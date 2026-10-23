@@ -4,7 +4,7 @@ import {
   SNOWFLAKE_MAX_POLLS, SNOWFLAKE_MAX_RESULT_ROWS, SNOWFLAKE_POLL_INTERVAL_MS, SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS,
   rowObjects, runSnowflakeStatement, snowflakeHost, snowflakeTargetOf,
 } from '../statement'
-import { STATEMENTS_URL, TARGET, fakeSnowflake, partition, resultSet, running, statementError } from './fake-snowflake'
+import { STATEMENTS_URL, STEP_REQUEST_ID, STEP_STATEMENT_URL, TARGET, fakeSnowflake, partition, resultSet, running, statementError } from './fake-snowflake'
 
 /**
  * The catalogue's one Snowflake SQL API client (#2337): what both Snowflake
@@ -24,6 +24,35 @@ async function failure(promise: Promise<unknown>): Promise<ActionFailure> {
 }
 
 const ONE_COLUMN = [{ name: 'N', type: 'fixed', scale: 0 }]
+
+/**
+ * Snowflake's documented resend contract, as the export path relies on it
+ * (apps/worker src/lib/snowflake.ts): a statement sent again with the same
+ * requestId and retry=true is not run again once it has run successfully, and
+ * its result is answered instead. A statement sent with an id never seen is run.
+ */
+function snowflakeHonouringRequestIds() {
+  const ran = new Map<string, Response>()
+  let executions = 0
+  let posts = 0
+  let loseNext = false
+  const fetch = async (input: string): Promise<Response> => {
+    posts++
+    const url = new URL(input)
+    const id = url.searchParams.get('requestId') ?? ''
+    const resend = url.searchParams.get('retry') === 'true' && ran.has(id)
+    if (!resend) {
+      executions++
+      ran.set(id, resultSet(ONE_COLUMN, [['1']]))
+    }
+    if (loseNext) {
+      loseNext = false
+      throw new DOMException('The operation timed out.', 'TimeoutError')
+    }
+    return ran.get(id)!.clone()
+  }
+  return { fetch, executions: () => executions, posts: () => posts, loseNextAnswer: () => { loseNext = true } }
+}
 
 describe('the declared target', () => {
   it('reads the account and user, and the optional session fields, refusing a target that names no usable account', () => {
@@ -46,7 +75,7 @@ describe('runSnowflakeStatement', () => {
     expect(result.rows).toEqual([['1']])
     expect(f.sent).toHaveLength(1)
     expect(f.sent[0].method).toBe('POST')
-    expect(f.sent[0].url).toMatch(new RegExp(`^${STATEMENTS_URL}\\?requestId=[0-9a-f-]{36}$`))
+    expect(f.sent[0].url).toBe(STEP_STATEMENT_URL)
     expect(f.sent[0].body).toEqual({
       statement: 'select ?',
       timeout: SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS,
@@ -54,6 +83,46 @@ describe('runSnowflakeStatement', () => {
       role: 'OPS_ROLE',
       bindings: { 1: { type: 'TEXT', value: '1' } },
     })
+  })
+
+  it('without a step request id (the verify probe) mints a fresh one and does not claim a resend', async () => {
+    const f = fakeSnowflake()
+    f.respond(resultSet(ONE_COLUMN, [['1']]), resultSet(ONE_COLUMN, [['1']]))
+    const probe = { fetch: f.ctx.fetch, sleep: f.ctx.sleep }
+    await runSnowflakeStatement(probe, snowflakeTargetOf(TARGET), { statement: 'select 1' })
+    await runSnowflakeStatement(probe, snowflakeTargetOf(TARGET), { statement: 'select 1' })
+    const [first, second] = f.sent.map((s) => new URL(s.url))
+    expect(`${first.origin}${first.pathname}`).toBe(STATEMENTS_URL)
+    expect(first.searchParams.get('requestId')).toMatch(/^[0-9a-f-]{36}$/)
+    expect(first.searchParams.get('retry')).toBeNull()
+    expect(first.searchParams.get('requestId')).not.toBe(second.searchParams.get('requestId'))
+  })
+
+  // #2339 (comment of 2026-10-22): a step's statement carries the step's stable
+  // request id with retry=true, so Snowflake runs it at most once however many
+  // times the run sends it.
+  it('with a step request id sends that id, with retry=true, every time', async () => {
+    const f = fakeSnowflake()
+    f.respond(resultSet(ONE_COLUMN, [['1']]), resultSet(ONE_COLUMN, [['1']]))
+    const step = { fetch: f.ctx.fetch, sleep: f.ctx.sleep, requestId: STEP_REQUEST_ID }
+    await runSnowflakeStatement(step, snowflakeTargetOf(TARGET), { statement: 'select 1' })
+    await runSnowflakeStatement(step, snowflakeTargetOf(TARGET), { statement: 'select 1' })
+    for (const sent of f.sent) {
+      expect(sent.url).toBe(STEP_STATEMENT_URL)
+    }
+  })
+
+  it('a resend with the same request id after a timeout is accepted and does not execute twice', async () => {
+    const snowflake = snowflakeHonouringRequestIds()
+    const step = { fetch: snowflake.fetch, sleep: async () => undefined, requestId: STEP_REQUEST_ID }
+    // The first send lands and runs, and its answer is lost on the way back.
+    snowflake.loseNextAnswer()
+    await expect(runSnowflakeStatement(step, snowflakeTargetOf(TARGET), { statement: 'insert into t values (1)' })).rejects.toThrow('timed out')
+    // The run is tried again and sends the same statement with the same id.
+    const resent = await runSnowflakeStatement(step, snowflakeTargetOf(TARGET), { statement: 'insert into t values (1)' })
+    expect(resent.rows).toEqual([['1']])
+    expect(snowflake.executions()).toBe(1)
+    expect(snowflake.posts()).toBe(2)
   })
 
   it('polls a statement that went async until it completes, sleeping between polls, a 429 on a poll meaning still running', async () => {

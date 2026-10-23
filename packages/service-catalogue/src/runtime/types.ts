@@ -24,6 +24,10 @@ export type ActionArgs = Readonly<Record<string, JsonValue>>
  * Snowflake account, a Salesforce instance), which is where the run's requests
  * go; connectionFetch refuses any other host. `sleep` is every wait a run makes
  * (a poll's interval), injected so a test crossing one does not wait (L524).
+ * `requestId` is the step's stable request id, the same on every attempt of the
+ * run (#2339): an action whose service deduplicates on a caller's id (Snowflake's
+ * requestId with retry=true) sends it, so a resend after a lost answer cannot
+ * apply twice.
  *
  * How a run fails is runtime/failure.ts.
  */
@@ -32,6 +36,7 @@ export interface ActionContext {
   readonly signal: AbortSignal
   readonly target: JsonValue
   readonly sleep: (ms: number) => Promise<void>
+  readonly requestId: string
 }
 
 export type ActionRun = (ctx: ActionContext, args: ActionArgs) => Promise<JsonValue>

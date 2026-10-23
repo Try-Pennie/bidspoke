@@ -173,7 +173,7 @@ describe('the OpenAI actions through the real connectionFetch (#2337)', () => {
     }
   }
 
-  const ctx = (w: World) => ({ fetch: stepFetch(w), signal: new AbortController().signal, target: TARGET, sleep: () => Promise.reject(new Error('never waits')) })
+  const ctx = (w: World) => ({ fetch: stepFetch(w), signal: new AbortController().signal, target: TARGET, sleep: () => Promise.reject(new Error('never waits')), requestId: '00000000-0000-8000-8000-000000000001' })
   const ARGS = { model: 'gpt-4o-mini', user_message: 'Is 3pm good?' }
   const completion = () => openai({ id: 'chatcmpl-1', choices: [{ index: 0, message: { role: 'assistant', content: 'Yes', refusal: null }, finish_reason: 'stop' }] })
 

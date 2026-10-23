@@ -4,15 +4,16 @@ import { resolveRuntimeAction } from '../..'
 import { ActionFailure } from '../../failure'
 import type { ActionArgs, RuntimeAction } from '../../types'
 import { SNOWFLAKE_INSERT_MAX_BODY_BYTES, SNOWFLAKE_INSERT_MAX_ROWS } from '../insert'
-import { STATEMENTS_URL, fakeSnowflake, partition, resultSet, statementError } from './fake-snowflake'
+import { STEP_STATEMENT_URL, fakeSnowflake, partition, resultSet, statementError } from './fake-snowflake'
 
 /**
  * The two Snowflake actions the Pipedream workflows use (#2337; surveyed from
  * the export of 2026-09-30): Execute SQL Query (19 steps) and Insert Multiple
  * Rows (2 steps). Each has the four fixtures every service PR carries: an
  * expired login, revoked consent, a 429 with Retry-After and a partial batch,
- * and the timeout after send that a non idempotent action must leave to the
- * executor as outcome unknown.
+ * and the timeout after send, which the action passes on for the executor to
+ * judge: since #2339 each statement carries the step's stable request id with
+ * retry=true, so the executor may send it again and Snowflake runs it once.
  */
 
 function action(key: string): RuntimeAction {
@@ -47,10 +48,12 @@ const INSERT_ARGS: ActionArgs = {
 }
 
 describe('both actions decide their own traits', () => {
-  it('are side effecting and not idempotent, and say why', () => {
+  // #2339: each statement carries the step's stable request id with retry=true,
+  // which Snowflake runs at most once, so a resend after a lost answer is safe.
+  it('are side effecting and idempotent through the step request id, and say why', () => {
     for (const a of [SQL, INSERT]) {
-      expect([a.sideEffect, a.idempotent]).toEqual([true, false])
-      expect(a.idempotentBecause.length).toBeGreaterThan(40)
+      expect([a.sideEffect, a.idempotent]).toEqual([true, true])
+      expect(a.idempotentBecause).toContain('retry=true')
     }
     expect(catalogueActions(CATALOGUE).map((a) => `${a.key}@${a.version}`).filter((id) => id.startsWith('snowflake.'))).toEqual([
       'snowflake.execute-sql-query@1',
@@ -75,6 +78,13 @@ describe('snowflake.execute-sql-query@1', () => {
       { ID: 2, NAME: null },
     ])
     expect(f.sent[0].body?.bindings).toEqual({ 1: { type: 'TEXT', value: '2026-10-01' }, 2: { type: 'TEXT', value: '3' } })
+  })
+
+  it('sends the statement under the step\'s stable request id with retry=true', async () => {
+    const f = fakeSnowflake()
+    f.respond(resultSet([{ name: 'N', type: 'fixed', scale: 0 }], [['1']]))
+    await SQL.run(f.ctx, { sql: 'select 1' })
+    expect(f.sent[0].url).toBe(STEP_STATEMENT_URL)
   })
 
   it('refuses a missing statement and a bind it cannot send, before anything is sent', async () => {
@@ -122,12 +132,13 @@ describe('snowflake.execute-sql-query@1', () => {
     expect([partial.code, partial.outcome]).toEqual(['snowflake_result_unread', 'applied'])
   })
 
-  it('a timeout after send is passed on unchanged: the executor records it as outcome unknown, since the action is not idempotent', async () => {
+  it('a timeout after send is passed on unchanged, for the executor to send again under the same request id', async () => {
     const timeout = new DOMException('The operation timed out.', 'TimeoutError')
     const f = fakeSnowflake()
     f.respond(timeout)
     await expect(SQL.run(f.ctx, { sql: 'delete from t' })).rejects.toBe(timeout)
-    expect(SQL.idempotent).toBe(false)
+    expect(f.sent[0].url).toBe(STEP_STATEMENT_URL)
+    expect(SQL.idempotent).toBe(true)
   })
 })
 
@@ -137,7 +148,7 @@ describe('snowflake.insert-multiple-rows@1', () => {
     f.respond(INSERTED())
     expect(await INSERT.run(f.ctx, INSERT_ARGS)).toEqual([{ 'number of rows inserted': 2 }])
     expect(f.sent).toHaveLength(1)
-    expect(f.sent[0].url.startsWith(`${STATEMENTS_URL}?requestId=`)).toBe(true)
+    expect(f.sent[0].url).toBe(STEP_STATEMENT_URL)
     expect(f.sent[0].body?.statement).toBe('INSERT INTO ANALYTICS.ENROLLMENT.DAILY_SYNC (ID, AMOUNT, NOTE, META) VALUES (?, ?, ?, ?), (?, NULL, ?, NULL)')
     expect(f.sent[0].body?.bindings).toEqual({
       1: { type: 'TEXT', value: '1' },
@@ -205,11 +216,13 @@ describe('snowflake.insert-multiple-rows@1', () => {
     expect([a.sent.length, b.sent.length, c.sent.length]).toEqual([1, 1, 1])
   })
 
-  it('a timeout after send is passed on unchanged, for the executor to record as outcome unknown', async () => {
+  it('a timeout after send is passed on unchanged, for the executor to send again under the same request id', async () => {
     const timeout = new DOMException('The operation timed out.', 'TimeoutError')
     const f = fakeSnowflake()
     f.respond(timeout)
     await expect(INSERT.run(f.ctx, INSERT_ARGS)).rejects.toBe(timeout)
+    expect(f.sent[0].url).toBe(STEP_STATEMENT_URL)
+    expect(INSERT.idempotent).toBe(true)
   })
 
   it('an answer read after the insert ran but not in full is applied, so it is never repeated', async () => {
