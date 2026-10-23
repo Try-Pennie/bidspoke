@@ -15,8 +15,7 @@
  * declared workspace, #2337), and Google's (google-service.ts: the Gmail
  * profile, acted as the declared mailbox, #2337). The
  * other the plan names (a Supabase key's project ref) arrives with its
- * service's rules (Phase 7), as
- * as another kind here; until a service has one, verify refuses it by name
+ * service's rules (Phase 7), as another kind here; until a service has one, verify refuses it by name
  * (verify_identity_unmeasurable), never passes it unmeasured.
  */
 

@@ -16,9 +16,9 @@
  * be read refuses the call too (check_unavailable), never lets it through.
  *
  * The scopes asked for are derived from the catalogue (googleDelegationScopes:
- * the union of what its Google actions declare), never written here. While no
- * Google action ships, that list is empty and every mint is refused
- * (no_delegation_scopes).
+ * the union of what its Google actions declare), never written here: since
+ * #2337 shipped them, the four the grant names. A catalogue declaring none
+ * would leave the list empty, and every mint refused (no_delegation_scopes).
  *
  * The mint: a JWT with iss the service account's client_email, sub the
  * mailbox, the space joined scope and aud Google's token URI, signed RS256 with

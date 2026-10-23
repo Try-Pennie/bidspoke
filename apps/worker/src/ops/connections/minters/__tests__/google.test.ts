@@ -35,7 +35,7 @@ const CATALOGUE: readonly ServiceSchema[] = [
       { key: 'google_sheets.append', name: 'Append', version: 1, arguments: [], sideEffect: true, idempotent: false, idempotentBecause: 'appends', googleScopes: [SHEETS] },
       { key: 'google_sheets.read', name: 'Read', version: 1, arguments: [], sideEffect: false, idempotent: true, idempotentBecause: 'a read', googleScopes: [SHEETS, DRIVE] },
     ],
-    // Only the scopes are read here; the Google connection is declared when Google ships (#2337).
+    // Only the scopes are read here; the shipped Google entry declares the connection (#2337).
     connection: { tile: 'A test Google service', auth: 'service_account_delegation', fields: [] },
   },
 ]
