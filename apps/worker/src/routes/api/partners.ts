@@ -102,7 +102,7 @@ function numberRefusal(body: Readonly<Record<string, unknown>>): { error: string
   return errors.length === 0 ? null : { error: errors[0].code, message: errors.map((e) => e.message).join(' '), errors }
 }
 
-// #306. One refusal shared by POST and PUT, so the create and update paths cannot
+// #306. One refusal shared by POST and PUT /:id/page, so the create and save paths cannot
 // disagree about which partner types exist. Returns the message rather than the
 // response so each caller keeps its own status shape.
 function partnerTypeRefusal(body: PartnerBody): string | null {
