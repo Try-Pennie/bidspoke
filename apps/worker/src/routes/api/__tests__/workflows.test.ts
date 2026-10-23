@@ -52,10 +52,6 @@ import { recordBackupSuccess, recordBackupFailure } from '../../../lib/github-ba
 import { uuidv7 } from '@bidspoke/uuidv7'
 import api from '../index'
 
-/**
- * The shared mock now covers what this file kept a local copy for: a handler for
- * non-auth rpcs, with jwtAuth's lookup served internally (#347).
- */
 /** One call of write_workflow, as the route sent it (#1947). */
 interface WriteArgs {
   p_op: string
@@ -93,6 +89,10 @@ function defaultWrite(args: WriteArgs): RpcAnswer {
   return { data: { workflow, version_id: 'ver-new', version_number: 2, restored_from: args.p_op === 'restore' ? 1 : undefined }, error: null }
 }
 
+/**
+ * The shared mock now covers what this file kept a local copy for: a handler for
+ * non-auth rpcs, with jwtAuth's lookup served internally (#347).
+ */
 const makeSupabase = (
   tables: Record<string, TableConfig | TableConfig[]> = {},
   opts: { rpc?: (name: string, args: unknown) => Promise<RpcAnswer>; write?: (args: WriteArgs) => RpcAnswer } = {},

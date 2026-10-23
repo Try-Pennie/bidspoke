@@ -51,7 +51,6 @@ const AUTHORING_WRITE = /\bwriteWorkflow\s*\(\s*\w+\s*,\s*\{\s*op\s*:\s*(['"`])(
  * `.definition =` assignment fills before it (in the same text, which is one
  * handler when called per handler); and every version row write.
  */
-
 function definitionWritesOf(kept: string): number[] {
   const out: number[] = []
   for (const m of kept.matchAll(AUTHORING_WRITE)) out.push(m.index ?? 0)

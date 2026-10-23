@@ -14,8 +14,9 @@
  *   claim a check it never had, and an unstamped row stays unstamped rather
  *   than being read as version 1 forever by a stamp of 1. Since #1947 A2 the
  *   write_workflow database function copies that stamp itself and refuses one
- *   from the caller; copiedDefinitionStamp is what the Worker's report reads
- *   to judge a copy at the stamp it will keep (lib/definition-report.ts).
+ *   from the caller; copiedDefinitionStamp is the stamp the restore and
+ *   duplicate routes hand reportDefinition, so a copy is judged at the stamp
+ *   write_workflow will give it (lib/definition-report.ts).
  *
  * Order (L255, L640): every reader learns a version one release before any
  * writer stamps it. Only version 1 exists, and readers have handled it since
