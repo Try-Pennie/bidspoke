@@ -214,7 +214,8 @@ describe('definitionShapeProblems', () => {
   })
 })
 
-// The five saved shapes the #1947 calibration named (2026-10-22), each decided.
+// The saved shapes the #1947 calibration named (2026-10-22), each decided. The
+// fourth, #2190, is the named 400 in the Worker's route tests.
 describe('saved shapes measured in production (#1947)', () => {
   it('a step of the retired integration type is refused by name on every save, never mapped to another type', () => {
     // One saved version holds one, in a soft deleted workflow, so restoring it is a 404 today.

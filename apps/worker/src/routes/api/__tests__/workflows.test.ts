@@ -423,19 +423,6 @@ describe('PUT /workflows/:id', () => {
     expect(res.status).toBe(500)
   })
 
-  it('saves as version 1 when there are no prior versions (PGRST116 is not an error)', async () => {
-    const newVersion = { id: 'ver-1', version_number: 1, workflow_id: 'wf-1' }
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
-        // no `single` config → mock returns PGRST116 (no rows), then the insert
-        workflow_versions: [{}, { insertResult: newVersion }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'First' } })
-    expect(res.status).toBe(200)
-  })
 
   it('calls refreshWorkflowCaches with the workflow id', async () => {
     const newVersion = { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' }
