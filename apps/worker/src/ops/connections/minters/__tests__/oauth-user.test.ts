@@ -5,7 +5,7 @@ import { ConnectionRefusal, LoginMintError } from '../../refusals'
 import type { Authorization, AuthorizeInput, ServiceRules } from '../../service-rules'
 import type { AccessTokenRequest, ExchangeRequest } from '../../token-object-contract'
 import { CONN, ORG, T0, makeDoubles, makeKeys, sealLogin, usableCopy, type TestKeys } from '../../__tests__/harness'
-import { exchangeOAuthCode, oauthUserAuth, type OAuthUserService, type TokenObjects } from '../oauth-user'
+import { exchangeOAuthCode, oauthUserAuth, oauthUserCache, type OAuthUserService, type TokenObjects } from '../oauth-user'
 
 /**
  * The person bound minter (#2335, PR 5 of phase 5 of #1689; Dan's decision 1):
@@ -118,6 +118,19 @@ describe('oauthUserAuth: the auth of a person bound login', () => {
     expect(objects.accessCalls.map((c) => c.rejectedTokenId)).toEqual([null, 'id-of-access-one'])
   })
 
+  it('a cache kept for the isolate serves an auth built per request, and its renewal still names the rejected token (#2338)', async () => {
+    // Google's entry is built per request (services.ts), so its memo and token ids must outlive the build.
+    const objects = tokenObjects(token('access-one'), token('access-two'))
+    const cache = oauthUserCache({ now: () => T0 })
+    const rejected: Authorization = await oauthUserAuth({ tokens: objects, now: () => T0, cache }, SERVICE).authorize(input())
+    const later = oauthUserAuth({ tokens: objects, now: () => T0, cache }, SERVICE)
+    await later.authorize(input())
+    expect(objects.accessCalls).toHaveLength(1)
+    const renewed = await later.authorize(input({ renew: { rejected } }))
+    expect(renewed.secrets).toEqual(['access-two'])
+    expect(objects.accessCalls.map((c) => c.rejectedTokenId)).toEqual([null, 'id-of-access-one'])
+  })
+
   it('refuses a candidate: refreshing it for one call would spend a rotating refresh token (L5)', async () => {
     const objects = tokenObjects(token('never'))
     const auth = oauthUserAuth({ tokens: objects, now: () => T0 }, SERVICE)
@@ -205,16 +218,32 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
   it('hands the object the row\'s sealed app login and the code, and answers the new generation, never a token', async () => {
     const objects = tokenObjects({ ok: true, generation: 2 })
     const d = makeDoubles(keys, usableCopy(envelope), () => [])
-    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2 })
+    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: null })
     expect(objects.exchangeCalls).toEqual([{
       organizationId: ORG, connectionId: CONN, service: 'example', generation: 1, envelope, tokenUrl: TOKEN_URL, code: CODE, verifier: VERIFIER, redirectUri: REDIRECT,
     }])
   })
 
+  it('answers whom the person signed in as, when the object read it from the provider (#2338)', async () => {
+    const objects = tokenObjects({ ok: true, generation: 2, account: 'dan@trypennie.com' })
+    const d = makeDoubles(keys, usableCopy(envelope), () => [])
+    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: 'dan@trypennie.com' })
+  })
+
+  it('refuses a candidate whose target the service does not sign in as a person, before the object is asked (#2338)', async () => {
+    const objects = tokenObjects({ ok: true, generation: 2 })
+    const d = makeDoubles(keys, usableCopy(envelope), () => [])
+    const covering: OAuthUserService = { ...SERVICE, covers: (target) => (target as { person?: unknown } | null)?.person === true }
+    const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, covering, exchangeCall(appCandidate())).catch((e: unknown) => e)
+    expect((err as ConnectionRefusal).code).toBe('connection_target_invalid')
+    expect(objects.exchangeCalls).toEqual([])
+    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, covering, exchangeCall({ ...appCandidate(), target: { person: true } }))).resolves.toEqual({ generation: 2, account: null })
+  })
+
   it('a new connection with no copy on ops yet may exchange', async () => {
     const objects = tokenObjects({ ok: true, generation: 2 })
     const d = makeDoubles(keys, { state: 'not_found', connectionId: CONN, service: null, generation: null, envelope: null, publicConfig: null, target: null, servedAt: null, serveUntil: null, dbNow: new Date(T0).toISOString() }, () => [])
-    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2 })
+    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: null })
   })
 
   it.each([

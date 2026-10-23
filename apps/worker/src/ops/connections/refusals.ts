@@ -196,6 +196,10 @@ export const MINT_FAILURE_REASONS = {
     'delegation_key_unset',
     /** The ops Worker's Google delegation key is not a service account key it can sign with, or names another token_uri. Nothing was sent. */
     'delegation_key_malformed',
+    /** The ops Worker holds no sign in app for a person bound login's service (oauth-apps.ts, #2338). Nothing was sent. */
+    'oauth_app_unset',
+    /** The ops Worker's sign in app is not a web client's JSON it can read, or names another token endpoint. Nothing was sent. */
+    'oauth_app_malformed',
   ],
   check_unavailable: ['delegation_allowlist_unreadable'],
   token_object_unavailable: [

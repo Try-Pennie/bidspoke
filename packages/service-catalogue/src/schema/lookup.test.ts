@@ -23,6 +23,7 @@ describe('resolveActionVersion', () => {
       signal: new AbortController().signal,
       target: null,
       sleep: () => Promise.reject(new Error('the fixture never waits')),
+      requestId: '00000000-0000-8000-8000-000000000001',
     }
     const outV1 = await v1.action.run(ctx, { text: 'hi' })
     const outV2 = await v2.action.run(ctx, { text: 'hi' })

@@ -25,9 +25,10 @@ export const SNOWFLAKE_EXECUTE_SQL_QUERY_V1: ActionSchema = {
     { key: 'binds', type: 'list', required: false, allowsVariables: true, parseJson: true },
   ],
   sideEffect: true,
-  idempotent: false,
+  // #2339: true from the step request id, never from the SQL, which may write.
+  idempotent: true,
   idempotentBecause:
-    'The statement is whatever SQL the step holds, an INSERT, UPDATE, MERGE or CALL as easily as a SELECT, so running it again after an uncertain outcome could apply it twice.',
+    'The statement may be an INSERT, UPDATE, MERGE or CALL as easily as a SELECT, but it is sent under the step\'s stable request id with retry=true, and Snowflake does not run again a statement it has already run successfully under that id, so sending it again after an uncertain outcome applies it at most once.',
 }
 
 export const SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1: ActionSchema = {
@@ -42,9 +43,10 @@ export const SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1: ActionSchema = {
     { key: 'values', type: 'code', required: true, allowsVariables: true, parseJson: true },
   ],
   sideEffect: true,
-  idempotent: false,
+  // #2339: the step request id is the key Snowflake deduplicates the INSERT on.
+  idempotent: true,
   idempotentBecause:
-    'An INSERT carries no key Snowflake deduplicates on, so inserting the same rows again after an uncertain outcome writes them twice.',
+    'The INSERT is sent under the step\'s stable request id with retry=true, and Snowflake does not run again a statement it has already run successfully under that id, so sending the same rows again after an uncertain outcome writes them at most once.',
 }
 
 export const SNOWFLAKE_SERVICE: ServiceSchema = {

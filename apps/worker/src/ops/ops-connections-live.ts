@@ -70,6 +70,7 @@ export function liveOpsConnectionsDeps(env: OpsEnv, options: LiveOpsConnectionsO
     throw new OpsConnectionsNotConfigured('OPS_CONNECTIONS_PRIVATE_KEY', 'OPS_CONNECTIONS_PRIVATE_KEY is not set on bidspoke-worker-ops, or is not the private half of any committed public key, so no ops connection login can be opened')
   }
   const gateway = env.OPS_GATEWAY
+  const tokens = env.CONNECTION_TOKENS ? tokenObjectsOf(env.CONNECTION_TOKENS) : noTokenObjects
   return {
     connection: {
       privateKeys,
@@ -92,11 +93,13 @@ export function liveOpsConnectionsDeps(env: OpsEnv, options: LiveOpsConnectionsO
       report: (event) => console.log(JSON.stringify({ ...event, source: 'ops_connections' })),
     },
     // Google's entry checks the organization's delegation list on the ops database and signs with the
-    // ops Worker's own key (#2337), so the registry is built for this request's client and env.
+    // ops Worker's own key (#2337), so the registry is built for this request's client and env; a
+    // person's own Google account asks its token object (#2338).
     services: opsServiceRegistry({
       google: {
         checkDelegation: (organizationId, mailbox, drives) => googleDelegationCheck(client, organizationId, mailbox, drives),
         serviceAccountKey: () => env.GOOGLE_DELEGATION_KEY,
+        tokens,
       },
     }),
     moneyIdentities: async (organizationId) => {
@@ -111,7 +114,7 @@ export function liveOpsConnectionsDeps(env: OpsEnv, options: LiveOpsConnectionsO
     recordTombstone: (organizationId, connectionId, generation, removedAt) => recordConnectionTombstone(client, organizationId, connectionId, generation, removedAt),
     readStatus: (organizationId, limit) => readConnectionStatus(client, organizationId, limit),
     takeLookupAllowance: (organizationId, perMinute) => takeLookupAllowance(client, organizationId, perMinute),
-    tokens: env.CONNECTION_TOKENS ? tokenObjectsOf(env.CONNECTION_TOKENS) : noTokenObjects,
+    tokens,
     now: () => Date.now(),
   }
 }
