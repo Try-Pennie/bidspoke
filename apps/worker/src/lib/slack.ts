@@ -11,6 +11,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 // Type only, so this cannot create an import cycle with the watcher that calls
 // sendPgCronAlert: the import is erased at compile time.
 import type { AlertingStatus } from './pg-cron-watch'
+import type { TickRetry } from './cron-once'
 import { coerceString } from './coerce'
 import { stripUrlQueriesInText } from './url-redact'
 import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError, READ_BACK_MISSING_CODE } from './db-retry'
@@ -2360,6 +2361,9 @@ export async function sendCronHeartbeatAlert(
   // True only when the caller measured that the status is the one already
   // posted (#1768); the default never claims nothing changed.
   unchanged: boolean = false,
+  // Cloudflare's retry of this run, as the tick guard recorded it (#2610); null
+  // when the read found none or could not answer, and then nothing is said.
+  retry: TickRetry | null = null,
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection) return false
@@ -2428,10 +2432,10 @@ export async function sendCronHeartbeatAlert(
           // age is how long nothing has finished, not when one run started.
           text: job.completionDroughtMs
             ? `No run has finished in ~${minutes} minutes, while new runs keep starting. Until a run completes: ${job.dependents}.`
-            : `A run started ~${minutes} minutes ago and has not finished. Until a run completes: ${job.dependents}.`,
+            : `A run started ~${minutes} minutes ago and has not finished. Until a run completes: ${job.dependents}.${retrySentence(retry)}`,
         },
       },
-      { type: 'section', text: { type: 'mrkdwn', text: vanishedFixLine(words, 'one') } },
+      { type: 'section', text: { type: 'mrkdwn', text: vanishedFixLine(words, 'one', !job.completionDroughtMs && retry !== null) } },
       lastLine(
         job.completionDroughtMs
           ? 'Seen because no run has stamped a completion for that long; why they stop is not visible from here.'
@@ -2492,18 +2496,34 @@ export async function sendCronHeartbeatAlert(
  * which the all-clear reports, and the tick guard's takeover line, which names
  * a retry and how long before it the stopped run began.
  */
-function vanishedFixLine(words: string | null, jobs: 'one' | 'several'): string {
+function vanishedFixLine(words: string | null, jobs: 'one' | 'several', retryStated = false): string {
   const subject = jobs === 'one' ? 'this job' : 'these jobs'
   const when = jobs === 'one' ? 'when one does' : 'when they do'
+  // With the retry stated on the page (#2610), how to find it in the logs is a
+  // second statement of the same fact, so the line says only what it means.
+  const retried = retryStated
+    ? 'and Cloudflare may then retry it under the same scheduled time, as it did here, '
+    : 'and Cloudflare may then retry it under the same scheduled time. The retry logs `[cron-once] took over` with `previous_age_ms`, ' +
+      'how long before the retry the stopped run began, '
   return (
     `*How to fix:* nothing yet. The next scheduled run tries again on its own${words ? ` (${words})` : ''}, ` +
     `and this run may have completed part of its work before it stopped. ` +
     `What shows whether anything needs changing is whether the next run of ${subject} finishes: an all-clear is posted here ${when}. ` +
     `Cloudflare's own record of this run cannot settle it alone: a run Cloudflare cancels can leave no outcome record at all, ` +
-    'and Cloudflare may then retry it under the same scheduled time. The retry logs `[cron-once] took over` with `previous_age_ms`, ' +
-    "how long before the retry the stopped run began, so an `ok` outcome at that scheduled time can be the retry's rather than this run's. " +
+    retried +
+    "so an `ok` outcome at that scheduled time can be the retry's rather than this run's. " +
     "Only an outcome that is this run's own and says it went over a CPU, memory or wall time limit means the work needs bounding or splitting."
   )
+}
+
+/**
+ * The sentence naming Cloudflare's retry of a run that never finished (#2610),
+ * read from the tick guard's claim for that run. Empty when there is none or the
+ * read could not answer: a sentence that might be false is worse than none.
+ */
+function retrySentence(retry: TickRetry | null | undefined): string {
+  if (!retry) return ''
+  return ` Cloudflare retried this run at ${etTime(retry.retriedAtMs)}, and the retry ${retry.finished ? 'finished' : 'has not finished'}.`
 }
 
 /** One job in a grouped heartbeat page (#2117). */
@@ -2525,6 +2545,8 @@ export interface CronHeartbeatGroup {
   /** stale: the latest start of any of the jobs. vanished: the run's scheduled time. */
   runAt: string | null
   jobs: CronHeartbeatGroupJob[]
+  /** vanished: Cloudflare's retry of the run, as the tick guard recorded it (#2610). Absent or null says nothing. */
+  retry?: TickRetry | null
 }
 
 /** An age as a reader says it: minutes under two hours, hours past that. */
@@ -2585,8 +2607,8 @@ export async function sendCronHeartbeatGroupAlert(
     const ages = group.jobs.map((j) => j.ageMs).filter((a): a is number => a !== null)
     const started = ages.length ? ` ${agoInWords(Math.max(...ages))} ago` : ''
     const run = Number.isFinite(runAtMs) ? `The run scheduled for ${etTime(runAtMs)}` : 'One scheduled run'
-    opening = `${run} started these jobs${started} and none of them has finished. Until a run of each completes:`
-    fix = vanishedFixLine(words, 'several')
+    opening = `${run} started these jobs${started} and none of them has finished.${retrySentence(group.retry)} Until a run of each completes:`
+    fix = vanishedFixLine(words, 'several', !!group.retry)
     how = 'Seen because each of these jobs stamped its start in this run and no completion inside its allowance; why the run stopped is not visible from here.'
     fallback = `${labels} started and never finished (vanished)`
   }
