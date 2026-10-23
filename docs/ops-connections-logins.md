@@ -353,10 +353,13 @@ reaches a token object.
   and `.../sign-in/finish`, `routes/api/connections.ts`; `lib/google-sign-in.ts`),
   since it holds the person's session. The start asks ops for the app's client
   id, writes a single use state (`oauth_states`, bidding migration
-  20261023210000: who started it, the connection, the PKCE verifier, ten
+  20261024130000: who started it, the connection, the PKCE verifier, ten
   minutes) and answers Google's link. Google sends the browser to
-  `/connections/google/callback`, a page of the web app, which posts the code
-  and state with the person's session; `claim_oauth_state` consumes the state
+  `/connections/google/callback`, a page of the web app that only hands what
+  Google said back to `/connections`. The Connections page posts the code and
+  state with the person's session, in the add form or Reconnect dialog the sign
+  in started from (D1 of `docs/design/google-sign-in-return.html`), the form's
+  values kept in the tab's session storage under the state; `claim_oauth_state` consumes the state
   once, for that person and organization only. A new connection's row is
   inserted first (person bound, owned by the caller, its login the client id
   alone), because the token object writes the new login back to the row by its
