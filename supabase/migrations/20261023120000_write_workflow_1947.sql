@@ -66,6 +66,10 @@ COMMENT ON COLUMN public.workflows.version IS
   'Moved by the workflows_bump_version trigger on every change to a column outside workflows_unversioned_columns() (#1947). write_workflow refuses a save or restore made from any other version (stale_version).';
 COMMENT ON COLUMN public.workflows.last_save_id IS
   'The save press that last wrote this row through write_workflow (#1947), so a retried press can recognise its own landed save.';
+COMMENT ON COLUMN public.workflows.definition_schema_version IS
+  'Which rules the definition is judged by (#1947). NULL is unstamped, judged as version 1. Written only through write_workflow: the version the Worker checked a written definition by, or, for a restore or duplicate, the stamp of the row it copies, which the function reads itself.';
+COMMENT ON COLUMN public.workflow_versions.definition_schema_version IS
+  'Which rules this snapshot''s definition is judged by (#1947). NULL is unstamped, judged as version 1. Written only through write_workflow, which gives a copy the stamp of the row it copies; a restore copies it to the workflow with the definition.';
 COMMENT ON COLUMN public.workflow_versions.definition_report IS
   'What validateDefinition found in this snapshot''s definition when write_workflow wrote it (#1947, report only): the verdict, problems by rule, and what the rules would refuse. Null for snapshots written before 2026-10-23.';
 
