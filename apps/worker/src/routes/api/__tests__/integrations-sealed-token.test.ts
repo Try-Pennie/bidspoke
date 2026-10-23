@@ -4,9 +4,9 @@
  * Who may call these: any signed in user of the organization (jwtAuth), and
  * each reads and writes only the caller's organization's Slack row.
  *
- * - POST /slack seals the token into credential_enc AND keeps config.bot_token
- *   beside it in this release (dual write), because the code before this
- *   release, the rollback target, reads only config.bot_token (L640).
+ * - POST /slack seals the token into credential_enc, its only home since the
+ *   contract release: config never carries the plaintext, and a config passed
+ *   back from the row (a Reconnect) has any old bot_token dropped.
  * - PATCH merges the token the row holds (opened from credential_enc) into the
  *   saved copy, so a row in the contract release's shape stays in the copy.
  * - GET /slack/channels reads the token through the same resolver.
@@ -113,7 +113,7 @@ afterEach(() => {
 })
 
 describe('POST /integrations/slack seals the token', () => {
-  it('writes credential_enc (opening to the token under the current key) and keeps config.bot_token beside it', async () => {
+  it('writes credential_enc (opening to the token under the current key) and no plaintext in config', async () => {
     const { client, rec } = recordingSupabase()
     vi.mocked(createSupabaseClient).mockReturnValue(client as never)
     const res = await call('POST', '/integrations/slack', { bot_token: TOKEN, default_channel: '#alerts', workspace_name: 'Pennie' })
@@ -126,8 +126,10 @@ describe('POST /integrations/slack seals the token', () => {
     expect(typeof saved.credential_enc).toBe('string')
     expect(saved.credential_enc).not.toContain(TOKEN)
     expect(await decryptSecret(saved.credential_enc as string, KEY)).toBe(TOKEN)
-    // The rollback target reads only this, so it must still read the saved row.
-    expect(parseSlackConnection(saved.config)?.bot_token).toBe(TOKEN)
+    // #2331's contract release: the token lives only in credential_enc.
+    expect(saved.config).not.toHaveProperty('bot_token')
+    expect(JSON.stringify(saved.config)).not.toContain(TOKEN)
+    expect(saved.config).toMatchObject({ default_channel: '#alerts', workspace_name: 'Pennie' })
     // #2332: the credential is in credential_enc, so no Cloudflare secret name.
     expect(saved.cf_secret_key).toBeNull()
     expect((await copyEntry(ORG))?.bot_token).toBe(TOKEN)

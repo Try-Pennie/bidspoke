@@ -151,14 +151,12 @@ export async function lookupSlackConnection(
 }
 
 /**
- * A row resolved with the client's key ring (#2331), its problem logged by name
- * whichever way it went: a fallback to the plaintext is said, and a token
- * nobody can read is never read as "no Slack".
+ * A row resolved with the client's key ring (#2331), from its sealed token only:
+ * a token nobody can read is logged by name and never read as "no Slack".
  */
 async function resolveRow(supabase: SupabaseClient, row: SlackConnectionRow | null | undefined, subject: string) {
   const resolved = await resolveSlackConnection(row, slackKeyRingFor(supabase))
-  if (resolved.kind === 'unreadable') console.error(slackTokenProblemLine(subject, resolved, false))
-  else if (resolved.kind === 'connection' && resolved.problem) console.error(slackTokenProblemLine(subject, resolved.problem, true))
+  if (resolved.kind === 'unreadable') console.error(slackTokenProblemLine(subject, resolved))
   return resolved
 }
 
@@ -3706,21 +3704,19 @@ export async function sendDatabaseRecoveredAlert(
 
 /**
  * The organization's sealed Slack token cannot be read (#2331). Posted through
- * whichever connection can still post (the plaintext copy, or the saved copy's
- * entry), so it names what is wrong and what still stands in, never the token.
- * Returns whether it reached Slack.
+ * the saved copy's entry, the one connection that can still post, so it names
+ * what is wrong and what still stands in, never the token. Returns whether it
+ * reached Slack.
  */
 export async function sendSlackTokenUnreadableAlert(
   slack: { bot_token: string },
   channel: string,
-  payload: { reason: 'slack_token_undecryptable' | 'slack_key_ring_missing'; fellBackToPlaintext: boolean; appUrl: string; repeat?: string },
+  payload: { reason: 'slack_token_undecryptable' | 'slack_key_ring_missing'; appUrl: string; repeat?: string },
 ): Promise<boolean> {
   const cause = payload.reason === 'slack_key_ring_missing'
     ? 'The Worker read the sealed Slack token with no key ring, which is a defect in how its database client was built.'
     : 'No key the Worker holds opens the sealed Slack token (service_connections.credential_enc). Most likely it was locked with a key since rotated away, or it was never re-locked during a key rotation.'
-  const standing = payload.fellBackToPlaintext
-    ? 'Alerts still post today from the plain text copy of the token, which the next release removes. Until this is fixed, removing it would leave this organization with no alerts.'
-    : 'Alerts for this organization are posting from the last saved copy of the connection, which is not updated while the token cannot be read.'
+  const standing = 'Alerts for this organization are posting from the last saved copy of the connection, which is not updated while the token cannot be read.'
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Slack token cannot be read', emoji: false } },
     { type: 'section', text: { type: 'mrkdwn', text: `${cause} ${standing}` } },

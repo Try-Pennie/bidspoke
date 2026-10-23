@@ -5,6 +5,7 @@ import { sendMatrixChangeAlert, sendMatrixValidationAlert } from '../slack'
 import type { MatrixConfigChange, MatrixConfigProblems } from '../slack'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 const config = { slug: 'sofi', name: 'SoFi default' }
 
@@ -205,12 +206,12 @@ describe('sendMatrixChangeAlert', () => {
         if (typeof prop === 'symbol') return undefined
         if (prop === 'limit') return alertRowsAnswer(() =>
           connection
-            ? Promise.resolve({ data: { config: connection }, error: null })
+            ? sealedSlackRow(connection).then((row) => ({ data: row, error: null }))
             : Promise.resolve({ data: null, error: null }))
         return () => chain
       },
     })
-    return { from: () => chain }
+    return withSlackKeyRing({ from: () => chain })
   }
 
   const slackConnection = {
@@ -343,12 +344,12 @@ describe('sendMatrixValidationAlert (#182)', () => {
         if (typeof prop === 'symbol') return undefined
         if (prop === 'limit') return alertRowsAnswer(() =>
           connection
-            ? Promise.resolve({ data: { config: connection }, error: null })
+            ? sealedSlackRow(connection).then((row) => ({ data: row, error: null }))
             : Promise.resolve({ data: null, error: null }))
         return () => chain
       },
     })
-    return { from: () => chain }
+    return withSlackKeyRing({ from: () => chain })
   }
 
   const slackConnection = { bot_token: 'xoxb-test', default_channel: '#alerts' }

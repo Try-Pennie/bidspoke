@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { detectAnomaly, MIN_BASELINE_DAYS, runVolumeAnomalyCheck } from '../volume-anomaly'
 import { PAGE_SIZE } from '../paginate'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 function buildCounts(days: string[], count: number): Record<string, number> {
   return Object.fromEntries(days.map((d) => [d, count]))
@@ -206,7 +207,7 @@ function makeSupabase(statsRows: { workflow_id: string; day: string; run_count: 
     range: (from: number, to: number) => Promise.resolve({ data: statsRows.slice(from, to + 1), error: null }),
     order: () => terminal(), // chainable no-op, matches real query builder semantics
   })
-  return {
+  return withSlackKeyRing({
     from(table: string) {
       if (table === 'service_connections') {
         // The alert row reads (#2332): the org list is awaited as it is; one
@@ -217,7 +218,7 @@ function makeSupabase(statsRows: { workflow_id: string; day: string; run_count: 
           range: () => chain,
           eq: () => chain,
           or: () => chain,
-          limit: () => Promise.resolve({ data: [{ config: { bot_token: 'xoxb', default_channel: '#alerts' } }], error: null }),
+          limit: async () => ({ data: [await sealedSlackRow({ bot_token: 'xoxb', default_channel: '#alerts' })], error: null }),
           then: (resolve: (v: unknown) => void) => resolve({ data: [{ organization_id: 'org-1' }], error: null }),
         }
         return chain
@@ -234,7 +235,7 @@ function makeSupabase(statsRows: { workflow_id: string; day: string; run_count: 
       }
       throw new Error(`unexpected table in test mock: ${table}`)
     },
-  }
+  })
 }
 
 describe('runVolumeAnomalyCheck', () => {

@@ -36,6 +36,7 @@ import { partnerConstantsLastGoodKey } from '../partner-constants-loader'
 import { buyerProfilesLastGoodKey } from '../buyer-profile-loader'
 import { RECOVERY_REARM_MINUTES } from '../alert-recovery'
 import type { SweepResult } from '../stored-copy-sweep'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 // @ts-expect-error Vite resolves ?raw to the file's text; no ambient declaration here.
 import DEFINITION_LOADER_SOURCE from '../../engine/definition-loader.ts?raw'
 
@@ -89,21 +90,23 @@ function downDb() {
     chain.then = (resolve: (v: unknown) => unknown) => resolve(result)
     return chain
   }
-  return { asked, client: { from: builder } as unknown as SupabaseClient }
+  return { asked, client: withSlackKeyRing({ from: builder }) as unknown as SupabaseClient }
 }
 
 /** A database whose only answer is one Slack connection. */
-function slackDb(config: Record<string, unknown>) {
+async function slackDb(config: Record<string, unknown>) {
+  // The row as stored (#2331's contract release): the token sealed, no plaintext; the client carries the ring createSupabaseClient registers.
+  const row = await sealedSlackRow(config, { organization_id: ORG })
   const asked: string[] = []
   const builder = (table: string) => {
     asked.push(table)
-    const result = { data: [{ organization_id: ORG, config }], error: null, status: 200 }
+    const result = { data: [row], error: null, status: 200 }
     const chain: Record<string, unknown> = {}
     for (const m of ['select', 'eq', 'or', 'in', 'order', 'range', 'limit', 'abortSignal', 'retry']) chain[m] = () => chain
     chain.then = (resolve: (v: unknown) => unknown) => resolve(result)
     return chain
   }
-  return { asked, client: { from: builder } as unknown as SupabaseClient }
+  return { asked, client: withSlackKeyRing({ from: builder }) as unknown as SupabaseClient }
 }
 
 const SLACK_CONFIG = { bot_token: 'xoxb-test', default_channel: 'C-ALERTS', volume_alerts_enabled: true }
@@ -233,7 +236,7 @@ describe('while leads are being served from stored copies', () => {
   })
 
   it('posts to the live Slack connection when the database answers, without reading the copy (#1303)', async () => {
-    const h = harness({ db: slackDb({ ...SLACK_CONFIG, default_channel: 'C-LIVE' }) })
+    const h = harness({ db: await slackDb({ ...SLACK_CONFIG, default_channel: 'C-LIVE' }) })
     await rememberSlack(h.kv)
     for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, served(5))
     const r = await runStoredCopyChecks(h.deps())

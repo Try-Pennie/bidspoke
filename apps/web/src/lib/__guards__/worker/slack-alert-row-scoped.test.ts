@@ -17,16 +17,14 @@ import { WORKER_SRC, sanitizeSource } from '../../__tests__/_scan-utils'
  * L613).
  *
  * This fails on any `.from('service_connections')` in the alert path's
- * modules (lib/slack.ts, lib/alert-fanout.ts, routes/api/integrations.ts, and
- * routes/api/slack-token-seal.ts, whose seal and contract verdict are about the
- * alert row's token, found in #2332 release 2's lessons review) that is not
- * inside onlySlackAlertRow(...), except the three that are not unscoped alert
- * row reads, each with its reason (NOT_ALERT_ROW_READS):
+ * modules (lib/slack.ts, lib/alert-fanout.ts and routes/api/integrations.ts;
+ * routes/api/slack-token-seal.ts was one until #2331's contract release retired
+ * it) that is not inside onlySlackAlertRow(...), except the ones that are not
+ * unscoped alert row reads, each with its reason (NOT_ALERT_ROW_READS):
  * - the save's upsert in integrations.ts POST /slack, which writes the alert
  *   row by its conflict target (organization_id, service_type, name 'slack');
  * - the settings change's update in integrations.ts PATCH /slack/settings,
- *   and the seal's update in slack-token-seal.ts, each of which writes the row
- *   by the id its narrowed read returned;
+ *   which writes the row by the id its narrowed read returned;
  * - probeSlackConnectionsTable in alert-fanout.ts, the volume check's proof
  *   that the database answers: one organization_id from any row, no token.
  *
@@ -35,7 +33,7 @@ import { WORKER_SRC, sanitizeSource } from '../../__tests__/_scan-utils'
  * service-connections-readers.test.ts instead.
  */
 
-const ALERT_PATH_FILES = ['lib/slack.ts', 'lib/alert-fanout.ts', 'routes/api/integrations.ts', 'routes/api/slack-token-seal.ts']
+const ALERT_PATH_FILES = ['lib/slack.ts', 'lib/alert-fanout.ts', 'routes/api/integrations.ts']
 
 const FROM = /\.from\((['"`])service_connections\1\)/g
 
