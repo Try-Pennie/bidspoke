@@ -787,8 +787,9 @@ describe('the OpsGateway entrypoint', () => {
     // opsConnections and moneyIdentities: the serve (#2335), tested in ops-gateway-connections.test.ts and money-identity.test.ts.
     // replaceConnectionEnvelope: the reseal's write back (#2333), tested in ops-gateway-replace-envelope.test.ts.
     // opsJobStarted and opsJobCompleted: the ops jobs' stamps (#2340), tested in ops-gateway-jobs.test.ts and below.
+    // opsWorkflowDefinitions: the frozen definition copies (#1950), tested in ops-gateway-definitions.test.ts and below.
     expect(Object.getOwnPropertyNames(OpsGateway.prototype).sort()).toEqual([
-      'constructor', 'moneyIdentities', 'opsConnections', 'opsJobCompleted', 'opsJobStarted', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflows',
+      'constructor', 'moneyIdentities', 'opsConnections', 'opsJobCompleted', 'opsJobStarted', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflowDefinitions', 'opsWorkflows',
       'replaceConnectionEnvelope', 'storeRotatedEnvelope',
     ])
   })
@@ -820,5 +821,11 @@ describe('the OpsGateway entrypoint', () => {
     const gw = new OpsGateway({} as ExecutionContext, { IDEMPOTENCY: kv() } as never)
     await expect(gw.moneyIdentities(ORG)).resolves.toMatchObject({ organization_id: ORG, salesforce: null })
     await expect(gw.moneyIdentities(undefined)).rejects.toThrow(/no organization uuid/)
+  })
+
+  it('refuses a definition request it cannot read before reading anything (#1950)', async () => {
+    const { OpsGateway } = await import('../ops-gateway-entrypoint')
+    const gw = new OpsGateway({} as ExecutionContext, { IDEMPOTENCY: kv() } as never)
+    await expect((async () => gw.opsWorkflowDefinitions({ versions: 'all' }))()).rejects.toThrow(/definition request/)
   })
 })
