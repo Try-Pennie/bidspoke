@@ -178,7 +178,7 @@ BEGIN
   IF (doc->>'version')::int IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'version after one change: %', doc->>'version'; END IF;
   SELECT changes INTO ch FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-333333330001' ORDER BY changed_at DESC LIMIT 1;
   -- Paths only: the keys starting with an underscore are bookkeeping, such as the
-  -- legacy route's _route tag (#2133).
+  -- page save's _actor.
   IF (SELECT count(*) FROM jsonb_object_keys(ch) k WHERE k NOT LIKE '\_%') IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'expected one changed path, got %', ch; END IF;
   IF (ch->'tiers.engine.40000.multiplier'->>'old')::numeric IS DISTINCT FROM 0.0012 OR (ch->'tiers.engine.40000.multiplier'->>'new')::numeric IS DISTINCT FROM 0.0013 THEN
     RAISE EXCEPTION 'multiplier path old and new wrong: %', ch;

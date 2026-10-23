@@ -96,7 +96,7 @@ BEGIN
 END
 $do$;
 
--- ── 2. An absent key keeps the stored cap, through both saves ────────────────
+-- ── 2. An absent key keeps the stored cap, with a partner patch and without ──
 DO $do$
 DECLARE
   out jsonb;
@@ -111,10 +111,10 @@ BEGIN
   PERFORM pg_temp.save_profile('11111111-1111-1111-1111-000021110001', '33333333-3333-3333-3333-000021110002', v_version,
     '{"sold_on":"offer","is_enabled":false,"priority":3,"allowed_states":["CA"],"windows":[{"day_of_week":1,"opens_minute":540,"closes_minute":1020}],"blackout_dates":[],"tiers":[]}'::jsonb, '22222222-2222-2222-2222-00002111000a', 'erin@example.test');
   IF (SELECT collections_max_percent FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-000021110002') IS DISTINCT FROM 75 THEN
-    RAISE EXCEPTION 'case 2: the legacy save without the key cleared the cap';
+    RAISE EXCEPTION 'case 2: the profile only save without the key cleared the cap';
   END IF;
   IF (SELECT priority FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-000021110002') IS DISTINCT FROM 3 THEN
-    RAISE EXCEPTION 'case 2: the legacy save did not write its own change';
+    RAISE EXCEPTION 'case 2: the profile only save did not write its own change';
   END IF;
   INSERT INTO suite_cases(name) VALUES ('absent key keeps the stored cap');
 END

@@ -3,7 +3,7 @@
 -- buyer_profiles.display_time_zone is a closed list: the CHECK must allow
 -- exactly DISPLAY_TIME_ZONES (packages/buyer-profile/src/clock.ts), which the
 -- suite receives as the generated fixture display-time-zones.json (L41), and
--- both saves must refuse anything else by name, keep the stored zone when the
+-- the page save must refuse anything else by name, keep the stored zone when the
 -- key is absent, and return it in the document.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh
@@ -127,7 +127,7 @@ BEGIN
 END
 $do$;
 
--- ── 3. An absent key keeps the stored zone, through both saves ───────────────
+-- ── 3. An absent key keeps the stored zone, with a partner patch and without ─
 DO $do$
 DECLARE
   out jsonb;
@@ -144,7 +144,7 @@ BEGIN
     '{"sold_on":"offer","is_enabled":false,"priority":3,"allowed_states":["CA"],"windows":[{"day_of_week":1,"opens_minute":540,"closes_minute":1020}],"blackout_dates":[],"tiers":[]}'::jsonb,
     '22222222-2222-2222-2222-00002143000a', 'erin@example.test');
   IF (SELECT display_time_zone FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-000021430002') IS DISTINCT FROM 'America/Denver' THEN
-    RAISE EXCEPTION 'case 3: the legacy save without the key cleared the zone';
+    RAISE EXCEPTION 'case 3: the profile only save without the key cleared the zone';
   END IF;
   INSERT INTO suite_cases(name) VALUES ('absent key keeps the stored zone');
 END
