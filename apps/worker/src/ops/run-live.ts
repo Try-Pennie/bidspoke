@@ -30,7 +30,7 @@ import { formatErr } from '../lib/format-error'
 import { dispatchKey, verifyDispatch } from './dispatch-auth'
 import type { OpsEnv } from './index'
 import { opsInternalIdentity, OpsInternalRefused } from './internal'
-import { createOpsSupabaseClient, organizationIdFrom, type OpsSupabaseClient } from './ops-db'
+import { createOpsSupabaseClient, OpsDatabaseConfigError, organizationIdFrom, type OpsSupabaseClient } from './ops-db'
 import {
   completeRunRequest, extendRunLease, readWorkflowDefinition, recordSendIntent, recordSendResult, saveWorkflowDefinition, startRunExecution,
   type ClaimedRun,
@@ -114,18 +114,30 @@ export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveD
     throw err
   }
 
-  const client = createOpsSupabaseClient(env, deps.opsFetch ? { fetch: deps.opsFetch } : {})
+  // Every answer is a value (internal.ts): a deploy missing the ops database is a refusal by name.
+  let client: OpsSupabaseClient
+  try {
+    client = createOpsSupabaseClient(env, deps.opsFetch ? { fetch: deps.opsFetch } : {})
+  } catch (err) {
+    if (err instanceof OpsDatabaseConfigError) return { refused: `ops_database_not_configured: ${formatErr(err)}` }
+    throw err
+  }
   let definition: Record<string, unknown>
   try {
     definition = await definitionOf(env, client, run, deps.delay)
   } catch (err) {
-    const error = `the run's definition (workflow ${run.workflowId} version ${run.workflowVersion}) could not be had: ${formatErr(err)}`
+    const why = `the run's definition (workflow ${run.workflowId} version ${run.workflowVersion}) could not be had: ${formatErr(err)}`
+    const end = { outcome: 'retry' as const, error: why, notBefore: new Date(deps.nowMs + RUN_DEFINITION_RETRY_MS) }
     // Not started, so this spends no attempt; the claim ends and the run waits a minute.
-    await completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, {
-      outcome: 'retry', error, notBefore: new Date(deps.nowMs + RUN_DEFINITION_RETRY_MS),
-    })
+    try {
+      await completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, end)
+    } catch (completeErr) {
+      // Not started, so no ledger row: the lease lapses and the sweep returns the run to the queue.
+      console.log(JSON.stringify({ event: 'ops_run', step: 'definition_unavailable_complete_failed', run_request_id: run.runRequestId, workflow_id: run.workflowId, error: formatErr(completeErr) }))
+      return { outcome: 'complete_failed', end, error: `${why}; and the return to the queue could not be recorded: ${formatErr(completeErr)}` }
+    }
     console.log(JSON.stringify({ event: 'ops_run', step: 'definition_unavailable', run_request_id: run.runRequestId, workflow_id: run.workflowId }))
-    return { outcome: 'definition_unavailable', error }
+    return { outcome: 'definition_unavailable', error: why }
   }
 
   return invokeRun({

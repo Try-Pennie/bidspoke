@@ -10,7 +10,9 @@
  * could reach it only by declaring its own binding to this entrypoint, which
  * takes a deploy. Data reached: none, except by resealConnections (#2333),
  * which reads every organization's ops connections from the bidding Worker,
- * ciphertext only, and writes each back only within its own organization.
+ * ciphertext only, and writes each back only within its own organization; and
+ * by run (#1950), which reads and writes the ops database for the claimed run's
+ * one organization and may ask the bidding Worker for its definition.
  *
  * Each method refuses by name outside the ops lane, the same rule the fetch
  * handler applies, so a deploy that lost its config cannot answer here either.

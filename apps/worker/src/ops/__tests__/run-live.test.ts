@@ -97,4 +97,20 @@ describe('OpsInternal.run', () => {
     expect(String(complete?.body.p_error)).toMatch(/definition/)
     expect(report).toMatchObject({ outcome: 'definition_unavailable' })
   })
+
+  it('answers a value, never a throw, when the ops database is not configured or the retry cannot be recorded', async () => {
+    const db = opsDb(LIFECYCLE)
+    const unconfigured = await runDispatched({ ...env(), OPS_SUPABASE_SECRET_KEY: '' } as OpsEnv, await signed({ kind: 'run', run: RUN }), deps(db.fetch))
+    expect(unconfigured).toMatchObject({ refused: expect.stringMatching(/^ops_database_not_configured/) })
+    expect(db.calls).toEqual([])
+
+    const gateway = { opsWorkflowDefinitions: async () => { throw new Error('the bidding Worker did not answer') } }
+    const { complete_run_request: _unanswered, ...noComplete } = LIFECYCLE
+    const down = opsDb({ ...noComplete, workflow_definition: [] })
+    const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(down.fetch))
+    expect(down.names()).toContain('complete_run_request')
+    expect(down.names()).not.toContain('start_run_execution')
+    // Not started, so the lapsed lease is swept back to the queue; the tick counts it by this answer.
+    expect(report).toMatchObject({ outcome: 'complete_failed', end: { outcome: 'retry' }, error: expect.stringMatching(/definition/) })
+  })
 })

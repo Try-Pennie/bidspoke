@@ -108,8 +108,6 @@ import {
 } from './ops-writes'
 import { OBSERVATION_REASONS, type OpsSweep, type OverlapRule } from './run-vocabulary'
 
-/** The only mode this tick has (#1949). */
-export const OPS_TICK_MODE: OpsTickMode = 'observe'
 
 /** k, the most runs of one workflow a claim takes (#1698 D1): the fair claim measured at k 5 (spike P9). */
 export const TICK_CLAIM_PER_WORKFLOW = 5
