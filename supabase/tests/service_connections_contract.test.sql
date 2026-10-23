@@ -233,7 +233,7 @@ DECLARE
 BEGIN
   -- A second non ops slack row as well, the case a delete by type removed too.
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config)
-  VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'second slack', 'bot_token', NULL, '{"default_channel":"#b"}');
+  VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'second slack', 'bot_token', 'CONN_PLANTED_SECOND', '{"default_channel":"#b"}');
   SELECT id INTO alert_id FROM public.service_connections
   WHERE organization_id = '11111111-1111-1111-1111-11111112334a' AND service_type = 'slack' AND name = 'slack';
 
