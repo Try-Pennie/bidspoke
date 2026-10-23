@@ -78,7 +78,7 @@ const CLASS_2456 = CLASS.replace(/ {2}\/\/ The Google mailboxes[\s\S]*(?=\};\n$)
  * of the source that shipped it, since build PR 13b requires it: the #2569
  * class above, which lacks it, is now a red case.
  */
-const CLASS_SIGN_IN = CLASS.replace(/\};\n$/, `  // Sign in with Google (#2338, build PR 13). Not in OPS_CONNECTIONS_METHODS until the bidding routes call it: see the contract.
+const CLASS_SIGN_IN = CLASS.replace(/\};\n$/, `  // Sign in with Google (#2338, build PR 13): called by the bidding Worker's sign in route.
   signInClient(request) {
     return signInClientAnswer(this.env, request);
   }

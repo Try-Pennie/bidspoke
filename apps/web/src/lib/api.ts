@@ -1396,7 +1396,8 @@ export const api = {
         timeoutMs: CONNECTION_REMOVE_TIMEOUT_MS,
       }),
     // Sign in with your own Google account (build PR 13, R17): the link to Google for a new connection or a
-    // Reconnect of one, then the finish the callback page posts. Each refusal throws carrying the route's sentence.
+    // Reconnect of one, then the finish the Connections page posts once the callback route hands Google's answer back
+    // to it. Each refusal throws carrying the route's sentence.
     startGoogleSignIn: (body: { name: string } | { connection_id: string }) =>
       req<{ url: string }>('/api/connections/google/sign-in', { method: 'POST', body: JSON.stringify(body), timeoutMs: CONNECTION_SAVE_TIMEOUT_MS }),
     finishGoogleSignIn: (body: { state: string; code: string } | { state: string; error: string }) =>
