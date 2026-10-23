@@ -142,6 +142,13 @@ describe('walkOpsDefinition', () => {
     expect(await walkOpsDefinition(circle, runCtx().ctx, { action_a: recorder().handler })).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/no entry/) })
   })
 
+  it('runs a handler registered under a name an object inherits, such as constructor, through that handler', async () => {
+    const r = recorder()
+    const def = { nodes: [node('odd', 'constructor')], edges: [edge('trigger', 'odd')] }
+    expect(await walkOpsDefinition(def, runCtx().ctx, { constructor: r.handler })).toEqual({ outcome: 'done' })
+    expect(r.seen.map((s) => s.node)).toEqual(['odd'])
+  })
+
   it('routes by _route only for the in memory routing steps, never by a handler\'s output, which an outside answer fills', async () => {
     const r = recorder()
     const def = {

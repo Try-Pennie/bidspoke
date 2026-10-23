@@ -104,9 +104,10 @@ export async function walkOpsDefinition(
     const step: NodeDefinition = current
     const name = `step ${step.namespace} (${step.type})`
     let result: StepExecutionResult
-    const inMemory = IN_MEMORY[step.type]
+    // Own keys only, as the up front check reads them: a type named like an inherited property is a handler's.
+    const inMemory = Object.hasOwn(IN_MEMORY, step.type)
     try {
-      result = inMemory ? inMemory(step, ctx) : await handlers[step.type]({ node: step, ctx, run })
+      result = inMemory ? IN_MEMORY[step.type](step, ctx) : await handlers[step.type]({ node: step, ctx, run })
     } catch (err) {
       if (err instanceof RunStopped) throw err
       return failed(`${name}: ${formatErr(err)}`)
@@ -119,7 +120,7 @@ export async function walkOpsDefinition(
     const out = outgoingEdges(step.id, edges)
     // Only an in memory step routes by _route: a handler's output carries an
     // outside answer, which must never pick the next step.
-    const route = Object.hasOwn(IN_MEMORY, step.type) && isRecord(result.output) && typeof result.output._route === 'string' ? result.output._route : null
+    const route = inMemory && isRecord(result.output) && typeof result.output._route === 'string' ? result.output._route : null
     // A routing step goes where its route says, and nowhere when that handle is not wired (a filter's exit).
     const next = route !== null ? out.find((e) => e.source_handle === route) : out.find((e) => evaluateEdge(e, ctx))
     current = next === undefined ? undefined : findNode(next.target, nodes)
