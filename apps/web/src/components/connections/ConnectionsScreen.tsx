@@ -374,7 +374,10 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
       )
       return
     }
+    // The catalogue always holds Google; a page without it cannot draw the form, so it fails loudly
+    // here, before the single use state is spent, rather than finishing into a form it cannot show.
     const google = services.find((x) => x.key === 'google')
+    if (!google) throw new Error('The Connections page has no Google service to finish a sign in with')
     dispatch({ type: 'add_opened' })
     dispatch({ type: 'add_service', service: 'google' })
     dispatch({ type: 'add_google', way: 'own' })
@@ -387,7 +390,13 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     }
     source.finishGoogleSignIn(body).then(
       (a) => {
-        if (a.outcome !== 'created' || !google) return
+        // Its kept values gone, a Reconnect lands here: the existing connection signed in again, so it opens, working.
+        if (a.outcome === 'reconnected') {
+          dispatch({ type: 'reconnect_answered', attempt, id: a.connection.id, actsAs: a.connection.acts_as, at: clock.now() })
+          dispatch({ type: 'add_closed' })
+          dispatch({ type: 'choose', chosen: { kind: 'connection', id: a.connection.id } })
+          return
+        }
         const created = { ...a.connection, target: { ...GOOGLE_OWN_ACCOUNT_TARGET }, created_at: new Date(clock.now()).toISOString() }
         dispatch({ type: 'save_answered', attempt, connection: createdView(created, google, clock.now()) })
       },

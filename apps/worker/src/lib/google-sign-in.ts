@@ -12,9 +12,11 @@
  * secret, and the authorize link names only the app's public client id
  * (OpsConnections.signInClient).
  *
- * Google sends the browser back to the Connections page's callback, a page of
- * the web app, which posts the code and state here with the person's JWT, so
- * the finish is held to both the state and the signed in person.
+ * Google sends the browser back to /connections/google/callback, a page of the
+ * web app that only hands what Google said on to /connections; the Connections
+ * page then posts the code and state here with the person's JWT, in the form or
+ * dialog the sign in started from, so the finish is held to both the state and
+ * the signed in person.
  */
 import { CATALOGUE, googleDelegationScopes } from '@bidspoke/service-catalogue/schema'
 

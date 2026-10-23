@@ -7,7 +7,8 @@
  * here before the bidding routes that call them (build PR 6), the same deploy
  * order as below; and signInClient (#2338, build PR 13;
  * connections/sign-in-client.ts), the client id of the Google sign in app this
- * Worker holds, shipped here before the bidding sign in route that calls it.
+ * Worker holds, which the bidding Worker's sign in route
+ * (POST /api/connections/google/sign-in) reads.
  *
  * WHO MAY CALL IT. Only a Worker holding a service binding to this named
  * entrypoint of bidspoke-worker-ops: the bidding Worker, through the

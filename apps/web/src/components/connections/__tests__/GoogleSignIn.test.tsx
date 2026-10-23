@@ -3,16 +3,19 @@
  * PR 13; R17, R18): the add form's Google button and a Reconnect of an own
  * account connection each ask the Worker for Google's link, show it starting,
  * go to Google once nothing on the page would be lost, and say why when the
- * Worker refuses; and the callback page finishes the sign in once, opens the
- * saved connection, or says why nothing was saved.
+ * Worker refuses; the callback route hands what Google said back to
+ * Connections, which finishes the sign in once, in the form or Reconnect dialog
+ * it started from, opens the saved connection, or says why nothing was saved
+ * (D1, D2).
  */
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { StrictMode } from 'react'
+import { Component, StrictMode, type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ConnectionList, ConnectionListRow } from '@/lib/api'
 import { ConnectionsScreen, type ConnectionsClock, type ConnectionsSource } from '../ConnectionsScreen'
 import { NO_SIGN_IN, signInReturnHref, signInReturnOf, type SignInReturn } from '../google-sign-in-return'
 import { keptSignInsIn, type KeptSignIns } from '../google-sign-in-kept'
+import { catalogueServices } from '../add-form-model'
 
 const T0 = Date.parse('2026-10-20T16:00:00Z')
 const LINK = 'https://accounts.google.com/o/oauth2/v2/auth?state=s'
@@ -32,6 +35,13 @@ const row = (over: Partial<ConnectionListRow>): ConnectionListRow => ({
 })
 
 const LIST: ConnectionList = { connections: [row({})], statuses: { as_of: '2026-10-20T16:00:00Z', stale: false, unavailable: null } }
+
+/** Draws what a child threw, as the app's error boundary would, so the test can read it. */
+class Caught extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  render() { return this.state.error ? <p role="alert">{this.state.error.message}</p> : this.props.children }
+}
 
 const refusal = (error: string, message: string) => Object.assign(new Error(error), { status: 503, body: { error, message } })
 
@@ -265,6 +275,28 @@ describe('back on Connections from Google (D1, D2, Dan 2026-10-23)', () => {
     render(<StrictMode><ConnectionsScreen source={s} clock={manualClock().clock} signInReturn={ret} /></StrictMode>)
     await waitFor(() => expect(part('save-line')?.getAttribute('data-state')).toBe('failed'))
     expect(finishGoogleSignIn).toHaveBeenCalledTimes(1)
+  })
+
+  it('a Reconnect whose kept values are gone still ends: the form closes and that connection opens, working', async () => {
+    await cameBack({ state: 's4', body: { state: 's4', code: 'c1' } }, {
+      finishGoogleSignIn: vi.fn(async () => ({ outcome: 'reconnected' as const, connection: { id: 'mine', acts_as: 'dan@trypennie.com' }, cleared: true })),
+    })
+    await waitFor(() => expect(part('add-form')).toBeNull())
+    const chosen = document.querySelector('[data-part="list-item"][data-selected="true"]')!
+    expect(chosen.getAttribute('data-name')).toBe('My Google')
+    expect(chosen.textContent).not.toMatch(/reconnecting/i)
+  })
+
+  it('a page with no Google to draw fails loudly before it spends the sign in, never finishing into nothing', async () => {
+    const s = source({ finishGoogleSignIn: vi.fn(async () => ({ outcome: 'created' as const, connection: { id: 'new-own', name: 'My Google 2', service: 'google', acts_as: 'dan@trypennie.com' } })) })
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      render(<Caught><ConnectionsScreen source={s} clock={manualClock().clock} services={catalogueServices().filter((x) => x.key !== 'google')} signInReturn={{ state: 's5', body: { state: 's5', code: 'c1' } }} /></Caught>)
+      expect((await screen.findByRole('alert')).textContent).toBe('The Connections page has no Google service to finish a sign in with')
+      expect(s.finishGoogleSignIn).not.toHaveBeenCalled()
+    } finally {
+      quiet.mockRestore()
+    }
   })
 
   it('finishes once even when the page is drawn again with new props after the list has loaded', async () => {
