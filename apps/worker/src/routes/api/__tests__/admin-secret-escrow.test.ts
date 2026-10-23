@@ -16,7 +16,7 @@ vi.mock('../../../lib/secret-reencrypt')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
-import { writeAuditLog } from '../../../lib/audit'
+import { recordAuditLog } from '../../../lib/audit'
 import { reencryptSecrets } from '../../../lib/secret-reencrypt'
 import api from '../index'
 
@@ -75,7 +75,7 @@ describe('admin secret escrow routes', () => {
           name === 'auth_user_with_allowlist' ? { data: [{ ...testUser, allowed: true }], error: null } : { data: [], error: null },
         ),
     } as unknown as ReturnType<typeof createSupabaseClient>)
-    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(recordAuditLog).mockResolvedValue(true)
     vi.mocked(reencryptSecrets).mockImplementation(async (_s, _k, o) => ({ ...RESULT, dryRun: o.dryRun }) as never)
     app = await makeApp()
   })
@@ -86,7 +86,7 @@ describe('admin secret escrow routes', () => {
       expect(res.status).toBe(200)
       expect(vi.mocked(reencryptSecrets).mock.calls[0][2]).toEqual({ dryRun: true, actorId: 'user-1' })
       expect(((await res.json()) as { rotating: boolean }).rotating).toBe(true)
-      expect(writeAuditLog).not.toHaveBeenCalled()
+      expect(recordAuditLog).not.toHaveBeenCalled()
     })
 
     it('re-locks with the next key when told to, and records the counts', async () => {
@@ -95,7 +95,7 @@ describe('admin secret escrow routes', () => {
       const [, keys, opts] = vi.mocked(reencryptSecrets).mock.calls[0]
       expect(keys).toEqual({ encryptWith: 'next-key', decryptWith: ['next-key', 'primary-key'] })
       expect(opts).toEqual({ dryRun: false, actorId: 'user-1' })
-      const audit = vi.mocked(writeAuditLog).mock.calls[0]
+      const audit = vi.mocked(recordAuditLog).mock.calls[0]
       expect(audit[4]).toBe('secrets_reencrypted')
       expect(JSON.stringify(audit)).not.toContain('next-key')
     })

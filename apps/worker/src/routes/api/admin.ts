@@ -981,13 +981,18 @@ admin.post('/reencrypt-secrets', async (c) => {
     // The caller is named on service_connections' audit row through updated_by
     // (#2331): that table is audited by its own trigger.
     const result = await reencryptSecrets(supabase, keys, { dryRun, actorId: userId })
-    if (!dryRun) {
-      await writeAuditLog(supabase, orgId, 'recovery_secret', 'SECRET_ENCRYPTION_KEY', 'secrets_reencrypted', email ?? 'unknown', {
-        ok: result.ok,
-        tables: result.tables,
-      })
-    }
-    return c.json({ ...result, rotating: keys.decryptWith.length > 1 })
+    if (dryRun) return c.json({ ...result, rotating: keys.decryptWith.length > 1 })
+    // The run's own record (#2689): audit_log.entity_id and changed_by are
+    // uuid columns, so the run is named by an id of its own (two runs, two
+    // records) and the caller by their user id. Whether it landed is answered,
+    // never assumed.
+    const runId = crypto.randomUUID()
+    const audited = await recordAuditLog(supabase, orgId, 'recovery_secret', runId, 'secrets_reencrypted', userId, {
+      ok: result.ok,
+      tables: result.tables,
+      by_email: email ?? null,
+    })
+    return c.json({ ...result, rotating: keys.decryptWith.length > 1, run_id: runId, audited })
   } catch (err) {
     return c.json({ error: formatErr(err) }, 500)
   }
