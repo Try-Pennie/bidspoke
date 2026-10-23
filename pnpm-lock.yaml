@@ -260,6 +260,9 @@ importers:
       '@bidspoke/references':
         specifier: workspace:*
         version: link:../../packages/references
+      '@bidspoke/salesforce-api':
+        specifier: workspace:*
+        version: link:../../packages/salesforce-api
       '@bidspoke/script-hygiene':
         specifier: workspace:*
         version: link:../../packages/script-hygiene
@@ -544,6 +547,27 @@ importers:
         specifier: ^4.1.10
         version: 4.1.10(@edge-runtime/vm@3.2.0)(@types/node@26.6.5)(jsdom@30.1.3)(vite@8.0.5(@emnapi/core@1.9.2)(@emnapi/runtime@1.11.3)(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0))
 
+  packages/salesforce-api:
+    devDependencies:
+      '@eslint/js':
+        specifier: ^10.0.1
+        version: 10.0.1(eslint@10.6.0(jiti@2.7.0))
+      '@types/node':
+        specifier: ^26.6.5
+        version: 26.6.5
+      '@typescript-eslint/eslint-plugin':
+        specifier: ^8.71.2
+        version: 8.71.2(@typescript-eslint/parser@8.71.2(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3))(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3)
+      '@typescript-eslint/parser':
+        specifier: ^8.71.2
+        version: 8.71.2(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3)
+      eslint:
+        specifier: ^10.6.0
+        version: 10.6.0(jiti@2.7.0)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
   packages/script-hygiene:
     devDependencies:
       '@eslint/js':
@@ -567,6 +591,9 @@ importers:
 
   packages/service-catalogue:
     dependencies:
+      '@bidspoke/salesforce-api':
+        specifier: workspace:*
+        version: link:../salesforce-api
       '@bidspoke/slack-client':
         specifier: workspace:*
         version: link:../slack-client

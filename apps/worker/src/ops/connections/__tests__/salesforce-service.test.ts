@@ -29,6 +29,8 @@ const OPS_LOGIN = { client_id: 'ops-app-client', client_secret: 'plain-ops-clien
 const SF_ORG = '00Dcs0000000001EAA'
 const OPS_USER = 'ops-integration@trypennie.example'
 const MONEY_USER = 'money-integration@trypennie.example'
+/** The organization holding money's Salesforce credentials, when it is not the one adding the connection (#2690). */
+const MONEY_ORG = '9b3e4d0a-2f5c-4e3a-9c77-3d4e5f607182'
 const TOKEN_URL = `https://${HOST}/services/oauth2/token`
 const USERINFO_URL = `https://${HOST}/services/oauth2/userinfo`
 
@@ -69,13 +71,13 @@ interface World {
 }
 
 /** Money's identity as the bidding Worker serves it: measured by the daily job, read back by OpsGateway.moneyIdentities. */
-async function servedMoney(username: string | null): Promise<(org: string) => Promise<unknown>> {
+async function servedMoney(username: string | null, moneyOrg: string = ORG): Promise<(org: string) => Promise<unknown>> {
   const store = new Map<string, string>()
   const kv = { get: async (k: string) => store.get(k) ?? null, put: async (k: string, v: string) => { store.set(k, v) } }
   if (username !== null) {
     const result = await measureMoneyIdentity({
       kv,
-      credentialOrg: async () => ({ orgId: ORG, error: null }),
+      credentialOrg: async () => ({ orgId: moneyOrg, error: null }),
       creds: async () => ({ instanceUrl: TARGET.instance_url, clientId: 'money-app-client', clientSecret: 'plain-money-secret' }),
       token: async () => 'plain-money-token',
       fetch: async () => Response.json({ organization_id: SF_ORG, preferred_username: username }),
@@ -86,14 +88,14 @@ async function servedMoney(username: string | null): Promise<(org: string) => Pr
   return (org) => readMoneyIdentities(kv, org, T0)
 }
 
-async function world(opts: { money?: string | null; pool?: Partial<Pool>; userinfoUser?: string } = {}): Promise<World> {
+async function world(opts: { money?: string | null; moneyOrg?: string; pool?: Partial<Pool>; userinfoUser?: string } = {}): Promise<World> {
   const pool: Pool = { measured: new Map(), bootstrapCaps: new Set(), orgCaps: new Set(), asks: [], ...opts.pool }
   const entry = opsServiceEntry('salesforce')
   const d = makeDoubles(keys, usableCopy(envelope, { service: 'salesforce', target: TARGET }), () => (entry ? [entry.rules] : []))
   const sent: string[] = []
   const recorded: World['recorded'] = []
   const moneyAsks: string[] = []
-  const money = await servedMoney(opts.money === undefined ? MONEY_USER : opts.money)
+  const money = await servedMoney(opts.money === undefined ? MONEY_USER : opts.money, opts.moneyOrg)
   const deps: OpsConnectionsDeps = {
     connection: {
       ...d.deps,
@@ -196,5 +198,30 @@ describe('once a bootstrap slot is approved: what verify measures', () => {
     const w = await world({ pool: approved() })
     await verify(w)
     expect(await lookup(w)).toMatchObject({ ok: false, refused: 'sf_cap_unset' })
+  })
+})
+
+describe('an organization other than money\'s adding a Salesforce connection (#2690, Dan\'s option 1, 2026-10-22)', () => {
+  // Money's credentials are held by MONEY_ORG; the connection is ORG's. The daily job measured money's login for
+  // MONEY_ORG alone, and verify for ORG still compares against it, rather than refusing money_identity_unmeasured for ever.
+  const approved = () => ({ bootstrapCaps: new Set([HOST]) })
+
+  it('is compared against money\'s one login: a credential measured as money\'s run as user is refused, and nothing is recorded', async () => {
+    const w = await world({ pool: approved(), moneyOrg: MONEY_ORG, userinfoUser: MONEY_USER })
+    expect(await verify(w)).toMatchObject({ ok: false, refused: 'money_identity_match' })
+    expect(w.moneyAsks).toEqual([ORG])
+    expect(w.recorded).toEqual([])
+  })
+
+  it('is verified when its own integration user is not money\'s', async () => {
+    const w = await world({ pool: approved(), moneyOrg: MONEY_ORG })
+    expect(await verify(w)).toEqual({ ok: true, service: 'salesforce', generation: 1, identity: { kind: 'salesforce', sf_org_id: SF_ORG, username: OPS_USER } })
+    expect(w.recorded).toEqual([{ generation: 1, identity: { sfOrgId: SF_ORG, username: OPS_USER } }])
+  })
+
+  it('is refused money_identity_unmeasured only while money\'s login has no reading at all', async () => {
+    const w = await world({ pool: approved(), moneyOrg: MONEY_ORG, money: null })
+    expect(await verify(w)).toMatchObject({ ok: false, refused: 'money_identity_unmeasured' })
+    expect(w.sent).toEqual([])
   })
 })

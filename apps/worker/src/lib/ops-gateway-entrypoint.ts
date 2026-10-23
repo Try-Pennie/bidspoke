@@ -10,7 +10,7 @@
  * the library's retries off (a lead client's setting, #1844), since the tick
  * gives up at 15 s and keeps its saved copies: the workflow list (one paged
  * read), the connection list (two paged reads, #2335), a heartbeat stamp of the
- * tick or of an ops job (one KV write, #2340), money's identity for one organization (one KV read, #2335), a
+ * tick or of an ops job (one KV write, #2340), money's identity served under the organization named (one KV read, #2335; the same reading for every organization since #2690), a
  * rotated login's compare and set (one rpc, #2335), a resealed login's
  * compare and set during a rotation of the ops key (one rpc, #2333), or the
  * definitions of up to MAX_DEFINITIONS_PER_REQUEST ops workflow versions (one
@@ -43,9 +43,10 @@ export class OpsGateway extends WorkerEntrypoint<Env> {
   }
 
   /**
-   * Money's measured Salesforce identity for the one organization named, and
-   * no other (#2335): one KV read. Who may call it and whose data:
-   * money-identity.ts.
+   * Money's measured Salesforce identity, served under the organization named
+   * (#2335): one KV read. Every organization is answered with money's one
+   * reading, since money's login is the same whichever organization asks
+   * (#2690). Who may call it and whose data: money-identity.ts.
    */
   moneyIdentities(organizationId: unknown) {
     return readMoneyIdentities(this.env.IDEMPOTENCY, organizationId, Date.now())
