@@ -53,7 +53,7 @@ DECLARE
   n int;
 BEGIN
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, updated_by, updated_by_email)
-  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'oauth', NULL,
+  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'bot_token', NULL,
           '{"bot_token":"planted-bot-token-2331","default_channel":"#alerts","workspace_name":"Test"}',
           '22222222-2222-2222-2222-22222222331a', 'sca2331@example.test');
   SELECT count(*) INTO n FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
@@ -133,7 +133,7 @@ BEGIN
   DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
   -- The shape PostgREST sends for the integrations save.
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
-  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'oauth', NULL,
+  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'bot_token', NULL,
           '{"bot_token":"planted-bot-token-2331-b","default_channel":"#alerts"}', 'planted-ciphertext-2331-b', 'bidding_ring',
           '22222222-2222-2222-2222-22222222331a', 'sca2331@example.test')
   ON CONFLICT (organization_id, service_type, name) DO UPDATE SET
@@ -174,7 +174,7 @@ BEGIN
   END IF;
   -- The actor belongs to that call only: a later hand run delete names nobody.
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config)
-  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'oauth', NULL, '{"bot_token":"planted-bot-token-2331-c","default_channel":"#alerts"}');
+  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'bot_token', NULL, '{"bot_token":"planted-bot-token-2331-c","default_channel":"#alerts"}');
   DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
   DELETE FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
   SELECT * INTO a FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
@@ -197,7 +197,7 @@ $do$;
 DO $do$
 BEGIN
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, updated_by)
-  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'oauth', NULL, '{"bot_token":"planted-bot-token-2331-d","default_channel":"#alerts"}', '22222222-2222-2222-2222-22222222331a');
+  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'bot_token', NULL, '{"bot_token":"planted-bot-token-2331-d","default_channel":"#alerts"}', '22222222-2222-2222-2222-22222222331a');
   DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
   UPDATE public.service_connections SET updated_by = '22222222-2222-2222-2222-22222222331a', updated_by_email = 'sca2331@example.test'
   WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
@@ -224,7 +224,7 @@ DECLARE
   n_all int;
 BEGIN
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, updated_by)
-  VALUES ('11111111-1111-1111-1111-11111112331a', 'salesforce', 'salesforce', 'oauth', 'CONN_TEST_2331', '{}', '22222222-2222-2222-2222-22222222331a');
+  VALUES ('11111111-1111-1111-1111-11111112331a', 'salesforce', 'salesforce', 'oauth_client_credentials', 'CONN_TEST_2331', '{}', '22222222-2222-2222-2222-22222222331a');
   DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
   UPDATE public.service_connections SET schema_synced_at = now(), updated_by = '22222222-2222-2222-2222-22222222331a'
   WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
