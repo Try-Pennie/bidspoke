@@ -6,7 +6,7 @@
 -- INSERT, UPDATE and DELETE on every table, and most tables carry a FOR ALL
 -- organization policy, so any signed in employee could write their
 -- organization's rows straight through the Data API with the publishable key
--- (measured on production 2026-10-22: 30 tables and 98 partitions). No browser
+-- (measured on production 2026-10-23: 30 tables and 98 partitions). No browser
 -- code writes any of them (the list is on the pull request).
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh
