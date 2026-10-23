@@ -54,7 +54,7 @@ tooling noise.
 | `glob` | `>=10.5.0 <11` | Pulled by `eslint-config-next` (lint tooling). Both ends are load-bearing: the lower bound patches the advisory, the upper keeps the override inside the 10.x line. |
 | `postcss` | `>=8.5.12 <9` (replacing only versions below the floor) | CVE-2026-45623 (file read via `sourceMappingURL` during CSS processing). The vulnerable 8.4.31 was `next` 14's own pin; the app's direct dep was already on 8.5.x. Range-scoped so nothing already safe is touched. |
 | `nanoid` | `>=3.3.18 <4` | CVE-2026-67213 (denial of service via an infinite loop in random ID generation). Reaches production only through `postcss`, which requires CommonJS; nanoid 5+ is ESM-only, hence the upper bound. |
-| `dompurify` | `>=3.4.17 <4` (replacing only versions below the floor) | GHSA-mrv2-3pqr-j5jr (#2691). Pulled by `monaco-editor`. This fixes the lockfile copy only: the canvas editor still loads Monaco from a CDN with its own DOMPurify 3.2.7 inside, which is #2695. |
+| `dompurify` | `>=3.4.17 <4` (replacing only versions below the floor) | GHSA-mrv2-3pqr-j5jr (#2691). Pulled by `monaco-editor`, and also a direct web dependency. Monaco carries its own copy too, which the override cannot reach, so the canvas editor is served from our build and `apps/web/monaco-dompurify-swap.js` points Monaco's copy at this package (#2695); `monaco-self-hosted.test.ts` guards both. |
 
 ### Every override carries an upper bound
 
