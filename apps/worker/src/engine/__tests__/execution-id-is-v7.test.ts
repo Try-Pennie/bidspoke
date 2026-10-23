@@ -75,7 +75,7 @@ async function run(options: Record<string, unknown> = {}): Promise<string> {
   const executionCtx = recordingContext()
 
   await executeWorkflow(
-    { workflowId: 'wf-869', payload: { lead: 1 }, source: 'engine', ...options },
+    { triggerType: 'http_webhook', workflowId: 'wf-869', payload: { lead: 1 }, source: 'engine', ...options },
     env,
     moneyRuntime(supabase),
     executionCtx,

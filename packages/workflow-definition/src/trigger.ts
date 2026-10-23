@@ -172,6 +172,22 @@ function configProblems(trigger: TriggerConfig): TriggerProblem[] {
 }
 
 /**
+ * The type a stored trigger is, with an old spelling read as the type it
+ * spells, or null when it names no type this build can run (missing, planned
+ * or unknown). The one reading of a stored type: the validator judges by it,
+ * and a run records it as its trigger_type (#1947), so the two cannot disagree
+ * about what the old spelling means.
+ */
+export function triggerTypeOf(trigger: unknown): TriggerType | null {
+  const type = isRecord(trigger) ? trigger.type : undefined
+  if (isTriggerType(type)) return type
+  if (typeof type === 'string' && Object.hasOwn(LEGACY_TRIGGER_SPELLINGS, type)) {
+    return LEGACY_TRIGGER_SPELLINGS[type as keyof typeof LEGACY_TRIGGER_SPELLINGS]
+  }
+  return null
+}
+
+/**
  * Every problem with a stored trigger for a workflow of `lane`. An empty list
  * means the trigger is one this lane's engine reads, with settings of the
  * types it reads them as.
@@ -183,13 +199,12 @@ export function validateTrigger(trigger: unknown, lane: WorkflowLane): TriggerPr
     return [{ reason: 'trigger_type_not_built', severity: 'error', message: `a ${type} trigger is planned but not built: nothing would start this workflow` }]
   }
   const problems: TriggerProblem[] = []
-  let known: TriggerType
-  if (isTriggerType(type)) known = type
-  else if (typeof type === 'string' && Object.hasOwn(LEGACY_TRIGGER_SPELLINGS, type)) {
-    known = LEGACY_TRIGGER_SPELLINGS[type as keyof typeof LEGACY_TRIGGER_SPELLINGS]
-    problems.push({ reason: 'trigger_legacy_spelling', severity: 'warning', message: `the trigger type ${type} is the old spelling of ${known}` })
-  } else {
+  const known = triggerTypeOf(trigger)
+  if (known === null) {
     return [{ reason: 'trigger_type_unknown', severity: 'error', message: `the trigger type ${String(type)} is not one this build knows` }]
+  }
+  if (type !== known) {
+    problems.push({ reason: 'trigger_legacy_spelling', severity: 'warning', message: `the trigger type ${String(type)} is the old spelling of ${known}` })
   }
   if (!TRIGGER_LANES[known].includes(lane)) {
     problems.push({ reason: 'trigger_not_on_lane', severity: 'error', message: `a ${known} trigger does not run on the ${lane} lane: nothing there would start this workflow` })

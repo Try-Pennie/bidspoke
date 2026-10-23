@@ -36,6 +36,7 @@ import { readOrgWorkflows } from '../../lib/org-workflows'
 import { secretKeys } from '../../lib/secret-crypto'
 import { retirePartnerLastGood } from '../../lib/partner-last-good'
 import { checkDefinitionConnections, connectionRefusalOfWriteError, type ConnectionCheckedAction, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
+import { copiedDefinitionStamp, writtenDefinitionStamp } from '../../lib/definition-stamp'
 
 type Variables = AuthVariables
 
@@ -231,6 +232,8 @@ workflows.post('/', async (c) => {
       name: body.name,
       description: body.description ?? null,
       definition: asJson(definition),
+      // Never the caller's: the Worker says which rules this definition is judged by (#1947).
+      definition_schema_version: writtenDefinitionStamp(),
       // A new workflow starts switched off (#1706): nothing a caller sends can create
       // one that takes traffic before a person has switched it on through PATCH,
       // which is where the unconfigured node and partner safeguards live.
@@ -268,7 +271,7 @@ workflows.post('/:id/duplicate', async (c) => {
   // Load source (org-scoped)
   const { data: source, error: sourceErr } = await supabase
     .from('workflows')
-    .select('name, description, definition, folder_id')
+    .select('name, description, definition, folder_id, definition_schema_version')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -293,6 +296,8 @@ workflows.post('/:id/duplicate', async (c) => {
       name: `${source.name} (copy)`,
       description: source.description ?? null,
       definition: cloneDefinition,
+      // A copy keeps the stamp it was stored under (#1947).
+      definition_schema_version: copiedDefinitionStamp(source),
       is_active: false,
       folder_id: source.folder_id ?? null,
       created_by: userId,
@@ -313,13 +318,13 @@ workflows.post('/:id/duplicate', async (c) => {
   // Paged, so a history past PostgREST's 1,000 row cap is copied whole rather
   // than silently cut short. A read that fails copies nothing and seeds nothing:
   // inventing a v1 there would present a lost history as a workflow never saved.
-  type VersionCopy = Pick<Database['public']['Tables']['workflow_versions']['Row'], 'version_number' | 'definition' | 'commit_sha' | 'created_by' | 'created_at' | 'message'>
+  type VersionCopy = Pick<Database['public']['Tables']['workflow_versions']['Row'], 'version_number' | 'definition' | 'commit_sha' | 'created_by' | 'created_at' | 'message' | 'definition_schema_version'>
   let versions: VersionCopy[] | null
   try {
     versions = await fetchAllPaged<VersionCopy>(
       (from, to) => supabase
         .from('workflow_versions')
-        .select('version_number, definition, commit_sha, created_by, created_at, message')
+        .select('version_number, definition, commit_sha, created_by, created_at, message, definition_schema_version')
         .eq('workflow_id', id)
         .order('version_number', { ascending: true })
         .range(from, to),
@@ -340,6 +345,7 @@ workflows.post('/:id/duplicate', async (c) => {
       workflow_id: clone.id,
       version_number: v.version_number,
       definition: sanitizeDefinition(v.definition),
+      definition_schema_version: copiedDefinitionStamp(v),
       commit_sha: v.commit_sha,
       created_by: v.created_by,
       created_at: v.created_at,
@@ -358,6 +364,7 @@ workflows.post('/:id/duplicate', async (c) => {
       workflow_id: clone.id,
       version_number: 1,
       definition: source.definition,
+      definition_schema_version: copiedDefinitionStamp(source),
       created_by: userId,
       message: `Duplicated from ${source.name}`,
     })
@@ -488,7 +495,7 @@ workflows.put('/:id', async (c) => {
   // Verify ownership
   const { data: existing, error: fetchError } = await supabase
     .from('workflows')
-    .select('id, definition, name, slack_channel, is_active')
+    .select('id, definition, name, slack_channel, is_active, definition_schema_version')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -577,13 +584,16 @@ workflows.put('/:id', async (c) => {
 
   const nextVersion = ((lastVersion?.version_number as number) ?? 0) + 1
 
-  // Create version snapshot
+  // Create version snapshot. A save that sends no definition snapshots the stored
+  // one, which keeps the stamp it was stored under (#1947).
+  const savedStamp = body.definition !== undefined ? writtenDefinitionStamp() : copiedDefinitionStamp(existing)
   const { data: version, error: versionError } = await supabase
     .from('workflow_versions')
     .insert({
       workflow_id: id,
       version_number: nextVersion,
       definition: asJson(body.definition ?? existing.definition),
+      definition_schema_version: savedStamp,
       created_by: userId,
       message: body.message ?? null,
     })
@@ -600,7 +610,10 @@ workflows.put('/:id', async (c) => {
   }
   if (body.name !== undefined) updates.name = body.name
   if (body.description !== undefined) updates.description = body.description
-  if (body.definition !== undefined) updates.definition = asJson(body.definition)
+  if (body.definition !== undefined) {
+    updates.definition = asJson(body.definition)
+    updates.definition_schema_version = savedStamp
+  }
   if (body.slack_channel !== undefined) updates.slack_channel = body.slack_channel
 
   const { data: updated, error: updateError } = await supabase
@@ -1006,7 +1019,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
 
   const { data: version, error: versionError } = await supabase
     .from('workflow_versions')
-    .select('definition, version_number')
+    .select('definition, version_number, definition_schema_version')
     .eq('id', versionId)
     .eq('workflow_id', id)
     .single()
@@ -1046,11 +1059,19 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
 
   const nextVersion = ((lastVersion?.version_number as number) ?? 0) + 1
 
+  // A restored definition keeps the stamp its version row carries, unstamped
+  // included (#1947): it was checked under those rules when it was saved, and
+  // relabelling it with this build's version would claim a check it never had.
+  // The workflow row is written with it even when it is null, because the row
+  // may hold a newer stamp from the save this restore replaces.
+  const restoredStamp = copiedDefinitionStamp(version)
+
   // Surface a failed snapshot write instead of silently "restoring" nothing.
   const { error: restoreInsertError } = await supabase.from('workflow_versions').insert({
     workflow_id: id,
     version_number: nextVersion,
     definition: restored,
+    definition_schema_version: restoredStamp,
     created_by: userId,
     message: `Restored from v${version.version_number}`,
   })
@@ -1066,7 +1087,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   const restoreWrite = await requireRowsAffected('Workflow not found', async () => {
     const result = await supabase
       .from('workflows')
-      .update({ definition: restored, updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name })
+      .update({ definition: restored, definition_schema_version: restoredStamp, updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name })
       .eq('id', id)
       .eq('organization_id', orgId)
       .select('id')
@@ -1159,6 +1180,8 @@ workflows.post('/:id/test', async (c) => {
         workflowId: id,
         payload: body.payload,
         source: 'test_runner',
+        // A canvas test posts a payload as a webhook would; recorded as it always was.
+        triggerType: 'http_webhook',
         isTest: true,
         executionId: body.execution_id,
         ...(testBundleName ? { codeBundleName: testBundleName } : {}),

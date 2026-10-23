@@ -56,7 +56,7 @@ async function runWith(isTest?: boolean): Promise<ExecutionContext> {
   const executionCtx = recordingContext()
 
   await executeWorkflow(
-    { workflowId: 'wf-547', payload: { lead: 1 }, source: 'engine', ...(isTest === undefined ? {} : { isTest }) },
+    { triggerType: 'http_webhook', workflowId: 'wf-547', payload: { lead: 1 }, source: 'engine', ...(isTest === undefined ? {} : { isTest }) },
     env,
     moneyRuntime(supabase),
     executionCtx,

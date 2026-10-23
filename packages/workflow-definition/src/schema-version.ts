@@ -7,9 +7,12 @@
  * the rules that take effect at it, and never edits an old one, so a row keeps
  * meaning what it meant when it was written.
  *
- * Nothing stamps a definition yet. The column and the server stamp arrive with
- * #1947's second change; until then every stored definition is unstamped, and
- * an unstamped one is version 1, the rules as they stood before any stamp.
+ * The stamp is the definition_schema_version column of workflows and
+ * workflow_versions, written only by the Worker (apps/worker/src/lib/
+ * definition-stamp.ts): a definition a request writes gets this build's
+ * version, and a copied one keeps the stamp of the row it came from. A row
+ * written before the column existed is unstamped, and an unstamped one is
+ * version 1, the rules as they stood before any stamp.
  *
  * A reader older than the writer will meet a stamp it does not know during
  * every deploy, when both run at once (L640). That reading is a named result,

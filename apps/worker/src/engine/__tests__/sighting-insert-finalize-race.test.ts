@@ -108,7 +108,7 @@ describe('sighting insert / finalize ordering', () => {
     vi.mocked(finalizeSighting).mockImplementation(async () => { order.push('finalize') })
 
     const harness = makeHarness()
-    await executeWorkflow({ workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, moneyRuntime(supabase), harness.executionCtx)
+    await executeWorkflow({ triggerType: 'http_webhook', workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, moneyRuntime(supabase), harness.executionCtx)
 
     // Let every already-resolvable background task run. If finalize does not
     // await the insert, it runs here, while the insert is still pending.
@@ -127,7 +127,7 @@ describe('sighting insert / finalize ordering', () => {
     vi.mocked(finalizeSighting).mockImplementation(async () => { order.push('finalize') })
 
     const harness = makeHarness()
-    await executeWorkflow({ workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, moneyRuntime(supabase), harness.executionCtx)
+    await executeWorkflow({ triggerType: 'http_webhook', workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, moneyRuntime(supabase), harness.executionCtx)
     await harness.drain()
 
     expect(order).toEqual(['finalize'])
@@ -140,7 +140,7 @@ describe('sighting insert / finalize ordering', () => {
 
     const harness = makeHarness()
     // Would hang if the response path awaited the insert.
-    const result = await executeWorkflow({ workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, moneyRuntime(supabase), harness.executionCtx)
+    const result = await executeWorkflow({ triggerType: 'http_webhook', workflowId: 'wf-1', payload: { lead: 1 }, source: 'engine' }, harness.env, moneyRuntime(supabase), harness.executionCtx)
     expect(result.status).toBe(200)
 
     releaseInsert()

@@ -48,8 +48,8 @@ beforeEach(() => {
 })
 
 describe('runOptions', () => {
-  it('replays a live lead with the trigger alone, as it always has', () => {
-    expect(runOptions('live', { workflowId: 'wf-1', payload, source: 'engine' })).toEqual({ workflowId: 'wf-1', payload, source: 'engine' })
+  it('replays a live lead with the trigger alone, as it always has, started by a webhook as the route names it (#1947)', () => {
+    expect(runOptions('live', { workflowId: 'wf-1', payload, source: 'engine' })).toEqual({ workflowId: 'wf-1', payload, source: 'engine', triggerType: 'http_webhook' })
   })
 
   it('names every kind it can build, live first', () => {

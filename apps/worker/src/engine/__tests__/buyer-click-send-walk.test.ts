@@ -118,7 +118,7 @@ describe('executeWorkflow marks a recovery run on the context', () => {
     const e = { IDEMPOTENCY: kv, WORKFLOW_CACHE: kv, APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
     const sb = { from: () => ({ select: () => ({ eq: () => ({ eq: () => Promise.resolve({ data: [], error: null }) }) }) }) } as unknown as SupabaseClient
     const ec = recordingContext()
-    const base = { workflowId: 'wf-1', payload: { prospect: 'p-1' }, source: 's' }
+    const base = { workflowId: 'wf-1', payload: { prospect: 'p-1' }, source: 's', triggerType: 'http_webhook' as const }
     await executeWorkflow(base, e, moneyRuntime(sb), ec)
     await executeWorkflow({ ...base, resumeFromExecutionId: 'orig-1' }, e, moneyRuntime(sb), ec)
     await executeWorkflow({ ...base, parentExecutionId: 'orig-1' }, e, moneyRuntime(sb), ec)
