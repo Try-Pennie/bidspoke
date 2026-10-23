@@ -248,6 +248,14 @@ BEGIN
     IF NOT FOUND THEN
       RAISE EXCEPTION 'workflow_not_found' USING ERRCODE = 'P0002';
     END IF;
+    -- The caller's copy of the definition was read from the version it names;
+    -- a save landing since would give the copy one definition and another's
+    -- history and stamp, so it is refused and the copy made again.
+    IF p_expected_version IS NOT NULL AND v_row.version <> p_expected_version THEN
+      RAISE EXCEPTION 'stale_version' USING ERRCODE = 'BP409',
+        DETAIL = jsonb_build_object('current', to_jsonb(v_row), 'last_save_id', v_row.last_save_id,
+                                    'changed_by_name', v_row.updated_by_name, 'changed_at', v_row.updated_at)::text;
+    END IF;
     INSERT INTO workflows (organization_id, name, description, definition, definition_schema_version, is_active, folder_id, lane,
                            created_by, updated_by, updated_by_email, updated_by_name, last_save_id)
     VALUES (p_org, v_name, v_row.description, v_def, v_row.definition_schema_version, false, v_row.folder_id, v_row.lane,

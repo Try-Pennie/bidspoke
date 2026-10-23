@@ -732,7 +732,7 @@ describe('POST /workflows/:id/duplicate', () => {
   // the lane and stamp it keeps are proven against Postgres in
   // supabase/tests/write_workflow.test.sql (F). What the route sends is here.
   it('clones through write_workflow, from the source, switched off, and audit-logs the source', async () => {
-    const source = { name: 'Lead Routing', description: null, definition: { nodes: [], edges: [] }, folder_id: null, is_active: true, lane: 'money' }
+    const source = { name: 'Lead Routing', description: null, definition: { nodes: [], edges: [] }, folder_id: null, is_active: true, lane: 'money', version: 3 }
     const clone = { id: 'wf-copy', name: 'Lead Routing (copy)', organization_id: USER_ORG, is_active: false }
     const sb = makeSupabase(
       { users: { single: testUser }, workflows: { single: source } },
@@ -743,7 +743,7 @@ describe('POST /workflows/:id/duplicate', () => {
     expect(res.status).toBe(201)
     const body = await res.json() as { id: string; name: string; history_copied: boolean }
     expect(body).toMatchObject({ id: 'wf-copy', name: 'Lead Routing (copy)', history_copied: true })
-    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'duplicate', p_id: 'wf-1', p_expected_version: null, p_fields: { name: 'Lead Routing (copy)', definition: source.definition } })])
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'duplicate', p_id: 'wf-1', p_expected_version: 3, p_fields: { name: 'Lead Routing (copy)', definition: source.definition } })])
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
       expect.anything(), USER_ORG, 'workflow', 'wf-copy', 'created', 'user-1', { duplicated_from: 'wf-1' }
     )
@@ -763,6 +763,20 @@ describe('POST /workflows/:id/duplicate', () => {
     )
     const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
     expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('copies from the source version it read, and answers a save landing in between with 409, copying nothing', async () => {
+    const source = { name: 'Lead Routing', description: null, definition: { nodes: [], edges: [] }, folder_id: null, is_active: false, lane: 'money', version: 6 }
+    const sb = makeSupabase(
+      { users: { single: testUser }, workflows: { single: source } },
+      { write: () => ({ data: null, error: { code: 'BP409', message: 'stale_version', details: JSON.stringify({ current: { ...source, version: 7 }, last_save_id: null, changed_by_name: 'Bob', changed_at: '2026-10-23T14:00:00Z' }) } }) },
+    )
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: 'stale_version', error: expect.stringMatching(/^Not duplicated\./) })
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'duplicate', p_expected_version: 6 })])
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 

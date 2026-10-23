@@ -332,7 +332,7 @@ workflows.post('/:id/duplicate', async (c) => {
   // Load source (org-scoped)
   const { data: source, error: sourceErr } = await supabase
     .from('workflows')
-    .select('name, description, definition, folder_id, definition_schema_version, lane')
+    .select('name, description, definition, folder_id, definition_schema_version, lane, version')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -361,12 +361,16 @@ workflows.post('/:id/duplicate', async (c) => {
     op: 'duplicate',
     orgId,
     workflowId: id,
-    expectedVersion: null,
+    // The version the copied definition was read from: a save landing since is
+    // refused, so the copy never pairs one definition with another's history.
+    expectedVersion: source.version,
     fields: { name: `${source.name} (copy)`, definition: cloneDefinition },
     saveId: null,
     actor: actorOf(c),
   })
-  if (result.kind !== 'written') return answerUnwritten(c, result)
+  if (result.kind !== 'written') {
+    return answerUnwritten(c, result, 'Not duplicated. This workflow was saved by someone else while it was being copied. Nothing was created. Try again.')
+  }
   const clone = result.workflow
 
   // Deploy the clone's code-node bundle. Bundles are keyed per workflow id, so

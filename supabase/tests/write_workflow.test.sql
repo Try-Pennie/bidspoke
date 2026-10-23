@@ -251,6 +251,9 @@ BEGIN
   IF (SELECT array_agg(definition_schema_version ORDER BY version_number)::text FROM public.workflow_versions WHERE workflow_id = (w ->> 'id')::uuid) <> '{NULL,1}' THEN
     RAISE EXCEPTION 'F: copied history stamps wrong';
   END IF;
+  -- A copy made from a version the source no longer holds is refused: its definition would not match
+  -- the history and stamp copied beside it.
+  PERFORM pg_temp.expect_refused(pg_temp.ww('duplicate', src, 5, jsonb_build_object('name', 'Stale copy', 'definition', pg_temp.def('s'))), 'BP409', 'stale_version', 'F stale duplicate');
   INSERT INTO public.workflows (organization_id, name, definition) VALUES ('11111111-1111-1111-1111-111111111947', 'Never saved', pg_temp.def('n')) RETURNING id INTO bare;
   v := pg_temp.ww('duplicate', bare, NULL, jsonb_build_object('name', 'Never saved (copy)', 'definition', pg_temp.def('n')));
   IF (SELECT message FROM public.workflow_versions WHERE workflow_id = (v -> 'ok' -> 'workflow' ->> 'id')::uuid AND version_number = 1) <> 'Duplicated from Never saved' THEN
