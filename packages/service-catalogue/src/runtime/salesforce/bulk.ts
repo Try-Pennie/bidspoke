@@ -18,7 +18,12 @@ import { CsvError, parseCsv, toCsv } from './csv'
  * open job that still runs nothing) and is not applied; what the connection
  * bound fetch throws for the upload passes on unchanged after the abort. Once
  * the close is sent the records may be running, so a close whose answer is lost
- * is `salesforce_bulk_close_unknown`, outcome unknown, naming the job to check.
+ * is settled by reading the job back (#2337's rule for an uncertain send: a read
+ * back decides whether the write landed): still Open, nothing ran, so the
+ * job is aborted and the failure passes on; UploadComplete, InProgress or
+ * JobComplete, the close landed and the step succeeds; anything else, or a read
+ * back that fails, is `salesforce_bulk_close_unknown`, outcome unknown, naming
+ * the job to check.
  */
 
 export const BULK_OPERATIONS = ['insert', 'update', 'upsert', 'delete'] as const
@@ -91,6 +96,7 @@ export async function ingest(ctx: ActionContext, instance: string, args: ActionA
   }
 
   const close: SalesforceRequest = { method: 'PATCH', url: jobUrl, body: { state: 'UploadComplete' }, what: `PATCH job ${jobId} UploadComplete`, effect: 'write' }
+  const done = (state: JsonValue | undefined) => ({ job_id: jobId, state: typeof state === 'string' ? state : 'UploadComplete', object, operation, records: records.length })
   let closed: Readonly<Record<string, JsonValue>>
   try {
     closed = await salesforceObject(ctx, close)
@@ -99,9 +105,31 @@ export async function ingest(ctx: ActionContext, instance: string, args: ActionA
       if (err.outcome === 'not_applied') await abort(ctx, jobUrl)
       throw err
     }
-    throw new ActionFailure('salesforce_bulk_close_unknown', `the close of job ${jobId} was sent and its answer lost, so its records may be running; read the job before anything is sent again`, 'unknown')
+    // The connection bound fetch threw: before sending (a requeue, a refused login) or after (a timeout). The job's own
+    // state says which: still open, nothing runs, so it is aborted and the failure passes on; closed, the close landed.
+    const state = await stateOf(ctx, jobUrl)
+    if (state === 'Open') {
+      await abort(ctx, jobUrl)
+      throw err
+    }
+    if (state !== null && CLOSED_STATES.has(state)) return done(state)
+    throw new ActionFailure('salesforce_bulk_close_unknown', `the close of job ${jobId} was sent and its answer lost, and the job could not be read back as open or closed, so its records may be running; read the job before anything is sent again`, 'unknown')
   }
-  return { job_id: jobId, state: typeof closed.state === 'string' ? closed.state : 'UploadComplete', object, operation, records: records.length }
+  return done(closed.state)
+}
+
+/** The states of a job whose close landed: it is queued, running or finished. */
+const CLOSED_STATES: ReadonlySet<string> = new Set(['UploadComplete', 'InProgress', 'JobComplete'])
+
+/** A job's state, read back, or null when it cannot be read. */
+async function stateOf(ctx: ActionContext, jobUrl: string): Promise<string | null> {
+  try {
+    const job = await salesforceObject(ctx, { method: 'GET', url: jobUrl, what: 'GET jobs/ingest', effect: 'read' })
+    return typeof job.state === 'string' ? job.state : null
+  } catch {
+    // Unreadable: the caller reports the close's outcome as unknown.
+    return null
+  }
 }
 
 async function results(ctx: ActionContext, jobUrl: string, kind: 'failedResults' | 'successfulResults'): Promise<JsonValue[]> {

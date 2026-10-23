@@ -442,12 +442,31 @@ describe('salesforce.bulk-ingest@1, a Bulk API 2.0 job', () => {
     expect(f.sent.map((s) => s.method)).toEqual(['POST', 'PUT', 'PATCH'])
   })
 
-  it('a timeout after the close was sent: the job may be running, so the outcome is unknown and never retried', async () => {
+  it('a close whose answer is lost is settled by reading the job back: closed is a success, still open is aborted and the failure passed on', async () => {
+    const timeout = new DOMException('The operation timed out.', 'TimeoutError')
     const f = fakeSalesforce()
-    f.respond(sfAnswer({ id: '750J1', state: 'Open' }), new Response(null, { status: 201 }), { throws: new DOMException('The operation timed out.', 'TimeoutError') })
-    const failed = await failure(BULK.run(f.ctx, { object: 'Lead', operation: 'update', records }))
-    expect([failed.code, failed.outcome]).toEqual(['salesforce_bulk_close_unknown', 'unknown'])
-    expect(failed.message).toContain('750J1')
+    f.respond(sfAnswer({ id: '750J1', state: 'Open' }), new Response(null, { status: 201 }), { throws: timeout }, sfAnswer({ id: '750J1', state: 'InProgress' }))
+    expect(await BULK.run(f.ctx, { object: 'Lead', operation: 'update', records })).toEqual({ job_id: '750J1', state: 'InProgress', object: 'Lead', operation: 'update', records: 2 })
+    expect(f.sent.map((s) => [s.method, s.url])).toEqual([
+      ['POST', `${DATA}/jobs/ingest`], ['PUT', `${DATA}/jobs/ingest/750J1/batches`], ['PATCH', `${DATA}/jobs/ingest/750J1`], ['GET', `${DATA}/jobs/ingest/750J1`],
+    ])
+
+    // A requeue or a refused login before the close was sent leaves the job open: nothing runs, so it is aborted and the failure passes on unchanged.
+    const requeue = { kind: 'requeue_at', notBefore: new Date('2026-10-22T15:00:20Z') }
+    const g = fakeSalesforce()
+    g.respond(sfAnswer({ id: '750J1', state: 'Open' }), new Response(null, { status: 201 }), { throws: requeue }, sfAnswer({ id: '750J1', state: 'Open' }), sfAnswer({ id: '750J1', state: 'Aborted' }))
+    await expect(BULK.run(g.ctx, { object: 'Lead', operation: 'update', records })).rejects.toBe(requeue)
+    expect(g.sent.map((s) => [s.method, s.json])).toEqual([['POST', expect.anything()], ['PUT', null], ['PATCH', { state: 'UploadComplete' }], ['GET', null], ['PATCH', { state: 'Aborted' }]])
+  })
+
+  it('a close whose answer is lost and whose job cannot be read back: the records may be running, so the outcome is unknown and never retried', async () => {
+    for (const readBack of [{ throws: new DOMException('The operation timed out.', 'TimeoutError') }, sfAnswer({ id: '750J1', state: 'Failed' })]) {
+      const f = fakeSalesforce()
+      f.respond(sfAnswer({ id: '750J1', state: 'Open' }), new Response(null, { status: 201 }), { throws: new DOMException('The operation timed out.', 'TimeoutError') }, readBack)
+      const failed = await failure(BULK.run(f.ctx, { object: 'Lead', operation: 'update', records }))
+      expect([failed.code, failed.outcome]).toEqual(['salesforce_bulk_close_unknown', 'unknown'])
+      expect(failed.message).toContain('750J1')
+    }
   })
 
   it('refuses rows that do not share one set of fields, a value it cannot write, and an upload over its cap, before anything is sent', async () => {

@@ -17,8 +17,9 @@
  * refuses rather than guess when several do): money's token through the
  * existing getSalesforceToken, unchanged (a cache read, and a mint only when
  * the cache is empty, as every money caller does), then ONE userinfo call. The
- * org id and username it answers are kept in KV under the organization, with
- * the time measured. A failed measurement keeps the last reading (L5) and pages
+ * org id and username it answers are kept in KV once for the whole lane
+ * (MONEY_SALESFORCE_IDENTITY_KEY, #2690), naming that organization, with the
+ * time measured. A failed measurement keeps the last reading (L5) and pages
  * through the shared export alerter, which holds a lone transient failure.
  * Nothing on the money path changes: no money module is edited, no cache is
  * written or cleared here, and the call takes no bulkhead slot (one call a day).

@@ -20,9 +20,9 @@ export { containsHtmlDocument }
  */
 
 // An HTML DOCUMENT, not merely markup-looking text: the marker and its test live
-// in @bidspoke/salesforce-api (html-document.ts) since #2337, because the
-// Salesforce failure rule there reads them, and are imported back here so there
-// is one marker.
+// in @bidspoke/salesforce-api (packages/salesforce-api/src/index.ts) since
+// #2337, because the Salesforce failure rule there reads them, and are imported
+// back here so there is one marker.
 
 /** Blocks whose contents are never human-readable signal. */
 const OPAQUE_BLOCKS = /<(script|style|svg)\b[^>]*>[\s\S]*?<\/\1\s*>/gi
