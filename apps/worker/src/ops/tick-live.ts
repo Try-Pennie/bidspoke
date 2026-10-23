@@ -49,7 +49,8 @@ export const DISPATCH_DEADLINE_MS = 10_000
  * A run dispatch (#1950): a whole run, whose lease extend_run_lease caps at 15
  * minutes from its claim, the wall clock of the tick that dispatched it (spike
  * P1, P4). Just inside that, so the tick reports the run lost rather than being
- * cut off with it.
+ * cut off with it. Counted from when the tick began, not from the dispatch,
+ * since the sweeps, copies and connections before it spend the same wall clock.
  */
 export const RUN_DISPATCH_DEADLINE_MS = 14 * 60_000 + 30_000
 
@@ -185,6 +186,7 @@ async function bounded<T>(what: string, work: () => Promise<T>, deadlineMs: numb
 
 export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options: LiveTickOptions = {}): OpsTickPorts {
   const now = options.now ?? (() => Date.now())
+  const startedAt = now()
   const tickId = options.tickId ?? `ops-tick-${crypto.randomUUID()}`
   const gateway = env.OPS_GATEWAY
   const self = env.SELF
@@ -197,7 +199,9 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
       const signed = await signDispatch(await dispatchKey(env.PORTING_CAPTURE_MASTER), {
         v: 1, tick_id: tickId, signed_at: new Date(now()).toISOString(), item: { kind: 'run', run },
       })
-      const answer = await bounded('OpsInternal.run', () => self.run(signed), RUN_DISPATCH_DEADLINE_MS, options.delay)
+      const left = startedAt + RUN_DISPATCH_DEADLINE_MS - now()
+      if (left <= 0) throw new Error('the tick had no time left to run it, so it was not dispatched; its lease lapses and the sweep returns it')
+      const answer = await bounded('OpsInternal.run', () => self.run(signed), left, options.delay)
       const a = (typeof answer === 'object' && answer !== null ? answer : {}) as { refused?: unknown; outcome?: unknown; error?: unknown }
       if (typeof a.refused === 'string') throw new Error(`OpsInternal refused the run: ${a.refused}`)
       // Returned to the queue for want of its definition: counted as requeued.

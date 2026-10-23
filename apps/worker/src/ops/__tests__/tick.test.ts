@@ -1,5 +1,6 @@
 /**
- * The ops minute cron's tick (#1949), in observe mode, against injected ports.
+ * The ops minute cron's tick (#1949), in observe mode and in live mode (#1950),
+ * against injected ports.
  *
  * The database functions are proven against a real Postgres in
  * supabase-ops/supabase/tests/ops_tick.test.sql, and the binding to OpsInternal
@@ -8,7 +9,9 @@
  * and each dispatch is its own failure boundary; it plans from the copies as
  * the database holds them after its save, never from its own fetch; a missing
  * key, a lost claim, a failed fetch, a missed slot and a statement timeout are
- * each reported, never swallowed; and it runs nothing that sends anywhere.
+ * each reported, never swallowed; in observe mode it runs nothing that sends
+ * anywhere, and in live mode it records real fires, claims runs and hands each
+ * to OpsInternal.run, counting how they ended.
  *
  * Every clock is injected: the worker clock is set an hour away from the
  * database clock, so a fire computed on the wrong one is visible.

@@ -11,7 +11,7 @@ import { dispatchKey, verifyDispatch } from '../dispatch-auth'
 import { scheduledTick, type OpsEnv } from '../index'
 import type { OpsInternalBinding } from '../internal'
 import { runOpsTick } from '../tick'
-import { GATEWAY_DEADLINE_MS, liveTickPorts, opsTickDatabase } from '../tick-live'
+import { GATEWAY_DEADLINE_MS, liveTickPorts, opsTickDatabase, RUN_DISPATCH_DEADLINE_MS } from '../tick-live'
 import { KEYGEN_TIMEOUT_MS, opsKeyPair } from './ops-key-fixture'
 import type { SealRegistry } from '../connection-key'
 
@@ -445,6 +445,26 @@ describe('the bindings', () => {
     }))
     expect(waited).toContain(GATEWAY_DEADLINE_MS)
     expect(report.problems.join(' ')).toMatch(/workflow list did not answer within 15 s/)
+  })
+
+  it('a run dispatch is given up on by the tick\'s own deadline, counted from when the tick began, not from the dispatch', async () => {
+    const { env } = configured({ ...gateway() }, { ...self(), run: () => new Promise<never>(() => {}) })
+    let clock = NOW
+    const waited: number[] = []
+    const ports = liveTickPorts(env, null, { sealRegistry, now: () => clock, delay: async (ms) => { waited.push(ms) } })
+    // The sweeps, copies and connections before the claim took three minutes.
+    clock = NOW + 3 * 60_000
+    const run = {
+      runRequestId: '0192f4a0-0000-7000-8000-000000000001', organizationId: ORG, workflowId: WF, workflowVersion: 3, triggerKind: 'schedule',
+      claimToken: '11111111-2222-4333-8444-555555555555', claimExpiresAt: '2026-10-17T10:06:30+00:00', stateVersion: 2, attempts: 0, unchargedAttempts: 0,
+      maxAttempts: 3, resumeReason: null, executionChainId: '0192f4a0-0000-7000-9000-000000000001', resumedFromExecutionId: null, payload: null, payloadRef: null,
+    } as unknown as Parameters<typeof ports.dispatchRun>[0]
+    await expect(ports.dispatchRun(run)).rejects.toThrow(/OpsInternal.run did not answer/)
+    expect(waited).toEqual([RUN_DISPATCH_DEADLINE_MS - 3 * 60_000])
+    // With no time left it is not dispatched at all.
+    clock = NOW + RUN_DISPATCH_DEADLINE_MS
+    await expect(ports.dispatchRun(run)).rejects.toThrow(/no time left/)
+    expect(waited).toHaveLength(1)
   })
 
   it('a connection list that never answers is given up on at its deadline, and no copy is saved (#2335)', async () => {
