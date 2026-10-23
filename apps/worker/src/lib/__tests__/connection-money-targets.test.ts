@@ -7,7 +7,10 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { FEATURE_GATED_SECRETS, REQUIRED_PARTNER_SECRETS, REQUIRED_SECRETS } from '../secret-lists'
-import { MONEY_SNOWFLAKE_USER_NAMES, moneyTargetIn, moneyTargetsFrom, readMoneyTargets } from '../connection-money-targets'
+import {
+  MONEY_SNOWFLAKE_USER_NAMES, moneyHostOf, moneyHostsFrom, moneyTargetIn, moneyTargetsFrom, readMoneyHosts, readMoneyTargets, type MoneyHostReads,
+} from '../connection-money-targets'
+import { ACHIEVE_HOSTS } from '../../engine/nodes/achieve-identity'
 
 const WORKER_ENV = {
   SUPABASE_URL: 'https://moneyref0123456789ab.supabase.co',
@@ -71,6 +74,82 @@ describe('readMoneyTargets', () => {
 
   it('refuses to answer, never passing, when the store cannot be read', async () => {
     const read = await readMoneyTargets(WORKER_ENV, 'org-1', async () => { throw new Error('db down SECRET') })
+    expect(read).toEqual({ ok: false, detail: expect.not.stringContaining('SECRET') })
+  })
+})
+
+/**
+ * The hosts bidding sends to, which an HTTP connection may never declare
+ * (#2337): an HTTP connection carries any key to any host, so the host is the
+ * only thing that can keep it off the money lane's partners and off the
+ * bidding Worker itself.
+ */
+describe('moneyHostsFrom and moneyHostOf', () => {
+  const ENV = { ...WORKER_ENV, APP_URL: 'https://bidspoke.trypennie.dev' }
+  const hosts = () => moneyHostsFrom(ENV, {
+    salesforceInstanceUrls: ['https://lendco.my.salesforce.com'],
+    partnerUrls: ['https://partner-proxy.trypennie.dev/bid', 'https://offers.lender.example/click?id={prospect_id}', '{{env.PARTNER_URL}}', ''],
+    moneyDefinitions: [JSON.stringify({ nodes: [{ type: 'webhook', data: { config: { url: 'https://api.equifax.example/v1/report' } } }, { type: 'code', data: { code: 'await fetch("https://risk.decide.example/run")' } }] })],
+  })
+
+  it.each([
+    ['the money Supabase project', 'moneyref0123456789ab.supabase.co', 'SUPABASE_URL'],
+    ['a host under the money Supabase project', 'db.moneyref0123456789ab.supabase.co', 'SUPABASE_URL'],
+    ['the bidding Worker itself', 'bidspoke.trypennie.dev', 'APP_URL'],
+    ['a partner subdomain the bidding Worker answers (the *.trypennie.dev route)', 'tripoint.trypennie.dev', 'APP_URL'],
+    ['the money Salesforce instance', 'lendco.my.salesforce.com', 'SALESFORCE_INSTANCE_URL'],
+    ['a money partner endpoint', 'offers.lender.example', 'partner_configs'],
+    ['a host a money workflow calls', 'api.equifax.example', 'money workflows'],
+    ['a host a money code node calls', 'risk.decide.example', 'money workflows'],
+    ['an Achieve host the achieve_offers node calls', ACHIEVE_HOSTS[0], 'ACHIEVE_HOSTS'],
+  ])('refuses %s', (_what, host, source) => {
+    expect(moneyHostOf(host, hosts())).toEqual({ host, source })
+  })
+
+  it('takes a partner or workflow host exactly, never the domain around it', () => {
+    expect(moneyHostOf('sandbox.lender.example', hosts())).toBeNull()
+    expect(moneyHostOf('equifax.example', hosts())).toBeNull()
+    expect(moneyHostOf('api.lender-ops.example', hosts())).toBeNull()
+    // A host under an exact one is another host: only the domain sources (Supabase, the bidding zone, Salesforce) reach down.
+    expect(moneyHostOf('eu.api.equifax.example', hosts())).toBeNull()
+    expect(moneyHostOf('beta.offers.lender.example', hosts())).toBeNull()
+  })
+
+  it('takes the bidding zone from APP_URL only when APP_URL has a zone above its host', () => {
+    const bare = moneyHostsFrom({ APP_URL: 'https://bidspoke.app' }, { salesforceInstanceUrls: [], partnerUrls: [], moneyDefinitions: [] })
+    expect(moneyHostOf('bidspoke.app', bare)?.source).toBe('APP_URL')
+    expect(moneyHostOf('other.app', bare)).toBeNull()
+  })
+
+  it('never matches on a value that is unset, blank or not an address', () => {
+    expect(moneyHostsFrom({ SUPABASE_URL: '', APP_URL: 'not a url' }, { salesforceInstanceUrls: [''], partnerUrls: ['{{env.X}}'], moneyDefinitions: ['{}'] })
+      .filter((h) => h.source !== 'ACHIEVE_HOSTS')).toEqual([])
+  })
+})
+
+describe('readMoneyHosts', () => {
+  const reads = (over: Partial<MoneyHostReads> = {}): MoneyHostReads => ({
+    salesforce: async () => ({ creds: { clientId: MONEY_CLIENT_ID, instanceUrl: 'https://lendco.my.salesforce.com' }, missing: [] }),
+    partnerUrls: async () => ['https://partner-proxy.trypennie.dev/bid'],
+    moneyDefinitions: async () => [],
+    ...over,
+  })
+
+  it('reads every source for the organization, the Salesforce instance from the organization store', async () => {
+    const read = await readMoneyHosts(WORKER_ENV, 'org-1', reads())
+    expect(read.ok).toBe(true)
+    if (read.ok) {
+      expect(moneyHostOf('lendco.my.salesforce.com', read.hosts)?.source).toBe('SALESFORCE_INSTANCE_URL')
+      expect(moneyHostOf('partner-proxy.trypennie.dev', read.hosts)?.source).toBe('partner_configs')
+    }
+  })
+
+  it.each([
+    ['the organization store', { salesforce: async () => { throw new Error('db down SECRET') } }],
+    ['the partner endpoints', { partnerUrls: async () => { throw new Error('db down SECRET') } }],
+    ['the money workflows', { moneyDefinitions: async () => { throw new Error('db down SECRET') } }],
+  ])('refuses to answer, never passing, when %s cannot be read', async (_what, over) => {
+    const read = await readMoneyHosts(WORKER_ENV, 'org-1', reads(over as Partial<MoneyHostReads>))
     expect(read).toEqual({ ok: false, detail: expect.not.stringContaining('SECRET') })
   })
 })

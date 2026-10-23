@@ -85,6 +85,28 @@ describe("Snowflake's connection", () => {
   })
 })
 
+describe("HTTP's connection (#2337)", () => {
+  it('is a static key on one declared host, sent in a declared header, proven by a declared check path', () => {
+    const c = service('http').connection
+    expect(c.auth).toBe('static_key')
+    expect(c.tile).toBe('Any web API that takes a key')
+    expect(connectionFormLabels(c)).toEqual(['Name', 'Host', 'Header', 'Check path', 'Header value'])
+    expect(loginFieldNames(c)).toEqual(['api_key'])
+    expect(targetFieldNames(c)).toEqual(['host', 'header', 'check_path'])
+    expect(c.fields.every((f) => f.required)).toBe(true)
+  })
+
+  it('masks the header value, which is the only secret, and keeps it out of the public target', () => {
+    const c = service('http').connection
+    expect(c.fields.filter((f) => f.input === 'secret').map((f) => f.key)).toEqual(['api_key'])
+    expect(connectionParts(c, { host: 'https://api.regal.io/v1', header: 'Authorization', check_path: '/v1/me', api_key: 'Bearer abc' })).toEqual({
+      ok: true,
+      login: { api_key: 'Bearer abc' },
+      target: { host: 'https://api.regal.io/v1', header: 'Authorization', check_path: '/v1/me' },
+    })
+  })
+})
+
 describe('every shipped connection', () => {
   it('passes the connection checks', () => {
     expect(CATALOGUE.flatMap((s) => connectionProblems(s))).toEqual([])

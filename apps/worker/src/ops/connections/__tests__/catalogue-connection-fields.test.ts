@@ -53,6 +53,12 @@ const SAMPLES: Readonly<Record<string, () => Readonly<Record<string, string>>>> 
   google: () => ({
     subject: 'ops@trypennie.example',
   }),
+  http: () => ({
+    host: 'https://api.lender.example/v2',
+    header: 'X-Partner-Key',
+    check_path: '/v2/me',
+    api_key: 'canary-http-key-2337',
+  }),
   openai: () => ({
     project_id: 'proj_0PS2337',
     api_key: 'canary-openai-key-2337',

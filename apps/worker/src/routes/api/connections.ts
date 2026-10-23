@@ -35,7 +35,7 @@
 import { Hono, type Context } from 'hono'
 import { CURRENT_OPS_KID, OPS_CONNECTION_PUBLIC_KEYS, seal, SealError, type SealedEnvelope } from '@bidspoke/connection-seal'
 import {
-  CATALOGUE, CONNECTION_STATUS_WORDS, connectionParts, SLACK_ALERT_LOGIN_NAME, type ConnectionPageStatus,
+  CATALOGUE, CONNECTION_STATUS_WORDS, connectionParts, HTTP_SERVICE_KEY, httpHostOf, SLACK_ALERT_LOGIN_NAME, type ConnectionPageStatus,
 } from '@bidspoke/service-catalogue/schema'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
@@ -43,7 +43,8 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { formatErr } from '../../lib/format-error'
 import { mapWithConcurrency } from '../../lib/timeout-audit'
 import { resolveSalesforceCredsFor } from '../../lib/salesforce-creds'
-import { moneyTargetIn, readMoneyTargets } from '../../lib/connection-money-targets'
+import { moneyHostOf, moneyTargetIn, readMoneyHosts, readMoneyTargets, type MoneyHostReads } from '../../lib/connection-money-targets'
+import { readOrgWorkflows } from '../../lib/org-workflows'
 import {
   connectionRouteSentence, createRefusalSentence, isCreateRefusalCode, type ConnectionRouteRefusalCode, type CreateRefusalCode, type CreateRouteRefusalCode,
   type RefusalContext, type RouteRefusalContext, type VerifyRefusalCode,
@@ -388,6 +389,8 @@ const CREATE_STATUS: Readonly<Record<CreateRouteRefusalCode, 400 | 409 | 422 | 5
   connection_name_taken: 409,
   connection_money_identity: 422,
   connection_money_targets_unreadable: 503,
+  connection_host_owned: 422,
+  connection_money_host: 422,
   google_subject_not_listed: 422,
   google_list_unavailable: 503,
   connection_seal_failed: 500,
@@ -400,6 +403,35 @@ const CREATE_STATUS: Readonly<Record<CreateRouteRefusalCode, 400 | 409 | 422 | 5
 const VERIFY_STATUS: Partial<Record<VerifyRefusalCode, 503 | 504>> = {
   ops_connections_unavailable: 503,
   ops_connections_timeout: 504,
+}
+
+/** At most this many partner rows are read; a read that reaches it is not known to be whole, so it refuses. */
+const MONEY_HOST_READ_LIMIT = 1000
+
+/**
+ * The organization's money hosts sources (lib/connection-money-targets.ts,
+ * readMoneyHosts), read only for an HTTP save. Each read is scoped to the
+ * organization; one that comes back at its limit throws, so the save is
+ * refused rather than checked against part of a list. Measured 2026-10-23: 10
+ * money workflows (440 KB of definitions) and a handful of partner rows.
+ */
+function moneyHostReads(supabase: ReturnType<typeof createSupabaseClient>, env: Env): MoneyHostReads {
+  return {
+    salesforce: (organizationId) => resolveSalesforceCredsFor(env, supabase, organizationId),
+    partnerUrls: async (organizationId) => {
+      const { data, error } = await supabase
+        .from('partner_configs')
+        .select('api_endpoint, dedup_endpoint, click_url')
+        .eq('organization_id', organizationId)
+        .order('id')
+        .limit(MONEY_HOST_READ_LIMIT)
+      if (error) throw new Error('partner_configs read failed')
+      if (data.length >= MONEY_HOST_READ_LIMIT) throw new Error('partner_configs read reached its limit')
+      return data.flatMap((r) => [r.api_endpoint, r.dedup_endpoint, r.click_url].filter((v): v is string => typeof v === 'string'))
+    },
+    // The one organization workflows read (lib/org-workflows.ts): scoped, not soft deleted, paged; it throws rather than truncating.
+    moneyDefinitions: async (organizationId) => (await readOrgWorkflows(supabase, organizationId, { lane: 'money' })).map((w) => JSON.stringify(w.definition)),
+  }
 }
 
 /** The columns the create answers with: never credential_enc or config. */
@@ -418,7 +450,9 @@ const CREATED_COLUMNS = 'id, name, service_type, acts_as, target, created_at'
 //      connectionParts, the one builder the ops minters are tested against
 //   3. a reserved name, then a name taken in the organization (a read that
 //      answers early; the table's unique decides, at step 7)
-//   4. a money identity in the target (lib/connection-money-targets.ts)
+//   4. a money identity in the target (lib/connection-money-targets.ts), and
+//      for an HTTP connection its host: refused when another catalogue
+//      service owns it, or when bidding sends to it (moneyHostOf, #2337)
 //   5. for a Google delegation login, a mailbox or drive not on the
 //      organization's list
 //   6. the login sealed to the ops key under a fresh uuid, and verify asked
@@ -508,6 +542,22 @@ connections.post('/', async (c) => {
   }
   const found = moneyTargetIn(target, money.targets)
   if (found) return refuse('connection_money_identity', { ...words, money: found.kind }, { money: found.kind, matched: found.source })
+
+  // 4b. An HTTP connection's one host: never one another catalogue service owns, and never one bidding sends to (#2337).
+  if (service.key === HTTP_SERVICE_KEY) {
+    const declared = httpHostOf(target.host)
+    if (!declared.ok) {
+      if (declared.problem === 'service_owned') return refuse('connection_host_owned', { ...words, names: [declared.host, declared.service] }, { owned_by: declared.service })
+      return refuse('connection_target_invalid', words, { detail: declared.problem })
+    }
+    const hosts = await readMoneyHosts(c.env as unknown as Record<string, unknown>, orgId, moneyHostReads(supabase, c.env))
+    if (!hosts.ok) {
+      console.error(JSON.stringify({ event: 'connection_money_targets_unreadable', organization_id: orgId, detail: hosts.detail }))
+      return refuse('connection_money_targets_unreadable', words)
+    }
+    const money = moneyHostOf(declared.host, hosts.hosts)
+    if (money) return refuse('connection_money_host', { ...words, names: [money.host] }, { matched: money.source })
+  }
 
   // 5. A Google delegation login names only mailboxes and drives on the organization's list (F129).
   if (service.connection.auth === 'service_account_delegation') {

@@ -180,6 +180,9 @@ export function actsAsOf(identity: MeasuredIdentityAnswer): string | null {
       : identity.kind === 'google'
         // A Google connection acts as its mailbox, which verify read back from Gmail (#2337).
         ? identity.mailbox
+      : identity.kind === 'http'
+        // An HTTP key acts on its host, which verify proved it on with the check path (#2337).
+        ? identity.host
       : identity.kind === 'anthropic'
         // An Anthropic key acts in its workspace (#2337); its organization is an id, which would tell a reader nothing.
         ? `Workspace ${identity.workspace_id}`
