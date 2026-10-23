@@ -7,9 +7,9 @@
 -- WHAT IT PROVES. One audit_log row per change, whoever made it, naming the
 -- actor the way partner_configs_audit does (#1409), so the routes write none of
 -- their own and a change is never recorded twice (F119):
---   A. An app insert names its user; no token is recorded, since config can
---      no longer hold one (service_connections_no_plaintext_token, #2331), and
---      the ciphertext is recorded only as present.
+--   A. An app insert names its user and records no token, since config can no
+--      longer hold one (service_connections_no_plaintext_token, #2331). That a
+--      ciphertext is recorded only as present is proved in case B.
 --   B. A backfill shaped UPDATE (ciphertext sealed, updated_by set) makes
 --      exactly one row naming the caller and holding no token value.
 --   C. A hand run UPDATE is labelled direct_sql with no actor.
@@ -18,7 +18,8 @@
 --      delete is labelled direct_sql. (The delete by service type this case
 --      used to call was dropped in #2332's release 2.)
 --   F. A change to nothing audited writes no row.
---   G. The planted token and ciphertext appear in no audit row.
+--   G. The planted ciphertexts appear in no audit row. (No row can hold a
+--      plaintext token any more, so there is none to plant.)
 --   H. With audit_log locked by another session, a save fails by name
 --      (connection_audit_failed) within the bound rather than hanging, and the
 --      write does not land unaudited.
@@ -248,16 +249,15 @@ BEGIN
 END
 $do$;
 
--- ── G. No token or ciphertext anywhere ───────────────────────────────────────
+-- ── G. No ciphertext anywhere ────────────────────────────────────────────────
 DO $do$
 DECLARE
   leaked int;
 BEGIN
   SELECT count(*) INTO leaked FROM public.audit_log
-  WHERE entity_type = 'service_connection'
-    AND (changes::text LIKE '%planted-bot-token-2331%' OR changes::text LIKE '%planted-ciphertext-2331%');
-  IF leaked <> 0 THEN RAISE EXCEPTION '% audit rows hold the planted token or ciphertext', leaked; END IF;
-  INSERT INTO sca_cases VALUES ('the planted token and ciphertext appear in no audit row');
+  WHERE entity_type = 'service_connection' AND changes::text LIKE '%planted-ciphertext-2331%';
+  IF leaked <> 0 THEN RAISE EXCEPTION '% audit rows hold a planted ciphertext', leaked; END IF;
+  INSERT INTO sca_cases VALUES ('the planted ciphertexts appear in no audit row');
 END
 $do$;
 
