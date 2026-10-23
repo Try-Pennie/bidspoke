@@ -393,7 +393,8 @@ describe('salesforce.apex-rest@1', () => {
   })
 
   it('refuses a path that would leave the Apex REST root, and a method it does not send', async () => {
-    for (const args of [{ method: 'GET', path: '../data/v60.0/sobjects/User' }, { method: 'GET', path: 'a?b=c' }, { method: 'GET', path: 'https://evil.example/x' }, { method: 'TRACE', path: 'x' }]) {
+    const paths = ['../data/v60.0/sobjects/User', 'a?b=c', 'https://evil.example/x', '%2e%2e/data/v60.0/sobjects/User', 'bid%2F..%2Fdata', 'a/./b']
+    for (const args of [...paths.map((path) => ({ method: 'GET', path })), { method: 'TRACE', path: 'x' }]) {
       const f = fakeSalesforce()
       const failed = await failure(APEX.run(f.ctx, args))
       expect([failed.code, f.sent]).toEqual(['salesforce_argument_invalid', []])

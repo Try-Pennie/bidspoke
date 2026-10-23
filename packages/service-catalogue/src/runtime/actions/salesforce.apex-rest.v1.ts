@@ -10,16 +10,17 @@ import type { ActionArgs, ActionContext, ActionRun, JsonValue } from '../types'
  * engine bidding code steps call custommdt/bid and prospect-trades and the
  * Tripoint submission calls nu_dse/CreateProspect in its own org, on the money
  * path's Apex URL rule (salesforceApexPath, salesforceApexUrl). The path is
- * relative to /services/apexrest, each segment plain (letters, digits, - _ . ~
- * and %), never `.` or `..`, so a value cannot leave the Apex root; parameters
- * go in `params`, encoded. Answers `{ status, body }`, the body as JSON or text.
+ * relative to /services/apexrest, each segment plain (letters, digits, - _ . and
+ * ~), never `.` or `..` and never percent encoded, which Salesforce could decode
+ * into a slash or a `..`, so a value cannot leave the Apex root; parameters go
+ * in `params`, encoded. Answers `{ status, body }`, the body as JSON or text.
  * What a class does is its own, so every call may have side effects and is
  * never repeated on an uncertain outcome.
  */
 
 const METHODS = ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'] as const
 type Method = (typeof METHODS)[number]
-const SEGMENT = /^[A-Za-z0-9_\-.~%]+$/
+const SEGMENT = /^[A-Za-z0-9_\-.~]+$/
 
 function pathOf(args: ActionArgs): string {
   const segments = text(args, 'path').trim().replace(/^\/+/, '').split('/')

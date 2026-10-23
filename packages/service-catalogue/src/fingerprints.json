@@ -6,7 +6,7 @@
   "openai.create-response@1": "a407f785d191f3305a8e9ec28843264f940d18eb3444baa654d8be016c59c896",
   "openai.get-conversation@1": "b6a2b2a0cd6908004ae8440306730e4a43a61dc03ca8e78463ca198342a051e4",
   "openai.list-conversation-items@1": "1cc92da662d00835216d614797f0d3544aec07fbb0792ae0c5f46dc87b11bb03",
-  "salesforce.apex-rest@1": "a89e4e14afc71da43d869d9e23c572f83e6b9cb78f5e5e58c8e96a3d3a633348",
+  "salesforce.apex-rest@1": "bf8804b7a3b8889cdc30fa301f9efa0d9bf79bf16ec33655104b43f169618f78",
   "salesforce.bulk-ingest@1": "eab602c2e4adda99ce26791446dff7e57b6d333c09f7d4c24819523862c862d3",
   "salesforce.create-record@1": "07bf01041b4ff458a9e17d1b2b4ac828bd4ce5241433876ad62e52a1fec63785",
   "salesforce.create-records@1": "14791509c70a09d93429f3d03345685e4e5994c4f47f593820a304b3a900bab1",
