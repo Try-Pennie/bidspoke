@@ -535,6 +535,22 @@ describe('PUT /workflows/:id', () => {
     expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
   })
 
+  it('reports the commit-sha stamp as unset, and stamps nothing, when the write named no version', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-sha-123')
+    const sb = makeSupabase(
+      { users: { single: testUser }, workflows: { single: existingWorkflow } },
+      { write: () => ({ data: { workflow: existingWorkflow }, error: null }) },
+    )
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    await drainWaitUntil()
+    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'update')).toEqual([])
+    const logged = errSpy.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+    expect(logged).toContainEqual(expect.objectContaining({ event: 'workflow_version_commit_sha_unset', workflow_id: 'wf-1', version_id: null }))
+    expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
+  })
+
   it('records a backup failure (for alerting) when the push throws', async () => {
     vi.mocked(pushWorkflowToGitHub).mockRejectedValue(new Error('GitHub push failed (401): Bad credentials'))
     vi.mocked(recordBackupFailure).mockResolvedValue(false)
@@ -977,6 +993,18 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true, version_number: 4, version: 5 })
     expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'restore', p_id: 'wf-1', p_expected_version: 4, p_fields: expect.objectContaining({ version_id: 'ver-1', definition: oldVersion.definition }) })])
+  })
+
+  it.each([['no body', undefined], ['a body of null', null], ['a body that is a list', [1]]])('a restore sent %s is made from the version read, never a 500', async (_, body) => {
+    const sb = makeSupabase({ users: { single: testUser }, workflow_versions: { single: { id: 'ver-1', definition: { nodes: [], edges: [] }, version_number: 1 } }, workflows: { single: existingWorkflow } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await app.request('/workflows/wf-1/versions/ver-1/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }, testEnv, mockCtx)
+    expect(res.status).toBe(200)
+    expect(sb.writes[0].p_expected_version).toBe(4)
   })
 
   it('a restore naming the version its page saw is made from that version', async () => {

@@ -1,8 +1,10 @@
 /**
  * writeWorkflow (#1947): the Worker's one way to write a workflow.
  *
- * Every write of a workflow's definition, is_active, lane or deleted_at, and
- * every version snapshot, goes through the write_workflow database function
+ * Every write of a workflow's definition, is_active or deleted_at, and every
+ * version snapshot, goes through the write_workflow database function (lane is
+ * written by none of its ops: a create takes the money default and a duplicate
+ * the source's lane)
  * (migration 20261023120000): create, duplicate, save, restore, patch (switch
  * on or off, move to a folder) and soft delete. The function locks the row,
  * compares the version the caller read with the stored one and refuses a stale

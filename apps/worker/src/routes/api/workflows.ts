@@ -654,11 +654,15 @@ workflows.put('/:id', async (c) => {
         // leaving a version row with no commit_sha that still looked like a
         // healthy backup. The GitHub push itself did succeed, so the streak is
         // still reset; only the bookkeeping is reported as broken (#588).
-        const { error: stampError } = await requireRowsAffected(
-          'workflow_versions.commit_sha',
-          () => supabase.from('workflow_versions').update({ commit_sha: commitSha }).eq('id', versionId ?? '').select('id'),
-          { onMiss: 'error', context: { workflow_id: id, version_id: versionId } }
-        )
+        // write_workflow names the snapshot it wrote; an answer without one leaves
+        // nothing to stamp, reported as the unset stamp it is, never sent as an empty id.
+        const { error: stampError } = versionId
+          ? await requireRowsAffected(
+            'workflow_versions.commit_sha',
+            () => supabase.from('workflow_versions').update({ commit_sha: commitSha }).eq('id', versionId).select('id'),
+            { onMiss: 'error', context: { workflow_id: id, version_id: versionId } }
+          )
+          : { error: new Error('write_workflow answered the save without the id of the version it wrote') }
         if (stampError && !isNoRowMatchedError(stampError)) {
           console.error(
             JSON.stringify({
@@ -984,7 +988,9 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   const supabase = createSupabaseClient(c.env)
   // A restore may name the version its page last saw (#1947); without one it is
   // made from the version read below, so a write landing during it is still caught.
-  const body = await c.req.json<{ expected_version?: unknown }>().catch(() => ({} as { expected_version?: unknown }))
+  // No body, one that is not JSON, and one that is not an object (null, a list) all name no version.
+  const parsed: unknown = await c.req.json().catch(() => null)
+  const body = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as { expected_version?: unknown }
   const versionRefusal = expectedVersionRefusal(c, body.expected_version)
   if (versionRefusal) return versionRefusal
 
