@@ -158,7 +158,7 @@ describe('engine trigger boundary: persons write removed (#765)', () => {
     const harness = makeHarness()
 
     await executeWorkflow(
-      { workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
+      { triggerType: 'http_webhook', workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
       harness.env, moneyRuntime(db.client), harness.executionCtx,
     )
     await harness.drain()
@@ -172,7 +172,7 @@ describe('engine trigger boundary: persons write removed (#765)', () => {
     const harness = makeHarness()
 
     await executeWorkflow(
-      { workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
+      { triggerType: 'http_webhook', workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
       harness.env, moneyRuntime(db.client), harness.executionCtx,
     )
     await harness.drain()
@@ -191,7 +191,7 @@ describe('engine trigger boundary: persons write removed (#765)', () => {
     const encrypt = vi.spyOn(crypto.subtle, 'encrypt')
 
     await executeWorkflow(
-      { workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
+      { triggerType: 'http_webhook', workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
       harness.env, moneyRuntime(db.client), harness.executionCtx,
     )
     await harness.drain()
@@ -208,7 +208,7 @@ describe('engine trigger boundary: persons write removed (#765)', () => {
     const harness = makeHarness()
 
     const result = await executeWorkflow(
-      { workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
+      { triggerType: 'http_webhook', workflowId: 'wf-1', payload: PII_PAYLOAD, source: 'engine' },
       harness.env, moneyRuntime(db.client), harness.executionCtx,
     )
     await harness.drain()

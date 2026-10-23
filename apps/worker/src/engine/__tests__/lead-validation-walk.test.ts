@@ -104,7 +104,7 @@ async function run(def: WorkflowDefinition, payload: Record<string, unknown>) {
   })
   const env = { IDEMPOTENCY: makeKV(), WORKFLOW_CACHE: makeKV(), APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
   const executionCtx = recordingContext()
-  const result = await executeWorkflow({ workflowId: WF_ID, payload, source: 'gigfi' }, env, moneyRuntime(supabase), executionCtx)
+  const result = await executeWorkflow({ triggerType: 'http_webhook', workflowId: WF_ID, payload, source: 'gigfi' }, env, moneyRuntime(supabase), executionCtx)
   await executionCtx.settle()
   return result
 }
@@ -174,7 +174,7 @@ describe('lead validation in a run', () => {
     })
     const env = { IDEMPOTENCY: makeKV(), WORKFLOW_CACHE: makeKV(), APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
     const executionCtx = recordingContext()
-    await executeWorkflow({ workflowId: WF_ID, payload: { state: 'TX', loanAmount: 1 }, source: 'gigfi', isTest: true }, env, moneyRuntime(supabase), executionCtx)
+    await executeWorkflow({ triggerType: 'http_webhook', workflowId: WF_ID, payload: { state: 'TX', loanAmount: 1 }, source: 'gigfi', isTest: true }, env, moneyRuntime(supabase), executionCtx)
     await executionCtx.settle()
     expect(vi.mocked(reportLeadValidationEvent).mock.calls[0][0].silent).toBe(true)
   })

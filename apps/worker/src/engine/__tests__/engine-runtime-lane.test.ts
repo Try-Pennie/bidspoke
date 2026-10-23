@@ -34,9 +34,9 @@ import { executeWorkflow, moneyRuntime, WorkflowLaneError } from '../index'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { loadEnvVars } from '../../lib/env-loader'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
-import { createExecutionRecord, flushStepLogs } from '../step-logger'
+import { createExecutionRecord, flushStepLogs, updateExecutionRecord } from '../step-logger'
 import { executeNode } from '../nodes/index'
-import { LaneRefusedNodeError } from '../lane'
+import { LaneRefusedNodeError, TriggerLaneError } from '../lane'
 import { ShadowRunRefusedError } from '../run-reality'
 
 const definitionWith = (type: string): WorkflowDefinition =>
@@ -72,7 +72,7 @@ async function run(runtime: Parameters<typeof executeWorkflow>[2], extra: Partia
   const env = { IDEMPOTENCY: makeKV(), WORKFLOW_CACHE: makeKV(), APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
   const executionCtx = recordingContext()
   try {
-    return await executeWorkflow({ workflowId: 'wf-1707', payload: { lead: 1 }, source: 'engine', ...extra }, env, runtime, executionCtx)
+    return await executeWorkflow({ triggerType: 'http_webhook', workflowId: 'wf-1707', payload: { lead: 1 }, source: 'engine', ...extra }, env, runtime, executionCtx)
   } finally {
     await executionCtx.settle()
   }
@@ -126,6 +126,37 @@ describe('engine runtime: the stored lane', () => {
     const result = await run(moneyRuntime(client('main')))
     expect(result.status).toBe(200)
     expect(executeNode).toHaveBeenCalledTimes(1)
+  })
+})
+
+// workflow_executions.trigger_type is what started the run (#1947, A1b), named
+// by the entry point that started it rather than a constant in the step
+// logger, so a run started some other way can never be recorded as a webhook.
+// The value reaches the created row and the create fields finalize rebuilds a
+// lost row from, so the two cannot disagree.
+describe('engine: a run records the trigger that started it (#1947)', () => {
+  const recorded = () => ({
+    created: (vi.mocked(createExecutionRecord).mock.calls[0]?.[1] as { trigger_type?: unknown } | undefined)?.trigger_type,
+    rebuildable: (vi.mocked(updateExecutionRecord).mock.calls[0]?.[4] as { trigger_type?: unknown } | undefined)?.trigger_type,
+  })
+
+  it('records an http webhook run as http_webhook on the money runtime', async () => {
+    await run(moneyRuntime(client('main')), { triggerType: 'http_webhook' })
+    expect(recorded()).toEqual({ created: 'http_webhook', rebuildable: 'http_webhook' })
+  })
+
+  it('records a scheduled run as schedule on the ops runtime', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue(loaded({ lane: 'ops' }))
+    await run({ lane: 'ops', config: client('c'), run: client('r') }, { triggerType: 'schedule' })
+    expect(recorded()).toEqual({ created: 'schedule', rebuildable: 'schedule' })
+  })
+
+  it('refuses a run started by a trigger its lane does not run, before recording anything', async () => {
+    const err = await run(moneyRuntime(client('main')), { triggerType: 'schedule' }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(TriggerLaneError)
+    expect((err as Error).message).toBe('A schedule trigger does not start runs in the money lane')
+    expect(createExecutionRecord).not.toHaveBeenCalled()
+    expect(executeNode).not.toHaveBeenCalled()
   })
 })
 

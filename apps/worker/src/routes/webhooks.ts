@@ -29,6 +29,7 @@ webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
         workflowId,
         payload,
         source,
+        triggerType: 'http_webhook',
         idempotencyKeyHeader: idempotencyKey,
         isTest: false,
         enforceSourceAssignment: true,
