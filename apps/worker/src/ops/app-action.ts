@@ -13,8 +13,10 @@
  * connection by id; a value that is not an id, or a connection of another
  * service than the step names, is refused, never replaced (L75). A person's
  * own account (a target of { own_account: true }) may be used only by its owner
- * (Dan, 2026-10-23, on #2338); until ops holds who owns it and who bound the
- * step, such a step is refused by name (own_account_binder_unrecorded).
+ * (Dan, 2026-10-23, on #2338): such a step runs only when the step's boundBy
+ * (stamped by the bidding Worker's save, lib/app-action-binders.ts) is the
+ * copy's owner, and is refused by name otherwise (own_account_binder_unrecorded,
+ * own_account_owner_unrecorded, own_account_not_owner).
  *
  * ORDER.
  *  1. The step's settings and the pinned version (D1: never the newest), its

@@ -2,7 +2,8 @@ import type { ActionSchema } from './types'
 
 /**
  * An app_action step's settings (#2339, plan section 3.0): `{ service, action,
- * actionVersion, connection, args }`. One reading of them, shared by the
+ * actionVersion, connection, args }`, and `boundBy`, who bound the step, which
+ * the bidding Worker's save stamps and a client never sets. One reading of them, shared by the
  * definition validator at save and the ops executor at run, so the two can never
  * disagree about what a step holds (L342).
  *
