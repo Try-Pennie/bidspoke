@@ -19,12 +19,12 @@ import { opsSealKeys, type SealRegistryOf } from './connection-token-object'
 import { tokenObjectsOf, type TokenObjects } from './connections/minters/oauth-user'
 import { recordSfBudgetReadingFor, SfBudgetMemory } from './connections/sf-budget-reading'
 import type { OpsConnectionsDeps } from './connections/ops-connections'
-import { opsServiceEntry } from './connections/services'
+import { opsServiceRegistry } from './connections/services'
 import type { OpsEnv } from './index'
 import { createOpsSupabaseClient } from './ops-db'
 import type { DelegationListDeps } from './connections/delegation-list'
 import {
-  acquireSfLease, addGoogleDelegationSubject, readConnectionCopy, readConnectionStatus, readGoogleDelegationSubjects, readMeasuredSfOrg, recordConnectionNeedsReauth,
+  acquireSfLease, addGoogleDelegationSubject, googleDelegationCheck, readConnectionCopy, readConnectionStatus, readGoogleDelegationSubjects, readMeasuredSfOrg, recordConnectionNeedsReauth,
   recordConnectionReauthCleared, recordConnectionRefresh, recordConnectionTombstone, recordMeasuredIdentity, recordSfBudgetReading, releaseSfLease,
   removeGoogleDelegationSubject, takeLookupAllowance,
 } from './ops-writes'
@@ -91,7 +91,14 @@ export function liveOpsConnectionsDeps(env: OpsEnv, options: LiveOpsConnectionsO
       // connectionFetch's events carry names only (an event, a connection id, a purpose).
       report: (event) => console.log(JSON.stringify({ ...event, source: 'ops_connections' })),
     },
-    services: opsServiceEntry,
+    // Google's entry checks the organization's delegation list on the ops database and signs with the
+    // ops Worker's own key (#2337), so the registry is built for this request's client and env.
+    services: opsServiceRegistry({
+      google: {
+        checkDelegation: (organizationId, mailbox, drives) => googleDelegationCheck(client, organizationId, mailbox, drives),
+        serviceAccountKey: () => env.GOOGLE_DELEGATION_KEY,
+      },
+    }),
     moneyIdentities: async (organizationId) => {
       if (!gateway) throw new Error('the OPS_GATEWAY binding to the bidding Worker is missing from this deploy')
       const r = await raceDeadline(() => gateway.moneyIdentities(organizationId), GATEWAY_DEADLINE_MS)

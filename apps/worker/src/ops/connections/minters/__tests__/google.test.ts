@@ -16,11 +16,17 @@ import { makeSigningKey, readJwt, rulesOf, tokenEndpoint, type SigningKey, type 
  * reused the connection's mailbox and drives must be on the organization's own
  * allowlist (google_delegation_check), and the scopes asked for are only those
  * the catalogue's Google actions declare.
+ *
+ * The service account's key is the ops Worker's own secret (GOOGLE_DELEGATION_KEY,
+ * #2337), never a connection's login: the key can act as anyone in the
+ * Workspace, so it is not handed to whoever adds a connection, and the settled
+ * form asks only for the mailbox (D16). A Google connection's sealed login is
+ * empty, and anything in it is never read.
  */
 
 const SHEETS = 'https://www.googleapis.com/auth/spreadsheets'
 const DRIVE = 'https://www.googleapis.com/auth/drive'
-/** A catalogue with Google actions, standing in for the shipped one (which has none yet). */
+/** A catalogue with Google actions narrower than the shipped one, so the scope list is the catalogue's and nobody else's. */
 const CATALOGUE: readonly ServiceSchema[] = [
   {
     key: 'google_sheets',
@@ -51,7 +57,8 @@ beforeAll(async () => {
     private_key: signing.pem,
     token_uri: 'https://oauth2.googleapis.com/token',
   }
-  envelope = await sealLogin(keys, { service: 'google_sheets', plaintext: JSON.stringify(serviceAccount) })
+  // A Google connection's sealed login is empty: the key is the ops Worker's secret.
+  envelope = await sealLogin(keys, { service: 'google_sheets', plaintext: '{}' })
 }, 120_000)
 
 interface Setup {
@@ -60,6 +67,8 @@ interface Setup {
   target?: unknown
   catalogue?: readonly ServiceSchema[] | 'shipped'
   tokenTimeoutMs?: number
+  /** The ops Worker's GOOGLE_DELEGATION_KEY, as its text; null for unset. The account's key unless a test says. */
+  key?: string | null
 }
 
 function setup(endpoint: TokenEndpoint, opts: Setup = {}) {
@@ -69,6 +78,7 @@ function setup(endpoint: TokenEndpoint, opts: Setup = {}) {
   const auth = googleDelegationAuth({
     now: () => now,
     tokenTimeoutMs: opts.tokenTimeoutMs,
+    serviceAccountKey: () => (opts.key === undefined ? JSON.stringify(serviceAccount) : opts.key ?? undefined),
     ...(opts.catalogue === 'shipped' ? {} : { catalogue: opts.catalogue ?? CATALOGUE }),
     checkDelegation: async (organizationId, mailbox, drives) => {
       checks.push({ organizationId, mailbox, drives })
@@ -172,13 +182,54 @@ describe('the Google minter: domain wide delegation for an allowed mailbox', () 
     expect(d.rec.refreshes).toEqual([])
   })
 
-  it('the shipped catalogue declares no Google scope yet, so every Google mint is refused by name', async () => {
-    const endpoint = tokenEndpoint(tokenOk('ya29.must-never-be-minted'))
+  it('with the shipped catalogue it asks Google for exactly the four granted scopes its Google actions declare (#2337)', async () => {
+    const endpoint = tokenEndpoint(tokenOk('ya29.canary-google-0001'))
     const { d } = setup(endpoint, { catalogue: 'shipped' })
+    await connectionFetch(d.deps, call(d.rec), URL_)
+    const assertion = await readJwt(endpoint.calls[0].body.get('assertion')!, signing.publicKey)
+    expect(String(assertion.payload.scope).split(' ')).toEqual([
+      'https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/gmail.modify', 'https://www.googleapis.com/auth/spreadsheets',
+    ])
+  })
+
+  it('a catalogue with no Google scope refuses every mint by name', async () => {
+    const endpoint = tokenEndpoint(tokenOk('ya29.must-never-be-minted'))
+    const { d } = setup(endpoint, { catalogue: [] })
     const err = await refusal(connectionFetch(d.deps, call(d.rec), URL_))
     expect(err.code).toBe('connection_not_allowed')
     expect(err.message).toContain('no_delegation_scopes')
     expect(endpoint.calls).toEqual([])
+  })
+
+  it('with no service account key set on the ops Worker, every mint is refused by name, and nothing is recorded against the connection', async () => {
+    const endpoint = tokenEndpoint(tokenOk('ya29.must-never-be-minted'))
+    const { d } = setup(endpoint, { key: null })
+    const err = await refusal(connectionFetch(d.deps, call(d.rec), URL_))
+    expect([err.code, err.message.includes('delegation_key_unset')]).toEqual(['connection_not_allowed', true])
+    expect(endpoint.calls).toEqual([])
+    expect(d.rec.needsReauth).toEqual([])
+    expect(d.rec.refreshes).toEqual([])
+  })
+
+  it('a service account key that is not one is refused by name, and is not the connection\'s fault', async () => {
+    for (const key of ['not json', JSON.stringify({ client_email: 'x@y.iam.gserviceaccount.com' }), JSON.stringify({ ...serviceAccount, private_key: 'not a pem' })]) {
+      const endpoint = tokenEndpoint(tokenOk('ya29.must-never-be-minted'))
+      const { d } = setup(endpoint, { key })
+      const err = await refusal(connectionFetch(d.deps, call(d.rec), URL_))
+      expect([err.code, err.message.includes('delegation_key_malformed')]).toEqual(['connection_not_allowed', true])
+      expect(endpoint.calls).toEqual([])
+      expect(d.rec.needsReauth).toEqual([])
+    }
+  })
+
+  it('never reads a key from the connection\'s sealed login: only the ops Worker\'s key signs', async () => {
+    const other = await makeSigningKey()
+    const sealedKey = await sealLogin(keys, { service: 'google_sheets', plaintext: JSON.stringify({ ...serviceAccount, client_email: 'pasted@elsewhere.iam.gserviceaccount.com', private_key: other.pem }) })
+    const endpoint = tokenEndpoint(tokenOk('ya29.canary-google-0001'))
+    const { d } = setup(endpoint, { login: sealedKey })
+    await connectionFetch(d.deps, call(d.rec), URL_)
+    const assertion = await readJwt(endpoint.calls[0].body.get('assertion')!, signing.publicKey)
+    expect([assertion.verified, assertion.payload.iss]).toEqual([true, 'bidspoke-ops@ops-project.iam.gserviceaccount.com'])
   })
 
   it('two mailboxes through one connection never share a token', async () => {
@@ -239,12 +290,12 @@ describe('the Google minter: domain wide delegation for an allowed mailbox', () 
   })
 
   it('a key whose token_uri is not Google\'s is refused before the signed assertion goes anywhere', async () => {
-    const elsewhere = await sealLogin(keys, { service: 'google_sheets', plaintext: JSON.stringify({ ...serviceAccount, token_uri: 'https://collector.example.test/token' }) })
     const endpoint = tokenEndpoint(tokenOk('ya29.must-never-be-minted'))
-    const { d } = setup(endpoint, { login: elsewhere })
-    await refusal(connectionFetch(d.deps, call(d.rec), URL_))
-    expect(d.rec.needsReauth[0].cause).toBe('login_refused: token_uri_unexpected')
+    const { d } = setup(endpoint, { key: JSON.stringify({ ...serviceAccount, token_uri: 'https://collector.example.test/token' }) })
+    const err = await refusal(connectionFetch(d.deps, call(d.rec), URL_))
+    expect([err.code, err.message.includes('delegation_key_malformed')]).toEqual(['connection_not_allowed', true])
     expect(endpoint.calls).toEqual([])
+    expect(d.rec.needsReauth).toEqual([])
   })
 
   it('a target that names no mailbox, or drives that are not a list, is refused by rule before the allowlist is read', async () => {

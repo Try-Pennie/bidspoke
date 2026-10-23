@@ -192,6 +192,10 @@ export const MINT_FAILURE_REASONS = {
      * credentials in the URL (#2337). Nothing was sent.
      */
     'token_host_not_declared',
+    /** The ops Worker holds no Google delegation key (GOOGLE_DELEGATION_KEY, #2337). Nothing was sent. */
+    'delegation_key_unset',
+    /** The ops Worker's Google delegation key is not a service account key it can sign with, or names another token_uri. Nothing was sent. */
+    'delegation_key_malformed',
   ],
   check_unavailable: ['delegation_allowlist_unreadable'],
   token_object_unavailable: [

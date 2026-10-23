@@ -16,6 +16,10 @@
  * approved for the org (Decision 11, ops migration 20261020010000: the
  * trypennie org alone so far) and refuses every other one by name
  * (sf_cap_unset, or sf_org_unmeasured before verify has measured the org).
+ * Google (google-service.ts, #2337) is built per request
+ * by opsServiceRegistry, since its minter checks the ops database's delegation
+ * list and signs with the ops Worker's key, neither of which exists at module
+ * load; its token memo is kept here for the isolate's life all the same.
  * Every service not listed here is refused by
  * name (connection_service_unknown).
  *
@@ -24,6 +28,8 @@
  * path to the platform's fetch.
  */
 import { anthropicServiceEntry } from './anthropic-service'
+import { googleServiceEntry } from './google-service'
+import { googleTokenMemo, type GoogleDelegationDeps } from './minters/google'
 import { openaiServiceEntry } from './openai-service'
 import type { OpsServiceEntry } from './ops-connections'
 import { salesforceServiceEntry } from './salesforce-service'
@@ -42,12 +48,33 @@ const REGISTERED: Readonly<Record<string, OpsServiceEntry>> = {
   anthropic: anthropicServiceEntry(),
 }
 
-/** The registered entry for a service key, or undefined. An own key only: a 'constructor' must not reach Object.prototype. */
+/** The services built per request, with what each needs from the request's Worker. */
+export const PER_REQUEST_SERVICES = ['google'] as const
+
+/** What the per request services need: Google's delegation list check and the ops Worker's key. */
+export interface OpsServiceDeps {
+  readonly google: Pick<GoogleDelegationDeps, 'checkDelegation' | 'serviceAccountKey'>
+}
+
+/** Google's token memo, per isolate, keyed on connection, generation, mailbox and scope (minters/google.ts). */
+const GOOGLE_MEMO = googleTokenMemo({ now: () => Date.now() })
+
+/**
+ * A module scoped entry for a service key, or undefined: every registered
+ * service but the per request ones, which only opsServiceRegistry builds. An
+ * own key only: a 'constructor' must not reach Object.prototype.
+ */
 export function opsServiceEntry(service: string): OpsServiceEntry | undefined {
   return Object.hasOwn(REGISTERED, service) ? REGISTERED[service] : undefined
 }
 
+/** Every registered service's entry, the per request ones built with the deps given. What the live wiring passes. */
+export function opsServiceRegistry(deps: OpsServiceDeps): (service: string) => OpsServiceEntry | undefined {
+  const google = googleServiceEntry({ now: () => Date.now(), memo: GOOGLE_MEMO, ...deps.google })
+  return (service) => (service === 'google' ? google : opsServiceEntry(service))
+}
+
 /** The registered service keys, for tests and the status of this deploy. */
 export function registeredOpsServices(): string[] {
-  return Object.keys(REGISTERED)
+  return [...Object.keys(REGISTERED), ...PER_REQUEST_SERVICES]
 }

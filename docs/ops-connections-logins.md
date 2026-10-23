@@ -16,7 +16,11 @@ pull request of Phase 7 (#2337, `snowflake-service.ts`), and Salesforce
 (`salesforce-service.ts`, #2337), registered ahead of its catalogue actions, which
 followed in #2337's Salesforce pull request: ten actions on API v60.0
 (`packages/service-catalogue/src/schema/services/salesforce.ts`), whose URLs and
-failure rules are the money path's own, `@bidspoke/salesforce-api`. An OpsConnections
+failure rules are the money path's own, `@bidspoke/salesforce-api`. Google
+(`google-service.ts`, #2337) is registered with its sixteen Sheets, Gmail, Drive
+and Calendar actions (`packages/service-catalogue/src/schema/services/google.ts`);
+its entry is built per request (`opsServiceRegistry`), since its minter reads the
+ops database's delegation list and the ops Worker's own key. An OpsConnections
 call that reaches any other service is refused `connection_service_unknown` until
 that service's own Phase 7 pull request registers it.
 
@@ -258,7 +262,7 @@ value, a refusal naming its cause. Each method has a ceiling
 | `staticKeyAuth` | Slack ops bot (decision 6), OpenAI, Anthropic, Supabase, HTTP | `{ "api_key" }`, or `bot_token` for Slack, `service_key` for Supabase | the service's hosts; Slack's is `{ team_id }`, its one host `slack.com`; OpenAI's is `{ project_id }`, sent on every request as `OpenAI-Project`, its one host `api.openai.com`; Anthropic's is `{ workspace_id }`, sent on every request as `anthropic-workspace-id`, its one host `api.anthropic.com` | 401; for Slack also a 200 whose `ok: false` names a login refusal (`invalid_auth`, `not_authed`, `token_revoked`, `token_expired`, `account_inactive`), since Slack refuses a token without a 401 (`slack-service.ts`) |
 | `snowflakeKeyPairAuth` | Snowflake | `{ "private_key": "<PEM>" }` | `{ account, user }`, and optionally `warehouse`, `role`, `database`, `schema` for the session (a lookup needs `database`) | 401 |
 | `salesforceClientCredentialsAuth` | Salesforce | `{ client_id, client_secret }` of the org's ops connected app | `{ instance_url, client_id }` | 401 (INVALID_SESSION_ID), the money path's own rule |
-| `googleDelegationAuth` | Google (Sheets, Gmail, Calendar, Drive) | the service account key JSON Google issues | `{ subject: "<mailbox>", drives?: ["<shared drive id>"] }` | 401 |
+| `googleDelegationAuth` | Google (Sheets, Gmail, Calendar, Drive) | nothing: the service account key JSON Google issues is the ops Worker's own secret, `GOOGLE_DELEGATION_KEY` (#2337), never a connection's login, which is empty | `{ subject: "<mailbox>", drives?: ["<shared drive id>"] }` | 401 |
 
 - Tokens are held per isolate in a `TokenMemo` keyed by connection, generation,
   mailbox and scope, so two mailboxes never share a token and a reconnect never
@@ -280,9 +284,20 @@ value, a refusal naming its cause. Each method has a ceiling
   one is refused before anything is sent. The money path's `getSalesforceToken`
   and its KV cache are not used.
 - Google asks only `https://oauth2.googleapis.com/token`; a key naming any other
-  `token_uri` is refused, so the signed assertion goes nowhere else. A Google
-  service's entry must therefore declare `oauth2.googleapis.com` beside the API
-  host it calls.
+  `token_uri` is refused, so the signed assertion goes nowhere else. The Google
+  entry declares `oauth2.googleapis.com` beside every API host its actions call:
+  `sheets.googleapis.com`, `gmail.googleapis.com`, and `www.googleapis.com` for
+  Drive and Calendar.
+- Google's key is the ops Worker's `GOOGLE_DELEGATION_KEY` (#2337), not a
+  connection's login: the key can act as anyone in the Workspace, so it is not
+  handed to whoever adds a connection, and the settled Connections form asks only
+  for the mailbox (D16). Unset, unreadable, unable to sign, or naming another
+  `token_uri`, every Google mint is refused by rule (`connection_not_allowed`:
+  `delegation_key_unset` or `delegation_key_malformed`), nothing sent and nothing
+  recorded against a connection, which is not at fault. Verify asks Gmail's
+  profile (`users/me/profile`) as the mailbox, which must answer the declared
+  address (`verify_google_mailbox_mismatch`), and records nothing; the connection
+  acts as the mailbox.
 - Every failure is a `LoginMintError` whose message is its kind and reason alone
   (F120), and connectionFetch forwards none of it.
 
@@ -443,6 +458,13 @@ trypennie org is the only one approved so far (table above). To approve another:
 
 1. A Workspace super admin, in Security, API controls, Domain wide delegation,
    adds the ops service account's client id with exactly the four scopes above.
+   Its key: in Google Cloud, create a JSON key for that service account, and set
+   it on the ops Worker as `GOOGLE_DELEGATION_KEY` (piped in, never typed on a
+   command line): `wrangler secret put GOOGLE_DELEGATION_KEY --name
+   bidspoke-worker-ops`. It is allowed and not yet required
+   (`OPS_OPTIONAL_SECRETS`); once set, it moves to `OPS_REQUIRED_SECRETS` (L65).
+   A lost key is re-obtained by creating a new one; delete the old key in Google
+   Cloud then.
 2. A signed-in user of the organization adds each mailbox and shared drive its
    Google connections may name, on the Connections page (#2338), which audits
    every change.

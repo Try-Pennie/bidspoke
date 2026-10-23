@@ -28,9 +28,11 @@ import { rpcStub } from '../../../test-setup/rpc-stub'
 import type { AuthorizeInput } from '../../../ops/connections/service-rules'
 
 const fixtures = vi.hoisted(() => {
+  // A delegated service declaring drives too, which the shipped Google entry's form does not (#2337), so the
+  // route's drive check is still driven; keyed apart from the shipped google.
   const google: ServiceSchema = {
-    key: 'google',
-    name: 'Google',
+    key: 'google_drives_fixture',
+    name: 'Google drives fixture',
     actions: [],
     connection: {
       tile: 'A company mailbox or drive',
@@ -605,7 +607,7 @@ describe('refused before anything is sealed or verified', () => {
 
 describe('Google: a mailbox or drive must be on the organization\'s list before verify is asked', () => {
   const google = (fields: Record<string, string>) => ({
-    service: 'google', name: 'Ops mailbox', fields: { client_email: 'ops@pennie-ops.iam.gserviceaccount.com', private_key: 'pem', ...fields },
+    service: 'google_drives_fixture', name: 'Ops mailbox', fields: { client_email: 'ops@pennie-ops.iam.gserviceaccount.com', private_key: 'pem', ...fields },
   })
 
   it('refuses a mailbox not on the list, naming it, and asks verify nothing', async () => {
@@ -648,6 +650,39 @@ describe('Google: a mailbox or drive must be on the organization\'s list before 
     expect(res.status).toBe(503)
     expect(((await res.json()) as Refusal).error).toBe('google_list_unavailable')
     expect(binding.verify).not.toHaveBeenCalled()
+  })
+})
+
+describe('an ops Google connection: a company mailbox on the list (#2337)', () => {
+  it('seals an empty login, declares only the mailbox, and is saved acting as the mailbox verify read back', async () => {
+    const db = storeDouble()
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    let sealed: VerifyRequest | null = null
+    const { env } = makeEnv({
+      list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }]),
+      verify: async (r) => {
+        sealed = r
+        return { ok: true, service: 'google', generation: 1, identity: { kind: 'google', mailbox: 'ops@trypennie.com' } }
+      },
+    })
+    const res = await post(env, { service: 'google', name: 'Ops mailbox', fields: { subject: 'ops@trypennie.com' } })
+    expect(res.status).toBe(201)
+    expect(((await res.json()) as { connection: { acts_as: string } }).connection.acts_as).toBe('ops@trypennie.com')
+    expect(sealed!.candidate!.target).toEqual({ subject: 'ops@trypennie.com' })
+    expect(db.inserts.map((r) => [r.service_type, r.auth_type, r.sealed_for, r.target])).toEqual([['google', 'service_account', 'ops_key', { subject: 'ops@trypennie.com' }]])
+  })
+
+  it('says a mailbox Google answers as another in its own sentence', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env } = makeEnv({
+      list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }]),
+      verify: async () => ({ ok: false, refused: 'verify_google_mailbox_mismatch', detail: 'named on ops' }),
+    })
+    const body = (await (await post(env, { service: 'google', name: 'Ops mailbox', fields: { subject: 'ops@trypennie.com' } })).json()) as { error: string; message: string }
+    expect(body).toMatchObject({
+      error: 'verify_google_mailbox_mismatch',
+      message: 'Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.',
+    })
   })
 })
 
