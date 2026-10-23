@@ -577,7 +577,9 @@ workflows.put('/:id', async (c) => {
   // the Worker checked by when a definition is sent (the stored one's when not),
   // and what validateDefinition found in it, reported only. A save that lost
   // the race to someone else's writes nothing and answers 409 with theirs.
-  const savedStamp = body.definition !== undefined ? writtenDefinitionStamp() : copiedDefinitionStamp(existing)
+  // A sent definition is stamped with this build's version; a save sending none
+  // snapshots the stored one, whose stamp write_workflow copies itself.
+  const savedStamp = writtenDefinitionStamp()
   const report = body.definition !== undefined
     ? reportDefinition(body.definition, { writer: 'save', workflowId: id, lane: existing.lane, live: existing.is_active === true, schemaVersion: savedStamp })
     : null

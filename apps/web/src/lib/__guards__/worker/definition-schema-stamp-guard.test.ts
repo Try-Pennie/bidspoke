@@ -41,14 +41,16 @@ const STAMP_WRITE = /\bdefinition_schema_version\s*(?::|=(?!=))\s*([^,\n}]+)/g
 const HELPER = /\b(?:writtenDefinitionStamp|copiedDefinitionStamp)\s*\(/
 const REQUEST = /\bbody\b|\bc\.req\b|\.json\s*\(/
 
-/**
- * Positions of every definition write in `kept` (comments blanked, strings
- * kept): a workflows write whose arguments name `definition`, or that writes an
- * object a `.definition =` assignment fills before it (in the same text, which
- * is one handler when called per handler); and every version row write.
- */
 /** A writeWorkflow call whose op authors a definition (#1947): its stamp is the caller's to send. */
 const AUTHORING_WRITE = /\bwriteWorkflow\s*\(\s*\w+\s*,\s*\{\s*op\s*:\s*(['"`])(create|save)\1/g
+
+/**
+ * Positions of every definition write in `kept` (comments blanked, strings
+ * kept): a writeWorkflow call that authors a definition; a workflows write
+ * whose arguments name `definition`, or that writes an object a
+ * `.definition =` assignment fills before it (in the same text, which is one
+ * handler when called per handler); and every version row write.
+ */
 
 function definitionWritesOf(kept: string): number[] {
   const out: number[] = []
