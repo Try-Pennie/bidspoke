@@ -96,6 +96,19 @@ describe('pushWorkflowToGitHub', () => {
     expect(putBody.message as string).toContain(String(VERSION))
   })
 
+  it('names no version in the commit message when the save named none, never v0 (#1947)', async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(makeResponse({}, 404))
+      .mockResolvedValueOnce(makeResponse({ commit: { sha: 'sha' } }))
+    vi.stubGlobal('fetch', mockFetch)
+
+    await pushWorkflowToGitHub(TOKEN, REPO, WF_ID, WF_NAME, DEFINITION, null)
+
+    const [, putInit] = mockFetch.mock.calls[1] as [string, RequestInit]
+    const putBody = JSON.parse(putInit.body as string) as Record<string, unknown>
+    expect(putBody.message).toBe(`chore: update workflow "${WF_NAME}"`)
+  })
+
   it('uses a custom message when provided', async () => {
     const mockFetch = vi.fn()
       .mockResolvedValueOnce(makeResponse({}, 404))

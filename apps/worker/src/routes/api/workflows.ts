@@ -647,7 +647,7 @@ workflows.put('/:id', async (c) => {
       id,
       workflowName,
       body.definition ?? existing.definition,
-      nextVersion ?? 0,
+      nextVersion,
       body.message
     )
       .then(async (commitSha) => {
