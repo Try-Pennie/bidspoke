@@ -6,7 +6,8 @@ import { REPO_ROOT } from './_scan-utils'
 /**
  * What CLAUDE.md loads into every session (#2606).
  *
- * A line `@<path>` in CLAUDE.md imports that file whole, as instructions, into
+ * An `@<path>` in CLAUDE.md, alone on a line or inside a sentence, imports that
+ * file whole (and whatever it imports in turn), as instructions, into
  * every Claude Code session started in this repo. On 2026-10-21 a new session
  * opened warning that its instruction files came to 173.5k characters, over
  * the platform's 150k total. The largest was the planning list (47.4k,
