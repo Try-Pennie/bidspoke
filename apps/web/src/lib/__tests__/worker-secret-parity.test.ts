@@ -130,6 +130,14 @@ describe('the committed lists (#1709)', () => {
     expect(OPS_REQUIRED_SECRETS).not.toContain('GOOGLE_DELEGATION_KEY')
   })
 
+  // #2338 build PR 13: the Google sign in app's client JSON lives only on the ops Worker (Dan, 2026-10-22).
+  // Allowed, not required, until Dan creates the app and sets it; no list of the bidding Worker's names it.
+  it('allow the Google sign in app on the ops Worker, and do not require it before it is set (#2338)', () => {
+    expect(OPS_ALLOWED_SECRETS).toContain('GOOGLE_OAUTH_CLIENT')
+    expect(OPS_REQUIRED_SECRETS).not.toContain('GOOGLE_OAUTH_CLIENT')
+    expect(MONEY_ALL).not.toContain('GOOGLE_OAUTH_CLIENT')
+  })
+
   it('no longer allow Spike 0\'s arm on the ops Worker, whose probes are removed (#1946)', () => {
     expect(OPS_ALLOWED_SECRETS).not.toContain('OPS_SPIKE_ARM')
   })

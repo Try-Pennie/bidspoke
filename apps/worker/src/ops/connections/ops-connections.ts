@@ -55,7 +55,7 @@ import { organizationIdFrom, type OrganizationId } from '../ops-db'
 import type { ConnectionCopy, ConnectionHealthStatus, LookupAllowance, MeasuredIdentityOutcome } from '../ops-writes'
 import { connectionFetch, type CandidateConnection, type ConnectionCall, type ConnectionFetchDeps, type ConnectionSource } from './connection-fetch'
 import { IdentityMismatch, IdentityUnreadable, isMoneySalesforceIdentity, type BoundFetch, type IdentityProbe, type MeasuredIdentity } from './identity'
-import { exchangeOAuthCode, type OAuthUserService, type TokenObjects } from './minters/oauth-user'
+import { exchangeOAuthCode, isPersonBoundTarget, type OAuthUserService, type TokenObjects } from './minters/oauth-user'
 import { ConnectionRefusal, RequeueAt } from './refusals'
 import type { ServiceRules } from './service-rules'
 
@@ -84,7 +84,11 @@ export interface OpsServiceEntry {
   readonly identity?: IdentityProbe
   /** Where a lookup sends. Absent: the service answers no lookups. */
   readonly schema?: (target: unknown, publicConfig: unknown) => SchemaTarget
-  /** A person bound (OAuth user) service: its token endpoint. A candidate of one is proven by its code exchange, never verify. */
+  /**
+   * A person bound (OAuth user) service: its token endpoint, and which targets
+   * sign in a person (Google signs in a company mailbox too, #2338). A
+   * candidate of one is proven by its code exchange, never verify.
+   */
   readonly oauthUser?: OAuthUserService
 }
 
@@ -229,7 +233,7 @@ async function verifyIdentity(
   if (isRefused(subject)) return subject
   const entry = deps.services(subject.service)
   if (entry === undefined) return refuse('connection_service_unknown', `no rules for the ${subject.service} service on this Worker`)
-  if (candidate !== null && entry.oauthUser !== undefined) {
+  if (candidate !== null && entry.oauthUser !== undefined && isPersonBoundTarget(entry.oauthUser, candidate.target)) {
     return refuse('candidate_not_refreshable', 'a person bound login is proven by its code exchange, not by verify')
   }
   const probe = entry.identity
@@ -396,10 +400,10 @@ export async function exchangeConnectionCode(deps: OpsConnectionsDeps, request: 
   const oauthUser = deps.services(request.candidate.service)?.oauthUser
   if (oauthUser === undefined) return refuse('connection_service_unknown', `the ${request.candidate.service} service has no person bound login on this Worker`)
   try {
-    const { generation } = await exchangeOAuthCode({ tokens: deps.tokens, readCopy: deps.connection.readCopy }, oauthUser, {
+    const { generation, account } = await exchangeOAuthCode({ tokens: deps.tokens, readCopy: deps.connection.readCopy }, oauthUser, {
       organizationId, connectionId: request.connection_id, candidate: candidateOf(request.candidate), code: request.code, verifier: request.verifier, redirectUri: request.redirect_uri,
     })
-    return { ok: true, generation }
+    return { ok: true, generation, account }
   } catch (err) {
     if (err instanceof ConnectionRefusal) return fromRefusal(err, false)
     return unexpected(err, 'the code exchange')

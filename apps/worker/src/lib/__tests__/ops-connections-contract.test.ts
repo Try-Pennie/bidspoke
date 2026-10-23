@@ -5,9 +5,9 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OpsConnectionsContractError,
-  parseAddDelegationSubjectRequest, parseClearReauthRequest, parseExchangeOAuthCodeRequest, parseHealthRequest, parseListDelegationSubjectsRequest,
-  parseLookupRequest, parseRemoveDelegationSubjectRequest, parseRevokeRequest, parseVerifyRequest,
+  LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OPS_SIGN_IN_CEILINGS_MS, OPS_SIGN_IN_METHODS,
+  OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest, parseExchangeOAuthCodeRequest, parseHealthRequest,
+  parseListDelegationSubjectsRequest, parseLookupRequest, parseRemoveDelegationSubjectRequest, parseRevokeRequest, parseSignInClientRequest, parseVerifyRequest,
 } from '../ops-connections-contract'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
@@ -37,6 +37,21 @@ describe('the OpsConnections contract', () => {
     for (const ms of Object.values(OPS_CONNECTIONS_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
     expect(LOOKUP_RATE_PER_MINUTE).toBeGreaterThanOrEqual(1)
     expect(LOOKUP_RATE_PER_MINUTE).toBeLessThanOrEqual(600)
+  })
+
+  it('keeps the sign in method apart from the methods bidding calls until the ops deploy carries it (#2338, build PR 13)', () => {
+    // CI requires the LIVE ops Worker to export every method on OPS_CONNECTIONS_METHODS, so a method ships on ops first.
+    expect([...OPS_SIGN_IN_METHODS]).toEqual(['signInClient'])
+    for (const m of OPS_SIGN_IN_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).not.toContain(m)
+    expect(Object.keys(OPS_SIGN_IN_CEILINGS_MS)).toEqual([...OPS_SIGN_IN_METHODS])
+    for (const ms of Object.values(OPS_SIGN_IN_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
+  })
+
+  it('a sign in client request names the organization and a service key, and nothing else is read', () => {
+    expect(parseSignInClientRequest({ organization_id: ORG.toUpperCase(), service: 'google', client_secret: 'ignored' })).toEqual({ organization_id: ORG, service: 'google' })
+    expect(refused(() => parseSignInClientRequest({ service: 'google' }))).toMatch(/organization_id/)
+    expect(refused(() => parseSignInClientRequest({ organization_id: ORG, service: 'Google Sheets' }))).toMatch(/service/)
+    expect(refused(() => parseSignInClientRequest({ organization_id: ORG }))).toMatch(/service/)
   })
 
   it('a verify names the organization and connection, with or without a candidate; ids are read lower case, as the seal binds them', () => {

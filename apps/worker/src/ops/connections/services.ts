@@ -28,8 +28,9 @@
  * path to the platform's fetch.
  */
 import { anthropicServiceEntry } from './anthropic-service'
-import { googleServiceEntry } from './google-service'
-import { googleTokenMemo, type GoogleDelegationDeps } from './minters/google'
+import { googleServiceEntry, type GoogleServiceDeps } from './google-service'
+import { googleTokenMemo } from './minters/google'
+import { oauthUserCache } from './minters/oauth-user'
 import { openaiServiceEntry } from './openai-service'
 import type { OpsServiceEntry } from './ops-connections'
 import { salesforceServiceEntry } from './salesforce-service'
@@ -51,13 +52,19 @@ const REGISTERED: Readonly<Record<string, OpsServiceEntry>> = {
 /** The services built per request, with what each needs from the request's Worker. */
 export const PER_REQUEST_SERVICES = ['google'] as const
 
-/** What the per request services need: Google's delegation list check and the ops Worker's key. */
+/**
+ * What the per request services need: Google's delegation list check and the
+ * ops Worker's key, and the token objects of a person's own Google account
+ * (#2338).
+ */
 export interface OpsServiceDeps {
-  readonly google: Pick<GoogleDelegationDeps, 'checkDelegation' | 'serviceAccountKey'>
+  readonly google: Pick<GoogleServiceDeps, 'checkDelegation' | 'serviceAccountKey' | 'tokens'>
 }
 
 /** Google's token memo, per isolate, keyed on connection, generation, mailbox and scope (minters/google.ts). */
 const GOOGLE_MEMO = googleTokenMemo({ now: () => Date.now() })
+/** A person's own Google account's memo and token ids, per isolate, so a renewal names the token an earlier request handed out (#2338). */
+const GOOGLE_OWN_ACCOUNT_CACHE = oauthUserCache({ now: () => Date.now() })
 
 /**
  * A module scoped entry for a service key, or undefined: every registered
@@ -70,7 +77,7 @@ export function opsServiceEntry(service: string): OpsServiceEntry | undefined {
 
 /** Every registered service's entry, the per request ones built with the deps given. What the live wiring passes. */
 export function opsServiceRegistry(deps: OpsServiceDeps): (service: string) => OpsServiceEntry | undefined {
-  const google = googleServiceEntry({ now: () => Date.now(), memo: GOOGLE_MEMO, ...deps.google })
+  const google = googleServiceEntry({ now: () => Date.now(), memo: GOOGLE_MEMO, ownAccountCache: GOOGLE_OWN_ACCOUNT_CACHE, ...deps.google })
   return (service) => (service === 'google' ? google : opsServiceEntry(service))
 }
 

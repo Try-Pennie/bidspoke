@@ -158,6 +158,14 @@ export const OPS_OPTIONAL_SECRETS = [
   // moves to OPS_REQUIRED_SECRETS (L65), tracked on the issue the hand off names.
   // Re-obtained by creating a new key for the service account in Google Cloud.
   'GOOGLE_DELEGATION_KEY',
+  // The Google sign in app's client JSON (#2338 build PR 13, Dan's decision of
+  // 2026-10-22): the client id and secret every person bound Google connection's
+  // code exchange and refresh name (ops/connections/oauth-apps.ts). It lives only
+  // here, never on the bidding Worker and never in a connection's sealed login.
+  // Optional only until Dan creates the app and sets it: then it moves to
+  // OPS_REQUIRED_SECRETS (L65). Re-obtained by adding a new secret to the same
+  // client in Google Cloud, which keeps its client id and so every connection.
+  'GOOGLE_OAUTH_CLIENT',
 ] as const
 
 /** Every secret the ops Worker may hold; anything else on it fails the parity check. */
