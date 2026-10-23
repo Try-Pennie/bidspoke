@@ -1,5 +1,5 @@
 {
-  "about": "Measured by scripts/measure-workflow-values-fixture.ts from Try-Pennie/bidspoke-workflows; see that script. RML GigFi (6624acd0-bf61-4d21-85fc-4371ca7ed77d) is production version 25 (the lead validation swap, #2592, saved 2026-10-22), reduced the same way, because the mirror holds no copy of that save. RML LendSwift (e1b810da-16c0-49eb-bf12-ba1c9b67c914) is production version 26 (the lead validation swap, #2593, saved 2026-10-22), from the money gate's copy of it, which the export checked equal to the mirror and to production, reduced the same way.",
+  "about": "Measured by scripts/measure-workflow-values-fixture.ts from Try-Pennie/bidspoke-workflows; see that script. RML GigFi (6624acd0-bf61-4d21-85fc-4371ca7ed77d) is production version 25 (the lead validation swap, #2592, saved 2026-10-22), reduced the same way, because the mirror holds no copy of that save. RML LendSwift (e1b810da-16c0-49eb-bf12-ba1c9b67c914) is production version 26 (the lead validation swap, #2593, saved 2026-10-22), from the money gate's copy of it, which the export checked equal to the mirror and to production, reduced the same way. Lead Economy (89b1a6af-7e0f-43de-bc66-1e888184551f) is production version 41 (the lead validation swap, #2594, saved 2026-10-22 as version 40, with Constants minimumLoanAmount set in version 41), from the money gate's copy of it, which the export checked equal to the mirror and to production, reduced the same way.",
   "mirror_commit": "18d91be8eee26b6703103c9a51ff332ee2ad372f",
   "partners": [
     {
@@ -418,15 +418,6 @@
             "config": {}
           },
           {
-            "id": "83ceda70-bea4-448b-9ec8-800527ae25ab",
-            "namespace": "validate_bidding_and_state",
-            "label": "Validate Bidding and State",
-            "type": "code",
-            "config": {
-              "script": "const constants = steps.constants.output;\nconst validState = constants.states.includes(state);\n  loanAmount >= constants.minimumLoanAmount &&\n  annualIncome >= constants.minimumAnnualIncome &&\n  constants.allowedPurposes.includes(purpose) &&\n  constants.allowedEmploymentStatuses.includes(employmentStatus);"
-            }
-          },
-          {
             "id": "9ceb40c7-a036-4da2-b6db-63836c9f3dc5",
             "namespace": "return_response",
             "label": "Return Response",
@@ -442,6 +433,54 @@
             "type": "code",
             "config": {
               "script": "const constants = steps.constants.output;"
+            }
+          },
+          {
+            "id": "62403bde-a115-487b-ac9f-cbff3ddd03ae",
+            "namespace": "validate_bidding_and_state",
+            "label": "Validate Bidding and State",
+            "type": "lead_validation",
+            "config": {
+              "checks": [
+                {},
+                {
+                  "condition": {
+                    "groups": [
+                      {
+                        "conditions": [
+                          {
+                            "value": "steps.constants.output.states"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {},
+                {},
+                {
+                  "condition": {
+                    "groups": [
+                      {
+                        "conditions": [
+                          {
+                            "value": "steps.constants.output.minimumLoanAmount"
+                          },
+                          {
+                            "value": "steps.constants.output.minimumAnnualIncome"
+                          },
+                          {
+                            "value": "steps.constants.output.allowedPurposes"
+                          },
+                          {
+                            "value": "steps.constants.output.allowedEmploymentStatuses"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ]
             }
           }
         ],

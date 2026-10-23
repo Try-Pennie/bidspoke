@@ -21,7 +21,7 @@ import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB, EVERY_ORGAN
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
 import { sendGroupedRecoveryAlert, sendPartnerPageLiveAlert, sendTitledAlert } from './lib/slack'
 import { makeAlertClaims, raceDeadline } from './lib/alert-claim'
-import { runCronTickOnce } from './lib/cron-once'
+import { runCronTickOnce, tickRetryReader } from './lib/cron-once'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
 import { runDrainStallCheck } from './lib/drain-stall'
@@ -675,6 +675,26 @@ const scheduledJobs = {
             )
           }
         })().catch((e) => console.error('[salesforce-bulkhead-check] failed:', e))
+      )
+      // A lead validation script pasted back into a workflow (#2595): a code
+      // node returning status rejected with a lead validation reason, in any
+      // active workflow outside the known exceptions. Its own heartbeat, so a
+      // missed day pages, and its own failure boundary (L71).
+      track(
+        (async () => {
+          const { runValidationScriptGuardForEnv, VALIDATION_SCRIPT_GUARD_JOB } = await import('./lib/validation-script-guard')
+          await writeHeartbeat(env.IDEMPOTENCY, VALIDATION_SCRIPT_GUARD_JOB).catch((e) =>
+            console.error('[cron-heartbeat] validation-script-guard write failed:', e)
+          )
+          try {
+            const r = await runValidationScriptGuardForEnv(supabase, env)
+            if (r.alerted) console.error(`[validation-script-guard] ${r.newFindings.length} new, ${r.staleExceptions.length} stale exceptions, ${r.unreadable.length} unreadable`)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, VALIDATION_SCRIPT_GUARD_JOB).catch((e) =>
+              console.error('[cron-heartbeat] validation-script-guard completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[validation-script-guard] failed:', e))
       )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
@@ -1441,7 +1461,8 @@ const scheduledJobs = {
         ),
       )
       minuteJob('heartbeat-checks',
-        runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims)
+        // The tick guard's claims say when Cloudflare retried a run that never finished (#2610).
+        runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims, tickRetryReader(env.ALERT_CLAIM))
           .then((rs) => {
             for (const r of rs) {
               if (r.status === 'stale' || r.status === 'never_ran' || r.status === 'vanished') {

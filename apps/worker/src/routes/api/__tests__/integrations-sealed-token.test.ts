@@ -30,6 +30,7 @@ import { parseSlackConnection } from '../../../lib/slack-connection'
 import { readSlackCopy, rememberSlackConnections } from '../../../lib/slack-copy'
 import { makeSupabase } from './_supabase-mock'
 import { slackPostOf } from '../../../__tests__/helpers/slack-fetch'
+import api from '../index'
 
 const ORG = 'org-abc'
 const USER = 'user-1'
@@ -80,7 +81,6 @@ const env = {
 } as unknown as Env
 
 async function call(method: string, path: string, body?: unknown) {
-  const { default: api } = await import('../index')
   return api.request(path, {
     method,
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
@@ -147,6 +147,18 @@ describe('POST /integrations/slack seals the token', () => {
     expect(res.status).toBe(200)
     expect(rec.upserts[0].name).toBe('slack')
     expect(rec.upsertOptions).toEqual([{ onConflict: 'organization_id,service_type,name' }])
+  })
+
+  // #2332 release 3 (from #2481): the alert row's auth_type is the catalogue's
+  // kind for a Slack bot, bot_token, never the legacy oauth the save sent until
+  // now. This must be live before the migration that narrows the auth_type
+  // CHECK, which then refuses oauth and credentials.
+  it('stores the alert row as a bot token, never the legacy oauth or credentials', async () => {
+    const { client, rec } = recordingSupabase()
+    vi.mocked(createSupabaseClient).mockReturnValue(client as never)
+    const res = await call('POST', '/integrations/slack', { bot_token: TOKEN, default_channel: '#alerts' })
+    expect(res.status).toBe(200)
+    expect(rec.upserts[0].auth_type).toBe('bot_token')
   })
 
   it('writes no route audit row: the table trigger records the change once', async () => {

@@ -134,8 +134,10 @@ export const ALL_OBSERVATION_REASONS: readonly string[] = Object.values(OBSERVAT
  * #2334 (supabase-ops migration 20261017220000) for the ops connections; the
  * tick runs those in TICK_SWEEPS (tick.ts): tombstone_expiry since #2334,
  * sf_limits since #2336 and connection_check since #2340, so now every one.
+ * observation_purge (#1950, supabase-ops migration 20261022150000) keeps
+ * schedule_fire_observations to 30 days, once a night.
  */
-export const OPS_SWEEPS = ['lease_expiry', 'run_expiry', 'queue_agreement', 'tombstone_expiry', 'connection_check', 'sf_limits'] as const
+export const OPS_SWEEPS = ['lease_expiry', 'run_expiry', 'queue_agreement', 'tombstone_expiry', 'connection_check', 'sf_limits', 'observation_purge'] as const
 export type OpsSweep = (typeof OPS_SWEEPS)[number]
 
 // ── ops connections and the ops Salesforce pool (#2334, supabase-ops migration 20261017220000) ──

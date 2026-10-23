@@ -15,6 +15,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -23,7 +24,6 @@ const mockCtx = recordingContext()
 const DB_ERROR = { code: '57014', message: 'canceling statement due to statement timeout' }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

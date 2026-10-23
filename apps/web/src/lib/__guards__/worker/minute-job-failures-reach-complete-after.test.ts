@@ -25,8 +25,9 @@ import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
+import { parseSnippet } from '../../__tests__/_parsed-source'
 
-const parse = (source: string) => ts.createSourceFile('source.ts', source, ts.ScriptTarget.Latest, true)
+const parse = (source: string) => parseSnippet(source)
 
 /** The keys of `export const FAILED_RUN_CADENCES = { '<cron>': ..., ... }`: the crons whose jobs are counted. */
 export function countedCadences(failuresSource: string): string[] {

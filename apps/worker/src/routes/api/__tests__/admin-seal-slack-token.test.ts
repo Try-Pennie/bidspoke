@@ -20,6 +20,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { reencryptSecrets } from '../../../lib/secret-reencrypt'
 import { sealSlackTokens } from '../slack-token-seal'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@trypennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@trypennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -29,7 +30,6 @@ const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', SECRET_ENCRYPTION_KEY: KEY
 const RESULT = { dryRun: true, rotating: false, rowsSeen: 1, sealed: 1, alreadySealed: 0, cannotSeal: [], changedMeanwhile: [], verification: [], readyForContract: false }
 
 async function post(path: string, body: unknown) {
-  const { default: api } = await import('../index')
   return api.request(path, { method: 'POST', headers: { Authorization: 'Bearer tok', 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, env, recordingContext())
 }
 

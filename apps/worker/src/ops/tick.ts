@@ -25,6 +25,9 @@
  *     step 8, stamping its own heartbeat (SF_LIMITS_JOB) through the gateway.
  *     Since #2340 the connection_check sweep (connection-check.ts) the same way,
  *     which proves each ops connection's login and stamps CONNECTION_CHECK_JOB.
+ *     Since #1950 the observation_purge sweep, which keeps
+ *     schedule_fire_observations to 30 days and is claimed only while the
+ *     database clock reads the 03:00 Eastern hour (OBSERVATION_PURGE_EVERY_SECONDS).
  *  4. The workflows (decision 4, 2026-10-16): fetch the ops workflows' state from
  *     the bidding Worker over the service binding, save it as the last good
  *     copy, then read the copies back. The tick plans from what the database
@@ -66,6 +69,7 @@
  * Every port is injected, so the tests set both clocks (tick.test.ts); the live
  * ports are tick-live.ts.
  */
+import { easternParts } from '@bidspoke/buyer-profile'
 import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type MissedReason, type PlannedFire, type ScheduleConfig } from '@bidspoke/workflow-definition'
 import {
   CONNECTION_CHECK_JOB, SF_LIMITS_JOB, capTickProblems, parseServedOpsWorkflows, tickProblem, type ConnectionLoginsReport, type OpsGatewayJob, type OpsJobReport,
@@ -97,8 +101,21 @@ export const TICK_CLAIM_LIMIT = 40
 /** The copies one tick reads: every ops workflow, within PostgREST's 1,000 rows (L24). */
 const COPIES_READ_LIMIT = 1000
 
-/** The sweeps the tick claims: every one claim_ops_sweep names (#2340 brought the last, connection_check). */
+/** The sweeps the tick claims: every one claim_ops_sweep names (#2340 brought connection_check, #1950 observation_purge). */
 export type TickSweep = OpsSweep
+
+/**
+ * The observation purge (#1950): schedule_fire_observations is kept 30 days
+ * (Dan, 2026-10-22), and purge_schedule_observations holds that window itself.
+ * It runs once a night: claimed only while the DATABASE clock reads the 03:00
+ * Eastern hour (the shared Eastern clock, packages/buyer-profile, L655), and
+ * for 20 hours, so a second tick inside that hour stands down and the next
+ * night's claim is free. Up to 10 pages of 1,000 rows a night, far past the
+ * rows a day of every ops schedule adds; a backlog drains over the nights that
+ * follow, and only rows past 30 days wait for it.
+ */
+export const OBSERVATION_PURGE_EVERY_SECONDS = 20 * 3600
+export const OBSERVATION_PURGE_EASTERN_HOUR = 3
 
 /**
  * The sweeps, each with the interval its owner claims. A minute sweep claims 50 s,
@@ -128,13 +145,14 @@ export type TickSweep = OpsSweep
  * (CONNECTION_CHECK_JOB) only when it owns the claim, and holds a transient
  * failure itself, by the age of the connection's last passing check.
  */
-export const TICK_SWEEPS: ReadonlyArray<{ sweep: TickSweep; everySeconds: number; pageLimit: number; maxPages: number }> = [
+export const TICK_SWEEPS: ReadonlyArray<{ sweep: TickSweep; everySeconds: number; pageLimit: number; maxPages: number; easternHour?: number }> = [
   { sweep: 'lease_expiry', everySeconds: 50, pageLimit: 500, maxPages: 4 },
   { sweep: 'run_expiry', everySeconds: 50, pageLimit: 500, maxPages: 4 },
   { sweep: 'queue_agreement', everySeconds: 14 * 60, pageLimit: 100, maxPages: 1 },
   { sweep: 'tombstone_expiry', everySeconds: 59 * 60, pageLimit: 500, maxPages: 4 },
   { sweep: 'sf_limits', everySeconds: SF_LIMITS_EVERY_SECONDS, pageLimit: SF_LIMITS_MAX_ORGS, maxPages: 1 },
   { sweep: 'connection_check', everySeconds: CONNECTION_CHECK_EVERY_SECONDS, pageLimit: CONNECTION_CHECK_MAX_CONNECTIONS, maxPages: 1 },
+  { sweep: 'observation_purge', everySeconds: OBSERVATION_PURGE_EVERY_SECONDS, pageLimit: 1000, maxPages: 10, easternHour: OBSERVATION_PURGE_EASTERN_HOUR },
 ]
 
 /**
@@ -172,6 +190,8 @@ export interface OpsTickDb extends ConnectionServeDb {
   expireRuns(limit: number): Promise<{ expired: number; more: boolean }>
   /** The tombstone_expiry sweep (purge_expired_connection_tombstones). */
   purgeTombstones(limit: number): Promise<{ purged: number; more: boolean }>
+  /** The observation_purge sweep (purge_schedule_observations, #1950). */
+  purgeObservations(limit: number): Promise<{ purged: number; more: boolean }>
   /** The Salesforce lease sweep (sweep_sf_leases). */
   sweepSfLeases(limit: number): Promise<{ swept: number; more: boolean }>
   queueDisagreements(limit: number): Promise<QueueDisagreement[]>
@@ -389,6 +409,9 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   // 3. Sweeps, each its own boundary.
   if (db) {
     for (const s of TICK_SWEEPS) {
+      // A sweep held to an Eastern hour is claimed only in it, read on the database
+      // clock; with no clock its hour is unknown, so it waits for a tick that has one.
+      if (s.easternHour !== undefined && (dbNow === null || Math.floor(easternParts(Date.parse(dbNow)).minuteOfDay / 60) !== s.easternHour)) continue
       // The claim in its own boundary (#2506): a claim that failed is asked again
       // on the next tick, for every sweep, while a sweep that failed after its
       // claim is next tried when its interval comes round.
@@ -440,6 +463,11 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
             case 'tombstone_expiry': {
               const r = await db.purgeTombstones(s.pageLimit)
               bump(counts, 'tombstones_purged', r.purged)
+              return r.more
+            }
+            case 'observation_purge': {
+              const r = await db.purgeObservations(s.pageLimit)
+              bump(counts, 'observations_purged', r.purged)
               return r.more
             }
           }

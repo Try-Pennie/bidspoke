@@ -24,6 +24,7 @@ vi.mock('../../../lib/supabase')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
+import api from '../index'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -74,7 +75,6 @@ function makeEnv(handlers: Record<string, (r: unknown) => Promise<unknown>>) {
 const ctx = recordingContext()
 
 async function call(env: Env, method: string, path: string, body?: unknown) {
-  const { default: api } = await import('../index')
   return api.request(path, {
     method,
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },

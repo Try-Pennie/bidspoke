@@ -22,6 +22,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { eraseSubject } from '../../../lib/archive-erasure'
 import { writeAuditLog } from '../../../lib/audit'
+import api from '../index'
 
 const SSN = '123-45-6789'
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@trypennie.com' }
@@ -47,7 +48,6 @@ function makeSupabase() {
 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

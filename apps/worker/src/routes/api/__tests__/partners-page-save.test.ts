@@ -25,6 +25,7 @@ import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-
 import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { COPY_NOT_CLEARED_MESSAGE } from '../../../lib/stored-copy'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com', display_name: 'Dan Wright' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -45,7 +46,6 @@ const doc: BuyerProfileDocument = {
 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

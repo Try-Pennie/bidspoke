@@ -22,6 +22,8 @@ export interface CanvasRun {
   env?: Record<string, unknown>
   execution?: Record<string, unknown>
   props?: Record<string, unknown>
+  /** What the script's console writes to; silent unless a test records what it prints. */
+  console?: Partial<Record<'log' | 'info' | 'warn' | 'error' | 'debug', (...args: unknown[]) => void>>
   fetch?: (input: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<CanvasResponse>
 }
 
@@ -42,7 +44,7 @@ export function compileCanvasScript(script: string): (...fnArgs: unknown[]) => P
 
 export async function runCanvasScript(script: string, run: CanvasRun): Promise<unknown> {
   const fn = compileCanvasScript(script)
-  const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} }
+  const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {}, ...run.console }
   const noFetch = async (input: string) => {
     throw new Error(`the script fetched ${input} but the test injected no fetch`)
   }

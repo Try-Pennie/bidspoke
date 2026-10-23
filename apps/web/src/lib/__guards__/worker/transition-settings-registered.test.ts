@@ -12,10 +12,11 @@
  * key, each named in the failure.
  */
 import { describe, it, expect } from 'vitest'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { REPO_ROOT, WORKER_SRC, listFiles } from '../../__tests__/_scan-utils'
+import { parsedSource, sourceText } from '../../__tests__/_parsed-source'
 import { isRegisteredTransitionSetting } from '../../../../../worker/src/lib/transition-settings'
 
 const REGISTRY_FILE = path.join(WORKER_SRC, 'lib', 'transition-settings.ts')
@@ -45,7 +46,7 @@ interface KeyRead { line: number; text: string; dynamic: boolean }
  */
 function settingKeyLiterals(src: string, fileName = 'source.ts'): KeyRead[] {
   const out: KeyRead[] = []
-  const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true, fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+  const sf = parsedSource(fileName, src)
   const lineOf = (node: ts.Node) => sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1
   const visit = (node: ts.Node) => {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
@@ -157,8 +158,20 @@ describe('settingKeyLiterals (the scanner itself)', () => {
 })
 
 describe('every setting key read is in the registry', () => {
+  // The tree is read and parsed while the file is collected, so that cost is not
+  // charged to a test's 5 second limit (#2619).
+  const files = scannedRoots().flatMap(sourceFiles)
+  const offenders: string[] = []
+  for (const file of files) {
+    if (file === REGISTRY_FILE) continue
+    for (const read of settingKeyLiterals(sourceText(file), file)) {
+      const where = `${path.relative(REPO_ROOT, file)}:${read.line}`
+      if (read.dynamic) offenders.push(`${where} builds a setting key from a variable: ${read.text}`)
+      else if (!isRegisteredTransitionSetting(read.text)) offenders.push(`${where} reads ${read.text}, which is not in lib/transition-settings.ts`)
+    }
+  }
+
   it('scans a real tree, not an empty one', () => {
-    const files = scannedRoots().flatMap(sourceFiles)
     // apps/worker/src alone holds several hundred source files; a walk that found
     // a handful has lost its root, and its silence would read as a clean tree.
     expect(files.length).toBeGreaterThan(300)
@@ -166,15 +179,6 @@ describe('every setting key read is in the registry', () => {
   })
 
   it('finds no unregistered or dynamically built setting key', () => {
-    const offenders: string[] = []
-    for (const file of scannedRoots().flatMap(sourceFiles)) {
-      if (file === REGISTRY_FILE) continue
-      for (const read of settingKeyLiterals(readFileSync(file, 'utf8'), file)) {
-        const where = `${path.relative(REPO_ROOT, file)}:${read.line}`
-        if (read.dynamic) offenders.push(`${where} builds a setting key from a variable: ${read.text}`)
-        else if (!isRegisteredTransitionSetting(read.text)) offenders.push(`${where} reads ${read.text}, which is not in lib/transition-settings.ts`)
-      }
-    }
     expect(offenders).toEqual([])
   })
 })

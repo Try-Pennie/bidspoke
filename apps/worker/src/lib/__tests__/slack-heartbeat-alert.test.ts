@@ -396,3 +396,51 @@ describe('sendCronHeartbeatGroupRecoveryAlert (#2117)', () => {
     expect(text).not.toContain('last seen')
   })
 })
+
+// #2610: the tick guard records Cloudflare's retry of a stopped run in the run's
+// claim, so the page says it plainly instead of sending the reader to the logs.
+describe('a never finished page that knows Cloudflare retried the run (#2610)', () => {
+  const RETRY_AT = Date.parse('2026-10-21T04:03:12Z')
+  const run = {
+    status: 'vanished' as const,
+    triggerCron: '*/15 * * * *',
+    runAt: '2026-10-21T04:00:00.000Z',
+    jobs: [
+      { label: 'Buyer sales checks', dependents: 'nothing is comparing the buyer ledgers', ageMs: 11 * 60_000 },
+      { label: 'Click buyer path checks', dependents: 'nothing notices a click buyer check that cannot answer', ageMs: 11 * 60_000 },
+    ],
+  }
+  const fixOf = (post: { blocks: { text: { text: string } }[] }) => post.blocks.map((b) => b.text.text).find((t) => t.startsWith('*How to fix:*'))
+
+  it('says when the retry ran and that it finished, in Eastern time, and drops the search of the logs', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 15 * 60_000, null, Date.parse('2026-10-21T04:15:00Z'), false, { retriedAtMs: RETRY_AT, finished: true })
+    const post = await lastPost()
+    expect(textOf(post)).toContain('Cloudflare retried this run at Oct 21, 12:03 AM EDT, and the retry finished.')
+    expect(fixOf(post)).not.toContain('[cron-once] took over')
+    expect(fixOf(post)).toContain('as it did here')
+  })
+
+  it('says a retry that has not finished has not', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 15 * 60_000, null, Date.parse('2026-10-21T04:15:00Z'), false, { retriedAtMs: RETRY_AT, finished: false })
+    expect(textOf(await lastPost())).toContain('Cloudflare retried this run at Oct 21, 12:03 AM EDT, and the retry has not finished.')
+  })
+
+  it('says nothing about a retry it does not know of, and keeps the advice on finding one', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 15 * 60_000, null, Date.parse('2026-10-21T04:15:00Z'), false, null)
+    const post = await lastPost()
+    expect(textOf(post)).not.toContain('Cloudflare retried this run')
+    expect(fixOf(post)).toContain('`[cron-once] took over`')
+  })
+
+  it('says it on the page for the jobs of one run too', async () => {
+    await sendCronHeartbeatGroupAlert(makeSupabase(connection), 'org-1', { ...run, retry: { retriedAtMs: RETRY_AT, finished: true } }, null, Date.parse('2026-10-21T04:12:05Z'))
+    const post = await lastPost()
+    expect(textOf(post)).toContain('Cloudflare retried this run at Oct 21, 12:03 AM EDT, and the retry finished.')
+    expect(fixOf(post)).not.toContain('[cron-once] took over')
+  })
+
+  it('never says it on a page about a job being dark', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'stale', 3 * 3_600_000, null, Date.parse('2026-10-21T04:15:00Z'), false, { retriedAtMs: RETRY_AT, finished: true })
+    expect(textOf(await lastPost())).not.toContain('Cloudflare retried')
+  })
+})

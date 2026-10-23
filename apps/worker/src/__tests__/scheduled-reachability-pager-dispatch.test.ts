@@ -13,10 +13,12 @@ vi.mock('../lib/database-reachability', async (importOriginal) => {
   return { ...real, runDatabaseReachabilityProbe: vi.fn(async () => ({ kind: 'answered' as const, organizations: 0 })) }
 })
 
-import worker, { MINUTE_JOB_DEADLINE_MS } from '../index'
 import type { Env } from '../index'
 import { runDatabaseReachabilityProbe, type ProbeDeps } from '../lib/database-reachability'
 import { scheduledSlackFor } from '../lib/scheduled-slack'
+import { loadWorker } from '../test-setup/load-worker'
+
+const { default: worker, MINUTE_JOB_DEADLINE_MS } = await loadWorker()
 
 beforeEach(() => {
   vi.useFakeTimers({ now: Date.parse('2026-10-15T01:00:00Z') })

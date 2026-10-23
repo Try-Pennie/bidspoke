@@ -29,6 +29,7 @@ import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT, WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
+import { parseSnippet } from '../../__tests__/_parsed-source'
 
 const ALLOWED_PLATFORM_FETCH: Readonly<Record<string, string>> = {
   'apps/worker/src/ops/ops-connections-live.ts':
@@ -44,7 +45,7 @@ const GLOBAL_OBJECTS = new Set(['globalThis', 'self', 'window'])
 
 /** Where a source reaches the platform's fetch, as `line: what`. */
 export function platformFetchUses(source: string, fileName = 'source.ts'): string[] {
-  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const sf = parseSnippet(source, fileName)
   const found: string[] = []
   const at = (node: ts.Node, what: string) => found.push(`${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1}: ${what}`)
 
@@ -103,6 +104,12 @@ const rel = (full: string) => path.relative(REPO_ROOT, full).replace(/\\/g, '/')
 const files = listTsFiles(OPS_SRC).map((full) => ({ rel: rel(full), source: readFileSync(full, 'utf8') }))
 
 describe('every connection bound request on the ops Worker goes through connectionFetch (#2335)', () => {
+  // Parsed while the file is collected, not inside a test's 5 second limit (#2619).
+  const offenders = files
+    .filter((f) => !Object.hasOwn(ALLOWED_PLATFORM_FETCH, f.rel))
+    .map((f) => ({ file: f.rel, uses: platformFetchUses(f.source, f.rel) }))
+    .filter((o) => o.uses.length > 0)
+
   it('scans the ops Worker\'s source, so it cannot pass by reading nothing (L98)', () => {
     expect(files.length).toBeGreaterThan(25)
     expect(files.some((f) => f.rel === 'apps/worker/src/ops/connections/connection-fetch.ts')).toBe(true)
@@ -110,10 +117,6 @@ describe('every connection bound request on the ops Worker goes through connecti
   })
 
   it('no ops module but the listed ones reaches the platform\'s fetch', () => {
-    const offenders = files
-      .filter((f) => !Object.hasOwn(ALLOWED_PLATFORM_FETCH, f.rel))
-      .map((f) => ({ file: f.rel, uses: platformFetchUses(f.source, f.rel) }))
-      .filter((o) => o.uses.length > 0)
     expect(offenders).toEqual([])
   })
 

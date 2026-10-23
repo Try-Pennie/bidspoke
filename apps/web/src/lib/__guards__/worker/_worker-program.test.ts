@@ -22,10 +22,13 @@ const OPS_ENTRY = path.join(WORKER_SRC, 'ops/index.ts')
 const program = buildWorkerProgram([OPS_ENTRY])
 const PLANTED = path.join(WORKER_SRC, 'routes/__planted_program__.ts')
 const withExtra = buildWorkerProgram([OPS_ENTRY], { [PLANTED]: 'export const x: Request | null = null\n' })
+// Built while the file is collected: each checks every file, which is not charged to a test's 5 second limit (#2619).
+const loadErrors = workerProgramLoadErrors(program)
+const extraLoadErrors = workerProgramLoadErrors(withExtra)
 
 describe('buildWorkerProgram', () => {
   it('loads the worker program with no configuration or global errors', () => {
-    expect(workerProgramLoadErrors(program)).toEqual([])
+    expect(loadErrors).toEqual([])
   })
 
   it('resolves the Workers globals to real types, not any', () => {
@@ -46,7 +49,7 @@ describe('buildWorkerProgram', () => {
 
   it('serves an extra in-memory file on top of the disk', () => {
     expect(withExtra.getSourceFile(PLANTED)?.text).toContain('Request')
-    expect(workerProgramLoadErrors(withExtra)).toEqual([])
+    expect(extraLoadErrors).toEqual([])
   })
 })
 
