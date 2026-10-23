@@ -47,6 +47,9 @@ function opsDatabase() {
     // The connection_check sweep's list and the tick's login states (#2340): none, as today.
     connection_check_targets: [],
     record_connection_check: 'recorded',
+    // The frozen definition copies (#1950): the copy's version 3 is not held yet.
+    missing_workflow_definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3 }],
+    save_workflow_definition: 'saved',
   }
   const fakeFetch: typeof globalThis.fetch = (async (input: string | URL | Request) => {
     const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
@@ -57,8 +60,9 @@ function opsDatabase() {
   return { fetch: fakeFetch, called }
 }
 
-function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: number; jobStamps: string[]; jobReports: unknown[] } {
+function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: number; jobStamps: string[]; jobReports: unknown[]; definitionRequests: unknown[] } {
   const g = {
+    definitionRequests: [] as unknown[],
     reports: [] as OpsTickReport[],
     started: 0,
     jobStamps: [] as string[],
@@ -86,6 +90,12 @@ function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: num
     }),
     // Verify's, in PR 8 of #2335: the tick never asks.
     moneyIdentities: async () => { throw new Error('the tick does not call moneyIdentities') },
+    // The frozen definition copies (#1950): each version asked for, served.
+    opsWorkflowDefinitions: async (request: unknown) => {
+      g.definitionRequests.push(request)
+      const versions = (request as { versions: Array<{ workflow_id: string; version_number: number }> }).versions
+      return { definitions: versions.map((v) => ({ ...v, organization_id: ORG, definition: { nodes: [] } })), unserved: [] }
+    },
   }
   return g
 }
@@ -180,6 +190,10 @@ describe('the live tick', () => {
     expect(s.observed).toEqual(['would_fire'])
     expect(g.started).toBe(1)
     expect(g.reports).toEqual([report])
+    // The frozen definition copies (#1950): the version not held is asked of the gateway and saved through its ops function.
+    expect(g.definitionRequests).toEqual([{ versions: [{ workflow_id: WF, version_number: 3 }] }])
+    expect(db.called.indexOf('missing_workflow_definitions')).toBeLessThan(db.called.indexOf('save_workflow_definition'))
+    expect(report.counts.definitions_saved).toBe(1)
   })
 
   it('runs the sf_limits sweep through its ops function and stamps it through the gateway under its own job id (#2336, #2340)', async () => {

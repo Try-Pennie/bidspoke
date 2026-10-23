@@ -130,22 +130,20 @@ export const OPS_REQUIRED_SECRETS = [
   // the minute tick checks it imports and opens a probe sealed to the committed
   // public key (NEXT may open it mid rotation), and reports not_configured naming it.
   'OPS_CONNECTIONS_PRIVATE_KEY',
+  // The ops database's URL and named secret key (src/ops/ops-db.ts): every run,
+  // sweep and copy the minute cron keeps lives there. Optional while the cron
+  // was observe only and shipped before Dan created the key (#1949); required
+  // since run invocation (#1950), with both set on bidspoke-worker-ops since
+  // 2026-10-16 (read back by name with wrangler secret list on 2026-10-22).
+  'OPS_SUPABASE_URL',
+  'OPS_SUPABASE_SECRET_KEY',
 ] as const
 
 /**
- * Secrets the ops Worker may hold and does not require (#1709 part 3). First,
- * the ops database's URL and named secret key (src/ops/ops-db.ts). The minute cron
- * (#1949) is the first code that reads them, and it did NOT move them to
- * OPS_REQUIRED_SECRETS, deliberately: it ships before Dan has created the key,
- * and while either is unset it reports not_configured, naming it, every minute,
- * which the bidding Worker pages on (lib/ops-gateway.ts). Requiring them here as
- * well would turn main's secret parity step red and add a second daily alert for
- * the same unset key. They move to OPS_REQUIRED_SECRETS once both are set. Then
- * the NEXT ops private key, which is optional for good (#2333).
+ * Secrets the ops Worker may hold and does not require (#1709 part 3): the NEXT
+ * ops private key, which is optional for good (#2333).
  */
 export const OPS_OPTIONAL_SECRETS = [
-  'OPS_SUPABASE_URL',
-  'OPS_SUPABASE_SECRET_KEY',
   // The NEXT ops private key (#2333), held only during a rotation of the ops key
   // (docs/disaster-recovery.md). Optional because it is unset the rest of the
   // time; listed so that setting it does not turn main's secret parity step red
