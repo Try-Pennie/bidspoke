@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { forEachSlackOrg, rateLimitedOrgAlert, readEverySlackConnection, slackOrgIds } from '../alert-fanout'
 import { getSlackConnection } from '../slack'
 import { registerScheduledSlack } from '../scheduled-slack'
-import { fakeClient, fakeTimers, kvWith, kvWithCopy, LIVE_CONN, STORED_CONN, TEST_KEY, type Answer } from './_scheduled-slack-doubles'
+import { withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
+import { fakeClient, fakeTimers, kvWith, kvWithCopy, LIVE_ROW, STORED_CONN, TEST_KEY, type Answer } from './_scheduled-slack-doubles'
 
 let logs: string[]
 beforeEach(() => {
@@ -24,6 +25,8 @@ afterEach(() => vi.restoreAllMocks())
 async function scheduled(answers: Answer[], copy: Record<string, unknown> | null, timers: 'never' | 'now' = 'never') {
   const { client, calls } = fakeClient(answers)
   const kv = copy ? await kvWithCopy(copy) : kvWith()
+  // createScheduledSupabaseClient registers the key ring too (it builds through createSupabaseClient).
+  withSlackKeyRing(client)
   registerScheduledSlack(client, { kv, secretKeys: TEST_KEY, sleep: fakeTimers(timers).sleep })
   return { client, calls, kv }
 }
@@ -57,7 +60,7 @@ describe('slackOrgIds on the scheduled client', () => {
   })
 
   it('sets the tick\'s flag, so the lookups after a failed org list go to the copy without asking', async () => {
-    const { client, calls } = await scheduled([{ error: { message: 'boom' } }, { data: [{ config: LIVE_CONN }] }], COPY)
+    const { client, calls } = await scheduled([{ error: { message: 'boom' } }, { data: [LIVE_ROW] }], COPY)
     await slackOrgIds(client, 'test', 'tell-only')
     expect((await getSlackConnection(client, 'org-2'))?.bot_token).toBe('xoxb-stored-2')
     expect(calls).toHaveLength(1)
@@ -98,7 +101,7 @@ describe('forEachSlackOrg and rateLimitedOrgAlert on the scheduled client', () =
 
 describe('readEverySlackConnection', () => {
   it('reads every connection live in one read on the scheduled client', async () => {
-    const { client, calls } = await scheduled([{ data: [{ organization_id: 'org-1', config: LIVE_CONN }, { organization_id: 'org-3', config: { nope: true } }] }], COPY)
+    const { client, calls } = await scheduled([{ data: [{ ...LIVE_ROW, organization_id: 'org-1' }, { organization_id: 'org-3', config: { nope: true } }] }], COPY)
     const read = await readEverySlackConnection(client, 'test', 'tell-only')
     expect(read.kind).toBe('live')
     expect(read.kind === 'live' && [...read.connections.keys()]).toEqual(['org-1'])

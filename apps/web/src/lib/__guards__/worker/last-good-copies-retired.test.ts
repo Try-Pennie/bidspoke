@@ -103,17 +103,16 @@ const KINDS: Kind[] = [
     // answer the alert row connection_not_reconnectable and
     // connection_not_removable and leave it as it was.
     //
-    // #2331: the backfill and the key rotation re-lock change the token's
-    // ciphertext, never the token or any setting the copy holds, and the next
-    // healthy minute probe rewrites the copy from the rows with the key ring in
-    // force; each is held true by a test that the row it wrote still resolves to
-    // the same connection (routes/api/__tests__/slack-token-seal.test.ts and
-    // lib/__tests__/secret-reencrypt.test.ts).
+    // #2331: the key rotation re-lock changes the token's ciphertext, never the
+    // token or any setting the copy holds, and the next healthy minute probe
+    // rewrites the copy from the rows with the key ring in force; held true by a
+    // test that the row it wrote still resolves to the same connection
+    // (lib/__tests__/secret-reencrypt.test.ts). The backfill seal it stood beside
+    // was retired by #2331's contract release.
     exempt: {
       'apps/worker/src/routes/api/connections.ts POST /': 'inserts a new ops_key connection under a fresh id, never the bidding_ring Slack alert row the copy holds',
       'apps/worker/src/routes/api/connections.ts POST /:id/reconnect': 'reconnect_ops_connection writes only an ops_key row, and refuses the bidding_ring Slack alert row the copy holds without writing it; a Reconnect of the Slack alert row (build PR 14) saves through saveSlackAlertConnection, which edits the copy itself and is held to this rule as its own handler',
       'apps/worker/src/routes/api/connections.ts DELETE /:id': 'remove_ops_connection deletes only an ops_key row, and refuses the bidding_ring Slack alert row the copy holds without writing it',
-      'apps/worker/src/routes/api/slack-token-seal.ts sealSlackTokens': 'seals the token already in config.bot_token into credential_enc: the connection the copy holds is unchanged, and the next probe rewrites the copy from the rows',
       'apps/worker/src/lib/secret-reencrypt.ts reencryptSecrets': 're-locks credential_enc under the next key: the token the copy holds is unchanged, and the next probe rewrites the copy under the ring in force',
       // #2335: held true by supabase/tests/store_rotated_envelope.test.sql case D,
       // in which a bidding_ring Slack row is answered not_found and not written.

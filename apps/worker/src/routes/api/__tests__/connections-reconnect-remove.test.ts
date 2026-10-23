@@ -42,6 +42,8 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import api from '../index'
+import { SLACK_TEST_KEY } from '../../../__tests__/helpers/sealed-slack-row'
+import { encryptSecret } from '../../../lib/secret-crypto'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -52,6 +54,7 @@ const ALERT_ROW = 'c0000000-0000-4000-8000-000000000003'
 
 const NEW_SECRET = 'canary-new-client-secret-2338-pr6'
 const ALERT_TOKEN = 'canary-alert-bot-token-2338-pr6'
+const ALERT_SEALED = await encryptSecret(ALERT_TOKEN, SLACK_TEST_KEY)
 const CLIENT_ID = '3MVG9-ops-connected-app'
 const TARGET = { instance_url: 'https://achieve.my.salesforce.com', client_id: CLIENT_ID }
 const STORED_ENVELOPE = { v: 1, kid: 'ops-test-1', wrapped_key: 'd3JhcHBlZA==', iv: 'aXY=', ct: 'Y3Q=' }
@@ -160,7 +163,7 @@ function makeEnv(order: string[], ops: Partial<Record<'verify' | 'clearReauth' |
     addDelegationSubject: vi.fn(), removeDelegationSubject: vi.fn(), listDelegationSubjects: vi.fn(),
   }
   // Shaped like the real RPC stub, so a call it would refuse fails here too (#2570).
-  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, OPS_CONNECTIONS: rpcStub(binding) } as unknown as Env
+  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, OPS_CONNECTIONS: rpcStub(binding), SECRET_ENCRYPTION_KEY: SLACK_TEST_KEY } as unknown as Env
   return { env, binding }
 }
 
@@ -333,8 +336,8 @@ describe('Reconnect of an ops Slack bot never takes the alerts bot (Dan\'s decis
       id: SLACK_CONN, organization_id: ORG, service_type: 'slack', name: 'Ops bot', sealed_for: 'ops_key', credential_generation: 1,
       credential_enc: JSON.stringify(STORED_ENVELOPE), config: {}, target: { team_id: 'T0PENNIE' }, acts_as: 'bidspoke_ops in Pennie', person_bound: false,
     })
-    // The alert login, holding its token in the legacy plaintext form this double can resolve.
-    Object.assign(db.table.find((r) => r.id === ALERT_ROW)!, { credential_enc: null, config: { bot_token: ALERT_TOKEN, default_channel: 'C0ALERTS' } })
+    // The alert login as stored (#2331's contract release): its token sealed with the Worker's key, no plaintext.
+    Object.assign(db.table.find((r) => r.id === ALERT_ROW)!, { credential_enc: ALERT_SEALED, config: { default_channel: 'C0ALERTS' } })
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, team_id: 'T0PENNIE', team: 'Pennie', user_id: 'U0ALERTS', user: 'bidspoke_alerts', bot_id: alertsBotId })))
     const identity = { kind: 'slack', team_id: 'T0PENNIE', team: 'Pennie', user_id: 'U0OPS', user: 'bidspoke_ops', bot_id: botId }

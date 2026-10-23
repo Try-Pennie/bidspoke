@@ -6,6 +6,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { encryptSecret } from '../secret-crypto'
 import { SLACK_CONNS_LASTGOOD_KEY } from '../slack-copy'
+import { sealedSlackRow } from '../../__tests__/helpers/sealed-slack-row'
 
 export const TEST_KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)))
 export const OTHER_KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(9)))
@@ -141,3 +142,5 @@ export async function kvWithCopy(connections: Record<string, unknown>, key: stri
 
 export const LIVE_CONN = { bot_token: 'xoxb-live', default_channel: '#live' }
 export const STORED_CONN = { bot_token: 'xoxb-stored', default_channel: '#stored' }
+/** LIVE_CONN's row as the database holds it (#2331's contract release): the token sealed with TEST_KEY, no plaintext. */
+export const LIVE_ROW = await sealedSlackRow(LIVE_CONN)
