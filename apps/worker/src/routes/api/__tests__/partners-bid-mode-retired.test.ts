@@ -4,7 +4,7 @@
  *
  * Nothing acts on bid_mode, and its column is dropped
  * (20261016220000_drop_partner_bid_mode_2182.sql). A create never names it, and
- * a create, a save or a page save that names it is refused by name before
+ * a create or a page save that names it is refused by name before
  * anything is read or written, so a stale client is told which field to leave
  * out rather than reaching the database at all.
  */
