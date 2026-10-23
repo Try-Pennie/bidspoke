@@ -142,7 +142,7 @@ export const OPS_REQUIRED_SECRETS = [
 /**
  * Secrets the ops Worker may hold and does not require (#1709 part 3): the NEXT
  * ops private key, which is optional for good (#2333), and the Google
- * delegation key until it is set (#2337).
+ * delegation key (#2337) and the Google sign in app (#2338) until each is set.
  */
 export const OPS_OPTIONAL_SECRETS = [
   // The NEXT ops private key (#2333), held only during a rotation of the ops key
