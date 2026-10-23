@@ -13,7 +13,10 @@ connectionFetch, which calls them, is called by the OpsConnections entrypoint
 executor (Phase 9). The services registered on ops are listed in
 `apps/worker/src/ops/connections/services.ts`: Snowflake since the first service
 pull request of Phase 7 (#2337, `snowflake-service.ts`), and Salesforce
-(`salesforce-service.ts`, #2337) ahead of its catalogue actions. An OpsConnections
+(`salesforce-service.ts`, #2337), registered ahead of its catalogue actions, which
+followed in #2337's Salesforce pull request: ten actions on API v60.0
+(`packages/service-catalogue/src/schema/services/salesforce.ts`), whose URLs and
+failure rules are the money path's own, `@bidspoke/salesforce-api`. An OpsConnections
 call that reaches any other service is refused `connection_service_unknown` until
 that service's own Phase 7 pull request registers it.
 
@@ -228,7 +231,11 @@ value, a refusal naming its cause. Each method has a ceiling
   committed row. A failed verify or a lost compare and set leaves ops on the
   committed generation, and the next serve of it is accepted.
 - **Money's Salesforce identity** is read from `OPS_GATEWAY.moneyIdentities`,
-  measured daily on bidding. A reading more than 50 hours old (one missed daily
+  measured daily on bidding for the organization that holds money's Salesforce
+  credentials and kept once for the lane (`money-identity:salesforce`). Every
+  organization's ops Salesforce logins are compared against that one login
+  (#2690, Dan's decision of 2026-10-22), so a second Bidspoke organization's
+  connection is refused only if it authenticates as money's user. A reading more than 50 hours old (one missed daily
   run plus two hours) is treated as unmeasured, and with no reading verify
   refuses every Salesforce connection (`money_identity_unmeasured`) before any
   Salesforce call.
@@ -371,8 +378,12 @@ before the first connection of that kind is saved.
    - system permission **API Enabled**, and nothing else at the system level: not
      Modify All Data, View All Data, View Setup and Configuration, Manage Users,
      Customize Application or Author Apex;
-   - object and field access **only** as each ported action needs it, named in
-     that action's pull request (Phase 7), never ahead of it. It starts with none.
+   - object and field access **only** as each ported action needs it, never
+     ahead of it. It starts with none. The catalogue's Salesforce actions
+     (#2337) take the object as a step argument, so no action needs an object
+     on its own: each object a workflow reads or writes is granted when that
+     workflow is ported (Phase 9), named in its port, read only for an object
+     it only queries.
 3. Create the connected app **`Bidspoke Ops`** with OAuth enabled, the OAuth scope
    **`api`** only (not `full`, not `refresh_token`), and **Enable Client
    Credentials Flow** with the run as user set to the user from step 1.
