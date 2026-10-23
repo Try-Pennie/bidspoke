@@ -7,9 +7,9 @@
  * which reads every organization's row anyway, is this signal's one owner: it
  * hands over what it saw each healthy minute, and this module pages each
  * organization whose token could not be opened, once per cooldown, through the
- * connection that can still post (the plaintext copy while the dual write
- * lasts, or the saved copy's entry the probe carried forward), and says the
- * all-clear once the row has read cleanly for the re-arm window.
+ * connection that can still post (the saved copy's entry the probe carried
+ * forward), and says the all-clear once the row has read cleanly for the re-arm
+ * window.
  *
  * Not gated on any of the organization's alert toggles: a toggle mutes a kind
  * of alert, and this is about whether any alert can be sent at all.
@@ -36,8 +36,6 @@ const incident = (orgId: string): IncidentContext => ({ scope: { kind: 'org', or
 export interface SlackTokenSighting {
   orgId: string
   reason: SlackTokenProblem
-  /** True when the plaintext copy stood in; false when only the saved copy can. */
-  fellBackToPlaintext: boolean
 }
 
 export interface SlackTokenHealthDeps {
@@ -63,7 +61,7 @@ export async function judgeSlackTokens(
       await markSpikeSeen(deps.kv, SLACK_TOKEN_SIGNAL, s.orgId, nowMs)
       const conn = tellWith.get(s.orgId)
       if (!conn) {
-        console.error(`[slack-token-health] org=${s.orgId} ${s.reason}: nobody can be told, there is no plaintext copy and no saved copy entry to post with`)
+        console.error(`[slack-token-health] org=${s.orgId} ${s.reason}: nobody can be told, there is no saved copy entry to post with`)
         continue
       }
       const backoff = backoffKey(s.orgId)
@@ -78,7 +76,6 @@ export async function judgeSlackTokens(
         },
         send: () => sendSlackTokenUnreadableAlert(conn, conn.default_channel, {
           reason: s.reason,
-          fellBackToPlaintext: s.fellBackToPlaintext,
           appUrl: deps.appUrl,
           repeat: describeRepeat(standing, nowMs, true, BACKOFF_STEPS_SECONDS) ?? undefined,
         }),

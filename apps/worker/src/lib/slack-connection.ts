@@ -10,17 +10,15 @@
  *
  * The token's home (#2331, phase 1 of #1689). Until #2331 the bot token sat in
  * config.bot_token in plain text, and the browser roles could read the table.
- * It is now sealed into service_connections.credential_enc with the Worker's
- * key ring, and every reader of a ROW goes through resolveSlackConnection,
- * which opens the ciphertext first. In this release config.bot_token is still
- * written beside it (dual write), because the code before this release, the
- * rollback target, reads only that (L640), and the resolver falls back to it
- * when the ciphertext is absent or cannot be opened. A fallback over a
- * ciphertext that will not open is returned WITH its problem, which every
- * caller logs by name, and the minute probe pages (slack-token-health.ts), so
- * a bad seal cannot hide behind the plaintext until the contract release
- * strips it (F128). parseSlackConnection stays for what is not a row: the
- * saved copy's entries, which hold the token inside the encrypted copy.
+ * It is sealed into service_connections.credential_enc with the Worker's key
+ * ring, and every reader of a ROW goes through resolveSlackConnection. Since
+ * the contract release that is the ONLY place a token is read from: a plaintext
+ * config.bot_token is never read, and a ciphertext that will not open is
+ * unreadable by name (every caller logs it, the minute probe pages it,
+ * slack-token-health.ts), never covered by a plaintext. The migration that
+ * strips config.bot_token from the rows follows this code into production
+ * (L640). parseSlackConnection stays for what is not a row: the saved copy's
+ * entries, which hold the token inside the encrypted copy.
  *
  * Which row is the alert row (#2332) is defined here too, once
  * (onlySlackAlertRow), for every reader in lib and in routes/api.
@@ -77,10 +75,11 @@ export const SLACK_ROW_COLUMNS = 'config, credential_enc'
 // The alert row is service_type 'slack', name 'slack' (what migration
 // 20261017150000 backfilled; no ops_key slack row may take it,
 // service_connections_alert_name_reserved), and sealed_for 'bidding_ring' or
-// null. Null is the legacy unsealed form: the production row has it until
-// POST /api/admin/seal-slack-token seals it (measured 2026-10-17: the one row
-// has sealed_for null and no credential_enc). The contract release of #2331,
-// once every row is sealed, is where the null disjunct can go.
+// null. Null is the legacy unsealed form. The production row was sealed on
+// 2026-10-22 (read back: sealed_for bidding_ring, credential_enc set), and an
+// unsealed row now resolves to no connection (its plaintext is never read), so
+// keeping the null disjunct only lets such a row be named rather than vanish;
+// the num_nonnulls CHECK (#2332) is what makes it impossible to store.
 //
 // More than one candidate is its own named refusal (SLACK_ALERT_AMBIGUOUS),
 // never "no Slack" and never one of them picked (L55, L1005). UNIQUE
@@ -171,22 +170,21 @@ export interface SlackConnectionRow {
 export type SlackTokenProblem = 'slack_token_undecryptable' | 'slack_key_ring_missing'
 
 /**
- * What a row resolved to. `connection` may carry a `problem`: the ciphertext
- * would not open and the plaintext copy stood in, which works today and is a
- * defect the contract release would turn into silence, so it is said. `none` is
- * the row (or its absence) saying there is no usable connection, as before.
- * `unreadable` is a sealed token nobody can read and no plaintext to stand in:
- * never `none`, since the org does have Slack (L11).
+ * What a row resolved to. `none` is the row (or its absence) saying there is no
+ * usable connection: no row, no default channel, or no sealed token at all (a
+ * row never sealed holds its token only in plaintext, which is never read).
+ * `unreadable` is a sealed token that cannot be opened: never `none`, since the
+ * org does have Slack (L11).
  */
 export type SlackRowResolution =
-  | { kind: 'connection'; connection: SlackConnection; source: 'sealed' | 'plaintext'; problem?: { reason: SlackTokenProblem; detail: string } }
+  | { kind: 'connection'; connection: SlackConnection }
   | { kind: 'none' }
   | { kind: 'unreadable'; reason: SlackTokenProblem; detail: string }
 
 /**
- * Turn a row into a Slack connection: the sealed token first, the plaintext copy
- * only as a fallback (#2331). Never throws, and never puts the token or the
- * ciphertext into what it says.
+ * Turn a row into a Slack connection from its sealed token, the only place the
+ * token is read from (#2331's contract release). Never throws, and never puts
+ * the token or the ciphertext into what it says.
  */
 export async function resolveSlackConnection(
   row: SlackConnectionRow | null | undefined,
@@ -194,32 +192,20 @@ export async function resolveSlackConnection(
 ): Promise<SlackRowResolution> {
   if (!row) return { kind: 'none' }
   const ciphertext = typeof row.credential_enc === 'string' && row.credential_enc.length > 0 ? row.credential_enc : null
-  if (!ciphertext) {
-    const connection = parseSlackConnection(row.config)
-    return connection ? { kind: 'connection', connection, source: 'plaintext' } : { kind: 'none' }
+  if (!ciphertext) return { kind: 'none' }
+  if (!keys) return { kind: 'unreadable', reason: 'slack_key_ring_missing', detail: 'the reader was given no key ring for a sealed token' }
+  let token: string
+  try {
+    token = await decryptSecret(ciphertext, keys)
+  } catch (e) {
+    return { kind: 'unreadable', reason: 'slack_token_undecryptable', detail: `no key in the ring opens credential_enc (${formatErr(e)})` }
   }
-  let problem: { reason: SlackTokenProblem; detail: string }
-  if (!keys) {
-    problem = { reason: 'slack_key_ring_missing', detail: 'the reader was given no key ring for a sealed token' }
-  } else {
-    try {
-      const token = await decryptSecret(ciphertext, keys)
-      const base = row.config && typeof row.config === 'object' ? (row.config as Record<string, unknown>) : {}
-      const connection = parseSlackConnection({ ...base, bot_token: token })
-      return connection ? { kind: 'connection', connection, source: 'sealed' } : { kind: 'none' }
-    } catch (e) {
-      problem = { reason: 'slack_token_undecryptable', detail: `no key in the ring opens credential_enc (${formatErr(e)})` }
-    }
-  }
-  const fallback = parseSlackConnection(row.config)
-  if (fallback) return { kind: 'connection', connection: fallback, source: 'plaintext', problem }
-  return { kind: 'unreadable', ...problem }
+  const base = row.config && typeof row.config === 'object' ? (row.config as Record<string, unknown>) : {}
+  const connection = parseSlackConnection({ ...base, bot_token: token })
+  return connection ? { kind: 'connection', connection } : { kind: 'none' }
 }
 
 /** The one log line for a row whose sealed token could not be read, so every reader says it the same way. */
-export function slackTokenProblemLine(subject: string, problem: { reason: SlackTokenProblem; detail: string }, fellBackToPlaintext: boolean): string {
-  const what = fellBackToPlaintext
-    ? 'the plaintext copy in config.bot_token was used instead, which the contract release removes'
-    : 'there is no plaintext copy, so this connection cannot be used'
-  return `[slack] ${subject}: ${problem.reason}: ${problem.detail}; ${what}`
+export function slackTokenProblemLine(subject: string, problem: { reason: SlackTokenProblem; detail: string }): string {
+  return `[slack] ${subject}: ${problem.reason}: ${problem.detail}; this connection cannot be used`
 }

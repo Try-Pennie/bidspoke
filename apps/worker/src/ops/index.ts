@@ -72,6 +72,12 @@ export interface OpsEnv extends OpsDbEnv {
   /** The NEXT ops private key, set only during a rotation of the ops key. */
   OPS_CONNECTIONS_PRIVATE_KEY_NEXT?: string
   /**
+   * The Google domain wide delegation service account's key JSON (#2337): the one
+   * key every Google connection's token is minted with (minters/google.ts), never
+   * a connection's login. Unset, every Google mint is refused by name.
+   */
+  GOOGLE_DELEGATION_KEY?: string
+  /**
    * Set only during a rotation of the ops key (#2333), in wrangler.ops.toml
    * [vars]: "preview" or "apply" makes the minute cron run resealConnections
    * after each tick (reseal-live.ts). Unset, nothing is resealed.

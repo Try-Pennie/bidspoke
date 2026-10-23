@@ -2,12 +2,13 @@
  * The Slack bot token read from its sealed home (#2331, phase 1 of #1689).
  *
  * service_connections.credential_enc holds the token locked with the Worker's
- * key ring. In this release config.bot_token still holds the plaintext beside
- * it (dual write), because the code before this release, the rollback target,
- * reads only that (L640). So every reader resolves a row the same way: the
- * ciphertext first, the plaintext only as a fallback that is SAID, never
- * silent (F128), and a row holding only a ciphertext (the shape after the
- * contract release, built here) must still alert.
+ * key ring, and since the contract release it is the ONLY place a reader takes
+ * it from: a plaintext config.bot_token is never read, even beside a ciphertext
+ * that will not open. A ciphertext that will not open is unreadable by name and
+ * falls back to the saved copy where it did before, never to the plaintext.
+ * The migration that strips config.bot_token from the rows follows this code
+ * into production (L640), so a row that still carries it reads exactly as one
+ * that does not.
  *
  * The rows below are built in the test; the token is a placeholder string.
  */
@@ -47,18 +48,16 @@ const sealed = (token: string, key = TEST_KEY) => encryptSecret(token, key)
 describe('resolveSlackConnection', () => {
   it('reads the token from credential_enc when the row holds only the ciphertext', async () => {
     const r = await resolveSlackConnection({ config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN) }, RING)
-    expect(r).toMatchObject({ kind: 'connection', source: 'sealed', connection: { bot_token: SEALED_TOKEN, default_channel: '#a' } })
-    expect(r.kind === 'connection' && r.problem).toBeFalsy()
+    expect(r).toEqual({ kind: 'connection', connection: parseSlackConnection({ bot_token: SEALED_TOKEN, default_channel: '#a' }) })
   })
 
-  it('prefers the ciphertext over the plaintext copy beside it', async () => {
+  it('takes the ciphertext and ignores a plaintext copy beside it', async () => {
     const r = await resolveSlackConnection({ config: { bot_token: PLAIN_TOKEN, default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN) }, RING)
-    expect(r).toMatchObject({ kind: 'connection', source: 'sealed', connection: { bot_token: SEALED_TOKEN } })
+    expect(r).toMatchObject({ kind: 'connection', connection: { bot_token: SEALED_TOKEN } })
   })
 
-  it('reads a row that was never sealed exactly as before', async () => {
-    const r = await resolveSlackConnection({ config: { bot_token: PLAIN_TOKEN, default_channel: '#a' }, credential_enc: null }, RING)
-    expect(r).toMatchObject({ kind: 'connection', source: 'plaintext', connection: parseSlackConnection({ bot_token: PLAIN_TOKEN, default_channel: '#a' }) })
+  it('a row that was never sealed is no usable connection: its plaintext is never read', async () => {
+    expect(await resolveSlackConnection({ config: { bot_token: PLAIN_TOKEN, default_channel: '#a' }, credential_enc: null }, RING)).toEqual({ kind: 'none' })
   })
 
   it('answers none, as before, for a row with no default channel', async () => {
@@ -66,9 +65,9 @@ describe('resolveSlackConnection', () => {
     expect(await resolveSlackConnection({ config: null }, RING)).toEqual({ kind: 'none' })
   })
 
-  it('falls back to the plaintext when the ciphertext will not open, and says so by name', async () => {
+  it('a ciphertext that will not open is unreadable by name, even with a plaintext beside it', async () => {
     const r = await resolveSlackConnection({ config: { bot_token: PLAIN_TOKEN, default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN, OTHER_KEY) }, RING)
-    expect(r).toMatchObject({ kind: 'connection', source: 'plaintext', connection: { bot_token: PLAIN_TOKEN }, problem: { reason: 'slack_token_undecryptable' } })
+    expect(r).toMatchObject({ kind: 'unreadable', reason: 'slack_token_undecryptable' })
   })
 
   it('is unreadable by name, never none, when the ciphertext will not open and there is no plaintext', async () => {
@@ -80,13 +79,13 @@ describe('resolveSlackConnection', () => {
     const r = await resolveSlackConnection({ config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN) }, undefined)
     expect(r).toMatchObject({ kind: 'unreadable', reason: 'slack_key_ring_missing' })
     const withPlain = await resolveSlackConnection({ config: { bot_token: PLAIN_TOKEN, default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN) }, undefined)
-    expect(withPlain).toMatchObject({ kind: 'connection', source: 'plaintext', problem: { reason: 'slack_key_ring_missing' } })
+    expect(withPlain).toMatchObject({ kind: 'unreadable', reason: 'slack_key_ring_missing' })
   })
 
   it('never puts the token or the ciphertext in what it says about a problem', async () => {
     const enc = await sealed(SEALED_TOKEN, OTHER_KEY)
     const r = await resolveSlackConnection({ config: { bot_token: PLAIN_TOKEN, default_channel: '#a' }, credential_enc: enc }, RING)
-    const said = JSON.stringify(r.kind === 'connection' ? r.problem : r)
+    const said = JSON.stringify(r)
     expect(said).not.toContain(PLAIN_TOKEN)
     expect(said).not.toContain(enc)
   })
@@ -137,11 +136,15 @@ describe('the request path reads a sealed row', () => {
     expect(logs.some((l) => l.includes('slack_token_undecryptable'))).toBe(true)
   })
 
-  it('an undecryptable row with the plaintext beside it still alerts, and the fallback is logged by name', async () => {
+  it('an undecryptable row never posts with the plaintext beside it: it fails loudly by name', async () => {
     const { client } = fakeClient([{ data: [{ config: { bot_token: PLAIN_TOKEN, default_channel: '#alerts' }, credential_enc: await sealed(SEALED_TOKEN, OTHER_KEY) }] }])
     registerSlackKeyRing(client, RING)
-    expect((await getSlackConnection(client, ORG, []))?.bot_token).toBe(PLAIN_TOKEN)
-    expect(logs.some((l) => l.includes('slack_token_undecryptable') && l.includes('plaintext'))).toBe(true)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await getSlackConnection(client, ORG, [])).toBeNull()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(logs.some((l) => l.includes('slack_token_undecryptable'))).toBe(true)
+    expect(logs.some((l) => l.includes(PLAIN_TOKEN))).toBe(false)
   })
 
   it('readSlackConnectionForLead reads a sealed row, and throws by name on one it cannot open', async () => {
@@ -153,7 +156,7 @@ describe('the request path reads a sealed row', () => {
     await expect(readSlackConnectionForLead(bad, ORG)).rejects.toThrow(/slack_token_undecryptable/)
   })
 
-  it('readEverySlackConnection holds an org whose row has only credential_enc', async () => {
+  it('readEverySlackConnection holds an org whose row has only credential_enc, and never one read from a plaintext', async () => {
     const { client } = fakeClient([{ data: [
       { organization_id: ORG, config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN) },
       { organization_id: 'org-plain', config: { bot_token: PLAIN_TOKEN, default_channel: '#b' }, credential_enc: null },
@@ -163,7 +166,7 @@ describe('the request path reads a sealed row', () => {
     expect(read.kind).toBe('live')
     if (read.kind !== 'live') return
     expect(read.connections.get(ORG)?.bot_token).toBe(SEALED_TOKEN)
-    expect(read.connections.get('org-plain')?.bot_token).toBe(PLAIN_TOKEN)
+    expect(read.connections.has('org-plain')).toBe(false)
   })
 })
 
@@ -171,7 +174,7 @@ describe('the Slack token page names a fix that changes the state it reports (L1
   async function sentText(reason: 'slack_token_undecryptable' | 'slack_key_ring_missing'): Promise<string> {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, ts: '1.1' }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
-    await sendSlackTokenUnreadableAlert({ bot_token: 'copy-bot-token' }, '#a', { reason, fellBackToPlaintext: false, appUrl: 'https://app.example' })
+    await sendSlackTokenUnreadableAlert({ bot_token: 'copy-bot-token' }, '#a', { reason, appUrl: 'https://app.example' })
     return slackPostJsonOf(fetchMock.mock.calls[0])
   }
 

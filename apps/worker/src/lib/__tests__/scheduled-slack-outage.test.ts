@@ -13,10 +13,12 @@ import { runRequiredSecretsCheck } from '../required-secrets'
 import { createScheduledSupabaseClient } from '../scheduled-slack'
 import { fakeTimers, kvWith, kvWithCopy, TEST_KEY, type CountingKv } from './_scheduled-slack-doubles'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
+import { sealedSlackRow } from '../../__tests__/helpers/sealed-slack-row'
 
 const ORG = 'org-1'
 const CONN = { bot_token: 'xoxb-live', default_channel: '#ops', config_alerts_enabled: true }
 const STORED = { ...CONN, bot_token: 'xoxb-stored' }
+const CONN_ROW = await sealedSlackRow(CONN)
 
 // Every required secret is unset, so the check has something to say.
 const env = (kv: CountingKv) => ({
@@ -36,7 +38,7 @@ function database(mode: 'up' | 'stalled') {
       return new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }))
     }
     // PostgREST answers a read with an array (the connection read asks for up to two alert rows, #2332).
-    const body = url.includes('select=config') ? [{ config: CONN }] : [{ organization_id: ORG }]
+    const body = url.includes('select=config') ? [CONN_ROW] : [{ organization_id: ORG }]
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }))
   }) as typeof globalThis.fetch
   return { fetch: network, requests }

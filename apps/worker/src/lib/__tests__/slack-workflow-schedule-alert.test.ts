@@ -3,6 +3,7 @@ import { slackPostJsonOf } from '../../__tests__/helpers/slack-fetch'
 import { sendWorkflowScheduleAlert } from '../slack'
 import type { ScheduleStatus, WatchedWorkflow } from '../workflow-schedule-watch'
 import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 /**
  * The Slack message for the scheduled-workflow dead-man's-switch (#805, #843).
@@ -28,13 +29,13 @@ function makeSupabase(connection: Record<string, string> | null) {
         if (prop === 'limit')
           return alertRowsAnswer(() =>
             connection
-              ? Promise.resolve({ data: { config: connection }, error: null })
+              ? sealedSlackRow(connection).then((row) => ({ data: row, error: null }))
               : Promise.resolve({ data: null, error: null }))
         return () => chain
       },
     },
   )
-  return { from: () => chain } as never
+  return withSlackKeyRing({ from: () => chain }) as never
 }
 
 const connection = { bot_token: 'xoxb-test', default_channel: '#alerts', workspace_name: 'Pennie' }

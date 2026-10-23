@@ -148,6 +148,8 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'verify_openai_project_mismatch',
   /** An Anthropic key Anthropic ran in another workspace than the target's workspace_id (#2337). */
   'verify_anthropic_workspace_mismatch',
+  /** A Google connection whose delegated token Gmail answered as another mailbox than the target's subject (#2337). */
+  'verify_google_mailbox_mismatch',
   /** A generation ops holds as its copy measured another identity than before. */
   'identity_changed',
   /** The measured identity could not be written, so the connection is not verified. */
@@ -249,6 +251,7 @@ export type MeasuredIdentityAnswer =
   | { kind: 'slack'; team_id: string; team: string | null; user_id: string; user: string | null; bot_id: string }
   | { kind: 'openai'; project_id: string; organization: string | null }
   | { kind: 'anthropic'; workspace_id: string; organization_id: string | null }
+  | { kind: 'google'; mailbox: string }
 
 export type VerifyAnswer = { ok: true; service: string; generation: number; identity: MeasuredIdentityAnswer } | OpsConnectionsRefused
 export type ClearReauthAnswer = { ok: true; service: string; generation: number; identity: MeasuredIdentityAnswer; cleared: true } | OpsConnectionsRefused

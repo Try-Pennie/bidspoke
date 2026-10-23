@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { filterUnhandledBigTables, runBigTableGuard } from '../big-table-guard'
 import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 describe('filterUnhandledBigTables', () => {
   it('drops known/handled tables (including sf_bid_matrix_audit) and keeps unexpected growers', () => {
@@ -31,15 +32,15 @@ function makeSupabase(rpcRows: { table_name: string; est_rows: number }[]) {
     get(_t, prop) {
       if (prop === 'select') return () => chain
       if (prop === 'eq') return () => chain
-      if (prop === 'limit') return alertRowsAnswer(async () => ({ data: { config: { bot_token: 'xoxb', default_channel: '#a' } }, error: null }))
+      if (prop === 'limit') return alertRowsAnswer(async () => ({ data: await sealedSlackRow({ bot_token: 'xoxb', default_channel: '#a' }), error: null }))
       if (prop === 'then') return (resolve: (v: unknown) => void) => resolve({ data: [{ organization_id: 'org-1' }], error: null })
       return () => chain
     },
   })
-  return {
+  return withSlackKeyRing({
     rpc: vi.fn().mockResolvedValue({ data: rpcRows, error: null }),
     from: () => chain,
-  }
+  })
 }
 
 function makeKv(cooldownSet = false) {

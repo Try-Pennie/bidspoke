@@ -123,6 +123,13 @@ describe('the committed lists (#1709)', () => {
     expect(mid.ok).toBe(true)
   })
 
+  // #2337: the Google domain wide delegation key is the ops Worker's own secret, never a connection's login.
+  // Allowed, not required, until it is set (the Workspace grant is Dan's step); then it moves to required.
+  it('allow the Google delegation key on the ops Worker, and do not require it before it is set (#2337)', () => {
+    expect(OPS_ALLOWED_SECRETS).toContain('GOOGLE_DELEGATION_KEY')
+    expect(OPS_REQUIRED_SECRETS).not.toContain('GOOGLE_DELEGATION_KEY')
+  })
+
   it('no longer allow Spike 0\'s arm on the ops Worker, whose probes are removed (#1946)', () => {
     expect(OPS_ALLOWED_SECRETS).not.toContain('OPS_SPIKE_ARM')
   })

@@ -120,6 +120,43 @@ describe('the shipped catalogue', () => {
     expect(reached.packages).toEqual([])
   })
 
+  it("folds the money path's Salesforce rules into each Salesforce action's fingerprint, and imports no npm package (#2337)", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const salesforceActions = RUNTIME_ACTIONS.filter((a) => a.key.startsWith('salesforce.'))
+    expect(salesforceActions).toHaveLength(10)
+    for (const a of salesforceActions) {
+      const reached = collectModuleImports(path.join(SHIPPED.actionsDir, `${a.key}.v${a.version}.ts`), {
+        root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+        linkOf: (importer, name) => linkedPath(lock, importer, name),
+      })
+      // The URLs, the API version and the failure rule are @bidspoke/salesforce-api's, the money path's own (#2393).
+      expect(reached.files, a.key).toContain(path.join(REPO_ROOT, 'packages/salesforce-api/src/index.ts'))
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'salesforce', 'call.ts'))
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'failure.ts'))
+      expect(reached.packages, a.key).toEqual([])
+    }
+  })
+
+  it("folds each Google action's shared request code into its fingerprint, and imports no npm package (#2337)", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const googleActions = RUNTIME_ACTIONS.filter((a) => a.key.startsWith('google.'))
+    expect(googleActions).toHaveLength(16)
+    for (const a of googleActions) {
+      const reached = collectModuleImports(path.join(SHIPPED.actionsDir, `${a.key}.v${a.version}.ts`), {
+        root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+        linkOf: (importer, name) => linkedPath(lock, importer, name),
+      })
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'google', 'call.ts'))
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'failure.ts'))
+      expect(reached.packages, a.key).toEqual([])
+    }
+    const send = collectModuleImports(path.join(SHIPPED.actionsDir, 'google.gmail-send-email.v1.ts'), {
+      root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+      linkOf: (importer, name) => linkedPath(lock, importer, name),
+    })
+    expect(send.files).toContain(path.join(SRC, 'runtime', 'google', 'mime.ts'))
+  })
+
   it('carries no test fixture action', () => {
     expect(catalogueActions(CATALOGUE).filter((a) => a.key.startsWith('fixture.'))).toEqual([])
     expect(RUNTIME_ACTIONS.filter((a) => a.key.startsWith('fixture.'))).toEqual([])

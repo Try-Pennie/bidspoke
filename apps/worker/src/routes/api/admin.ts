@@ -37,7 +37,6 @@ import { eraseSubject } from '../../lib/archive-erasure'
 import { hashSsn } from '../../engine/persons-crypto'
 import { secretKeys } from '../../lib/secret-crypto'
 import { reencryptSecrets } from '../../lib/secret-reencrypt'
-import { sealSlackTokens } from './slack-token-seal'
 import {
   supabaseHeldWriteStore,
   salesforcePortFor,
@@ -982,39 +981,18 @@ admin.post('/reencrypt-secrets', async (c) => {
     // The caller is named on service_connections' audit row through updated_by
     // (#2331): that table is audited by its own trigger.
     const result = await reencryptSecrets(supabase, keys, { dryRun, actorId: userId })
-    if (!dryRun) {
-      await writeAuditLog(supabase, orgId, 'recovery_secret', 'SECRET_ENCRYPTION_KEY', 'secrets_reencrypted', email ?? 'unknown', {
-        ok: result.ok,
-        tables: result.tables,
-      })
-    }
-    return c.json({ ...result, rotating: keys.decryptWith.length > 1 })
-  } catch (err) {
-    return c.json({ error: formatErr(err) }, 500)
-  }
-})
-
-/**
- * Seals the caller's organization's Slack bot token into credential_enc, and
- * reports whether every seal opens under the current key and holds the same
- * token as config.bot_token (#2331, F128): the check the contract release, which
- * strips the plaintext, must pass first. See routes/api/slack-token-seal.ts.
- *
- * Who may call it: any signed in user. Whose data: the caller's organization
- * only, from the verified token. DEFAULTS TO A PREVIEW (L72); a non-boolean
- * dryRun is refused rather than read as truthy. Its audit row is the table
- * trigger's, naming the caller.
- */
-admin.post('/seal-slack-token', async (c) => {
-  const { orgId, userId } = c.get('user')
-  const body = await c.req.json<{ dryRun?: unknown }>().catch(() => ({}) as { dryRun?: unknown })
-  if (body.dryRun !== undefined && typeof body.dryRun !== 'boolean') {
-    return c.json({ error: 'dryRun must be true or false' }, 400)
-  }
-  const dryRun = body.dryRun !== false
-  try {
-    const result = await sealSlackTokens(createSupabaseClient(c.env), secretKeys(c.env), orgId, userId, { dryRun })
-    return c.json(result)
+    if (dryRun) return c.json({ ...result, rotating: keys.decryptWith.length > 1 })
+    // The run's own record (#2689): audit_log.entity_id and changed_by are
+    // uuid columns, so the run is named by an id of its own (two runs, two
+    // records) and the caller by their user id. Whether it landed is answered,
+    // never assumed.
+    const runId = crypto.randomUUID()
+    const audited = await recordAuditLog(supabase, orgId, 'recovery_secret', runId, 'secrets_reencrypted', userId, {
+      ok: result.ok,
+      tables: result.tables,
+      by_email: email ?? null,
+    })
+    return c.json({ ...result, rotating: keys.decryptWith.length > 1, run_id: runId, audited })
   } catch (err) {
     return c.json({ error: formatErr(err) }, 500)
   }
