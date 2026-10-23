@@ -18,9 +18,17 @@
  *    const assigned from them that reads nothing of the request.
  *
  * The routes' own tests prove which stamp each writer chooses; this catches a
- * new writer, or a copy of an old one, that forgets the column. It stops
- * being the line of defence when the money lane's definition writes move into
- * one database function (#1947, A2).
+ * new writer, or a copy of an old one, that forgets the column.
+ *
+ * Since #1947 A2 every definition write is a writeWorkflow call (the
+ * write_workflow database function). The function decides a COPIED stamp
+ * itself (duplicate, restore, the snapshot of a save that sends no
+ * definition) and refuses one from the caller, and it refuses an AUTHORED
+ * definition (create, a save that sends one) that carries no stamp
+ * (supabase/tests/write_workflow.test.sql). What it cannot see is where an
+ * authored stamp came from, so this still reads each writeWorkflow call whose
+ * op authors a definition (create, save) as a definition write that must name
+ * the stamp, from the helpers, as above.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -33,14 +41,19 @@ const STAMP_WRITE = /\bdefinition_schema_version\s*(?::|=(?!=))\s*([^,\n}]+)/g
 const HELPER = /\b(?:writtenDefinitionStamp|copiedDefinitionStamp)\s*\(/
 const REQUEST = /\bbody\b|\bc\.req\b|\.json\s*\(/
 
+/** A writeWorkflow call whose op authors a definition (#1947): its stamp is the caller's to send. */
+const AUTHORING_WRITE = /\bwriteWorkflow\s*\(\s*\w+\s*,\s*\{\s*op\s*:\s*(['"`])(create|save)\1/g
+
 /**
  * Positions of every definition write in `kept` (comments blanked, strings
- * kept): a workflows write whose arguments name `definition`, or that writes an
- * object a `.definition =` assignment fills before it (in the same text, which
- * is one handler when called per handler); and every version row write.
+ * kept): a writeWorkflow call that authors a definition; a workflows write
+ * whose arguments name `definition`, or that writes an object a
+ * `.definition =` assignment fills before it (in the same text, which is one
+ * handler when called per handler); and every version row write.
  */
 function definitionWritesOf(kept: string): number[] {
   const out: number[] = []
+  for (const m of kept.matchAll(AUTHORING_WRITE)) out.push(m.index ?? 0)
   for (const m of kept.matchAll(/\.from\(\s*(['"`])(workflows|workflow_versions)\1\s*\)/g)) {
     const at = m.index ?? 0
     const calls = chainCallsAfter(kept, at + m[0].length)
@@ -124,11 +137,10 @@ describe('every worker definition write stamps definition_schema_version from th
   const result = scan()
 
   it('finds the writers it exists to check (a scan that found none would pass on nothing)', () => {
+    // Duplicate and restore copy a stamp, which write_workflow decides (#1947).
     expect(result.writers).toEqual(expect.arrayContaining([
       'routes/api/workflows.ts POST /',
-      'routes/api/workflows.ts POST /:id/duplicate',
       'routes/api/workflows.ts PUT /:id',
-      'routes/api/workflows.ts POST /:id/versions/:version_id/restore',
     ]))
   })
 
@@ -218,6 +230,13 @@ describe('the scanner', () => {
       "  await supabase.from('workflows').update({ definition: def, definition_schema_version: copiedDefinitionStamp(row) }).eq('id', id)",
     ])
     expect(scanSource('p.ts', src)).toEqual({ unstamped: [], fromRequest: [], writers: ['p.ts PUT /:id'] })
+  })
+
+  it('counts a writeWorkflow call that authors a definition, and not one that copies (#1947)', () => {
+    const save = "  await writeWorkflow(supabase, {\n    op: 'save',\n    fields,\n  })"
+    expect(scanSource('p.ts', planted([save])).unstamped).toEqual(['p.ts PUT /:id: 1 definition writes, 0 stamps'])
+    expect(scanSource('p.ts', planted(['  fields.definition_schema_version = writtenDefinitionStamp()', save])).unstamped).toEqual([])
+    expect(scanSource('p.ts', planted(["  await writeWorkflow(supabase, { op: 'restore', fields })"])).writers).toEqual([])
   })
 
   it('fails a definition write outside any route handler', () => {

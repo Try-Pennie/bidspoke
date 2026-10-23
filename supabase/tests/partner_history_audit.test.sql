@@ -301,7 +301,9 @@ $do$;
 -- neither grant set may move. The sets are production's, read 2026-10-16:
 -- service_role holds everything, MAINTAIN and TRUNCATE included, by the
 -- platform's default privileges; anon and authenticated everything but
--- TRUNCATE, with RLS doing the refusing.
+-- TRUNCATE, with RLS doing the refusing. Since #2719 the browser roles hold no
+-- INSERT, UPDATE or DELETE on any table in public (browser_roles_no_writes),
+-- so their set here is what is left.
 DO $do$
 DECLARE
   t text;
@@ -316,7 +318,7 @@ BEGIN
       FROM unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN']) p
       WHERE has_table_privilege(r, t, p);
       v_want := CASE r WHEN 'service_role' THEN 'DELETE,INSERT,MAINTAIN,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE'
-                       ELSE 'DELETE,INSERT,MAINTAIN,REFERENCES,SELECT,TRIGGER,UPDATE' END;
+                       ELSE 'MAINTAIN,REFERENCES,SELECT,TRIGGER' END;
       IF v_have IS DISTINCT FROM v_want THEN bad := array_append(bad, format('%s on %s: %s, want %s', r, t, v_have, v_want)); END IF;
     END LOOP;
   END LOOP;
