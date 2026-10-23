@@ -24,6 +24,7 @@ For the JSON shape of a node and how edges route between them, see the [workflow
 | [Transform](transform.md) | `transform` | Map and reshape data into a new object. | single next |
 | [Constants](constants.md) | `constants` | Emit workflow constants merged with partner data from the database. | single next |
 | [Data Store](data-store.md) | `data_store` | Read and write a key-value store (KV-backed). | single next |
+| [App Action](app-action.md) | `app_action` | Run one catalogue action (Slack, Salesforce, Google, Snowflake and others) through a saved connection. Ops workflows only. | single next |
 
 ## Bidding
 

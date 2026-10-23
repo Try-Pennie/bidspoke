@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { NODE_TRAITS, NODE_TYPES, WORKFLOW_LANES, assertNever, isNodeType, isWorkflowLane, nodeTypeRunsInLane, nodeTypesForLane, type NodeType } from './index'
 
 const SORTED = [
-  'achieve_offers', 'bid_group', 'branch', 'branch_end', 'buyer_click_check', 'buyer_click_send', 'buyer_select', 'code', 'constants', 'data_store', 'exit', 'filter',
+  'achieve_offers', 'app_action', 'bid_group', 'branch', 'branch_end', 'buyer_click_check', 'buyer_click_send', 'buyer_select', 'code', 'constants', 'data_store', 'exit', 'filter',
   'latency_gate', 'lead_validation', 'parallel', 'parallel_end', 'partner_bid', 'response', 'salesforce', 'transform', 'webhook',
 ]
 
@@ -16,7 +16,7 @@ const withTrait = (pick: (t: (typeof NODE_TRAITS)[NodeType]) => boolean): string
   NODE_TYPES.filter((t) => pick(NODE_TRAITS[t])).sort()
 
 describe('NODE_TYPES', () => {
-  it('lists the twenty one node types a saved definition can carry, once each', () => {
+  it('lists the twenty two node types a saved definition can carry, once each', () => {
     expect([...NODE_TYPES].sort()).toEqual(SORTED)
     expect(new Set(NODE_TYPES).size).toBe(NODE_TYPES.length)
   })
@@ -39,7 +39,7 @@ describe('NODE_TRAITS', () => {
   })
 
   it('names the network nodes: the ones whose every run pays an outbound round trip', () => {
-    expect(withTrait((t) => t.network)).toEqual(['achieve_offers', 'bid_group', 'buyer_click_send', 'buyer_select', 'partner_bid', 'salesforce', 'webhook'])
+    expect(withTrait((t) => t.network)).toEqual(['achieve_offers', 'app_action', 'bid_group', 'buyer_click_send', 'buyer_select', 'partner_bid', 'salesforce', 'webhook'])
   })
 
   it('names the dispatch or storage nodes: a cold path no retry can rescue', () => {
@@ -55,7 +55,7 @@ describe('NODE_TRAITS', () => {
 
   it('names the nodes whose outbound or writes a shadow run stubs', () => {
     expect(withTrait((t) => t.shadowRun.kind === 'stubbed')).toEqual([
-      'achieve_offers', 'bid_group', 'buyer_click_send', 'buyer_select', 'data_store', 'latency_gate', 'partner_bid', 'salesforce', 'webhook',
+      'achieve_offers', 'app_action', 'bid_group', 'buyer_click_send', 'buyer_select', 'data_store', 'latency_gate', 'partner_bid', 'salesforce', 'webhook',
     ])
   })
 
@@ -106,6 +106,8 @@ describe('NODE_TRAITS', () => {
     const files = Object.fromEntries(NODE_TYPES.map((t) => [t, NODE_TRAITS[t].executorFile]))
     expect(files).toEqual({
       achieve_offers: 'achieve-offers',
+      // Runs only through the ops run body (apps/worker src/ops/run-walk.ts), never engine/nodes.
+      app_action: null,
       bid_group: 'bid-group',
       branch: 'branch',
       branch_end: null,
@@ -143,6 +145,8 @@ const MONEY_ONLY = [
   'latency_gate', 'lead_validation', 'partner_bid', 'salesforce',
 ]
 
+const OPS_ONLY = ['app_action']
+
 describe('lanes', () => {
   it('names the two workflow lanes', () => {
     expect([...WORKFLOW_LANES]).toEqual(['money', 'ops'])
@@ -151,22 +155,32 @@ describe('lanes', () => {
     expect(isWorkflowLane(null)).toBe(false)
   })
 
-  it('every node type declares a lane, money or shared', () => {
-    for (const t of NODE_TYPES) expect(['money', 'shared']).toContain(NODE_TRAITS[t].lane)
+  it('every node type declares a lane, money, ops or shared', () => {
+    for (const t of NODE_TYPES) expect(['money', 'ops', 'shared']).toContain(NODE_TRAITS[t].lane)
+  })
+
+  // #2339: a catalogue action runs through an ops connection, which only the ops
+  // Worker holds, so a money workflow may never carry one.
+  it('marks exactly app_action as ops only', () => {
+    expect(withTrait((t) => t.lane === 'ops')).toEqual(OPS_ONLY)
   })
 
   it('marks exactly the money only types as money', () => {
     expect(withTrait((t) => t.lane === 'money')).toEqual(MONEY_ONLY)
   })
 
-  it('a money workflow may run every node type', () => {
-    expect([...nodeTypesForLane('money')].sort()).toEqual(SORTED)
+  it('a money workflow may run every node type but the ops only ones', () => {
+    expect([...nodeTypesForLane('money')].sort()).toEqual(SORTED.filter((t) => !OPS_ONLY.includes(t)))
+    expect(nodeTypesForLane('money')).not.toContain('app_action')
+    expect(nodeTypeRunsInLane('app_action', 'money')).toBe(false)
   })
 
   it('an ops workflow may run no money only type', () => {
     const ops = nodeTypesForLane('ops')
     for (const t of MONEY_ONLY) expect(ops).not.toContain(t)
     expect([...ops].sort()).toEqual(SORTED.filter((t) => !MONEY_ONLY.includes(t)))
+    expect(ops).toContain('app_action')
+    expect(nodeTypeRunsInLane('app_action', 'ops')).toBe(true)
     expect(nodeTypeRunsInLane('partner_bid', 'ops')).toBe(false)
     expect(nodeTypeRunsInLane('code', 'ops')).toBe(true)
   })

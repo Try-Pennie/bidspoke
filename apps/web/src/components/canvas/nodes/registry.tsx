@@ -23,6 +23,7 @@ import { BuyerSelectNode } from './BuyerSelectNode'
 import { BuyerClickSendNode } from './BuyerClickSendNode'
 import { BuyerClickCheckNode } from './BuyerClickCheckNode'
 import { LeadValidationNode } from './LeadValidationNode'
+import { AppActionNode } from './AppActionNode'
 import { RegionNode } from './RegionNode'
 import { withNodeBadges } from './withNodeBadges'
 
@@ -65,6 +66,7 @@ const baseNodeTypesInternal = {
   buyer_click_send: BuyerClickSendNode,
   buyer_click_check: BuyerClickCheckNode,
   lead_validation: LeadValidationNode,
+  app_action: AppActionNode,
   region: RegionNode,
   // `satisfies` over every NodeType plus the two canvas only entries (#1411):
   // a type added to @bidspoke/node-types with no card here is a compile error,

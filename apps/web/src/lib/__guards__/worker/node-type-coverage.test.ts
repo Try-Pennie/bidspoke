@@ -26,9 +26,10 @@ describe('executorFile trait against the worker tree', () => {
     expect(missing).toEqual([])
   })
 
-  it('the types with no executor file are exactly the ones executeNode handles inline or the walker owns', () => {
+  it('the types with no executor file are exactly the ones executeNode handles inline, the walker owns, or the ops run body runs (app_action)', () => {
     const inline = NODE_TYPES.filter((t) => NODE_TRAITS[t].executorFile === null).sort()
-    expect(inline).toEqual(['branch_end', 'exit', 'parallel_end'])
+    // app_action is ops only (#2339): src/ops/app-action.ts runs it, and its EXECUTORS entry refuses.
+    expect(inline).toEqual(['app_action', 'branch_end', 'exit', 'parallel_end'])
     // The executor registry (#1707): one entry per type inside the EXECUTORS record.
     const src = readFileSync(path.join(WORKER_SRC, 'engine/nodes/index.ts'), 'utf8')
     const start = src.indexOf('const EXECUTORS: Record<NodeType, NodeExecutor> = {')

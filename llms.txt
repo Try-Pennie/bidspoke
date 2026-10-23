@@ -30,6 +30,7 @@ Each link points to a raw markdown page. Append nothing; the .md URLs are self-c
 - [Response](https://bidspoke.trypennie.dev/docs/nodes/response.md): send a structured HTTP response.
 - [Code](https://bidspoke.trypennie.dev/docs/nodes/code.md): run a sandboxed JavaScript script.
 - [Webhook](https://bidspoke.trypennie.dev/docs/nodes/webhook.md): outbound HTTP request (the Integration node).
+- [App Action](https://bidspoke.trypennie.dev/docs/nodes/app-action.md): one catalogue action through a saved connection, ops workflows only.
 - [Salesforce](https://bidspoke.trypennie.dev/docs/nodes/salesforce.md): create, update, or query Salesforce records.
 - [Transform](https://bidspoke.trypennie.dev/docs/nodes/transform.md): map and reshape data.
 - [Constants](https://bidspoke.trypennie.dev/docs/nodes/constants.md): emit workflow constants plus partner data.

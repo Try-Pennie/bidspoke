@@ -16,7 +16,8 @@
   "dependencies": {
     "@bidspoke/buyer-profile": "workspace:*",
     "@bidspoke/node-types": "workspace:*",
-    "@bidspoke/references": "workspace:*"
+    "@bidspoke/references": "workspace:*",
+    "@bidspoke/service-catalogue": "workspace:*"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
