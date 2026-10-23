@@ -26,6 +26,7 @@ function self(answer: () => unknown) {
     binding: {
       ping: async () => ({}),
       observe: async () => ({}),
+      run: async () => ({}),
       resealConnections: async (request: unknown) => { calls.push(request); return answer() },
     },
   }
