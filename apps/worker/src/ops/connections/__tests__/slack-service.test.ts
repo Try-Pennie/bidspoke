@@ -170,7 +170,7 @@ describe('slack.send-message through the real connectionFetch (#2337)', () => {
     }
   }
 
-  const ctx = (w: World) => ({ fetch: stepFetch(w), signal: new AbortController().signal, target: TARGET, sleep: () => Promise.reject(new Error('never waits')) })
+  const ctx = (w: World) => ({ fetch: stepFetch(w), signal: new AbortController().signal, target: TARGET, sleep: () => Promise.reject(new Error('never waits')), requestId: '00000000-0000-8000-8000-000000000001' })
 
   it('posts with the bot token connectionFetch applies, to slack.com only', async () => {
     const w = world()

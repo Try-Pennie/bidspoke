@@ -42,6 +42,7 @@ export function fakeOpenAI(target: unknown = TARGET): FakeOpenAI {
     signal: controller.signal,
     target: target as ActionContext['target'],
     sleep: () => Promise.reject(new Error('an OpenAI action never waits')),
+    requestId: '00000000-0000-8000-8000-000000000001',
   }
   return { ctx, sent, respond: (...answers) => queue.push(...answers) }
 }

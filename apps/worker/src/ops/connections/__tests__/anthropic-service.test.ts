@@ -179,7 +179,7 @@ describe('anthropic.chat through the real connectionFetch (#2337)', () => {
     }
   }
 
-  const ctx = (w: World) => ({ fetch: stepFetch(w), signal: new AbortController().signal, target: TARGET, sleep: () => Promise.reject(new Error('never waits')) })
+  const ctx = (w: World) => ({ fetch: stepFetch(w), signal: new AbortController().signal, target: TARGET, sleep: () => Promise.reject(new Error('never waits')), requestId: '00000000-0000-8000-8000-000000000001' })
   const ARGS = { model: 'claude-sonnet-4-5-20250929', user_message: 'Summarise this pitch.', max_tokens: 400 }
   const message = () => anthropic({ id: 'msg_1', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'In short.' }], stop_reason: 'end_turn' })
 
