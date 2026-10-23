@@ -437,18 +437,13 @@ export async function runDatabaseReachabilityProbe(deps: ProbeDeps): Promise<Pro
       const subject = `database-reachability slack connection for org ${row.organization_id}`
       if (resolved.kind === 'connection') {
         connections.set(row.organization_id, resolved.connection)
-        if (resolved.problem) {
-          console.error(slackTokenProblemLine(subject, resolved.problem, true))
-          sightings.push({ orgId: row.organization_id, reason: resolved.problem.reason, fellBackToPlaintext: true })
-        } else {
-          readable.set(row.organization_id, resolved.connection)
-        }
+        readable.set(row.organization_id, resolved.connection)
       } else if (resolved.kind === 'unreadable') {
         // Unreadable is not absent (L105): the org keeps its existing entry, so
         // a healthy minute never erases the last good copy of a connection
         // that is still there, only locked under a key this Worker cannot use.
-        console.error(slackTokenProblemLine(subject, resolved, false))
-        sightings.push({ orgId: row.organization_id, reason: resolved.reason, fellBackToPlaintext: false })
+        console.error(slackTokenProblemLine(subject, resolved))
+        sightings.push({ orgId: row.organization_id, reason: resolved.reason })
         current ??= await currentCopy(deps)
         const kept = current.get(row.organization_id)
         if (kept) connections.set(row.organization_id, kept)

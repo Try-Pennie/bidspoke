@@ -1,5 +1,8 @@
 import { ANTHROPIC_CHAT_V1 } from '../schema/services/anthropic'
 import {
+  GOOGLE_CALENDAR_CREATE_EVENT_V1, GOOGLE_CALENDAR_DELETE_EVENT_V1, GOOGLE_CALENDAR_LIST_EVENTS_V1, GOOGLE_DRIVE_DOWNLOAD_FILE_V1, GOOGLE_DRIVE_LIST_FILES_V1, GOOGLE_GMAIL_SEND_EMAIL_V1, GOOGLE_SHEETS_ADD_ROW_V1, GOOGLE_SHEETS_ADD_ROWS_V1, GOOGLE_SHEETS_CLEAR_ROWS_V1, GOOGLE_SHEETS_CREATE_WORKSHEET_V1, GOOGLE_SHEETS_DELETE_ROWS_V1, GOOGLE_SHEETS_FIND_ROW_V1, GOOGLE_SHEETS_GET_CELL_V1, GOOGLE_SHEETS_GET_SPREADSHEET_V1, GOOGLE_SHEETS_GET_VALUES_V1, GOOGLE_SHEETS_UPDATE_CELL_V1,
+} from '../schema/services/google'
+import {
   OPENAI_ADD_CONVERSATION_ITEMS_V1, OPENAI_CHAT_V1, OPENAI_CREATE_CONVERSATION_V1, OPENAI_CREATE_RESPONSE_V1, OPENAI_GET_CONVERSATION_V1,
   OPENAI_LIST_CONVERSATION_ITEMS_V1,
 } from '../schema/services/openai'
@@ -10,6 +13,22 @@ import {
 import { SLACK_SEND_MESSAGE_V1 } from '../schema/services/slack'
 import { SNOWFLAKE_EXECUTE_SQL_QUERY_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1 } from '../schema/services/snowflake'
 import { run as anthropicChatV1 } from './actions/anthropic.chat.v1'
+import { run as googleCalendarCreateEventV1 } from './actions/google.calendar-create-event.v1'
+import { run as googleCalendarDeleteEventV1 } from './actions/google.calendar-delete-event.v1'
+import { run as googleCalendarListEventsV1 } from './actions/google.calendar-list-events.v1'
+import { run as googleDriveDownloadFileV1 } from './actions/google.drive-download-file.v1'
+import { run as googleDriveListFilesV1 } from './actions/google.drive-list-files.v1'
+import { run as googleGmailSendEmailV1 } from './actions/google.gmail-send-email.v1'
+import { run as googleSheetsAddRowV1 } from './actions/google.sheets-add-row.v1'
+import { run as googleSheetsAddRowsV1 } from './actions/google.sheets-add-rows.v1'
+import { run as googleSheetsClearRowsV1 } from './actions/google.sheets-clear-rows.v1'
+import { run as googleSheetsCreateWorksheetV1 } from './actions/google.sheets-create-worksheet.v1'
+import { run as googleSheetsDeleteRowsV1 } from './actions/google.sheets-delete-rows.v1'
+import { run as googleSheetsFindRowV1 } from './actions/google.sheets-find-row.v1'
+import { run as googleSheetsGetCellV1 } from './actions/google.sheets-get-cell.v1'
+import { run as googleSheetsGetSpreadsheetV1 } from './actions/google.sheets-get-spreadsheet.v1'
+import { run as googleSheetsGetValuesV1 } from './actions/google.sheets-get-values.v1'
+import { run as googleSheetsUpdateCellV1 } from './actions/google.sheets-update-cell.v1'
 import { run as openaiAddConversationItemsV1 } from './actions/openai.add-conversation-items.v1'
 import { run as openaiChatV1 } from './actions/openai.chat.v1'
 import { run as openaiCreateConversationV1 } from './actions/openai.create-conversation.v1'
@@ -63,9 +82,29 @@ export const RUNTIME_ACTIONS: readonly RuntimeAction[] = [
   implement(SALESFORCE_APEX_REST_V1, salesforceApexRestV1),
   implement(SALESFORCE_BULK_INGEST_V1, salesforceBulkIngestV1),
   implement(SALESFORCE_GET_INGEST_JOB_V1, salesforceGetIngestJobV1),
+  implement(GOOGLE_SHEETS_ADD_ROW_V1, googleSheetsAddRowV1),
+  implement(GOOGLE_SHEETS_ADD_ROWS_V1, googleSheetsAddRowsV1),
+  implement(GOOGLE_SHEETS_UPDATE_CELL_V1, googleSheetsUpdateCellV1),
+  implement(GOOGLE_SHEETS_GET_VALUES_V1, googleSheetsGetValuesV1),
+  implement(GOOGLE_SHEETS_FIND_ROW_V1, googleSheetsFindRowV1),
+  implement(GOOGLE_SHEETS_GET_CELL_V1, googleSheetsGetCellV1),
+  implement(GOOGLE_SHEETS_GET_SPREADSHEET_V1, googleSheetsGetSpreadsheetV1),
+  implement(GOOGLE_SHEETS_CREATE_WORKSHEET_V1, googleSheetsCreateWorksheetV1),
+  implement(GOOGLE_SHEETS_DELETE_ROWS_V1, googleSheetsDeleteRowsV1),
+  implement(GOOGLE_SHEETS_CLEAR_ROWS_V1, googleSheetsClearRowsV1),
+  implement(GOOGLE_GMAIL_SEND_EMAIL_V1, googleGmailSendEmailV1),
+  implement(GOOGLE_DRIVE_LIST_FILES_V1, googleDriveListFilesV1),
+  implement(GOOGLE_DRIVE_DOWNLOAD_FILE_V1, googleDriveDownloadFileV1),
+  implement(GOOGLE_CALENDAR_CREATE_EVENT_V1, googleCalendarCreateEventV1),
+  implement(GOOGLE_CALENDAR_DELETE_EVENT_V1, googleCalendarDeleteEventV1),
+  implement(GOOGLE_CALENDAR_LIST_EVENTS_V1, googleCalendarListEventsV1),
 ]
 
 /**
+ * Google has no entry: a delegated token needs no consent URL, it is minted
+ * again rather than refreshed, and its verify is the ops Worker's Gmail profile
+ * probe (apps/worker src/ops/connections/google-service.ts).
+ *
  * Salesforce has no entry: a client credentials login needs no consent URL,
  * its token is minted again rather than refreshed, and its verify is the ops
  * Worker's userinfo probe (apps/worker src/ops/connections/salesforce-service.ts).

@@ -9,7 +9,7 @@ import {
 import { snowflakeTargetOf } from '@bidspoke/service-catalogue/runtime'
 import { LoginMintError } from '../refusals'
 import type { Authorization, AuthorizeInput } from '../service-rules'
-import { opsServiceEntry } from '../services'
+import { opsServiceRegistry } from '../services'
 import { makeSigningKey } from '../minters/__tests__/minter-harness'
 import { ORG } from './harness'
 
@@ -31,10 +31,25 @@ beforeAll(async () => {
   pem = (await makeSigningKey()).pem
 }, 120_000)
 
+/**
+ * The registered entries as the live wiring builds them. Google's key is the ops
+ * Worker's own secret and its list check the ops database's (#2337), so here a
+ * real key and a list that allows the sample mailbox.
+ */
+const opsServiceEntry = (service: string) => opsServiceRegistry({
+  google: {
+    checkDelegation: async () => 'allowed',
+    serviceAccountKey: () => JSON.stringify({ type: 'service_account', client_email: 'bidspoke-ops@ops.iam.gserviceaccount.com', private_key: pem, token_uri: 'https://oauth2.googleapis.com/token' }),
+  },
+})(service)
+
 const SAMPLES: Readonly<Record<string, () => Readonly<Record<string, string>>>> = {
   anthropic: () => ({
     workspace_id: 'wrkspc_0PS2337',
     api_key: 'canary-ant-key-2337',
+  }),
+  google: () => ({
+    subject: 'ops@trypennie.example',
   }),
   openai: () => ({
     project_id: 'proj_0PS2337',
@@ -133,6 +148,14 @@ const AUTH_KIND_BEHAVIOUR: Readonly<Partial<Record<ConnectionAuthKind, (seen: { 
     expect(auth.secrets).toEqual(keys)
     expect(Object.values(auth.headers).filter((v) => v === keys[0] || v === `Bearer ${keys[0]}`)).toHaveLength(1)
   },
+  service_account_delegation: ({ auth, tokenRequests, login }) => {
+    // The ops Worker's key signs one jwt-bearer grant at Google; the connection's login is empty (#2337).
+    expect(login).toEqual({})
+    expect(tokenRequests).toHaveLength(1)
+    expect(tokenRequests[0].url).toBe('https://oauth2.googleapis.com/token')
+    expect(tokenRequests[0].body.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:jwt-bearer')
+    expect(auth.headers.authorization).toBe('Bearer canary-access-token-2338')
+  },
   key_pair: ({ auth, tokenRequests }) => {
     // Signed locally with the connection's own key: no token endpoint is asked.
     expect(tokenRequests).toEqual([])
@@ -170,6 +193,11 @@ describe('the catalogue connection declarations, against the ops minters', () =>
       it('is refused without each required login field, so the minter reads every one by its declared name', async () => {
         const { login, target } = partsOf(service)
         const required = declared(service.connection, 'login').filter((f) => f.required)
+        // A delegated service holds no login of its own: the ops Worker's key signs (#2337).
+        if (service.connection.auth === 'service_account_delegation') {
+          expect(required).toEqual([])
+          return
+        }
         expect(required.length).toBeGreaterThan(0)
         for (const field of required) {
           const err = await mintRefusal(service.key, without(login, field.name), target)

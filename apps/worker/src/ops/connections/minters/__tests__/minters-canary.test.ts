@@ -90,15 +90,14 @@ describe('the canary never leaves through a minter (F120)', () => {
   })
 
   it('Google: a token endpoint echoing the signed assertion and a token', async () => {
-    const envelope = await sealLogin(keys, {
-      service: 'google_sheets',
-      plaintext: JSON.stringify({ type: 'service_account', client_email: 'ops@ops-project.iam.gserviceaccount.com', private_key: signing.pem, token_uri: 'https://oauth2.googleapis.com/token' }),
-    })
+    // The key is the ops Worker's secret (#2337); the connection's sealed login is empty.
+    const envelope = await sealLogin(keys, { service: 'google_sheets', plaintext: '{}' })
     const sentAssertions: string[] = []
     const auth = googleDelegationAuth({
       now: () => T0,
       catalogue: CATALOGUE,
       checkDelegation: async () => 'allowed',
+      serviceAccountKey: () => JSON.stringify({ type: 'service_account', client_email: 'ops@ops-project.iam.gserviceaccount.com', private_key: signing.pem, token_uri: 'https://oauth2.googleapis.com/token' }),
     })
     const echoingGoogle = async (input: string, init?: RequestInit) => {
       sentAssertions.push(new URLSearchParams(String(init?.body)).get('assertion') ?? '')

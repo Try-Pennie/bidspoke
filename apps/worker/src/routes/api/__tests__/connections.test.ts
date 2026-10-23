@@ -34,6 +34,10 @@ import { writeAuditLog } from '../../../lib/audit'
 import { verifySlackToken } from '../../../lib/slack-token-check'
 import { CONNECTIONS_LIST_MAX } from '../connections'
 import api from '../index'
+import { encryptSecret } from '../../../lib/secret-crypto'
+import { SLACK_TEST_KEY } from '../../../__tests__/helpers/sealed-slack-row'
+
+const ALERT_SEALED = await encryptSecret('xoxb-SECRET', SLACK_TEST_KEY)
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -66,8 +70,8 @@ const connRow = (over: Row): Row => ({
 const ROWS: Row[] = [
   connRow({ id: SF, name: 'Pennie Salesforce', acts_as: 'integration@trypennie.com', target: { instance_url: 'https://trypennie.my.salesforce.com' } }),
   connRow({ id: GOOGLE, name: "Dan's calendar", service_type: 'google', acts_as: 'dwright@trypennie.com', person_bound: true, user_id: OWNER }),
-  // The alert row's token is its plaintext copy here (no sealed copy), which the list reads only to ask Slack about it.
-  connRow({ id: ALERTS, name: 'slack', service_type: 'slack', sealed_for: 'bidding_ring', credential_enc: null, config: { bot_token: 'xoxb-SECRET', default_channel: 'C0ALERTS' } }),
+  // The alert row as stored (#2331's contract release): its token sealed with the env's key, which the list opens only to ask Slack about it.
+  connRow({ id: ALERTS, name: 'slack', service_type: 'slack', sealed_for: 'bidding_ring', credential_enc: ALERT_SEALED, config: { default_channel: 'C0ALERTS' } }),
   connRow({ id: THEIRS, organization_id: OTHER_ORG, name: 'Their Salesforce' }),
 ]
 
@@ -181,7 +185,7 @@ function makeEnv(ops: Partial<Record<'health' | 'lookup', (req: unknown) => Prom
     health: vi.fn(ops.health ?? (async () => ({ ok: true, connections: [], reached_limit: false }))),
     lookup: vi.fn(ops.lookup ?? (async () => ({ ok: false, refused: 'lookup_not_supported', detail: 'x', retry_at: null }))),
   }
-  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: kv, OPS_CONNECTIONS: binding } as unknown as Env
+  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: kv, OPS_CONNECTIONS: binding, SECRET_ENCRYPTION_KEY: SLACK_TEST_KEY } as unknown as Env
   return { env, binding, kv }
 }
 
@@ -511,7 +515,7 @@ describe('GET /connections: what the page draws each connection from (build PR 9
       expect(body.statuses.stale).toBe(true)
     })
 
-    it('reads Needs reconnecting, without asking Slack, when the sealed token opens with no key and there is no plaintext copy', async () => {
+    it('reads Needs reconnecting, without asking Slack, when no key opens the sealed token', async () => {
       const rows = ROWS.map((r) => (r.id === ALERTS ? { ...r, credential_enc: 'v1:not-a-real-ciphertext', config: { default_channel: 'C0ALERTS' } } : r))
       vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(rows) as never)
       vi.spyOn(console, 'error').mockImplementation(() => {})

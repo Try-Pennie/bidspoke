@@ -18,6 +18,7 @@ import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LAB
 import type { SlackConnection } from '../slack-connection'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 /**
  * Every sentence in the shared Slack alerts either follows from what the check
@@ -37,13 +38,13 @@ function makeSupabase(connection: Record<string, unknown> | null) {
         if (prop === 'limit')
           return alertRowsAnswer(() =>
             connection
-              ? Promise.resolve({ data: { config: connection }, error: null })
+              ? sealedSlackRow(connection).then((row) => ({ data: row, error: null }))
               : Promise.resolve({ data: null, error: null }))
         return () => chain
       },
     },
   )
-  return { from: () => chain } as never
+  return withSlackKeyRing({ from: () => chain }) as never
 }
 
 const slackConfig = {

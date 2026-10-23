@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { isDrainStalled, runDrainStallCheck, DRAIN_STALL_THRESHOLD } from '../drain-stall'
 import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 describe('isDrainStalled', () => {
   it('is false below the threshold and true at/above it', () => {
@@ -28,7 +29,7 @@ function makeSupabase(
     return new Proxy({}, {
       get(_t, prop) {
         if (prop === 'limit') {
-          return alertRowsAnswer(async () => ({ data: { config: { bot_token: 'xoxb', default_channel: '#alerts' } }, error: null }))
+          return alertRowsAnswer(async () => ({ data: await sealedSlackRow({ bot_token: 'xoxb', default_channel: '#alerts' }), error: null }))
         }
         if (prop === 'then') {
           return (resolve: (v: unknown) => void) =>
@@ -44,7 +45,7 @@ function makeSupabase(
       },
     })
   }
-  return { from: (table: string) => chainFor(table) }
+  return withSlackKeyRing({ from: (table: string) => chainFor(table) })
 }
 
 function makeKv(cooldownSet = false) {

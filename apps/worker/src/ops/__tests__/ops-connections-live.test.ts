@@ -56,3 +56,35 @@ describe('recordSfBudget on the live wiring', () => {
     expect(db.calls.map((c) => c.path)).toEqual(['/rest/v1/connection_measured_identity'])
   })
 })
+
+describe('the Google entry on the live wiring (#2337)', () => {
+  it('is built with the ops Worker\'s GOOGLE_DELEGATION_KEY and the ops database\'s delegation check, which it asks before any token', async () => {
+    const calls: Array<{ path: string; body: unknown }> = []
+    const opsFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString())
+      calls.push({ path: url.pathname, body: init?.body ? JSON.parse(String(init.body)) : null })
+      if (url.pathname === '/rest/v1/rpc/google_delegation_check') return Response.json('mailbox_not_allowed')
+      return Response.json({ message: 'unexpected' }, { status: 500 })
+    }) as typeof globalThis.fetch
+    const env = { ...configured, GOOGLE_DELEGATION_KEY: '{"client_email":"x@y.iam.gserviceaccount.com","private_key":"unused"}' } as OpsEnv
+    const live = liveOpsConnectionsDeps(env, { opensLogins: false, opsFetch })
+    const google = live.services('google')
+    expect(google?.rules.service).toBe('google')
+    const refused = await google!.rules.authorize({
+      organizationId: ORG, connectionId: CONN, generation: 1, login: {}, target: { subject: 'ceo@trypennie.example' }, purpose: 'step',
+      fetch: async () => { throw new Error('no token may be asked for a mailbox off the list') },
+    } as never).catch((err: unknown) => err)
+    expect(String(refused)).toContain('mailbox_not_allowed')
+    expect(calls).toEqual([{ path: '/rest/v1/rpc/google_delegation_check', body: { p_organization_id: ORG, p_mailbox: 'ceo@trypennie.example', p_drives: [] } }])
+  })
+
+  it('refuses every Google mint by name while the key is unset on the ops Worker', async () => {
+    const opsFetch = (async () => Response.json('allowed')) as unknown as typeof globalThis.fetch
+    const live = liveOpsConnectionsDeps(configured as OpsEnv, { opensLogins: false, opsFetch })
+    const refused = await live.services('google')!.rules.authorize({
+      organizationId: ORG, connectionId: CONN, generation: 1, login: {}, target: { subject: 'ops@trypennie.example' }, purpose: 'step',
+      fetch: async () => { throw new Error('no token may be asked without a key') },
+    } as never).catch((err: unknown) => err)
+    expect(String(refused)).toContain('delegation_key_unset')
+  })
+})

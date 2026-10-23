@@ -51,8 +51,8 @@ describe('the Google delegation scopes', () => {
     expect(googleDelegationScopes([service('slack', [action('slack.post')])])).toEqual([])
   })
 
-  it('derives nothing from the shipped catalogue until a Google action ships, so no Google token can be minted before then', () => {
-    expect(CATALOGUE.flatMap((s) => s.actions).filter((a) => a.googleScopes !== undefined)).toEqual([])
-    expect(googleDelegationScopes(CATALOGUE)).toEqual([])
+  it('derives the four granted scopes from the shipped catalogue once its Google actions ship (#2337), and only from Google actions', () => {
+    expect(googleDelegationScopes(CATALOGUE)).toEqual([...GOOGLE_DELEGATION_GRANTED_SCOPES].sort())
+    expect(CATALOGUE.flatMap((s) => s.actions).filter((a) => a.googleScopes !== undefined).every((a) => a.key.startsWith('google.'))).toBe(true)
   })
 })
