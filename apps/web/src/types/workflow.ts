@@ -98,6 +98,12 @@ export interface Workflow {
   updated_at: string
   updated_by_email?: string | null
   updated_by_name?: string | null
+  /**
+   * What a save of the definition writes over, as stored (#1947): every canvas
+   * save names the version it was loaded from, and the Worker refuses one made
+   * from any other as stale (#2599).
+   */
+  version: number
 }
 
 export interface WorkflowSummary {

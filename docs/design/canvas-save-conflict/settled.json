@@ -1,0 +1,43 @@
+{
+ "title": "Canvas save conflict (#2599)",
+ "intro": "What the workflow canvas does when a save is refused because someone else saved the workflow after it was opened. Settled over two design rounds, approved by Dan on 2026-10-22.",
+ "requirements": [
+  {"number": "R1", "text": "When a save is refused because the workflow was saved by someone else after the canvas loaded it, the canvas's existing red save error strip shows: \"Not saved. <name> saved this workflow at <time> ET, after you opened it. Your changes are still on the canvas.\" (with \"changed at <time> ET, outside the canvas\" when no person is named). The edits stay on the canvas."},
+  {"number": "R2", "text": "The strip offers two actions on its right, in the canvas toolbar's own button style: Load their version and Save mine over theirs."},
+  {"number": "R3", "text": "Save mine over theirs opens the app's standard confirm dialog (as Remove on Connections): title \"Save over <name>'s version?\", text \"Their save at <time> ET is replaced by your changes. It stays in Version history.\", with Cancel and a red Save over theirs, which saves naming the current version."},
+  {"number": "R4", "text": "Load their version asks the same way: title \"Load <name>'s version?\", text \"Your unsaved changes on the canvas are discarded and cannot be brought back.\", with Cancel and a red Load theirs, which replaces the canvas with the stored version."}
+ ],
+ "chrome": {
+  "captured": "chrome.html",
+  "from": "http://localhost:3017/dev/connection-field?frame=step-healthy at 1120 wide, the real WorkflowCanvas on its preview workflow, no sign in needed, 2026-10-22 (rounds 1 and 2 of #2599)",
+  "slot": "#save-bar-slot",
+  "width": 1120
+ },
+ "builder": "builder.js",
+ "fixture": "../canvas-save-conflict.fixture.json",
+ "frames": [
+  {"id": "refused", "title": "A save refused: Maria Lopez saved the workflow after it was opened", "width": 1120, "variant": {"named": true}},
+  {"id": "save-over", "title": "Save mine over theirs pressed: the dialog asks first", "width": 1120, "variant": {"named": true, "ask": "save-over"}},
+  {"id": "load-theirs", "title": "Load their version pressed: the dialog asks first", "width": 1120, "variant": {"named": true, "ask": "load-theirs"}},
+  {"id": "refused-outside", "title": "A save refused by a change nobody is named for, made outside the canvas", "width": 1120, "variant": {"named": false}}
+ ],
+ "decisions": [
+  {"id": "D1", "decision": "A refused save shows in the canvas's own red save error strip, naming who saved and when in ET, or that the change came from outside the canvas when nobody is named, and saying the edits are still on the canvas.", "why": "Round 1 kept the product's strip; the sentence is the partners page's stale save sentence for a workflow.", "requirement": "R1",
+   "frames": ["refused", "save-over", "load-theirs", "refused-outside"],
+   "check": "The strip ([data-part=save-conflict]) reads \"Not saved. Maria Lopez saved this workflow at Oct 22, 10:41 PM ET, after you opened it. Your changes are still on the canvas.\" on the named frames and \"Not saved. This workflow was changed at Oct 22, 10:41 PM ET, outside the canvas, after you opened it. Your changes are still on the canvas.\" on refused-outside, in red text on a light red background."},
+  {"id": "D2", "decision": "The strip offers Load their version and Save mine over theirs on its right, in the canvas toolbar's own button style.", "why": "Round 1: Dan chose Keep theirs or mine over overwrite only and see theirs first.", "requirement": "R2",
+   "frames": ["refused", "save-over", "load-theirs", "refused-outside"],
+   "check": "The strip holds exactly two buttons, reading Load their version then Save mine over theirs, both to the right of the sentence, on a white background with a grey border."},
+  {"id": "D3", "decision": "Save mine over theirs asks first in the app's shared warning dialog: \"Save over <name>'s version?\", \"Their save at <time> ET is replaced by your changes. It stays in Version history.\", Cancel and a red Save over theirs.", "why": "Round 2: Dan chose a dialog over one click and over asking in the bar.", "requirement": "R3",
+   "frames": ["save-over"],
+   "check": "An alertdialog is open whose title reads \"Save over Maria Lopez's version?\", whose description reads \"Their save at Oct 22, 10:41 PM ET is replaced by your changes. It stays in Version history.\", with two buttons, Cancel first, then Save over theirs on a red background."},
+  {"id": "D4", "decision": "Load their version asks the same way: \"Load <name>'s version?\", \"Your unsaved changes on the canvas are discarded and cannot be brought back.\", Cancel and a red Load theirs.", "why": "Dan, 2026-10-22: both bar actions follow one rule.", "requirement": "R4",
+   "frames": ["load-theirs"],
+   "check": "An alertdialog is open whose title reads \"Load Maria Lopez's version?\", whose description reads \"Your unsaved changes on the canvas are discarded and cannot be brought back.\", with two buttons, Cancel first, then Load theirs on a red background."}
+ ],
+ "exceptions": [],
+ "idioms": [
+  "The strip is drawn inside a captured copy of the canvas at 1120 wide, on its preview workflow; the canvas, its header and its palette are the product as it is today, not decisions.",
+  "The dialog's overlay and panel are the shared Dialog's own; its focus, dismissal and placement are the shell's, not decided here."
+ ]
+}

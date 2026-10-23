@@ -109,6 +109,7 @@ export const PREVIEW_WORKFLOW: Workflow = {
   id: '00000000-0000-4000-8000-000000002338',
   name: 'Achieve report import',
   is_active: true,
+  version: 6,
   test_payloads: [],
   created_at: '2026-10-01T16:00:00Z',
   updated_at: '2026-10-20T16:00:00Z',

@@ -7,6 +7,7 @@ import { ConnectionField } from '@/components/connections/ConnectionField'
 import { realClock } from '@/components/ui/Combobox'
 import { Select } from '@/components/ui/Select'
 import { chosenIdOf, PREVIEW_STEP, PREVIEW_WORKFLOW, previewLoadList, stillClock, type PreviewFrame } from './connection-field-preview-source'
+import type { StaleSave } from '@/lib/workflow-save-conflict'
 
 /**
  * A step's Connection field (#2338, build PR 11) as the canvas will show it,
@@ -21,7 +22,11 @@ import { chosenIdOf, PREVIEW_STEP, PREVIEW_WORKFLOW, previewLoadList, stillClock
  * Operation and Object the app's Select), drawn into the panel's body in place
  * of the Salesforce step's form.
  */
-export function ConnectionFieldPreview({ frame }: { frame: PreviewFrame }) {
+export function ConnectionFieldPreview({ frame, saveConflict }: {
+  frame: PreviewFrame
+  /** A refused save the canvas shows from the start: the save conflict preview (/dev/canvas-save-conflict, #2599) draws on this canvas. */
+  saveConflict?: StaleSave
+}) {
   const [body, setBody] = useState<HTMLElement | null>(null)
   useEffect(() => {
     // The step is opened as a person opens it, by a click on its card once the canvas has
@@ -47,7 +52,7 @@ export function ConnectionFieldPreview({ frame }: { frame: PreviewFrame }) {
     <>
       {/* The Salesforce step's own form is hidden; the preview's body takes its place. */}
       <style>{'#step-panel-body > :not([data-preview-step]) { display: none; }'}</style>
-      <WorkflowCanvas workflow={PREVIEW_WORKFLOW} mode="edit" />
+      <WorkflowCanvas workflow={PREVIEW_WORKFLOW} mode="edit" initialSaveConflict={saveConflict} />
       {body && createPortal(<StepBody frame={frame} />, body)}
     </>
   )

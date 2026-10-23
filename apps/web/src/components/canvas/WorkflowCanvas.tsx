@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -85,6 +85,9 @@ import { DEFAULT_ALERT_OVER_PERCENT } from '@bidspoke/buyer-profile'
 import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
 import { noChangesMessage, saveFinished, saveOutcomeMessage } from '@/lib/save-outcome'
 import { restoreVersion } from '@/lib/version-restore'
+import { canvasSaveReducer, classifySaveRefusal, initialCanvasSave, pressKeys, type CanvasSaveState, type StaleSave } from '@/lib/workflow-save-conflict'
+import { SaveConflictBar } from './SaveConflictBar'
+import { TOOLBAR_BUTTON, TOOLBAR_BUTTON_REST } from './toolbar-button'
 import { applyFormulaRenames } from '@/lib/formula-renames'
 import { newLeadValidationConfig } from '@/lib/lead-validation-checks'
 
@@ -836,8 +839,9 @@ function findRunningNamespace(
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution, onSelectExecution, focusNodeId, incidentId, onClearIncident }: {
+function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution, onSelectExecution, focusNodeId, incidentId, onClearIncident, initialSaveConflict }: {
   workflow: Workflow
+  initialSaveConflict?: StaleSave
   mode: 'edit' | 'view'
   onModeChange?: (mode: 'edit' | 'view') => void
   executionId?: string
@@ -913,6 +917,15 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const [triggerVersion, setTriggerVersion] = useState(0)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // The version the canvas was loaded from or last saved as, a press whose
+  // answer never came, and a refused save to show (#1947, #2599). Every save
+  // names that version and its press; a save made after someone else's is
+  // refused and shown in the save conflict strip.
+  const [saveState, dispatchSave] = useReducer(
+    canvasSaveReducer,
+    workflow.version,
+    (version: number): CanvasSaveState => ({ ...initialCanvasSave(version), conflict: initialSaveConflict ?? null }),
+  )
   // Surfaced when a replay/resume request fails server-side (#97) — otherwise the
   // spinner just stops and the operator can't tell the re-run never started.
   const [replayError, setReplayError] = useState<string | null>(null)
@@ -2736,7 +2749,14 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     }
   }
 
-  async function handleSave(message?: string) {
+  /**
+   * Saves the canvas. `from` is the save state the press names its version and
+   * its id from: the current one, or the one an answer just produced (Save mine
+   * over theirs, or this canvas's own earlier press found to have landed).
+   * `afterOwnSave` marks the save made on top of that earlier press, which is
+   * made at most once and counts finding nothing new to save as saved.
+   */
+  async function handleSave(message?: string, from: CanvasSaveState = saveState, afterOwnSave = false): Promise<void> {
     // Block saving when two nodes share a Step ID — the engine keys
     // ctx.steps + step logs by namespace, and downstream references can't
     // distinguish duplicates. Always block (regardless of is_active) since
@@ -2793,6 +2813,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     setSaveError(null)
     setSavedOk(false)
     setShowCommitMenu(false)
+    const keys = pressKeys(from, () => crypto.randomUUID())
+    let landedEarlier: CanvasSaveState | null = null
     try {
       const definition = flowToDef(nodes, edges, triggerRef.current)
       // Snapshot the signature of exactly what we're persisting, before any await,
@@ -2803,8 +2825,11 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         name,
         definition,
         slack_channel: slackChannel || null,
+        ...keys,
         ...(trimmed ? { message: trimmed } : {}),
       })
+      // The version now stored, which the next press names (#2599).
+      dispatchSave({ type: 'saved', version: result.version })
       // #569: confirm the save actually persisted before showing "Saved". The
       // server reports a no-op save (no_changes) instead of silently creating a
       // redundant version; and a 200 alone doesn't prove the definition reached
@@ -2820,7 +2845,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         }
       }
       const verdict = classifySave({ noChanges: !!result.no_changes, sentDefinition: definition, persisted })
-      if (verdict === 'no_changes') {
+      // On top of this canvas's own earlier press, nothing new to save means that press saved it all.
+      if (verdict === 'no_changes' && !afterOwnSave) {
         setSaveError(noChangesMessage(result))
         return
       }
@@ -2857,9 +2883,38 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         if (switchToView) switchMode('view')
       }
     } catch (e) {
-      setSaveError(e instanceof Error ? e.message : 'Save failed')
+      // A save made after someone else's is shown in the save conflict strip;
+      // this canvas's own earlier press, its answer lost, is saved on top of
+      // once; anything else is shown as the Worker worded it (#2599).
+      const refusal = classifySaveRefusal(e, keys.save_id)
+      if (refusal) dispatchSave({ type: 'refused', refusal })
+      if (refusal?.kind === 'own_save_landed' && !afterOwnSave) {
+        landedEarlier = canvasSaveReducer(from, { type: 'refused', refusal })
+      } else if (refusal?.kind !== 'stale') {
+        setSaveError(e instanceof Error ? e.message : 'Save failed')
+      }
     } finally {
       setSaving(false)
+    }
+    if (landedEarlier) await handleSave(message, landedEarlier, true)
+  }
+
+  /** R3, once confirmed: saves the canvas naming the version the refusal showed. */
+  async function saveOverTheirs(): Promise<void> {
+    const from = canvasSaveReducer(saveState, { type: 'save_over' })
+    dispatchSave({ type: 'save_over' })
+    await handleSave(commitMessage, from)
+  }
+
+  /** R4, once confirmed: replaces the canvas with the version stored now. */
+  async function loadTheirVersion(): Promise<void> {
+    try {
+      const stored = await api.workflows.get(workflow.id)
+      applyStoredWorkflow(stored)
+      dispatchSave({ type: 'loaded', version: stored.version })
+      setSaveError(null)
+    } catch (e) {
+      setSaveError(`Their version was not loaded: ${e instanceof Error ? e.message : 'the request failed'}. Your changes are still on the canvas.`)
     }
   }
 
@@ -2868,6 +2923,16 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   async function handleVersionRestore(versionId: string) {
     const { workflow: updated, notice } = await restoreVersion(workflow.id, versionId)
     if (notice) setSaveError(notice)
+    applyStoredWorkflow(updated)
+    dispatchSave({ type: 'loaded', version: updated.version })
+    setShowVersions(false)
+  }
+
+  /**
+   * Puts a stored workflow on the canvas as its new clean state: a restored
+   * version, or their version loaded over a refused save (#2599).
+   */
+  function applyStoredWorkflow(updated: Workflow) {
     // Run the same migration pipeline the initial mount does (#114) — restoring
     // an old version is exactly when legacy shapes appear, and skipping the
     // migrations here left the canvas half-migrated for the next save to persist.
@@ -2880,7 +2945,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     // derive effect to adopt the next signature it sees as the baseline (#212).
     lastSavedSignatureRef.current = null
     setSavedSignatureToken((t) => t + 1)
-    setShowVersions(false)
     requestAnimationFrame(() => fitView({ padding: 0.4, maxZoom: 0.5 }))
   }
 
@@ -2995,10 +3059,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           {mode === 'edit' && (
             <button
               onClick={() => { setShowTest((s) => !s); setSelectedNodeId(null) }}
-              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${
+              className={`${TOOLBAR_BUTTON} ${
                 showTest
                   ? 'border-p-blue-light bg-p-blue-light text-p-blue-dark'
-                  : 'border-gray-200 text-gray-600 hover:bg-beige'
+                  : TOOLBAR_BUTTON_REST
               }`}
               title="Run a test execution"
             >
@@ -3251,6 +3315,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                 </span>
               )}
             </div>
+          )}
+
+          {saveState.conflict && (
+            <SaveConflictBar stale={saveState.conflict} onLoadTheirs={loadTheirVersion} onSaveOver={saveOverTheirs} />
           )}
 
           {saveError && (
@@ -3892,8 +3960,14 @@ export default function WorkflowCanvas({
   focusNodeId,
   incidentId,
   onClearIncident,
+  initialSaveConflict,
 }: {
   workflow: Workflow
+  /**
+   * A refused save to show from the start, for the development preview of the
+   * save conflict only (/dev/canvas-save-conflict, #2599); the app never passes it.
+   */
+  initialSaveConflict?: StaleSave
   mode: 'edit' | 'view'
   onModeChange?: (mode: 'edit' | 'view') => void
   executionId?: string
@@ -3934,6 +4008,7 @@ export default function WorkflowCanvas({
         focusNodeId={focusNodeId}
         incidentId={incidentId}
         onClearIncident={onClearIncident}
+        initialSaveConflict={initialSaveConflict}
       />
       </TimeoutSuggestionsProvider>
     </ReactFlowProvider>
