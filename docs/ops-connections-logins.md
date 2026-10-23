@@ -460,8 +460,8 @@ trypennie org is the only one approved so far (table above). To approve another:
    adds the ops service account's client id with exactly the four scopes above.
    Its key: in Google Cloud, create a JSON key for that service account, and set
    it on the ops Worker as `GOOGLE_DELEGATION_KEY` (piped in, never typed on a
-   command line): `wrangler secret put GOOGLE_DELEGATION_KEY --name
-   bidspoke-worker-ops`. It is allowed and not yet required
+   command line), from `apps/worker`: `wrangler secret put GOOGLE_DELEGATION_KEY
+   --config wrangler.ops.toml`. It is allowed and not yet required
    (`OPS_OPTIONAL_SECRETS`); once set, it moves to `OPS_REQUIRED_SECRETS` (L65).
    A lost key is re-obtained by creating a new one; delete the old key in Google
    Cloud then.

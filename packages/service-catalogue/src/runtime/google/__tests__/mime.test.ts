@@ -71,9 +71,10 @@ describe('buildMessage', () => {
   })
 
   it('writes the address headers, a display name quoted, and a non ASCII subject as an encoded word', () => {
-    const msg = entity(buildMessage({ ...BASE, to: ['a@x.example', 'Bea Lee <b@x.example>'], cc: ['c@x.example'], bcc: ['d@x.example'], replyTo: 'r@x.example', subject: 'Résumé, café' }))
+    const msg = entity(buildMessage({ ...BASE, to: ['a@x.example', 'Bea Lee <b@x.example>', 'Lee, Sam <s@x.example>'], cc: ['c@x.example'], bcc: ['d@x.example'], replyTo: 'r@x.example', subject: 'Résumé, café' }))
     expect(msg.headers.from).toBe('"Pennie Ops" <ops@trypennie.com>')
-    expect(msg.headers.to).toBe('a@x.example, Bea Lee <b@x.example>')
+    // Every display name quoted, so a comma in one cannot split it into two addresses.
+    expect(msg.headers.to).toBe('a@x.example, "Bea Lee" <b@x.example>, "Lee, Sam" <s@x.example>')
     expect(msg.headers.cc).toBe('c@x.example')
     expect(msg.headers.bcc).toBe('d@x.example')
     expect(msg.headers['reply-to']).toBe('r@x.example')

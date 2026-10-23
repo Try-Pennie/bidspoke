@@ -367,7 +367,7 @@ describe('google.gmail-send-email', () => {
     const raw = rawOf(f.sent[1].json)
     expect(raw).toContain('Subject: Re: Bids')
     expect(raw).toContain('In-Reply-To: <orig@mail.gmail.com>')
-    expect(raw).toContain('To: Bea <bea@lender.example>')
+    expect(raw).toContain('To: "Bea" <bea@lender.example>')
   })
 
   it('attaches inline content, text or base64', async () => {

@@ -63,7 +63,7 @@ function encodedWord(value: string): string {
   return NOT_ASCII.test(value) ? `=?UTF-8?B?${bytesToBase64(new TextEncoder().encode(value))}?=` : value
 }
 
-/** One address, bare or `Name <address>`, checked, its name encoded when it is not ASCII. */
+/** One address, bare or `Name <address>`, checked; its name quoted, or encoded when it is not ASCII, so a comma in it cannot split it in two. */
 export function mailbox(raw: string, what: string): string {
   const value = headerValue(what, raw).trim()
   const named = NAMED.exec(value)
@@ -72,7 +72,7 @@ export function mailbox(raw: string, what: string): string {
   if (!named || named[1].trim() === '') return address
   const name = named[1].trim().replace(/^"(.*)"$/, '$1')
   if (name.includes('"') || name.includes('\\')) throw invalid(`${what} holds a display name with a quote in it`)
-  return `${encodedWord(name)} <${address}>`
+  return `${NOT_ASCII.test(name) ? encodedWord(name) : `"${name}"`} <${address}>`
 }
 
 function fromHeader(from: MailParts['from']): string {
