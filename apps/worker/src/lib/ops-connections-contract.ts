@@ -39,13 +39,15 @@ import { clearFieldProblem, OpsGatewayContractError, parseSealedEnvelope, type S
  * method CI's deployed ops check (.github/scripts/ops-exports-entrypoint.mjs)
  * requires the LIVE ops Worker to export.
  *
- * The last three are the Google mailboxes and drives list's (#2338, R10,
- * finding F129): add, remove and list an organization's
+ * After the first six come the Google mailboxes and drives list's three
+ * (#2338, R10, finding F129): add, remove and list an organization's
  * google_delegation_subjects, each change written on ops with who made it and
  * when. They shipped on ops first, in build PR 2, kept out of this list so that
  * pull request did not require them of the deploy it preceded; build PR 6 moved
  * them here once the ops deploy carried them (Deploy Ops Worker, 2026-10-20),
- * with the bidding routes that call them.
+ * with the bidding routes that call them. signInClient, last, followed the same
+ * order: shipped on ops in build PR 13a (#2739), moved here in build PR 13b
+ * with the Sign in with Google routes.
  */
 export const OPS_CONNECTIONS_METHODS = [
   'verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode', 'addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects',
