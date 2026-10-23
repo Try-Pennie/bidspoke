@@ -2580,3 +2580,143 @@ describe('workflow definition writers re-check connection ids (#2338)', () => {
     })
   })
 })
+
+// definition_schema_version (#1947): which rules a stored definition is judged
+// by. The Worker stamps it on every definition write and never takes it from
+// the caller. A definition this request wrote is stamped with the version this
+// build checks by; a copied one (a restore, a duplicate, a snapshot of the
+// stored definition) keeps the stamp of the row it came from, unstamped
+// included, so an old definition is never relabelled as checked under rules
+// it never met. 7 stands for a stamp other than this build's version 1, so a
+// copy is seen to carry the stamp rather than to happen to equal it.
+describe('definition_schema_version is stamped by the Worker on every definition write (#1947)', () => {
+  const CURRENT = 1
+  const definition = { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } }
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    app = await makeApp()
+  })
+
+  /** Every row written to `table` by `method`, flattened, as the route sent it. */
+  const rowsWritten = (sb: ReturnType<typeof makeSupabase>, table: string, method: string) =>
+    (sb.calls[table] ?? [])
+      .filter(([m]) => m === method)
+      .flatMap(([, args]) => (Array.isArray(args[0]) ? args[0] : [args[0]]) as Array<Record<string, unknown>>)
+  const stamps = (sb: ReturnType<typeof makeSupabase>, table: string, method: string) =>
+    rowsWritten(sb, table, method).map((row) => (Object.hasOwn(row, 'definition_schema_version') ? row.definition_schema_version : 'absent'))
+
+  it('POST / stamps a new workflow with the current version, whatever stamp the caller sends', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { insertResult: { id: 'wf-new', name: 'New' } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition, definition_schema_version: 99 } })
+    expect(res.status).toBe(201)
+    expect(stamps(sb, 'workflows', 'insert')).toEqual([CURRENT])
+  })
+
+  it('POST / stamps the default definition it writes when the caller sends none', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { insertResult: { id: 'wf-new', name: 'New' } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New' } })
+    expect(res.status).toBe(201)
+    expect(stamps(sb, 'workflows', 'insert')).toEqual([CURRENT])
+  })
+
+  it('PUT with a definition stamps the snapshot and the workflow with the current version, whatever the caller sends', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: { ...existingWorkflow, definition_schema_version: 7 } }, { single: existingWorkflow }],
+      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition, definition_schema_version: 99 } })
+    expect(res.status).toBe(200)
+    expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([CURRENT])
+    expect(stamps(sb, 'workflows', 'update')).toEqual([CURRENT])
+  })
+
+  it.each([
+    { stored: 7, label: 'a stamp' },
+    { stored: null, label: 'no stamp' },
+  ])('PUT without a definition snapshots the stored one with the stamp it holds ($label) and leaves the workflow stamp alone', async ({ stored }) => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: { ...existingWorkflow, definition_schema_version: stored } }, { single: existingWorkflow }],
+      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed', definition_schema_version: 99 } })
+    expect(res.status).toBe(200)
+    expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([stored])
+    expect(stamps(sb, 'workflows', 'update')).toEqual(['absent'])
+  })
+
+  it.each([
+    { stored: 7, label: 'a stamp' },
+    { stored: null, label: 'no stamp' },
+  ])('restore keeps the restored version\'s stamp ($label) on the new snapshot and on the workflow', async ({ stored }) => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflow_versions: [
+        { single: { id: 'ver-1', definition, version_number: 1, definition_schema_version: stored } },
+        { single: { version_number: 3 } },
+        { insertResult: { id: 'ver-4', version_number: 4 } },
+      ],
+      workflows: [{ single: existingWorkflow }, { list: [{ id: 'wf-1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore', { body: { definition_schema_version: 99 } })
+    expect(res.status).toBe(200)
+    expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([stored])
+    // Written even when null: the workflow may hold a newer stamp from the save the restore replaces.
+    expect(stamps(sb, 'workflows', 'update')).toEqual([stored])
+  })
+
+  it('duplicate keeps the source workflow\'s stamp on the clone and each copied version\'s own stamp', async () => {
+    const source = { name: 'Lead Routing', description: null, definition, folder_id: null, is_active: false, definition_schema_version: 7 }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: source }, { insertResult: { id: 'wf-copy', name: 'Lead Routing (copy)', organization_id: USER_ORG } }],
+      workflow_versions: [
+        { list: [
+          { version_number: 1, definition, message: 'init', definition_schema_version: null },
+          { version_number: 2, definition, message: 'edit', definition_schema_version: 7 },
+        ] },
+        { insertResult: {} },
+      ],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate', { body: { definition_schema_version: 99 } })
+    expect(res.status).toBe(201)
+    expect(stamps(sb, 'workflows', 'insert')).toEqual([7])
+    expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([null, 7])
+  })
+
+  it.each([
+    { stored: 7, label: 'a stamp' },
+    { stored: null, label: 'no stamp' },
+  ])('duplicate of a workflow never saved seeds its first version with the source\'s stamp ($label)', async ({ stored }) => {
+    const source = { name: 'Fresh', description: null, definition, folder_id: null, is_active: false, definition_schema_version: stored }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: source }, { insertResult: { id: 'wf-copy', name: 'Fresh (copy)', organization_id: USER_ORG } }],
+      workflow_versions: [{ list: [] }, { insertResult: {} }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    expect(stamps(sb, 'workflows', 'insert')).toEqual([stored])
+    expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([stored])
+  })
+})

@@ -36,6 +36,7 @@ const record = {
   trace_id: 'trace-1',
   started_at: '2026-06-10T03:30:00Z',
   is_test: false,
+  trigger_type: 'http_webhook' as const,
 }
 
 describe('createExecutionRecord', () => {
@@ -43,6 +44,13 @@ describe('createExecutionRecord', () => {
     const { client, insert } = clientWith([{ error: null }])
     await createExecutionRecord(client, record, [1, 1])
     expect(insert).toHaveBeenCalledTimes(1)
+  })
+
+  // #1947 (A1b): the row records the trigger the run was started by, not a constant.
+  it('writes the trigger the run was started by, at running', async () => {
+    const { client, insert } = clientWith([{ error: null }])
+    await createExecutionRecord(client, { ...record, trigger_type: 'schedule' }, [1, 1])
+    expect(insert.mock.calls[0][0]).toEqual([expect.objectContaining({ trigger_type: 'schedule', status: 'running' })])
   })
 
   it('retries after a statement timeout and succeeds when the lock clears', async () => {
@@ -308,9 +316,17 @@ const createFields = {
   trigger_payload: { lead: 1 },
   trace_id: 'trace-1',
   is_test: false,
+  trigger_type: 'http_webhook' as const,
 }
 
 describe('updateExecutionRecord: reconstruction on missing base row (#584)', () => {
+  // #1947 (A1b): a rebuilt row records the same trigger the create would have.
+  it('rebuilds the row with the trigger the run was started by', async () => {
+    const { client, insert } = reconClientWith({ error: null })
+    await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, { ...createFields, trigger_type: 'schedule' })
+    expect(insert.mock.calls[0][0][0]).toMatchObject({ trigger_type: 'schedule', status: 'completed' })
+  })
+
   it('reconstructs the row from createFields + the final-state update, and returns null', async () => {
     const { client, insert } = reconClientWith({ error: null })
     const error = await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, createFields)
