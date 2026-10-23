@@ -215,12 +215,6 @@ function actorOf(c: Context<{ Bindings: Env; Variables: Variables }>) {
 }
 
 /**
- * A save made from a version that is no longer stored (#1947). Nothing was
- * written, and the caller's edits are its own. It is the `error` a page shows
- * as it stands (this route's sentences are its errors), with `code` naming it
- * and the current row, the press that won and who made it beside it.
- */
-/**
  * A save of a definition from a canvas opened before every canvas save named
  * the version it was loaded from and its press (#2599). Its save would be made
  * from whatever version the request read, writing over a newer save, so it is
@@ -229,6 +223,12 @@ function actorOf(c: Context<{ Bindings: Env; Variables: Variables }>) {
 export const RELOAD_REQUIRED_WORKFLOW_MESSAGE =
   'Not saved. This page was opened before an update to how workflows are saved. Your changes are still on the canvas: copy the steps you changed, reload the page, and paste them back. A release can take a few minutes to reach your browser, so if this comes back after reloading, wait a few minutes and try again.'
 
+/**
+ * A save made from a version that is no longer stored (#1947). Nothing was
+ * written, and the caller's edits are its own. It is the `error` a page shows
+ * as it stands (this route's sentences are its errors), with `code` naming it
+ * and the current row, the press that won and who made it beside it.
+ */
 export const STALE_WORKFLOW_MESSAGE =
   'Not saved. This workflow was saved by someone else after you opened it, and saving yours would undo their change. Your changes are still on screen.'
 
