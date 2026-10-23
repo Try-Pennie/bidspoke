@@ -167,6 +167,8 @@ export function createdView(answer: CreatedConnection, service: FormService, now
     problemSince: null,
     problemCause: null,
     alertLogin: false,
+    // A form save is never a person's own Google account: that is saved by its sign in, not the form.
+    ownAccount: false,
   }
 }
 

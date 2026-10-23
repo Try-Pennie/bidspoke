@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { CATALOGUE } from './catalogue'
-import { GOOGLE_DELEGATION_GRANTED_SCOPES, googleDelegationScopes } from './google-delegation'
+import { GOOGLE_DELEGATION_GRANTED_SCOPES, GOOGLE_OWN_ACCOUNT_TARGET, googleDelegationScopes, isOwnAccountTarget } from './google-delegation'
+
+describe('a person\'s own Google account target (#2338, build PR 13)', () => {
+  it('is own_account true, and only exactly that reads as one', () => {
+    expect(GOOGLE_OWN_ACCOUNT_TARGET).toEqual({ own_account: true })
+    expect(Object.isFrozen(GOOGLE_OWN_ACCOUNT_TARGET)).toBe(true)
+    expect(isOwnAccountTarget({ own_account: true })).toBe(true)
+    for (const t of [{ own_account: 'true' }, { own_account: 1 }, { subject: 'ops@trypennie.com' }, null, [true], 'own_account']) expect(isOwnAccountTarget(t)).toBe(false)
+  })
+})
 import type { ActionSchema, ServiceSchema } from './types'
 
 /**

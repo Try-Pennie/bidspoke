@@ -6,6 +6,7 @@ import { Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import NavLayout from '@/components/NavLayout'
 import { api } from '@/lib/api'
+import { leaveThen } from '@/lib/leave-guard'
 import { ConnectionsScreen, type ConnectionsSource } from '@/components/connections/ConnectionsScreen'
 
 /**
@@ -24,6 +25,9 @@ const live: ConnectionsSource = {
   create: (body) => api.connections.create(body),
   reconnect: (id, body) => api.connections.reconnect(id, body),
   remove: (id) => api.connections.remove(id),
+  startGoogleSignIn: (body) => api.connections.startGoogleSignIn(body),
+  // Google's page, once nothing on this one would be lost (the screen waits for that); asked through the guard all the same.
+  goTo: (url) => leaveThen({ kind: 'page', name: 'Google' }, () => window.location.assign(url)),
   slackAlerts: () => api.integrations.getSlack(),
   updateSlackAlerts: (patch) => api.integrations.updateSlackSettings(patch),
   searchSlackChannels: (q) => api.integrations.searchSlackChannels(q),

@@ -94,7 +94,7 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
 
 function quiet(): ConnectionsSource {
   const never = vi.fn(() => new Promise<never>(() => {}))
-  return { list: never, history: never, googleSubjects: never, addGoogleSubject: never, removeGoogleSubject: never, create: never, reconnect: never, remove: never, slackAlerts: never, updateSlackAlerts: never, searchSlackChannels: never }
+  return { list: never, history: never, googleSubjects: never, addGoogleSubject: never, removeGoogleSubject: never, create: never, reconnect: never, remove: never, slackAlerts: never, updateSlackAlerts: never, searchSlackChannels: never, startGoogleSignIn: never, goTo: vi.fn() }
 }
 
 describe('the preview frames for states the design never drew', () => {

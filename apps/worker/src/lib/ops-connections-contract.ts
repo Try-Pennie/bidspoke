@@ -49,6 +49,7 @@ import { clearFieldProblem, OpsGatewayContractError, parseSealedEnvelope, type S
  */
 export const OPS_CONNECTIONS_METHODS = [
   'verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode', 'addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects',
+  'signInClient',
 ] as const
 export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
 
@@ -60,7 +61,7 @@ export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
 export const OPS_DELEGATION_METHODS = ['addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects'] as const satisfies readonly OpsConnectionsMethod[]
 export type OpsDelegationMethod = (typeof OPS_DELEGATION_METHODS)[number]
 /** The methods the entrypoint runs with the connections' dependencies (connections/ops-connections.ts). */
-export type OpsConnectionsCoreMethod = Exclude<OpsConnectionsMethod, OpsDelegationMethod>
+export type OpsConnectionsCoreMethod = Exclude<OpsConnectionsMethod, OpsDelegationMethod | OpsSignInMethod>
 
 /** At most this many entries are answered by listDelegationSubjects; reached_limit says so. */
 export const DELEGATION_LIST_LIMIT = 1000
@@ -72,20 +73,15 @@ export const DELEGATION_LIST_LIMIT = 1000
  * leaves ops (Dan's decision of 2026-10-22), and the id is read from the same
  * secret the exchange sends with it, so the two cannot disagree.
  *
- * Kept apart from OPS_CONNECTIONS_METHODS on purpose, as the Google list's
- * methods were in build PR 2: CI's deployed ops check requires the LIVE ops
- * Worker to export every method on that list, on every pull request that
- * touches ops, so the pull request adding this one cannot also require it of
- * the deploy it precedes. The bidding routes that call it move it onto that
- * list once the ops deploy carries it.
+ * It shipped on ops first (build PR 13a), kept out of OPS_CONNECTIONS_METHODS
+ * as the Google list's methods were in build PR 2, since CI's deployed ops
+ * check requires the LIVE ops Worker to export every method on that list; the
+ * bidding sign in routes that call it moved it onto the list once the ops
+ * deploy carried it. The entrypoint runs it with one secret of the ops
+ * Worker's own as its only dependency.
  */
-export const OPS_SIGN_IN_METHODS = ['signInClient'] as const
+export const OPS_SIGN_IN_METHODS = ['signInClient'] as const satisfies readonly OpsConnectionsMethod[]
 export type OpsSignInMethod = (typeof OPS_SIGN_IN_METHODS)[number]
-
-/** Reading one secret of the Worker's own: no database, no network. */
-export const OPS_SIGN_IN_CEILINGS_MS: Readonly<Record<OpsSignInMethod, number>> = {
-  signInClient: 5_000,
-}
 
 /**
  * How long the entrypoint lets each method run before it answers
@@ -115,6 +111,8 @@ export const OPS_CONNECTIONS_CEILINGS_MS: Readonly<Record<OpsConnectionsMethod, 
   addDelegationSubject: 10_000,
   removeDelegationSubject: 10_000,
   listDelegationSubjects: 10_000,
+  // Reading one secret of the ops Worker's own: no database, no network.
+  signInClient: 5_000,
 }
 
 /**

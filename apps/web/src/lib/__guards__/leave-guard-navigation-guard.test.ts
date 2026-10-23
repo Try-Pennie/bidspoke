@@ -77,6 +77,8 @@ const ALLOWED: Readonly<Record<string, Allowed>> = {
   'app/(app)/workflows/[id]/page.tsx': { count: 1, reason: 'The workflow page switching the canvas between view and edit on the same workflow: it leaves nothing.' },
   'app/(app)/workflows/[id]/versions/page.tsx': { count: 2, reason: 'The version history page returning to its workflow: it holds nothing editable.' },
   'app/(app)/dashboard/page.tsx': { count: 2, reason: 'The dashboard opening a failed run: the dashboard holds no draft.' },
+  'app/(app)/connections/page.tsx': { count: 1, consults: 'leaveThen', reason: 'Sign in with Google (#2338): the browser goes to Google only inside leaveThen, after the form or dialog that asked has closed, so nothing on the page is lost.' },
+  'app/(app)/connections/google/callback/page.tsx': { count: 1, reason: 'Back from Google (#2338): opens the saved connection on the Connections page; this page holds nothing editable.' },
   'components/canvas/WorkflowCanvas.tsx': { count: 5, reason: 'The canvas: mode and run switches on the same workflow, clearing a run, its back link, and its own leave dialog\'s Discard (LeaveCanvasDialog, #2134), which guards its own edits.' },
 }
 

@@ -61,7 +61,7 @@ describe('each per method deadline is longer than the ceiling ops answers by nam
   it('holds the stated values', () => {
     expect(OPS_CONNECTIONS_DEADLINES_MS).toEqual({
       verify: 50_000, clearReauth: 50_000, exchangeOAuthCode: 35_000, lookup: 30_000, revoke: 15_000, health: 15_000,
-      addDelegationSubject: 15_000, removeDelegationSubject: 15_000, listDelegationSubjects: 15_000,
+      addDelegationSubject: 15_000, removeDelegationSubject: 15_000, listDelegationSubjects: 15_000, signInClient: 10_000,
     })
   })
 })

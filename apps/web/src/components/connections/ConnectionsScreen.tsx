@@ -64,6 +64,10 @@ export interface ConnectionsSource {
   create(body: CreateBody): Promise<{ connection: CreatedConnection }>
   /** POST /api/connections/:id/reconnect: a new login, or none to check the stored one again (build PR 6). */
   reconnect(id: string, body: { fields?: Record<string, string> }): Promise<{ outcome: 'reconnected' | 'checked'; connection: { id: string; acts_as: string | null } }>
+  /** POST /api/connections/google/sign-in: Google's link, for a new own account connection or a Reconnect of one (build PR 13, R17). */
+  startGoogleSignIn(body: { name: string } | { connection_id: string }): Promise<{ url: string }>
+  /** Sends the browser to Google's link; the preview stays where it is. */
+  goTo(url: string): void
   /** DELETE /api/connections/:id: refused while a workflow uses it (build PR 6). */
   remove(id: string): Promise<{ outcome: 'removed'; ops: { told: true } | { told: false; message: string } }>
   /** GET /api/integrations/slack: the Slack alerts login's alert settings (build PR 14). */
@@ -270,6 +274,44 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     )
   }, [source, clock, services])
 
+  // ── Sign in with Google (build PR 13, R17) ──
+  // Google's link, once the Worker gives it, is followed only after the form or dialog closes, so the
+  // page holds nothing it would lose and the leave guard does not ask: the sign in carries the name.
+  const [signInLink, setSignInLink] = useState<string | null>(null)
+
+  const signIn = useCallback(() => {
+    const s = latest.current
+    if (!s.add || s.add.draft.service !== 'google' || s.add.save.kind === 'saving' || s.list.kind !== 'loaded') return
+    const attempt = ++changeNumber.current.save
+    if (attempt <= s.lastChange.save) return
+    const ms = s.deadlines.saveDeadlineMs
+    dispatch({ type: 'save_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'saved') })
+    source.startGoogleSignIn({ name: s.add.draft.name }).then(
+      (a) => {
+        dispatch({ type: 'add_closed' })
+        setSignInLink(a.url)
+      },
+      (err: unknown) => dispatch({ type: 'save_refused', attempt, sentence: saveFailureSentence(err, 'Google', ms, 'saved') }),
+    )
+  }, [source, clock])
+
+  const signInAgain = useCallback(() => {
+    const s = latest.current
+    const d = s.dialog
+    if (d?.kind !== 'reconnect' || d.save.kind === 'saving' || s.list.kind !== 'loaded') return
+    const attempt = ++changeNumber.current.reconnect
+    if (attempt <= s.lastChange.reconnect) return
+    const ms = s.deadlines.saveDeadlineMs
+    dispatch({ type: 'reconnect_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'reconnected') })
+    source.startGoogleSignIn({ connection_id: d.id }).then(
+      (a) => {
+        dispatch({ type: 'dialog_closed' })
+        setSignInLink(a.url)
+      },
+      (err: unknown) => dispatch({ type: 'reconnect_refused', attempt, sentence: saveFailureSentence(err, 'Google', ms, 'reconnected') }),
+    )
+  }, [source, clock])
+
   const remove = useCallback(() => {
     const s = latest.current
     const d = s.dialog
@@ -344,6 +386,12 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   useLeaveGuard({ blocking, onAsk: (request) => setLeaveAsk((open) => open ?? request) })
   // The question goes once there is nothing left to lose (a save landed while it was asked); the person can go again.
   useEffect(() => { if (!blocking) setLeaveAsk(null) }, [blocking])
+  // Google's link, followed once the form or dialog that asked for it has closed (build PR 13).
+  useEffect(() => {
+    if (signInLink === null || blocking) return
+    setSignInLink(null)
+    source.goTo(signInLink)
+  }, [signInLink, blocking, source])
   const choose = useCallback((c: Chosen, name: string) => {
     leaveThen({ kind: 'page', name }, () => { setLeaveAsk(null); dispatch({ type: 'choose', chosen: c }) })
   }, [])
@@ -424,6 +472,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
                   onField={(field, text, typedNew) => dispatch({ type: 'add_field', field, text, typedNew })}
                   onGoogle={(way) => dispatch({ type: 'add_google', way })}
                   onSave={save}
+                  onSignIn={signIn}
                   onCancel={() => dispatch({ type: 'add_closed' })}
                   onGoogleRetry={loadGoogle}
                 />
@@ -465,6 +514,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
           now={state.now}
           onField={(field, text) => dispatch({ type: 'dialog_field', field, text })}
           onSave={reconnect}
+          onSignIn={signInAgain}
           onClose={() => dispatch({ type: 'dialog_closed' })}
         />
       )}

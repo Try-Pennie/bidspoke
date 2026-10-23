@@ -35,8 +35,8 @@ import { raceDeadline } from './alert-claim'
 import type {
   AddDelegationSubjectAnswer, AddDelegationSubjectRequest, ClearReauthAnswer, ClearReauthRequest, ExchangeOAuthCodeAnswer, ExchangeOAuthCodeRequest,
   HealthAnswer, HealthRequest, ListDelegationSubjectsAnswer, ListDelegationSubjectsRequest, LookupAnswer, LookupRequest, OpsConnectionsBinding,
-  OpsConnectionsMethod, RemoveDelegationSubjectAnswer, RemoveDelegationSubjectRequest, RevokeAnswer, RevokeRequest, VerifyAnswer,
-  VerifyRequest,
+  OpsConnectionsMethod, RemoveDelegationSubjectAnswer, RemoveDelegationSubjectRequest, RevokeAnswer, RevokeRequest, SignInClientAnswer, SignInClientRequest,
+  VerifyAnswer, VerifyRequest,
 } from './ops-connections-contract'
 
 /**
@@ -57,6 +57,7 @@ export const OPS_CONNECTIONS_DEADLINES_MS: Readonly<Record<OpsConnectionsMethod,
   addDelegationSubject: 15_000,
   removeDelegationSubject: 15_000,
   listDelegationSubjects: 15_000,
+  signInClient: 10_000,
 }
 
 const deadlineOf = (method: OpsConnectionsMethod): number => OPS_CONNECTIONS_DEADLINES_MS[method]
@@ -71,6 +72,7 @@ interface Requests {
   addDelegationSubject: AddDelegationSubjectRequest
   removeDelegationSubject: RemoveDelegationSubjectRequest
   listDelegationSubjects: ListDelegationSubjectsRequest
+  signInClient: SignInClientRequest
 }
 
 interface Answers {
@@ -83,6 +85,7 @@ interface Answers {
   addDelegationSubject: AddDelegationSubjectAnswer
   removeDelegationSubject: RemoveDelegationSubjectAnswer
   listDelegationSubjects: ListDelegationSubjectsAnswer
+  signInClient: SignInClientAnswer
 }
 
 /** Why the call gave no answer this contract reads. */

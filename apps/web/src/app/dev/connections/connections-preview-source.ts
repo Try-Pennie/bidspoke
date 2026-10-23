@@ -221,6 +221,9 @@ export function previewSource(frame: string | undefined, moreGoogle = 0): Connec
     searchSlackChannels: (q) => Promise.resolve({
       channels: fixture.alerts.channels.filter((c) => c.includes(q.toLowerCase())).map((c) => ({ id: slug(c), name: c.replace(/^#/, '') })),
     }),
+    // The preview signs in to nothing: its link is Google's own page, which it never opens.
+    startGoogleSignIn: () => Promise.resolve({ url: 'https://accounts.google.com/o/oauth2/v2/auth' }),
+    goTo: () => undefined,
   }
 }
 

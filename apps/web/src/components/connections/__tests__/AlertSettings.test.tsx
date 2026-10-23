@@ -45,6 +45,8 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     slackAlerts: vi.fn(async () => SETTINGS),
     updateSlackAlerts: vi.fn(async () => ({ ok: true })),
     searchSlackChannels: vi.fn(async (q: string) => ({ channels: ['ops-alerts', 'ops-bidding'].filter((c) => c.includes(q)).map((name) => ({ id: name, name })) })),
+    startGoogleSignIn: vi.fn(async () => { throw new Error('not called') }),
+    goTo: vi.fn(),
     ...over,
   }
 }

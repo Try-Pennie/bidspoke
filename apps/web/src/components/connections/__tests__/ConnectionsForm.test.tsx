@@ -64,6 +64,8 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     slackAlerts: vi.fn(async () => ({ connected: true, default_channel: '#bidspoke-alerts' })),
     updateSlackAlerts: vi.fn(async () => ({ ok: true })),
     searchSlackChannels: vi.fn(async () => ({ channels: [] })),
+    startGoogleSignIn: vi.fn(async () => ({ url: 'https://accounts.google.com/o/oauth2/v2/auth?state=s' })),
+    goTo: vi.fn(),
     ...over,
   }
 }

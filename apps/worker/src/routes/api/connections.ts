@@ -12,6 +12,8 @@
 // DELETE /api/connections/:id            removes one no workflow uses, then
 //      revokes it on ops (build PR 6; R9, R21)
 // GET  /api/connections/:id/history  the History tab (build PR 9; R5)
+// POST /api/connections/google/sign-in, POST /api/connections/google/sign-in/finish
+//      Sign in with your own Google account (build PR 13; R17)
 // GET, POST /api/connections/google/subjects, and
 // DELETE /api/connections/google/subjects/:kind/:subject  the Google
 //      mailboxes and drives list (build PR 6; R10)
@@ -35,8 +37,12 @@
 import { Hono, type Context } from 'hono'
 import { CURRENT_OPS_KID, OPS_CONNECTION_PUBLIC_KEYS, seal, SealError, type SealedEnvelope } from '@bidspoke/connection-seal'
 import {
-  CATALOGUE, CONNECTION_STATUS_WORDS, connectionParts, SLACK_ALERT_LOGIN_NAME, type ConnectionPageStatus,
+  CATALOGUE, CONNECTION_STATUS_WORDS, connectionParts, GOOGLE_OWN_ACCOUNT_TARGET, isOwnAccountTarget, SLACK_ALERT_LOGIN_NAME, type ConnectionPageStatus,
 } from '@bidspoke/service-catalogue/schema'
+import {
+  googleAuthorizeUrl, googleRedirectUri, pkceChallenge, pkceVerifier, readSignInFinishBody, readSignInStartBody, SIGN_IN_REFUSAL_CODES, signInRefusalSentence,
+  type SignInRefusalCode,
+} from '../../lib/google-sign-in'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -50,6 +56,7 @@ import {
 } from '../../lib/connection-create-refusals'
 import { readDelegationEntryBody, readReconnectBody, reconnectLogin, reconnectValues } from '../../lib/connection-reconnect'
 import { writeAuditLog } from '../../lib/audit'
+import { requireRowsAffected } from '../../lib/db-retry'
 import { DELEGATION_KINDS, type DelegationKind } from '../../ops/run-vocabulary'
 import {
   actsAsOf, AUTH_TYPE_OF, connectionNameOf, connectionsNamingSubject, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
@@ -1141,6 +1148,310 @@ connections.delete('/google/subjects/:kind/:subject', async (c) => {
   if (!answer.ok) return delegationRefuse(c, orgId, delegationRefusalCode(answer.refused), [subject], { cause: answer.refused })
   console.log(JSON.stringify({ event: 'google_list_removed', organization_id: orgId, kind }))
   return c.json({ outcome: answer.outcome })
+})
+
+// ── Sign in with your own Google account (build PR 13; R17) ─────────────────
+
+/** How each sign in refusal is answered. */
+const SIGN_IN_STATUS: Readonly<Record<SignInRefusalCode, 400 | 403 | 404 | 409 | 410 | 422 | 502 | 503>> = {
+  sign_in_request_invalid: 400,
+  google_sign_in_unset: 503,
+  google_sign_in_misconfigured: 503,
+  google_sign_in_no_return: 503,
+  google_sign_in_unavailable: 503,
+  google_sign_in_denied: 422,
+  google_sign_in_failed: 502,
+  google_sign_in_expired: 410,
+  google_sign_in_used: 409,
+  google_sign_in_unknown: 404,
+  google_code_refused: 422,
+  google_sign_in_not_person: 422,
+  google_sign_in_not_owner: 403,
+}
+
+/** The columns a sign in Reconnect reads: never config. */
+const SIGN_IN_ROW_COLUMNS = 'id, name, service_type, sealed_for, person_bound, user_id, credential_generation, credential_enc, target, acts_as'
+
+interface SignInRow {
+  id: string
+  name: string
+  service_type: string
+  sealed_for: string | null
+  person_bound: boolean
+  user_id: string | null
+  credential_generation: number
+  credential_enc: string | null
+  target: unknown
+  acts_as: string | null
+}
+
+/** The connection a sign in Reconnect signs in again: the caller's organization's own Google account row, and only its owner's. */
+async function signInRowFor(
+  supabase: ReturnType<typeof createSupabaseClient>, orgId: string, userId: string, id: string,
+): Promise<{ kind: 'row'; row: SignInRow } | { kind: 'refused'; code: SignInRefusalCode | 'connection_not_found' | 'connections_unavailable' }> {
+  const { data, error } = await supabase.from('service_connections').select(SIGN_IN_ROW_COLUMNS).eq('id', id).eq('organization_id', orgId).maybeSingle()
+  if (error) {
+    console.error(JSON.stringify({ event: 'google_sign_in_row_read_failed', organization_id: orgId, error: formatErr(error) }))
+    return { kind: 'refused', code: 'connections_unavailable' }
+  }
+  if (!data) return { kind: 'refused', code: 'connection_not_found' }
+  const row = data as unknown as SignInRow
+  if (row.service_type !== 'google' || row.sealed_for !== 'ops_key' || !row.person_bound || !isOwnAccountTarget(row.target)) {
+    return { kind: 'refused', code: 'google_sign_in_not_person' }
+  }
+  // A person bound login is one person's: only they sign it in again, as themselves.
+  if (row.user_id !== userId) return { kind: 'refused', code: 'google_sign_in_not_owner' }
+  return { kind: 'row', row }
+}
+
+function signInRefuse(c: Context, orgId: string, code: SignInRefusalCode | CreateRefusalCode, extra: Record<string, unknown> = {}) {
+  console.warn(JSON.stringify({ event: 'google_sign_in_refused', code, organization_id: orgId }))
+  if ((SIGN_IN_REFUSAL_CODES as readonly string[]).includes(code)) {
+    const own = code as SignInRefusalCode
+    return c.json({ error: own, message: signInRefusalSentence(own), ...extra }, SIGN_IN_STATUS[own])
+  }
+  const shared = code as CreateRefusalCode
+  const status = (CREATE_STATUS as Partial<Record<CreateRefusalCode, number>>)[shared] ?? (VERIFY_STATUS as Partial<Record<CreateRefusalCode, number>>)[shared] ?? 422
+  return c.json({ error: shared, message: createRefusalSentence(shared, { service: 'Google', secret: 'login', org: null, names: [], money: null }), ...extra }, status as 400)
+}
+
+// POST /api/connections/google/sign-in   body { name } | { connection_id }
+//   200 { url }  the Google link the browser is sent to
+//   otherwise { error, message }: the sentence the add form or the Reconnect shows
+//
+// Starts Sign in with Google for a new connection named `name`, or for the
+// caller's own Google account connection `connection_id` (a Reconnect). In
+// order: the body; for a new one its name (as a save reads it, taken or not,
+// read early: the insert's unique decides), for a Reconnect the row, which must
+// be the caller's organization's own account connection AND the caller's own;
+// the sign in app's client id from ops (signInClient: the app's secret never
+// leaves ops); the redirect URI from APP_URL; then one single use state
+// (create_oauth_state) holding the PKCE verifier, the connection id (a fresh
+// uuid for a new one) and that client id, expiring in 10 minutes.
+//
+// Who may call it: any signed in user of the organization (jwtAuth). Whose
+// data: the caller's organization and the caller's own state; a Reconnect
+// touches only a connection the caller signs in as. Nothing of any login is
+// read or answered. Audit: the state is no connection change; the connection
+// is audited when the finish writes it.
+connections.post('/google/sign-in', async (c) => {
+  const { orgId, userId, email } = c.get('user')
+  const body = readSignInStartBody(await c.req.text())
+  if (!body.ok) return signInRefuse(c, orgId, 'sign_in_request_invalid', { detail: body.problem })
+  const supabase = createSupabaseClient(c.env)
+
+  let connectionId: string
+  let name: string | null = null
+  let loginHint: string | null = email || null
+  if (body.kind === 'new') {
+    const named = connectionNameOf(body.name)
+    if (!named.ok) return signInRefuse(c, orgId, named.code)
+    const { data: existing, error } = await supabase
+      .from('service_connections').select('id').eq('organization_id', orgId).eq('service_type', 'google').eq('name', named.name).maybeSingle()
+    if (error) {
+      console.error(JSON.stringify({ event: 'google_sign_in_name_read_failed', organization_id: orgId, error: formatErr(error) }))
+      return signInRefuse(c, orgId, 'connections_unavailable')
+    }
+    if (existing) return signInRefuse(c, orgId, 'connection_name_taken')
+    name = named.name
+    connectionId = crypto.randomUUID()
+  } else {
+    const found = await signInRowFor(supabase, orgId, userId, body.connectionId)
+    if (found.kind === 'refused') return found.code === 'connection_not_found' ? noSuchConnection(c) : signInRefuse(c, orgId, found.code)
+    connectionId = found.row.id
+    // Offer the account it signed in as before, so a Reconnect keeps acting as the same person.
+    loginHint = found.row.acts_as ?? loginHint
+  }
+
+  const app = await callOpsConnections(c.env, 'signInClient', { organization_id: orgId, service: 'google' })
+  if (!app.ok) {
+    if (isOpsConnectionsUnavailable(app)) return signInRefuse(c, orgId, 'ops_connections_unavailable', { detail: app.detail })
+    console.error(JSON.stringify({ event: 'google_sign_in_app_refused', organization_id: orgId, refused: app.refused }))
+    return signInRefuse(c, orgId, app.refused === 'sign_in_app_unset' ? 'google_sign_in_unset' : 'google_sign_in_misconfigured')
+  }
+  const redirectUri = googleRedirectUri(c.env.APP_URL)
+  if (redirectUri === null) return signInRefuse(c, orgId, 'google_sign_in_no_return')
+
+  const verifier = pkceVerifier()
+  const { data: created, error: stateError } = await supabase.rpc('create_oauth_state', {
+    p_organization_id: orgId,
+    p_user_id: userId,
+    p_service_type: 'google',
+    p_connection_id: connectionId,
+    // The generated types call every argument text; a Reconnect's null name is passed as SQL NULL.
+    p_name: name as string,
+    p_reconnect: body.kind === 'reconnect',
+    p_client_id: app.client_id,
+    p_verifier: verifier,
+    p_redirect_uri: redirectUri,
+  })
+  const state = Array.isArray(created) ? (created[0] as { state_id?: unknown } | undefined)?.state_id : undefined
+  if (stateError || typeof state !== 'string') {
+    console.error(JSON.stringify({ event: 'google_sign_in_state_unwritten', organization_id: orgId, error: stateError ? formatErr(stateError) : 'no state answered' }))
+    return signInRefuse(c, orgId, 'google_sign_in_unavailable')
+  }
+  console.log(JSON.stringify({ event: 'google_sign_in_started', organization_id: orgId, connection_id: connectionId, reconnect: body.kind === 'reconnect' }))
+  return c.json({ url: googleAuthorizeUrl({ clientId: app.client_id, redirectUri, state, challenge: await pkceChallenge(verifier), loginHint }) })
+})
+
+/** How the finish answers a failed exchange: Google refusing the code is the person's to retry; the rest are the create's own sentences. */
+function exchangeRefusal(answer: { ok: false; refused: string } & Partial<{ cause: string; detail: string }>): SignInRefusalCode | CreateRefusalCode {
+  if (isOpsConnectionsUnavailable(answer)) return answer.cause === 'deadline' ? 'verify_timed_out' : 'ops_connections_unavailable'
+  if (answer.refused === 'connection_needs_reauth') return 'google_code_refused'
+  return isCreateRefusalCode(answer.refused) ? answer.refused : 'verify_refused_unknown'
+}
+
+// POST /api/connections/google/sign-in/finish   body { state, code } | { state, error }
+//   201 { outcome: 'created', connection: { id, name, service, acts_as } }   a new connection
+//   200 { outcome: 'reconnected', connection: { id, acts_as }, cleared }      a Reconnect
+//   otherwise { error, message }
+//
+// The Connections page's callback posts what Google put on its address. In order:
+//   1. the state, claimed once by claim_oauth_state for the caller's own user
+//      and organization: never started, another person's or another
+//      organization's (unknown), used, or older than 10 minutes (expired), each
+//      by name. A claimed state is spent whatever follows.
+//   2. Google's error: access_denied (the person said no) is denied; any other
+//      is failed. Nothing is written.
+//   3. A new connection: the name re-checked, then the row inserted FIRST, as
+//      the person's own Google account (person_bound, owned by the caller,
+//      target { own_account: true }) with a login holding only the sign in
+//      app's client id, sealed to the ops key at generation 1; then ops'
+//      exchangeOAuthCode. The row comes first because the token object hands
+//      the new login back to the row by its alarm the moment it stores it, and
+//      a row not yet there would make it give the login up. A failed exchange
+//      then removes the row (remove_ops_connection, then revoke), so nothing is
+//      left that has no login; a removal that fails is logged by the id.
+//   4. A Reconnect: the row read again (the caller's own account connection),
+//      and the exchange with the row's own sealed login as the candidate; the
+//      token object seals the new refresh token above it and writes it back by
+//      compare and set on that generation. Ops clears needs_reauth.
+//   5. Whom it signed in as (the exchange's account, from Google's id_token) is
+//      written as acts_as, audited under the caller.
+//
+// Who may call it: any signed in user of the organization, holding a state
+// they started. Whose data: the caller's organization, and only a connection
+// the caller owns. Audit: the insert and the acts_as update by the store's
+// trigger under updated_by; a Reconnect also writes its own row here, naming
+// nothing of the login.
+connections.post('/google/sign-in/finish', async (c) => {
+  const { orgId, userId, email } = c.get('user')
+  const body = readSignInFinishBody(await c.req.text())
+  if (!body.ok) return signInRefuse(c, orgId, 'sign_in_request_invalid', { detail: body.problem })
+  const supabase = createSupabaseClient(c.env)
+
+  // 1. The state.
+  const { data: claimedRows, error: claimError } = await supabase.rpc('claim_oauth_state', { p_state_id: body.state, p_organization_id: orgId, p_user_id: userId })
+  const claim = Array.isArray(claimedRows) ? (claimedRows[0] as Record<string, unknown> | undefined) : undefined
+  if (claimError || !claim) {
+    console.error(JSON.stringify({ event: 'google_sign_in_claim_failed', organization_id: orgId, error: claimError ? formatErr(claimError) : 'no outcome answered' }))
+    return signInRefuse(c, orgId, 'google_sign_in_unavailable')
+  }
+  if (claim.outcome === 'expired') return signInRefuse(c, orgId, 'google_sign_in_expired')
+  if (claim.outcome === 'used') return signInRefuse(c, orgId, 'google_sign_in_used')
+  if (claim.outcome !== 'claimed') return signInRefuse(c, orgId, 'google_sign_in_unknown')
+  const state = {
+    connectionId: String(claim.connection_id), name: typeof claim.name === 'string' ? claim.name : null, reconnect: claim.reconnect === true,
+    clientId: String(claim.client_id), verifier: String(claim.verifier), redirectUri: String(claim.redirect_uri),
+  }
+
+  // 2. Google's own answer.
+  if (body.error !== null) return signInRefuse(c, orgId, body.error === 'access_denied' ? 'google_sign_in_denied' : 'google_sign_in_failed', { google_error: body.error })
+
+  const exchange = (generation: number, envelope: SealedEnvelope) => callOpsConnections(c.env, 'exchangeOAuthCode', {
+    organization_id: orgId,
+    connection_id: state.connectionId,
+    candidate: { service: 'google', generation, envelope, target: { ...GOOGLE_OWN_ACCOUNT_TARGET }, public_config: {} },
+    code: body.code as string,
+    verifier: state.verifier,
+    redirect_uri: state.redirectUri,
+  })
+  const recordAccount = async (account: string | null): Promise<string | null> => {
+    if (account === null) return null
+    const { error } = await requireRowsAffected(`service_connections ${state.connectionId} acts_as`, () => supabase
+      .from('service_connections')
+      .update({ acts_as: account, updated_by: userId, updated_by_email: email, updated_at: new Date().toISOString() })
+      .eq('id', state.connectionId).eq('organization_id', orgId).eq('person_bound', true).eq('sealed_for', 'ops_key')
+      .select('id'))
+    if (error) {
+      // The login is stored either way; only whom it names is not (or the row went meanwhile), and the next sign in records it.
+      console.error(JSON.stringify({ event: 'google_sign_in_account_unrecorded', organization_id: orgId, connection_id: state.connectionId, error: formatErr(error) }))
+      return null
+    }
+    return account
+  }
+
+  // 4. A Reconnect.
+  if (state.reconnect) {
+    const found = await signInRowFor(supabase, orgId, userId, state.connectionId)
+    if (found.kind === 'refused') return found.code === 'connection_not_found' ? noSuchConnection(c) : signInRefuse(c, orgId, found.code)
+    let envelope: unknown
+    try {
+      envelope = JSON.parse(found.row.credential_enc ?? '')
+    } catch {
+      envelope = null
+    }
+    if (!isRecordValue(envelope)) return signInRefuse(c, orgId, 'connection_store_failed')
+    const answer = await exchange(found.row.credential_generation, envelope as unknown as SealedEnvelope)
+    if (!answer.ok) return signInRefuse(c, orgId, exchangeRefusal(answer), { detail: answer.detail })
+    const actsAs = (await recordAccount(answer.account)) ?? found.row.acts_as
+    await writeAuditLog(supabase, orgId, 'service_connection', found.row.id, 'connection_signed_in_again', userId, { generation: answer.generation })
+    console.log(JSON.stringify({ event: 'google_sign_in_reconnected', organization_id: orgId, connection_id: found.row.id, cleared: answer.reauth_cleared }))
+    return c.json({ outcome: 'reconnected', connection: { id: found.row.id, acts_as: actsAs }, cleared: answer.reauth_cleared })
+  }
+
+  // 3. A new connection: the row first, holding the app's client id alone.
+  const named = connectionNameOf(state.name ?? '')
+  if (!named.ok) return signInRefuse(c, orgId, named.code)
+  const kid = CURRENT_OPS_KID
+  let envelope: SealedEnvelope
+  try {
+    if (kid === null) throw new Error('no current ops kid is committed')
+    envelope = await seal(OPS_CONNECTION_PUBLIC_KEYS, JSON.stringify({ client_id: state.clientId }), {
+      organization_id: orgId, connection_id: state.connectionId, service: 'google', generation: 1, kid,
+    })
+  } catch (err) {
+    console.error(JSON.stringify({ event: 'connection_seal_failed', organization_id: orgId, error: err instanceof SealError ? err.code : err instanceof Error ? err.name : 'error' }))
+    return signInRefuse(c, orgId, 'connection_seal_failed')
+  }
+  const { error: insertError } = await supabase.from('service_connections').insert({
+    id: state.connectionId,
+    organization_id: orgId,
+    service_type: 'google',
+    name: named.name,
+    auth_type: AUTH_TYPE_OF.oauth_user,
+    sealed_for: 'ops_key',
+    credential_enc: JSON.stringify(envelope),
+    credential_generation: 1,
+    target: { ...GOOGLE_OWN_ACCOUNT_TARGET },
+    acts_as: null,
+    person_bound: true,
+    user_id: userId,
+    cf_secret_key: null,
+    updated_by: userId,
+    updated_by_email: email,
+  })
+  if (insertError) {
+    if (insertError.code === '23505') return signInRefuse(c, orgId, 'connection_name_taken')
+    console.error(JSON.stringify({ event: 'google_sign_in_insert_failed', organization_id: orgId, connection_id: state.connectionId, error: formatErr(insertError) }))
+    return signInRefuse(c, orgId, 'connection_store_failed')
+  }
+
+  const answer = await exchange(1, envelope)
+  if (!answer.ok) {
+    // Nothing usable was stored, so the row that holds no login goes, on bidding and on ops.
+    const { error: removeError } = await supabase.rpc('remove_ops_connection', { p_organization_id: orgId, p_connection_id: state.connectionId, p_actor: userId })
+    if (removeError) {
+      console.error(JSON.stringify({ event: 'google_sign_in_row_left', organization_id: orgId, connection_id: state.connectionId, error: formatErr(removeError), why: 'the exchange failed and the row it was for could not be removed' }))
+    } else {
+      const revoked = await callOpsConnections(c.env, 'revoke', { organization_id: orgId, connection_id: state.connectionId, generation: 1, removed_at: new Date().toISOString() })
+      if (!revoked.ok) console.error(JSON.stringify({ event: 'google_sign_in_revoke_failed', organization_id: orgId, connection_id: state.connectionId, refused: revoked.refused }))
+    }
+    return signInRefuse(c, orgId, exchangeRefusal(answer), { detail: answer.detail })
+  }
+  const actsAs = await recordAccount(answer.account)
+  console.log(JSON.stringify({ event: 'connection_created', organization_id: orgId, connection_id: state.connectionId, service: 'google', person_bound: true }))
+  return c.json({ outcome: 'created', connection: { id: state.connectionId, name: named.name, service: 'google', acts_as: actsAs } }, 201)
 })
 
 /** The HTTP status a lookup refusal answers with; any other is the service's or ops's refusal, a 502. */
