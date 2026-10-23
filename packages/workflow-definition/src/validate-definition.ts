@@ -275,6 +275,17 @@ function shape(definition: unknown): { ok: true; value: ShapedDefinition } | { o
   return { ok: true, value: { trigger: definition.trigger, nodes: nodes as NodeDefLike[], edges: edges as EdgeDefLike[] } }
 }
 
+/**
+ * The shape problems alone: the parse every rule reads, as validateDefinition
+ * reports it. The save routes refuse a definition with any of these by a named
+ * 400 before any other check reads it (#2190), because every validator,
+ * the cycle check included, assumes this shape and throws on a null step.
+ */
+export function definitionShapeProblems(definition: unknown): DefinitionProblem[] {
+  const shaped = shape(definition)
+  return shaped.ok ? [] : shaped.problems
+}
+
 /** One problem per step and message: an attached step's settings are refused by its own rule and by node_config alike, so keep the stricter. */
 function withoutRepeats(problems: DefinitionProblem[]): DefinitionProblem[] {
   const strictness: Record<DefinitionEnforcement, number> = { every_save: 0, live_save: 1, advisory: 2 }

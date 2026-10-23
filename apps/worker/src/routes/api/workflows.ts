@@ -7,7 +7,8 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
-import { findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems } from '@bidspoke/workflow-definition'
+import { definitionShapeProblems, findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems } from '@bidspoke/workflow-definition'
+import { reportDefinition } from '../../lib/definition-report'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
@@ -80,6 +81,36 @@ function sanitizeDefinition<T>(definition: T): T {
  * itself saved, and duplicate copies a saved definition, so both carry only
  * definitions this check already passed or that predate the options.
  */
+/**
+ * The named 400 for a definition the rules cannot read (#2190): not an object,
+ * a step or connection list that is not a list, or an entry without the
+ * strings every rule reads. It is validateDefinition's own parse
+ * (definitionShapeProblems), asked first on both routes a caller's definition
+ * enters by, so a null step reaches no check that would answer 500 for it.
+ * Every stored definition reachable by a save or restore had this shape when
+ * measured (2026-10-22), so it refuses only what could never have run.
+ */
+function malformedDefinitionRefusal(c: Context<{ Bindings: Env; Variables: Variables }>, definition: unknown): Response | null {
+  const problems = definitionShapeProblems(definition)
+  if (problems.length === 0) return null
+  return c.json(
+    { error: `Nothing was saved. The workflow definition is malformed: ${problems.map((p) => p.message).join('; ')}.`, reason: 'definition_malformed', problems },
+    400,
+  )
+}
+
+/**
+ * A definition with a loop is refused on create and save alike (#334, #2190):
+ * an edge path back to an earlier node would loop at run time until the #260
+ * step ceiling aborts it. Asked after the shape check, which it depends on.
+ */
+function loopRefusal(c: Context<{ Bindings: Env; Variables: Variables }>, definition: unknown): Response | null {
+  const def = definition as WorkflowDefinition
+  const cycle = findWorkflowCycle(def.nodes ?? [], def.edges ?? [])
+  if (!cycle) return null
+  return c.json({ error: `Workflow has a loop: ${cycle.join(' → ')}. Remove the edge that returns to an earlier node before saving.` }, 400)
+}
+
 function salesforceOptionRefusal(definition: unknown): string | null {
   const nodes = (definition as { nodes?: unknown } | null | undefined)?.nodes
   if (!Array.isArray(nodes)) return null
@@ -202,6 +233,14 @@ workflows.post('/', async (c) => {
 
   if (!body.name) return c.json({ error: 'name is required' }, 400)
 
+  // A caller's definition is held to the shape and loop checks save applies (#2190).
+  if (body.definition !== undefined) {
+    const malformed = malformedDefinitionRefusal(c, body.definition)
+    if (malformed) return malformed
+    const loop = loopRefusal(c, body.definition)
+    if (loop) return loop
+  }
+
   // A definition can enter here as well as by save, so it meets the same
   // Salesforce write option rule the save route applies (#2170).
   const sfProblem = salesforceOptionRefusal(body.definition)
@@ -224,6 +263,9 @@ workflows.post('/', async (c) => {
   const definition = sanitizeDefinition(body.definition ?? { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } })
   const missing = await connectionRefusal(c, supabase, orgId, definition)
   if (missing) return missing
+
+  // Report only (#1947): a new workflow is a switched off money workflow.
+  reportDefinition(definition, { writer: 'create', workflowId: null, lane: 'money', live: false, schemaVersion: writtenDefinitionStamp() })
 
   const { data, error } = await supabase
     .from('workflows')
@@ -271,7 +313,7 @@ workflows.post('/:id/duplicate', async (c) => {
   // Load source (org-scoped)
   const { data: source, error: sourceErr } = await supabase
     .from('workflows')
-    .select('name, description, definition, folder_id, definition_schema_version')
+    .select('name, description, definition, folder_id, definition_schema_version, lane')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -285,6 +327,9 @@ workflows.post('/:id/duplicate', async (c) => {
   const cloneDefinition = sanitizeDefinition(source.definition)
   const missing = await connectionRefusal(c, supabase, orgId, cloneDefinition)
   if (missing) return missing
+
+  // Report only (#1947): the clone is a switched off copy under the source's stamp.
+  reportDefinition(cloneDefinition, { writer: 'duplicate', workflowId: id, lane: source.lane, live: false, schemaVersion: copiedDefinitionStamp(source) })
 
   // Create the clone, always switched off (#1706), whatever the source's state.
   // A copy of a live workflow is a second definition that could take traffic the
@@ -495,7 +540,7 @@ workflows.put('/:id', async (c) => {
   // Verify ownership
   const { data: existing, error: fetchError } = await supabase
     .from('workflows')
-    .select('id, definition, name, slack_channel, is_active, definition_schema_version')
+    .select('id, definition, name, slack_channel, is_active, definition_schema_version, lane')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -505,19 +550,14 @@ workflows.put('/:id', async (c) => {
   if (blocked) return blocked
   if (!existing) return c.json({ error: 'Workflow not found' }, 404)
 
-  // Reject a cyclic definition at save time (#334). A cycle (an edge path that
-  // returns to an earlier node) would loop at run time until the #260 step
-  // ceiling aborts it; catching it here flags the misconfiguration in the editor
-  // before it can process a lead. Only checked when a new definition is sent.
-  if (body.definition) {
+  // A definition the rules cannot read is refused by name first (#2190), then a
+  // cyclic one (#334). Only checked when a new definition is sent.
+  if (body.definition !== undefined) {
+    const malformed = malformedDefinitionRefusal(c, body.definition)
+    if (malformed) return malformed
+    const loop = loopRefusal(c, body.definition)
+    if (loop) return loop
     const def = body.definition as WorkflowDefinition
-    const cycle = findWorkflowCycle(def.nodes ?? [], def.edges ?? [])
-    if (cycle) {
-      return c.json(
-        { error: `Workflow has a loop: ${cycle.join(' → ')}. Remove the edge that returns to an earlier node before saving.` },
-        400,
-      )
-    }
     // A Salesforce step's write options (#2170), judged by the rule its executor
     // applies, so a definition PUT from a file is held to what the canvas is.
     const sfProblem = salesforceOptionRefusal(def)
@@ -587,6 +627,10 @@ workflows.put('/:id', async (c) => {
   // Create version snapshot. A save that sends no definition snapshots the stored
   // one, which keeps the stamp it was stored under (#1947).
   const savedStamp = body.definition !== undefined ? writtenDefinitionStamp() : copiedDefinitionStamp(existing)
+  // Report only (#1947): the definition this save writes, at its stamp, live if the workflow is.
+  if (body.definition !== undefined) {
+    reportDefinition(body.definition, { writer: 'save', workflowId: id, lane: existing.lane, live: existing.is_active === true, schemaVersion: savedStamp })
+  }
   const { data: version, error: versionError } = await supabase
     .from('workflow_versions')
     .insert({
@@ -797,7 +841,7 @@ workflows.patch('/:id', async (c) => {
 
   const { data: owner, error: fetchError } = await supabase
     .from('workflows')
-    .select('id, name, is_active, definition')
+    .select('id, name, is_active, definition, definition_schema_version, lane')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -823,6 +867,8 @@ workflows.patch('/:id', async (c) => {
     // workflow's definition names the connection, switched on or off.
     const missing = await connectionRefusal(c, supabase, orgId, owner.definition, 'switch_on')
     if (missing) return missing
+    // Report only (#1947): the stored definition this makes live, at its own stamp.
+    reportDefinition(owner.definition, { writer: 'switch_on', workflowId: id, lane: owner.lane, live: true, schemaVersion: owner.definition_schema_version })
   }
 
   const updates: Database['public']['Tables']['workflows']['Update'] = { updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name }
@@ -1007,7 +1053,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // 404 (not 403) to avoid leaking which workflow ids exist, matching siblings.
   const { data: owner, error: ownerError } = await supabase
     .from('workflows')
-    .select('id, name, is_active')
+    .select('id, name, is_active, lane')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -1065,6 +1111,11 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // The workflow row is written with it even when it is null, because the row
   // may hold a newer stamp from the save this restore replaces.
   const restoredStamp = copiedDefinitionStamp(version)
+
+  // Report only (#1947): the old definition at the stamp it keeps, live if the
+  // workflow is. A version a rule would refuse (a loop, the retired integration
+  // step) is restored as before and named in the report.
+  reportDefinition(restored, { writer: 'restore', workflowId: id, lane: owner.lane, live: owner.is_active === true, schemaVersion: restoredStamp })
 
   // Surface a failed snapshot write instead of silently "restoring" nothing.
   const { error: restoreInsertError } = await supabase.from('workflow_versions').insert({
