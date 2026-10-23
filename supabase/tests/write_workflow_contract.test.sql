@@ -6,7 +6,7 @@
 -- rolled back. No real identity.
 --
 -- WHAT IT PROVES, each statement made as service_role, the Worker's role:
---   A. A direct INSERT, UPDATE of the definition, is_active or deleted_at, and
+--   A. A direct INSERT, UPDATE of the definition, is_active, deleted_at or lane, and
 --      DELETE of a workflow are refused by the database itself (42501), and so
 --      are a direct INSERT, UPDATE of the definition and DELETE of a version.
 --   B. What the Worker still writes directly is allowed: a workflow's
