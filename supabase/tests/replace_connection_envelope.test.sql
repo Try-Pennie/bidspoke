@@ -75,7 +75,7 @@ BEGIN
      NULL, pg_temp.rce_envelope('ops-old', 'aXYtc2hhcmVkLW9sZA')::text, 'ops_key', false, 3, NULL, '{"account":"example"}'),
     ('33333333-3333-3333-3333-33333333d002', '11111111-1111-1111-1111-11111112333a', 'salesforce', 'rce person', 'oauth_user', NULL,
      NULL, pg_temp.rce_envelope('ops-old', 'aXYtcGVyc29uLW9sZA')::text, 'ops_key', true, 3, '22222222-2222-2222-2222-22222222333a', '{"instance_url":"https://example.my.salesforce.com"}'),
-    ('33333333-3333-3333-3333-33333333d003', '11111111-1111-1111-1111-11111112333a', 'slack', 'slack', 'oauth', NULL,
+    ('33333333-3333-3333-3333-33333333d003', '11111111-1111-1111-1111-11111112333a', 'slack', 'slack', 'bot_token', NULL,
      '{"bot_token":"planted-bot-token-2333"}', 'planted-ciphertext-2333', 'bidding_ring', false, 3, NULL, NULL),
     ('33333333-3333-3333-3333-33333333d004', '11111111-1111-1111-1111-11111112333b', 'snowflake', 'rce shared b', 'key_pair', NULL,
      NULL, pg_temp.rce_envelope('ops-old', 'aXYtb3JnLWItb2xk')::text, 'ops_key', false, 3, NULL, NULL);

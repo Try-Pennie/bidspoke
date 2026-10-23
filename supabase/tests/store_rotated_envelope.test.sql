@@ -75,7 +75,7 @@ BEGIN
     -- Another service type, not person bound.
     ('33333333-3333-3333-3333-33333333c002', '11111111-1111-1111-1111-11111112335a', 'snowflake', 'sre shared', 'key_pair', NULL,
      NULL, pg_temp.sre_envelope('aXYtc2hhcmVkLXJvdw')::text, 'ops_key', false, 3, NULL, NULL),
-    ('33333333-3333-3333-3333-33333333c003', '11111111-1111-1111-1111-11111112335a', 'slack', 'slack', 'oauth', NULL,
+    ('33333333-3333-3333-3333-33333333c003', '11111111-1111-1111-1111-11111112335a', 'slack', 'slack', 'bot_token', NULL,
      '{"bot_token":"planted-bot-token-2335"}', 'planted-ciphertext-2335', 'bidding_ring', true, 3, NULL, NULL),
     ('33333333-3333-3333-3333-33333333c004', '11111111-1111-1111-1111-11111112335b', 'salesforce', 'sre person b', 'oauth_user', NULL,
      NULL, pg_temp.sre_envelope('aXYtb3JnLWItcm93')::text, 'ops_key', true, 3, NULL, NULL);
