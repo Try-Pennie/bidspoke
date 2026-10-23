@@ -470,6 +470,13 @@ export const OPS_TICK_PROBLEM_RULES = {
   definitions_failed: 'three_in_a_row',
   /** One version's save failed; it is still not held, so asked for again next tick. */
   definition_save_failed: 'three_in_a_row',
+  /** The live claim failed (#1950); every queued run waits for the next tick's claim. */
+  claim_failed: 'three_in_a_row',
+  /**
+   * Lost and requeued runs of one workflow reached the rate in a tick (L77,
+   * #1950): held for three ticks, so three ticks in a row of the rate pages.
+   */
+  runs_failing: 'three_in_a_row',
   /**
    * The sentence saying how many problems a report left out. Every at_once
    * problem is kept ahead of it (capTickProblems), so it stands only for held
@@ -506,6 +513,12 @@ export const OPS_TICK_PROBLEM_RULES = {
   definition_refused: 'at_once',
   /** More versions are missing than one read lists, so some are not even in the rotation the tick asks from. */
   definitions_backlog: 'at_once',
+  /** Live mode (#1950): the copies are older than 6 hours, so nothing fires or starts until the bidding Worker serves again. */
+  copies_stale: 'at_once',
+  /** A run made a send whose outcome is unknown and waits for a person: nothing retries it (L77, #1950). */
+  run_outcome_unknown: 'at_once',
+  /** A run lost its lease after a send that cannot be repeated, and waits for a person (lease_expired_after_send). */
+  runs_lapsed_after_send: 'at_once',
   // Reported once, never again by a later tick.
   /** The agreement check failed after its claim; it is not tried again for 14 minutes. */
   agreement_check_failed: 'at_once',
