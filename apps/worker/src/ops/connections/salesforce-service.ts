@@ -3,7 +3,9 @@
  * of #1689; registered in services.ts by #2337, phase 7): the
  * client_credentials minter (minters/salesforce.ts) with its declared host,
  * what verify measures (userinfo), and where a schema lookup sends (the
- * declared instance). No catalogue action uses it yet.
+ * declared instance). The catalogue's ten Salesforce actions (#2337,
+ * packages/service-catalogue/src/schema/services/salesforce.ts) send through
+ * it once #1950's executor runs a step, each request under a `step` lease.
  *
  * Every request takes a lease from the ops pool first (connectionFetch), and
  * acquire_sf_lease grants it only within the caps Dan approved (Decision 11,

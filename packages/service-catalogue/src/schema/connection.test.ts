@@ -72,9 +72,7 @@ describe("Salesforce's connection (D15, R15)", () => {
     expect(targetFieldNames(c)).toEqual(['instance_url', 'client_id'])
   })
 
-  it('carries no actions yet: its entry is the connection only (#2337 ships them)', () => {
-    expect(service('salesforce').actions).toEqual([])
-  })
+  // Its actions arrived with #2337's Salesforce pull request: runtime/salesforce/__tests__/actions.test.ts names them.
 })
 
 describe("Snowflake's connection", () => {
