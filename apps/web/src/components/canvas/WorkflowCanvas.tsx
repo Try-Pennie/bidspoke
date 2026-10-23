@@ -42,7 +42,7 @@ import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
 import { EdgeHopsProvider } from './edges/edge-hops'
 import NodePalette from './NodePalette'
-import ConfigPanel from './ConfigPanel'
+import ConfigPanel, { type NodeTestOptions } from './ConfigPanel'
 import { api } from '@/lib/api'
 import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, DISCONNECTED_GAP } from '@/lib/layout'
 import { handleLeftFractions, outputHandles } from '@/lib/handle-geometry'
@@ -1515,7 +1515,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // omits it and runs with just the supplied trigger payload (works for nodes
   // that don't read steps.*). Result is written to liveSteps so the node's
   // StepResults panel renders it, same as a full test run.
-  const handleNodeTest = useCallback(async (namespace: string, opts: { triggerPayload: unknown; useLastRun: boolean }) => {
+  const handleNodeTest = useCallback(async (namespace: string, opts: NodeTestOptions) => {
     const definition = flowToDef(nodes, edges, triggerRef.current)
     const buildFromExecId = opts.useLastRun ? (lastTestExecId ?? executionId ?? undefined) : undefined
     try {
@@ -1524,6 +1524,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         definition,
         execution_id: buildFromExecId,
         trigger_payload: opts.triggerPayload,
+        ...(opts.confirmSend ? { confirm_send: true } : {}),
       })
       setLiveSteps((prev) => ({
         ...prev,

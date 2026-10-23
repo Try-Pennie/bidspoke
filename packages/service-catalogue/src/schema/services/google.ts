@@ -63,6 +63,7 @@ const read = (key: string, name: string, args: ActionArgument[], googleScopes: r
 export const GOOGLE_SHEETS_ADD_ROW_V1: ActionSchema = {
   key: 'google.sheets-add-row', name: 'Sheets: add a row', version: 1,
   arguments: [spreadsheet, worksheet, json('values', true)],
+  realSend: 'adds a real row to the sheet',
   sideEffect: true, idempotent: false,
   idempotentBecause: 'An append adds the row again on a repeat; Sheets takes no key to deduplicate it on.',
   googleScopes: SHEETS,
@@ -71,6 +72,7 @@ export const GOOGLE_SHEETS_ADD_ROW_V1: ActionSchema = {
 export const GOOGLE_SHEETS_ADD_ROWS_V1: ActionSchema = {
   key: 'google.sheets-add-rows', name: 'Sheets: add rows', version: 1,
   arguments: [spreadsheet, worksheet, json('rows', true)],
+  realSend: 'adds real rows to the sheet',
   sideEffect: true, idempotent: false,
   idempotentBecause: 'An append adds every row again on a repeat; Sheets takes no key to deduplicate it on.',
   googleScopes: SHEETS,
@@ -79,6 +81,7 @@ export const GOOGLE_SHEETS_ADD_ROWS_V1: ActionSchema = {
 export const GOOGLE_SHEETS_UPDATE_CELL_V1: ActionSchema = {
   key: 'google.sheets-update-cell', name: 'Sheets: update a cell', version: 1,
   arguments: [spreadsheet, worksheet, fixed('cell'), json('value', true)],
+  realSend: 'changes a real cell in the sheet',
   sideEffect: true, idempotent: true,
   idempotentBecause: 'It writes the given value into one named cell, so a repeat leaves the cell as one write does.',
   googleScopes: SHEETS,
@@ -92,6 +95,7 @@ export const GOOGLE_SHEETS_GET_SPREADSHEET_V1 = read('google.sheets-get-spreadsh
 export const GOOGLE_SHEETS_CREATE_WORKSHEET_V1: ActionSchema = {
   key: 'google.sheets-create-worksheet', name: 'Sheets: create a worksheet', version: 1,
   arguments: [spreadsheet, value('title', true)],
+  realSend: 'creates a real worksheet',
   sideEffect: true, idempotent: false,
   idempotentBecause: 'A repeat asks for a second worksheet of the same title, which Sheets refuses, so after an uncertain outcome a person decides.',
   googleScopes: SHEETS,
@@ -100,6 +104,7 @@ export const GOOGLE_SHEETS_CREATE_WORKSHEET_V1: ActionSchema = {
 export const GOOGLE_SHEETS_DELETE_ROWS_V1: ActionSchema = {
   key: 'google.sheets-delete-rows', name: 'Sheets: delete rows', version: 1,
   arguments: [spreadsheet, worksheet, json('start_row', true), json('end_row')],
+  realSend: 'deletes real rows from the sheet',
   sideEffect: true, idempotent: false,
   idempotentBecause: 'The rows below move up after a delete, so a repeat deletes different rows.',
   googleScopes: SHEETS,
@@ -108,6 +113,7 @@ export const GOOGLE_SHEETS_DELETE_ROWS_V1: ActionSchema = {
 export const GOOGLE_SHEETS_CLEAR_ROWS_V1: ActionSchema = {
   key: 'google.sheets-clear-rows', name: 'Sheets: clear rows', version: 1,
   arguments: [spreadsheet, worksheet, json('start_row', true), json('end_row')],
+  realSend: 'clears real rows in the sheet',
   sideEffect: true, idempotent: true,
   idempotentBecause: 'Clearing empties the same rows in place and moves nothing, so a repeat leaves them as one clear does.',
   googleScopes: SHEETS,
@@ -119,6 +125,7 @@ export const GOOGLE_GMAIL_SEND_EMAIL_V1: ActionSchema = {
     json('to'), json('cc'), json('bcc'), value('subject'), value('body', true), fixed('body_type', false), value('from_name'), value('from_email'), value('reply_to'),
     value('in_reply_to_message_id'), json('attachments'),
   ],
+  realSend: 'sends a real email',
   sideEffect: true, idempotent: false,
   idempotentBecause: 'A repeat sends the message again; Gmail takes no key to deduplicate a send on.',
   googleScopes: GMAIL,
@@ -133,6 +140,7 @@ export const GOOGLE_CALENDAR_CREATE_EVENT_V1: ActionSchema = {
     value('calendar_id'), value('summary'), value('description'), value('location'), value('start', true), value('end', true), value('time_zone'),
     json('attendees'), fixed('send_updates', false), fixed('visibility', false), json('create_meet_room'),
   ],
+  realSend: 'creates a real calendar event',
   sideEffect: true, idempotent: false,
   idempotentBecause: 'A repeat creates a second event, and invites its attendees again.',
   googleScopes: CALENDAR,
@@ -141,6 +149,7 @@ export const GOOGLE_CALENDAR_CREATE_EVENT_V1: ActionSchema = {
 export const GOOGLE_CALENDAR_DELETE_EVENT_V1: ActionSchema = {
   key: 'google.calendar-delete-event', name: 'Calendar: delete an event', version: 1,
   arguments: [value('calendar_id'), value('event_id', true), fixed('send_updates', false)],
+  realSend: 'deletes a real calendar event',
   sideEffect: true, idempotent: true,
   idempotentBecause: 'A repeat finds the event already deleted (HTTP 410), which it answers as deleted, and sends no second cancellation.',
   googleScopes: CALENDAR,

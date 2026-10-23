@@ -29,6 +29,9 @@ import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
 import { useElapsed } from '@/hooks/useElapsed'
 import JsonTreeView from './JsonTreeView'
+import { TickRow } from '@/components/ui/form'
+import { appActionRealSend, realSendConnectionOf } from '@/lib/app-action-display'
+import { useConnectionName } from './connection-names'
 import type { ReferenceProblem } from '@/lib/reference-validation'
 
 interface Props {
@@ -63,7 +66,7 @@ interface Props {
   onRetryFromFailure?: () => Promise<void>
   // Test a single node. "Build from run" seeds upstream context from the last
   // run; "cold start" runs with only the supplied trigger payload.
-  onNodeTest?: (namespace: string, opts: { triggerPayload: unknown; useLastRun: boolean }) => Promise<void>
+  onNodeTest?: (namespace: string, opts: NodeTestOptions) => Promise<void>
   canBuildFromRun?: boolean
   defaultTestPayload?: unknown
   width: number
@@ -92,6 +95,11 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
+  // A test of a step that changes something in its service sends for real, so it is agreed to first (#2339).
+  // Not a section of its own: the step's form is not built yet (node-type-coverage.test.ts).
+  const sendConnection = realSendConnectionOf(type, data.config)
+  const sendConnectionName = useConnectionName(sendConnection)
+  const realSend = sendConnection === null ? null : appActionRealSend(data.config, sendConnectionName)
   const isCode = type === 'code'
 
   const [showAdvanced, setShowAdvanced] = useState(true)
@@ -499,6 +507,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           namespace={data.namespace ?? ''}
           defaultPayload={defaultTestPayload}
           canBuildFromRun={canBuildFromRun}
+          realSend={realSend}
           onTest={onNodeTest}
         />
       )}
@@ -512,18 +521,30 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
 // "Build from run" seeds the context with the last run's upstream step outputs +
 // trigger payload (editable). "Run cold" runs with only the trigger payload
 // below — for nodes that don't read steps.*. Output renders in StepResults below.
+/** How a node is tested: its payload, whether from the last run, and whether a real send was agreed to (#2339). */
+export interface NodeTestOptions {
+  triggerPayload: unknown
+  useLastRun: boolean
+  confirmSend?: boolean
+}
+
 function NodeTestSection({
   namespace,
   defaultPayload,
   canBuildFromRun,
+  realSend,
   onTest,
 }: {
   namespace: string
   defaultPayload: unknown
   canBuildFromRun: boolean
-  onTest: (namespace: string, opts: { triggerPayload: unknown; useLastRun: boolean }) => Promise<void>
+  /** The tick box's words when testing this step sends for real (appActionRealSend); null when it sends nothing. */
+  realSend: string | null
+  onTest: (namespace: string, opts: NodeTestOptions) => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
+  // Agreed to for one test only: cleared after each, so every real send is agreed to again.
+  const [sendAgreed, setSendAgreed] = useState(false)
   const [payloadText, setPayloadText] = useState(() => JSON.stringify(defaultPayload ?? {}, null, 2))
   const [parseError, setParseError] = useState<string | null>(null)
   const [running, setRunning] = useState<null | 'run' | 'cold'>(null)
@@ -540,7 +561,11 @@ function NodeTestSection({
     }
     setParseError(null)
     setRunning(useLastRun ? 'run' : 'cold')
-    try { await onTest(namespace, { triggerPayload: parsed, useLastRun }) } finally { setRunning(null) }
+    const confirmSend = realSend !== null && sendAgreed
+    try { await onTest(namespace, { triggerPayload: parsed, useLastRun, confirmSend }) } finally {
+      setRunning(null)
+      setSendAgreed(false)
+    }
   }
 
   return (
@@ -564,6 +589,8 @@ function NodeTestSection({
             className="w-full resize-y rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 font-mono text-xs text-gray-800 focus:border-purple-300 focus:outline-none focus:ring-1 focus:ring-purple-200"
           />
           {parseError && <p className="text-xs text-red-600">{parseError}</p>}
+          {/* Balanced so no line ends with one word alone (.impeccable.md's copy rule). */}
+          {realSend !== null && <div className="text-pretty"><TickRow checked={sendAgreed} onChange={setSendAgreed} label={realSend} disabled={running !== null} /></div>}
           <div className="flex items-center gap-2">
             <button
               onClick={() => run(true)}
@@ -576,7 +603,7 @@ function NodeTestSection({
             </button>
             <button
               onClick={() => run(false)}
-              disabled={running !== null}
+              disabled={running !== null || (realSend !== null && !sendAgreed)}
               title="Run this node with only the trigger payload above (no upstream outputs)"
               className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-40"
             >

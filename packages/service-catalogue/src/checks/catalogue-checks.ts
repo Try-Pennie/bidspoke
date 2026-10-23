@@ -51,6 +51,8 @@ export type ProblemCode =
   | 'trait_not_decided'
   | 'idempotent_reason_missing'
   | 'read_not_idempotent'
+  | 'real_send_missing'
+  | 'real_send_on_read'
   | 'argument_duplicate_key'
   | 'argument_depends_on_unknown'
   | 'dropdown_without_source'
@@ -99,6 +101,14 @@ function checkAction(service: ServiceSchema, action: ActionSchema, problems: Pro
   }
   if (action.sideEffect === false && action.idempotent === false) {
     add('read_not_idempotent', `${id} has no side effect, so repeating it changes nothing; it cannot be non idempotent`)
+  }
+  // The canvas asks before a test that sends for real, naming what it sends (#2339).
+  const realSend = typeof action.realSend === 'string' ? action.realSend.trim() : ''
+  if (action.sideEffect === true && realSend === '') {
+    add('real_send_missing', `${id} changes something, so it must say in realSend what a test of it sends for real`)
+  }
+  if (action.sideEffect === false && action.realSend !== undefined) {
+    add('real_send_on_read', `${id} has no side effect, so a test of it asks nothing and it carries no realSend`)
   }
 
   const argKeys = new Set<string>()
