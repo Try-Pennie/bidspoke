@@ -78,6 +78,13 @@ export interface OpsEnv extends OpsDbEnv {
    */
   GOOGLE_DELEGATION_KEY?: string
   /**
+   * The Google sign in app's client JSON (#2338): the client id and secret a
+   * person's own Google account's code exchange and every refresh name, read by
+   * the connection's token object (connections/oauth-apps.ts), never a
+   * connection's login. Unset, every Google sign in is refused by name.
+   */
+  GOOGLE_OAUTH_CLIENT?: string
+  /**
    * Set only during a rotation of the ops key (#2333), in wrangler.ops.toml
    * [vars]: "preview" or "apply" makes the minute cron run resealConnections
    * after each tick (reseal-live.ts). Unset, nothing is resealed.
