@@ -54,7 +54,7 @@ import {
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
   servedConnectionProblem,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
-  type ServedOpsWorkflow, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer,
+  type ServedOpsWorkflow, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
 } from './ops-gateway-contract'
 import { formatErr } from './format-error'
 
@@ -162,6 +162,56 @@ interface TombstoneRow {
   organization_id: string
   generation: number
   removed_at: string
+}
+
+interface VersionRow {
+  workflow_id: string
+  version_number: number
+  definition: unknown
+  workflows: { organization_id: string; lane: string } | null
+}
+
+/**
+ * The definitions of the ops workflow versions the ops tick asks for (#1950),
+ * which it keeps as frozen copies so a run executes its recorded version
+ * through a bidding outage (Dan's decision on #1950, 2026-10-22). A saved
+ * version never changes, so serving it once is enough.
+ *
+ * WHO CALLS IT. The ops minute tick, through OpsGateway.opsWorkflowDefinitions
+ * over its OPS_GATEWAY binding, for at most MAX_DEFINITIONS_PER_REQUEST
+ * versions (parseOpsDefinitionRequest, at the entrypoint). WHOSE DATA. Ops lane
+ * workflows of any organization, each served with its own organization, which
+ * the ops database matches against its copy; a money lane version is never
+ * served, by the inner join's filter and again by the lane check below. One
+ * read per version, each over the (workflow_id, version_number) key. Throws on
+ * a failed read, never serving it as unserved.
+ */
+export async function readOpsWorkflowDefinitions(supabase: SupabaseClient, request: OpsDefinitionRequest): Promise<ServedOpsDefinitions> {
+  const served: ServedOpsDefinitions = { definitions: [], unserved: [] }
+  for (const want of request.versions) {
+    const { data, error } = await supabase
+      .from('workflow_versions')
+      .select('workflow_id, version_number, definition, workflows!inner(organization_id, lane)')
+      .eq('workflow_id', want.workflow_id)
+      .eq('version_number', want.version_number)
+      .eq('workflows.lane', 'ops')
+      .limit(2)
+    if (error) throw new Error(`the ops workflow definitions could not be read (${error.code ?? 'no code'}): ${error.message}`)
+    const rows = (data ?? []) as unknown as VersionRow[]
+    if (rows.length > 1) throw new Error(`the bidding database holds ${rows.length} rows for workflow ${want.workflow_id} version ${want.version_number}`)
+    const row = rows[0]
+    if (row === undefined || row.workflows?.lane !== 'ops' || row.definition === null || typeof row.definition !== 'object' || Array.isArray(row.definition)) {
+      if (row !== undefined && row.workflows?.lane !== 'ops') {
+        console.error(`[ops-gateway] the definition read returned workflow ${want.workflow_id} of lane ${String(row.workflows?.lane)}; not served, because the query's scoping did not hold`)
+      }
+      served.unserved.push({ workflow_id: want.workflow_id, version_number: want.version_number })
+      continue
+    }
+    served.definitions.push({
+      workflow_id: row.workflow_id, organization_id: row.workflows.organization_id, version_number: row.version_number, definition: row.definition as Record<string, unknown>,
+    })
+  }
+  return served
 }
 
 /**
