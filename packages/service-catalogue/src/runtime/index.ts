@@ -13,6 +13,7 @@ export {
   SNOWFLAKE_MAX_RESULT_ROWS, rowObjects, runSnowflakeStatement, snowflakeHost, snowflakeTargetOf,
   type SnowflakeResult, type SnowflakeStatementContext, type SnowflakeTarget,
 } from './snowflake/statement'
+export { ANTHROPIC_VERSION } from './anthropic/call'
 export { RUNTIME_ACTIONS, SERVICE_RUNTIMES } from './registry'
 
 /** The run a step pinned to (key, version) executes, or a named refusal (D1). */
