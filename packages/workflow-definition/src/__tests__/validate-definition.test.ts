@@ -3,6 +3,7 @@ import {
   DEFINITION_RULES,
   DEFINITION_SCHEMA_VERSION,
   blockingProblems,
+  definitionShapeProblems,
   judgeDefinition,
   validateDefinition,
   type DefinitionProblem,
@@ -12,7 +13,8 @@ import {
 
 // validateDefinition (#1947): one pure function composing the validators both
 // apps already share, plus the trigger union, judged by the rules in force at
-// the definition's own schema stamp. Nothing on a write path calls it yet.
+// the definition's own schema stamp. The Worker's write paths call it report
+// only (lib/definition-report.ts), so it refuses nothing yet.
 
 type Node = { id: string; type: string; namespace: string; config?: Record<string, unknown>; label?: string }
 type Edge = { source: string; target: string; source_handle?: string; condition?: unknown }
@@ -187,5 +189,59 @@ describe('blockingProblems', () => {
 
   it('blocks a live save on the live rules too, never on advice or a warning', () => {
     expect(blockingProblems(all, { live: true }).map((p) => p.message)).toEqual(['every_save error', 'live_save error'])
+  })
+})
+
+// The shape check is the one parse every rule reads, and the save routes refuse
+// a definition that fails it with a named 400 (#2190), so a null step reaches
+// no rule and no route answers 500 for it.
+describe('definitionShapeProblems', () => {
+  it.each([
+    ['a definition that is not an object', 'x'],
+    ['a null step', { trigger, nodes: [null], edges: [] }],
+    ['a step that is a number', { trigger, nodes: [5], edges: [] }],
+    ['nodes that are an object', { trigger, nodes: {}, edges: [] }],
+    ['no edges at all', { trigger, nodes: [] }],
+    ['a null edge', { trigger, nodes: [], edges: [null] }],
+  ])('names %s, exactly as validateDefinition does', (_, definition) => {
+    const problems = definitionShapeProblems(definition)
+    expect(problems.length).toBeGreaterThan(0)
+    expect(problems).toEqual(judged(validateDefinition(definition, { lane: 'money' })))
+  })
+
+  it('finds nothing in a definition every rule can read', () => {
+    expect(definitionShapeProblems(clean())).toEqual([])
+  })
+})
+
+// The five saved shapes the #1947 calibration named (2026-10-22), each decided.
+describe('saved shapes measured in production (#1947)', () => {
+  it('a step of the retired integration type is refused by name on every save, never mapped to another type', () => {
+    // One saved version holds one, in a soft deleted workflow, so restoring it is a 404 today.
+    const nodes = [{ id: 'f', type: 'integration', namespace: 'fail_test', config: {} }, response('done')]
+    const problems = judged(validateDefinition(def(nodes, [{ source: 'f', target: 'done' }]), { lane: 'money' }))
+    const blocking = blockingProblems(problems, { live: false })
+    expect(blocking.map((p) => [p.rule, p.reason, p.namespace])).toEqual([['node_type', 'node_type_unknown', 'fail_test']])
+    expect(blocking[0].message).toContain('integration')
+  })
+
+  it('the old webhook spelling is a warning that refuses no save, live or not', () => {
+    const problems = judged(validateDefinition({ ...clean(), trigger: { type: 'webhook', config: { method: 'POST', auth_method: 'api_key' } } }, { lane: 'money' }))
+    expect(problems.map((p) => [p.reason, p.severity])).toEqual([['trigger_legacy_spelling', 'warning']])
+    expect(blockingProblems(problems, { live: true })).toEqual([])
+  })
+
+  it.each([['a string', 'yes'], ['a number', 3], ['an object', { body: 1 }], ['true', true]])(
+    'custom_response holding %s is not judged, because nothing reads it',
+    (_, value) => {
+      const t = { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key', custom_response: value } }
+      expect(judged(validateDefinition({ ...clean(), trigger: t }, { lane: 'money' }))).toEqual([])
+    },
+  )
+
+  it('a money workflow whose stored trigger no money entry point fires is refused on every save, so a run cannot disagree with it', () => {
+    const schedule = { type: 'schedule', config: { interval_seconds: 300, timezone: 'UTC', overlap: 'skip', catch_up: 'none', jitter_max_seconds: 0 } }
+    const problems = judged(validateDefinition({ ...clean(), trigger: schedule }, { lane: 'money' }))
+    expect(blockingProblems(problems, { live: false }).map((p) => p.reason)).toEqual(['trigger_not_on_lane'])
   })
 })
