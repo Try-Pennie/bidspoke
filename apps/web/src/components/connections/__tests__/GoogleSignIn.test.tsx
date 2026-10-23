@@ -88,6 +88,15 @@ describe('Sign in with Google on the add form (R17)', () => {
     expect(s.create).not.toHaveBeenCalled()
   })
 
+  it('Cancel while the link is fetched goes nowhere when it arrives', async () => {
+    let answer: (v: { url: string }) => void = () => {}
+    const { s } = await openOwnAccountForm({ startGoogleSignIn: vi.fn(() => new Promise<{ url: string }>((r) => { answer = r })) })
+    fireEvent.click(within(part('add-form')!).getByRole('button', { name: 'Sign in with Google' }))
+    fireEvent.click(within(part('add-form')!).getByRole('button', { name: 'Cancel' }))
+    await act(async () => answer({ url: LINK }))
+    expect(s.goTo).not.toHaveBeenCalled()
+  })
+
   it('a refusal turns the line red with the Worker\'s own sentence, goes nowhere, and the button is ready again', async () => {
     const { s } = await openOwnAccountForm({
       startGoogleSignIn: vi.fn(async () => { throw refusal('google_sign_in_unset', 'Sign in with Google is not set up on Bidspoke yet. Nothing was saved. Ask Dan to set it up.') }),
@@ -125,6 +134,15 @@ describe('Reconnect of a person\'s own Google account', () => {
     await waitFor(() => expect(s.goTo).toHaveBeenCalledWith(LINK))
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(s.reconnect).not.toHaveBeenCalled()
+  })
+
+  it('Cancel while the link is fetched goes nowhere when it arrives', async () => {
+    let answer: (v: { url: string }) => void = () => {}
+    const { s, dialog } = await openReconnect({ startGoogleSignIn: vi.fn(() => new Promise<{ url: string }>((r) => { answer = r })) })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Sign in with Google' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await act(async () => answer({ url: LINK }))
+    expect(s.goTo).not.toHaveBeenCalled()
   })
 
   it('a refusal stays in the dialog with its sentence', async () => {

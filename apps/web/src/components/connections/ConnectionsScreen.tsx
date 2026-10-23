@@ -288,6 +288,9 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     dispatch({ type: 'save_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'saved') })
     source.startGoogleSignIn({ name: s.add.draft.name }).then(
       (a) => {
+        // A form cancelled, or a newer press, while the link was fetched goes nowhere: its state just expires.
+        const now = latest.current.add
+        if (!now || now.started !== attempt || now.save.kind !== 'saving') return
         dispatch({ type: 'add_closed' })
         setSignInLink(a.url)
       },
@@ -305,6 +308,9 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     dispatch({ type: 'reconnect_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'reconnected') })
     source.startGoogleSignIn({ connection_id: d.id }).then(
       (a) => {
+        // A dialog cancelled while the link was fetched goes nowhere: its state just expires.
+        const now = latest.current.dialog
+        if (now?.kind !== 'reconnect' || now.id !== d.id || now.save.kind !== 'saving' || latest.current.lastChange.reconnect !== attempt) return
         dispatch({ type: 'dialog_closed' })
         setSignInLink(a.url)
       },
