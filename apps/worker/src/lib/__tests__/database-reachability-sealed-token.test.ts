@@ -98,18 +98,19 @@ describe('a row whose sealed token cannot be opened', () => {
     const [conn, channel, payload] = vi.mocked(sendSlackTokenUnreadableAlert).mock.calls[0]
     expect(conn.bot_token).toBe('copy-bad-token')
     expect(channel).toBe('#bad')
-    expect(payload).toMatchObject({ reason: 'slack_token_undecryptable', fellBackToPlaintext: false })
+    expect(payload).toMatchObject({ reason: 'slack_token_undecryptable' })
     expect(JSON.stringify(payload)).not.toMatch(/bot-token/)
     expect(logs.some((l) => l.includes('slack_token_undecryptable') && l.includes(BAD))).toBe(true)
   })
 
-  it('with the plaintext beside it, the org is written from the plaintext and still paged', async () => {
-    const kv = await kvWithCopy({})
+  // #2331's contract release: the plaintext is never read, so it never reaches the copy.
+  it('with the plaintext beside it, the copy keeps the carried entry, never the plaintext, and the org is paged', async () => {
+    const kv = await kvWithCopy({ [BAD]: { bot_token: 'copy-bad-token', default_channel: '#bad' } })
     await runDatabaseReachabilityProbe(probeDeps(kv, T0, [await badRow('plain-bad-token')]))
     const copy = await readSlackCopy(kv, TEST_KEY)
-    expect(copy.kind === 'read' && copy.connections.get(BAD)?.bot_token).toBe('plain-bad-token')
+    expect(copy.kind === 'read' && copy.connections.get(BAD)?.bot_token).toBe('copy-bad-token')
     expect(sendSlackTokenUnreadableAlert).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(sendSlackTokenUnreadableAlert).mock.calls[0][2]).toMatchObject({ fellBackToPlaintext: true })
+    expect(vi.mocked(sendSlackTokenUnreadableAlert).mock.calls[0][0].bot_token).toBe('copy-bad-token')
   })
 
   it('pages once per cooldown, not every minute', async () => {
