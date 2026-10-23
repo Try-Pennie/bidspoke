@@ -4,7 +4,7 @@
  *
  * Nothing acts on bid_mode, and its column is dropped
  * (20261016220000_drop_partner_bid_mode_2182.sql). A create never names it, and
- * a create, a save or a page save that names it is refused by name before
+ * a create or a page save that names it is refused by name before
  * anything is read or written, so a stale client is told which field to leave
  * out rather than reaching the database at all.
  */
@@ -76,15 +76,6 @@ describe('bid_mode is no longer written by any partner route (#2182)', () => {
     expect(partnerCalls(sb).filter(([m]) => m === 'insert')).toEqual([])
   })
 
-  it('PUT naming bid_mode is refused by name with 400, as the function refuses a field it may not write, and nothing is read or saved', async () => {
-    const { sb, rpc } = supabase()
-    const res = await call('PUT', '/partners/p-1', { name: 'Renamed', bid_mode: 'commit', expected_version: 4, save_id: SAVE_ID })
-    expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'field_not_editable', field: 'bid_mode', message: RETIRED_MESSAGE })
-    expect(rpc).not.toHaveBeenCalled()
-    expect(partnerCalls(sb)).toEqual([])
-  })
-
   it('PUT /page with bid_mode in its patch is refused by name with 422 on that field, and nothing is read or saved', async () => {
     const { sb, rpc } = supabase()
     const res = await call('PUT', '/partners/p-1/page', { expected_partner_version: 4, patch: { name: 'Renamed', bid_mode: 'ping_only' }, save_id: SAVE_ID })
@@ -99,9 +90,9 @@ describe('bid_mode is no longer written by any partner route (#2182)', () => {
   })
 
   it('a save that does not name bid_mode is unaffected', async () => {
-    const { rpc } = supabase({ id: 'p-1', name: 'Renamed', version: 5 })
-    const res = await call('PUT', '/partners/p-1', { name: 'Renamed', expected_version: 4, save_id: SAVE_ID })
+    const { rpc } = supabase({ partner: { id: 'p-1', name: 'Renamed', version: 5 }, profile: null, partner_version: 5, profile_version: 0 })
+    const res = await call('PUT', '/partners/p-1/page', { expected_partner_version: 4, patch: { name: 'Renamed' }, save_id: SAVE_ID })
     expect(res.status).toBe(200)
-    expect(rpc.mock.calls[0]?.[0]).toBe('save_partner_config')
+    expect(rpc.mock.calls[0]?.[0]).toBe('save_partner_page')
   })
 })

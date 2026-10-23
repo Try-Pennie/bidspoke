@@ -151,15 +151,17 @@ The planning list is [TODO.md](./TODO.md) (#2606): read it before work on anythi
   `__guards__/worker/workflow-connection-check-guard.test.ts` fails on one that does not.
   What counts as naming a connection is the one database predicate
   `definition_connection_ids`, which `connection_references` reads too.
-- Partner saves are versioned (#2132). The partner edit route (`PUT /api/partners/:id`)
-  writes through the `save_partner_config` function, which writes just the fields a save
+- Partner saves are versioned (#2132). The partners page saves through
+  `PUT /api/partners/:id/page` (#2133), whose `save_partner_page` function writes the
+  partner half through the `save_partner_config` function, which writes just the fields a save
   names and refuses one made from a version that is no longer stored (409 `stale_version`,
   carrying the current row and who last changed it). Other writers (a step rename's
   `rename_partner_step_namespace`, hand run SQL) do not go through it, which is why the
   `partner_configs_bump_version` trigger, not the function, moves `version`: every writer
   moves it. The columns it ignores are the ones `partner_configs_unversioned_columns()`
   lists, which the audit trigger reads too. A 428 `reload_required` means the page was
-  opened before versioned saves shipped, so it must be reloaded.
+  opened before the save it sends was retired, so it must be reloaded: the old
+  `PUT /api/partners/:id` and `PUT /api/partners/:id/buyer-profile` answer only that (#2187).
 - How soon bidding sees a partner change, from ANY writer, is `BIDDING_PICKUP`
   (`apps/web/src/lib/bidding-pickup.ts`), whose doc comment holds the method and the
   measured figures, and which `__guards__/worker/bidding-pickup-bound.test.ts` re-derives
