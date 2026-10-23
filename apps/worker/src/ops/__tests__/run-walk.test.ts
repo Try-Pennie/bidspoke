@@ -137,5 +137,20 @@ describe('walkOpsDefinition', () => {
   it('refuses a definition with no steps or no entry, by name', async () => {
     expect(await walkOpsDefinition({ nodes: [], edges: [] }, runCtx().ctx, {})).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/no step/) })
     expect(await walkOpsDefinition({ nope: true }, runCtx().ctx, {})).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/nodes and edges/) })
+    // Every step is some edge's target and no edge leaves the trigger, so nothing is first.
+    const circle = { nodes: [node('a', 'action_a'), node('b', 'action_a')], edges: [edge('a', 'b'), edge('b', 'a')] }
+    expect(await walkOpsDefinition(circle, runCtx().ctx, { action_a: recorder().handler })).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/no entry/) })
+  })
+
+  it('routes by _route only for the in memory routing steps, never by a handler\'s output, which an outside answer fills', async () => {
+    const r = recorder()
+    const def = {
+      nodes: [node('call', 'action_a'), node('wired', 'action_b'), node('steered', 'action_b')],
+      edges: [edge('trigger', 'call'), edge('call', 'wired'), edge('call', 'steered', 'evil')],
+    }
+    const answering: OpsStepHandler = async () => ({ output: { _route: 'evil', from: 'a partner' } })
+    const end = await walkOpsDefinition(def, runCtx().ctx, { action_a: answering, action_b: r.handler })
+    expect(end).toEqual({ outcome: 'done' })
+    expect(r.seen.map((s) => s.node)).toEqual(['wired'])
   })
 })
