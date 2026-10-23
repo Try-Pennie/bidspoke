@@ -42,6 +42,7 @@ export function fakeSlack(target: unknown = TARGET): FakeSlack {
     signal: controller.signal,
     target: target as ActionContext['target'],
     sleep: () => Promise.reject(new Error('a Slack action never waits')),
+    requestId: '00000000-0000-8000-8000-000000000001',
   }
   return { ctx, sent, respond: (...answers) => queue.push(...answers) }
 }

@@ -14,9 +14,22 @@ import { ActionFailure } from '../failure'
  * not shared with it: that path is the bidding Worker's export, which stays
  * exactly as it is (#2337), and its resubmits, logging and budgets are its own.
  *
- * WHAT IT DOES NOT DO. It never resubmits. A send that failed is the executor's
- * to judge (failure.ts), and once a statement has run, a failure reading its
- * result is `applied`, so nothing can repeat it. A NULL bind is not offered,
+ * THE REQUEST ID (#2339, comment of 2026-10-22). A step's statement carries the
+ * step's stable request id (ctx.requestId: the ops executor derives it from the
+ * run, the node and the send, the same on every attempt of the run) with
+ * retry=true, Snowflake's documented resend contract: a statement sent again
+ * with the same requestId and retry=true is not run again once it has run
+ * successfully. So when a send's answer is lost (a timeout, a dropped
+ * connection), the run may be tried again and send it again, and Snowflake runs
+ * it at most once; the actions are idempotent for that reason. retry=true rides
+ * on the first send too, because a run cannot know whether an earlier attempt's
+ * send landed; an id Snowflake has not seen is run as a new statement. A caller
+ * with no step (the ops verify probe) passes no id, and each statement gets a
+ * fresh one, sent once.
+ *
+ * WHAT IT DOES NOT DO. It never resubmits itself. A send that failed is the
+ * executor's to judge (failure.ts), and once a statement has run, a failure
+ * reading its result is `applied`. A NULL bind is not offered,
  * because Snowflake's documentation does not say how to send one: an insert
  * writes NULL as a literal instead (snowflake.insert-multiple-rows).
  */
@@ -72,6 +85,8 @@ export interface SnowflakeStatementContext {
   readonly fetch: (input: string, init?: RequestInit) => Promise<Response>
   readonly signal?: AbortSignal
   readonly sleep: (ms: number) => Promise<void>
+  /** A step's stable request id, sent with retry=true (the top of this file). Absent outside a step. */
+  readonly requestId?: string
 }
 
 export interface SnowflakeStatementRequest {
@@ -205,7 +220,10 @@ export async function runSnowflakeStatement(
   }
 
   // Whatever the connection bound fetch throws here is passed on unchanged (failure.ts).
-  let res = await ctx.fetch(`${base}?requestId=${crypto.randomUUID()}`, {
+  const send = ctx.requestId === undefined
+    ? `${base}?requestId=${crypto.randomUUID()}`
+    : `${base}?requestId=${encodeURIComponent(ctx.requestId)}&retry=true`
+  let res = await ctx.fetch(send, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(body),

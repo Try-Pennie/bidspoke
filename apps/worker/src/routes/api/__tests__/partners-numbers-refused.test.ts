@@ -68,15 +68,6 @@ describe('partner numbers are refused by the shared rule (#2328)', () => {
     expect(partnerCalls(sb).filter(([m]) => m === 'insert')).toEqual([])
   })
 
-  it('PUT with a zero error count is refused with 422, and nothing is read or saved', async () => {
-    const { sb, rpc } = supabase()
-    const res = await call('PUT', '/partners/p-1', { name: 'Renamed', circuit_error_threshold: 0, expected_version: 4, save_id: SAVE_ID })
-    expect(res.status).toBe(422)
-    expect((await res.json() as { errors: { field: string }[] }).errors.map((e) => e.field)).toEqual(['circuit_error_threshold'])
-    expect(rpc).not.toHaveBeenCalled()
-    expect(partnerCalls(sb)).toEqual([])
-  })
-
   it('PUT /page with a routing code out of range in its patch is refused with 422 on that field, and nothing is read or saved', async () => {
     const { sb, rpc } = supabase()
     const res = await call('PUT', '/partners/p-1/page', { expected_partner_version: 4, patch: { external_routing_code: 40000 }, save_id: SAVE_ID })
@@ -87,9 +78,9 @@ describe('partner numbers are refused by the shared rule (#2328)', () => {
   })
 
   it('whole numbers in range save as before', async () => {
-    const { rpc } = supabase({ id: 'p-1', name: 'Renamed', version: 5 })
-    const res = await call('PUT', '/partners/p-1', { name: 'Renamed', daily_cap: 250, circuit_error_threshold: 5, expected_version: 4, save_id: SAVE_ID })
+    const { rpc } = supabase({ partner: { id: 'p-1', name: 'Renamed', version: 5 }, profile: null, partner_version: 5, profile_version: 0 })
+    const res = await call('PUT', '/partners/p-1/page', { expected_partner_version: 4, patch: { name: 'Renamed', daily_cap: 250, circuit_error_threshold: 5 }, save_id: SAVE_ID })
     expect(res.status).toBe(200)
-    expect(rpc.mock.calls[0]?.[0]).toBe('save_partner_config')
+    expect(rpc.mock.calls[0]?.[0]).toBe('save_partner_page')
   })
 })

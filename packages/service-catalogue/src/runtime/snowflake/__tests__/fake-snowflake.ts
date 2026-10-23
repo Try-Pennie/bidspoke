@@ -18,6 +18,10 @@ export type Answer = Response | Error | (() => Response)
 
 export const TARGET = { account: 'ab12345.us-east-1', user: 'ops_reader', warehouse: 'ops_wh', role: 'ops_role' }
 export const STATEMENTS_URL = 'https://ab12345.us-east-1.snowflakecomputing.com/api/v2/statements'
+/** The step's stable request id the fake's context carries, as the ops executor hands one to every action. */
+export const STEP_REQUEST_ID = '6f1c2a3b-4d5e-8f60-9172-83a4b5c6d7e8'
+/** Where a step's statement is sent: its stable id, with retry=true. */
+export const STEP_STATEMENT_URL = `${STATEMENTS_URL}?requestId=${STEP_REQUEST_ID}&retry=true`
 
 export interface FakeSnowflake {
   readonly ctx: ActionContext
@@ -47,6 +51,7 @@ export function fakeSnowflake(target: unknown = TARGET): FakeSnowflake {
     sleep: async (ms: number) => {
       slept.push(ms)
     },
+    requestId: STEP_REQUEST_ID,
   }
   return { ctx, sent, slept, controller, respond: (...answers) => queue.push(...answers) }
 }
