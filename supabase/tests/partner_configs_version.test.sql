@@ -22,6 +22,9 @@
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
 
+-- Profile saves go through save_partner_page (helpers/save_profile.sql, #2187).
+\i /sql-suite-fixtures/tests/save_profile.sql
+
 DO $do$
 BEGIN
   DELETE FROM public.buyer_pricing_tiers WHERE organization_id IN ('11111111-1111-1111-1111-111111112132', '11111111-1111-1111-1111-111111112133');
@@ -50,7 +53,7 @@ INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_typ
 VALUES ('33333333-3333-3333-3333-333333332134', '11111111-1111-1111-1111-111111112132', 'Profile Buyer', 'profile-buyer-2132', 'buyer', true, '22222222-2222-2222-2222-22222222213a', 'alice@example.test');
 DO $do$
 BEGIN
-  PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111112132', '33333333-3333-3333-3333-333333332134', 0,
+  PERFORM pg_temp.save_profile('11111111-1111-1111-1111-111111112132', '33333333-3333-3333-3333-333333332134', 0,
     '{"sold_on":"offer","is_enabled":false,"priority":1,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[],"blackout_dates":[],"tiers":[{"population":"engine","debt_from":10000,"debt_to":null,"multiplier":0.01}]}'::jsonb,
     '22222222-2222-2222-2222-22222222213a', 'alice@example.test');
 END
@@ -148,16 +151,16 @@ BEGIN
 END
 $do$;
 
--- ── 8. save_buyer_profile still moves its own version exactly once ────────────
+-- ── 8. A profile save moves the profile version exactly once ─────────────────
 DO $do$
 DECLARE v0 integer; v1 integer;
 BEGIN
   SELECT version INTO v0 FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333332134';
-  PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111112132', '33333333-3333-3333-3333-333333332134', v0,
+  PERFORM pg_temp.save_profile('11111111-1111-1111-1111-111111112132', '33333333-3333-3333-3333-333333332134', v0,
     '{"sold_on":"offer","is_enabled":false,"priority":2,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[],"blackout_dates":[],"tiers":[{"population":"engine","debt_from":10000,"debt_to":null,"multiplier":0.01}]}'::jsonb,
     '22222222-2222-2222-2222-22222222213a', 'alice@example.test');
   SELECT version INTO v1 FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333332134';
-  IF v1 IS DISTINCT FROM v0 + 1 THEN RAISE EXCEPTION 'save_buyer_profile should move the version from % to %, is %', v0, v0 + 1, v1; END IF;
+  IF v1 IS DISTINCT FROM v0 + 1 THEN RAISE EXCEPTION 'a profile save should move the version from % to %, is %', v0, v0 + 1, v1; END IF;
   INSERT INTO suite_cases(name) VALUES ('profile save bumps once');
 END
 $do$;

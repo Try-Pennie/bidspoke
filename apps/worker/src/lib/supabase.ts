@@ -18,7 +18,7 @@ import { withCancellationRecord } from './query-cancellations'
 // Reads stay allowed, and so do the rpcs on the READ ONLY list in
 // read-only-rpcs.json (#1409, L96). The old rule let every rpc through on the
 // claim that all of them read; record_archive_day_measurement already wrote,
-// and save_buyer_profile is a user facing write path, so the rule is now an
+// and save_partner_page is a user facing write path, so the rule is now an
 // allowlist: a mutating rpc, or one nobody has classified, is refused with the
 // same message as a blocked insert. auth_user_with_allowlist runs on every
 // authenticated request and is on the read only list, so local dev stays usable.

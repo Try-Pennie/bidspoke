@@ -147,7 +147,7 @@ interface ProfileRow {
   daily_lead_cap: number | null
   hourly_spend_cap_cents: number | null
   daily_spend_cap_cents: number | null
-  /** A click buyer's delivery (#1639); its structure is refused on save by save_buyer_profile. */
+  /** A click buyer's delivery (#1639); its structure is refused on save by save_partner_page. */
   click_delivery: ClickDeliveryDocument | null
   updated_at: string
   partner_configs: LoadedBuyerPartner & { accept_signals: unknown; duplicate_signals: unknown }

@@ -25,6 +25,9 @@
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
 
+-- Profile saves go through save_partner_page (helpers/save_profile.sql, #2187).
+\i /sql-suite-fixtures/tests/save_profile.sql
+
 DO $do$
 BEGIN
   DELETE FROM public.buyer_pricing_tiers WHERE organization_id = '11111111-1111-1111-1111-000021430001';
@@ -50,7 +53,7 @@ BEGIN
     INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_type, is_active, accept_signals, updated_by, updated_by_email, updated_by_name)
     VALUES (format('33333333-3333-3333-3333-00002143000%s', n)::uuid, '11111111-1111-1111-1111-000021430001', format('Zone Buyer %s', n), format('zone-buyer-2143-%s', n),
             'buyer', true, '[{"field":"ok","equals":true}]'::jsonb, '22222222-2222-2222-2222-00002143000a', 'erin@example.test', 'Erin Suite');
-    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-000021430001', format('33333333-3333-3333-3333-00002143000%s', n)::uuid, 0,
+    PERFORM pg_temp.save_profile('11111111-1111-1111-1111-000021430001', format('33333333-3333-3333-3333-00002143000%s', n)::uuid, 0,
       '{"sold_on":"offer","is_enabled":false,"priority":1,"allowed_states":["CA"],"windows":[{"day_of_week":1,"opens_minute":540,"closes_minute":1020}],"blackout_dates":[],"tiers":[]}'::jsonb,
       '22222222-2222-2222-2222-00002143000a', 'erin@example.test');
   END LOOP;
@@ -137,7 +140,7 @@ BEGIN
     RAISE EXCEPTION 'case 3: a page save without the key left %', out -> 'profile' -> 'display_time_zone';
   END IF;
   SELECT version INTO v_version FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-000021430002';
-  PERFORM public.save_buyer_profile('11111111-1111-1111-1111-000021430001', '33333333-3333-3333-3333-000021430002', v_version,
+  PERFORM pg_temp.save_profile('11111111-1111-1111-1111-000021430001', '33333333-3333-3333-3333-000021430002', v_version,
     '{"sold_on":"offer","is_enabled":false,"priority":3,"allowed_states":["CA"],"windows":[{"day_of_week":1,"opens_minute":540,"closes_minute":1020}],"blackout_dates":[],"tiers":[]}'::jsonb,
     '22222222-2222-2222-2222-00002143000a', 'erin@example.test');
   IF (SELECT display_time_zone FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-000021430002') IS DISTINCT FROM 'America/Denver' THEN
