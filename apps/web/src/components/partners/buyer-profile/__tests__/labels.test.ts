@@ -140,7 +140,7 @@ describe('click delivery words (#1639)', () => {
 })
 
 /**
- * #1672: the history reads audit_log rows that save_buyer_profile writes through
+ * #1672: the history reads audit_log rows that save_partner_page writes through
  * buyer_profile_flatten, whose paths are DOTTED (`windows.1.660`), not the
  * bracket keys diff.ts uses for the conflict view (`windows[1:660]`). The rows
  * below are copied from real audit_log changes (read 2026-10-02): Liberty1's

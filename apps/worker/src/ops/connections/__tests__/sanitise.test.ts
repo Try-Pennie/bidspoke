@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { REDACTED, isTokenName, sanitiseRequest, scrubSecrets, secretsOfLogin } from '../sanitise'
+import { REDACTED, credentialSecretsOfLogin, isTokenName, sanitiseRequest, scrubResponse, scrubSecrets, secretsOfLogin } from '../sanitise'
 
 /**
  * The request sanitiser (#2335, finding F120). What a connection bound request
@@ -113,5 +113,70 @@ describe('sanitiseRequest', () => {
   it('records the method upper case and the attempt', () => {
     const recorded = sanitiseRequest({ method: 'patch', url: 'https://api.example.test/x', headers: new Headers(), body: undefined }, [], 2)
     expect(recorded).toEqual({ method: 'PATCH', url: 'https://api.example.test/x', headers: {}, body: null, attempt: 2 })
+  })
+})
+
+// #2339: a service that echoes the login it was sent (in a body, an error text
+// or a header) must not hand it to the action that called it, whose output and
+// error a run stores and logs.
+describe('credentialSecretsOfLogin', () => {
+  it('takes the whole login and every value under a credential named key, at any depth', () => {
+    const login = JSON.stringify({ api_key: TOKEN, nested: { refresh_token: 'refresh-0002-abcdef', private_key: 'canary key line one\ncanary key line two\n' } })
+    const secrets = credentialSecretsOfLogin(login)
+    expect(secrets).toEqual(expect.arrayContaining([login, TOKEN, 'refresh-0002-abcdef', 'canary key line one\ncanary key line two\n']))
+  })
+
+  it('leaves the public fields of a login alone, so a response naming the same domain or account is not mangled', () => {
+    const google = JSON.stringify({
+      type: 'service_account', project_id: 'pennie-ops-1234', private_key: 'canary signing key line one\ncanary signing key line two\n',
+      client_email: 'ops@pennie-ops-1234.iam.gserviceaccount.com', client_id: '1234567890123', universe_domain: 'googleapis.com',
+    })
+    const secrets = credentialSecretsOfLogin(google)
+    for (const open of ['service_account', 'pennie-ops-1234', 'ops@pennie-ops-1234.iam.gserviceaccount.com', '1234567890123', 'googleapis.com']) {
+      expect(secrets, open).not.toContain(open)
+    }
+  })
+
+  it('takes a plain text login whole', () => {
+    expect(credentialSecretsOfLogin(TOKEN)).toEqual([TOKEN])
+  })
+})
+
+describe('scrubResponse', () => {
+  const bytes = async (r: Response) => new Uint8Array(await r.arrayBuffer())
+
+  it('removes a known secret from the body as written, URL encoded and JSON escaped, and from every header', async () => {
+    const key = 'line-one-secret\nline-two-secret'
+    const echoed = new Response(`{"echo":"Bearer ${TOKEN}","q":"${encodeURIComponent(TOKEN)}","key":${JSON.stringify(key)}}`, {
+      status: 401, statusText: 'Unauthorized', headers: { 'www-authenticate': `Bearer realm="x", token="${TOKEN}"`, 'x-request-id': 'r-1' },
+    })
+    const clean = await scrubResponse(echoed, [TOKEN, key])
+    expect([clean.status, clean.statusText]).toEqual([401, 'Unauthorized'])
+    expect(await clean.text()).toBe(`{"echo":"Bearer ${REDACTED}","q":"${REDACTED}","key":"${REDACTED}"}`)
+    expect(clean.headers.get('www-authenticate')).toBe(`Bearer realm="x", token="${REDACTED}"`)
+    expect(clean.headers.get('x-request-id')).toBe('r-1')
+  })
+
+  it('keeps every other byte of a binary body exactly, and drops the length the scrub may have changed', async () => {
+    const head = [0xff, 0xfe, 0x00, 0x80]
+    const tail = [0xc3, 0x28, 0x01]
+    const body = new Uint8Array([...head, ...new TextEncoder().encode(TOKEN), ...tail])
+    const clean = await scrubResponse(new Response(body, { headers: { 'content-length': String(body.byteLength), 'content-type': 'application/octet-stream' } }), [TOKEN])
+    expect([...await bytes(clean)]).toEqual([...head, ...new TextEncoder().encode(REDACTED), ...tail])
+    expect(clean.headers.get('content-length')).toBeNull()
+    expect(clean.headers.get('content-type')).toBe('application/octet-stream')
+  })
+
+  it('removes every occurrence, back to back ones included, and leaves a near miss that shares only its start', async () => {
+    const near = TOKEN.slice(0, -1)
+    const clean = await scrubResponse(new Response(`${TOKEN}${TOKEN} ${near}x ${TOKEN}`), [TOKEN])
+    expect(await clean.text()).toBe(`${REDACTED}${REDACTED} ${near}x ${REDACTED}`)
+  })
+
+  it('answers a body with no secret in it byte for byte, and a bodiless answer as bodiless', async () => {
+    const body = new Uint8Array([0, 1, 2, 250, 251])
+    expect([...await bytes(await scrubResponse(new Response(body), [TOKEN]))]).toEqual([...body])
+    const none = await scrubResponse(new Response(null, { status: 204 }), [TOKEN])
+    expect([none.status, none.body]).toEqual([204, null])
   })
 })

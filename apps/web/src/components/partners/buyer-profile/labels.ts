@@ -167,7 +167,7 @@ export const formatWhole = (n: number): string => whole.format(n)
  * The two spellings of a row path (#1672). flattenProfileDocument (diff.ts)
  * keys a row in brackets and values it by the whole row: `windows[1:660]`,
  * `blackout_dates[2026-12-25]`, `tiers[engine:10000]`. The history reads
- * audit_log, which save_buyer_profile fills through buyer_profile_flatten, and
+ * audit_log, which save_partner_page fills through buyer_profile_flatten, and
  * that keys a row in dots and values it by ONE field of the row: `windows.1.660`
  * holds the closing minute, `blackout_dates.2026-12-25` holds the note, and a
  * tier is two paths, `tiers.engine.10000.multiplier` and `.debt_to`. Both are

@@ -39,7 +39,12 @@
  *     429 means still running), when the response is handed back. The service's declared
  *     expiry signal renews the token once and retries once; a second is
  *     needs_reauth. A body that can be read only once is never sent twice.
- *  7. For Salesforce, the latest response's Sforce-Limit-Info is the org's
+ *  7. The response handed back has every known secret scrubbed from its headers
+ *     and body (sanitise.ts scrubResponse, #2339): the token the auth applied
+ *     and the login's credential values, so a service echoing them in an answer
+ *     or an error text cannot put them into a step output or a run's error.
+ *     Read whole within the deadline; a binary body keeps every other byte.
+ *  8. For Salesforce, the latest response's Sforce-Limit-Info is the org's
  *     budget reading (#2336, ./sf-budget-reading.ts), handed to recordSfBudget
  *     beside the lease release, for a committed copy whose lease came from its
  *     measured org's pool. Bounded by SF_BUDGET_READING_DEADLINE_MS and caught:
@@ -79,7 +84,7 @@ import {
   NON_STEP_LEASE_OUTCOMES, SF_LEASE_PURPOSES, type NonStepLeaseOutcome, type RefreshOutcome, type SfLeaseOutcome, type SfLeasePurpose,
 } from '../run-vocabulary'
 import { ConnectionRefusal, LoginMintError, RequeueAt, type ConnectionRefusalCode, type MintFailureReason } from './refusals'
-import { isCredentialHeader, sanitiseRequest, scrubSecrets, secretsOfLogin, type RecordedRequest } from './sanitise'
+import { credentialSecretsOfLogin, isCredentialHeader, sanitiseRequest, scrubResponse, scrubSecrets, secretsOfLogin, type RecordedRequest } from './sanitise'
 import { parseSforceLimitInfo, SF_BUDGET_READING_DEADLINE_MS } from './sf-budget-reading'
 import type { Authorization, AuthorizeInput, OpenedLogin, ServiceRules } from './service-rules'
 
@@ -718,7 +723,17 @@ async function sendWithRenewal(
     } catch {
       expired = false
     }
-    if (!expired) return response
+    if (!expired) {
+      // A service that echoes the login (a body, an error text, a header) must not hand it to
+      // the caller, whose output and errors a run stores and logs (#2339). Read within the deadline.
+      const echoable = [...credentialSecretsOfLogin(login.plaintext), ...auth.secrets, ...(rejected?.secrets ?? [])]
+      try {
+        return await beforeDeadline(scrubResponse(response, echoable), deadline)
+      } catch {
+        throw deadlineRefusal(deadline, `reading the answer to the ${method} request`, secrets)
+          ?? refusal('connection_network_error', `the answer to the ${method} request to ${new URL(url).hostname} could not be read`, secrets)
+      }
+    }
     discard(response)
     if (attempt === 2) return needsReauth(deps, call, resolved, NEEDS_REAUTH_CAUSES.refusedAfterRenew, secrets)
     if (singleUse) throw refusal('connection_body_not_resendable', `the token expired on a ${method} whose body can be sent only once`, secrets)

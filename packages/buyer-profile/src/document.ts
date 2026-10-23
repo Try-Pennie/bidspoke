@@ -1,6 +1,6 @@
 /**
  * The buyer profile DOCUMENT (#1412): the wire shape the API and the partner
- * form exchange, and the shape save_buyer_profile and buyer_profile_document
+ * form exchange, and the shape save_partner_page and buyer_profile_document
  * return. snake_case, windows and blackout dates with notes, tiers. The
  * evaluator reads BuyerProfile (camelCase, no notes); documentToProfile is the
  * one mapping between them, so the form's worked example, the API's validation
@@ -60,7 +60,7 @@ export interface BuyerProfileDocument {
   /**
    * A click buyer's delivery (#1639). Null clears it. ABSENT means the sender
    * did not speak about it (a form or Worker from before it existed), and
-   * save_buyer_profile keeps what is stored, so it is never blanked by omission.
+   * save_partner_page keeps what is stored, so it is never blanked by omission.
    */
   click_delivery?: ClickDeliveryDocument | null
   /**

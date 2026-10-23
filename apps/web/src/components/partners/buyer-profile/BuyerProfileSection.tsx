@@ -110,7 +110,7 @@ interface Props {
   /**
    * Why the kind cannot be switched now, or null when it can (#1541): a stored
    * profile with pricing or accept rules stored keeps its kind until they are
-   * removed and saved. save_buyer_profile refuses the same switch.
+   * removed and saved. save_partner_page refuses the same switch.
    */
   soldOnLock: string | null
 }

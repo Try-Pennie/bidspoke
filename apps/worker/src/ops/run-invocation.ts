@@ -133,11 +133,16 @@ export interface RunContext {
   send<T>(step: StepSend<T>): Promise<{ status: number; value: T }>
 }
 
-/** What a body may end its run with. */
+/**
+ * What a body may end its run with. needs_human is a send that was answered
+ * whose step still cannot tell whether what it asked for was applied (#2339:
+ * an action's outcome unknown after a non idempotent send); a person resolves it.
+ */
 export type RunBodyEnd =
   | { outcome: 'done' }
   | { outcome: 'failed'; reason?: HolderFailedReason; error?: string }
   | { outcome: 'retry'; error?: string; notBefore?: Date }
+  | { outcome: 'needs_human'; reason: 'send_outcome_unknown'; error?: string }
 
 export type RunBody = (ctx: RunContext) => Promise<RunBodyEnd>
 
@@ -478,7 +483,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
   } else if (result.kind === 'returned') {
     const b = result.end
     if (b.outcome === 'done') end = { outcome: 'done' }
-    else if (b.outcome === 'failed') end = b
+    else if (b.outcome === 'failed' || b.outcome === 'needs_human') end = b
     else end = retryOr(b.error ?? 'the run asked to be retried', b.notBefore)
   } else if (result.kind === 'threw') {
     end = retryOr(formatErr(result.error))

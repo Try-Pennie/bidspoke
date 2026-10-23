@@ -35,7 +35,7 @@ export interface ClickDeliveryDocument {
 
 /**
  * The evaluator's shape from a stored or sent delivery. It never throws: a value
- * written around save_buyer_profile could be malformed, and one buyer's bad row
+ * written around save_partner_page could be malformed, and one buyer's bad row
  * must not fail the read every buyer shares. What is malformed is carried as
  * something the shared rules refuse (no routes, an unset reply, a state list of
  * nothing), so buyer_click_send fails that buyer by name instead.

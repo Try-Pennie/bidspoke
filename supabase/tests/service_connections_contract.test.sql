@@ -2,8 +2,8 @@
 -- migration 20261019150000.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
--- by replaying every migration from empty, never production. The tokens and the
--- ciphertexts below are planted placeholders, not credentials.
+-- by replaying every migration from empty, never production. The ciphertexts
+-- below are planted placeholders, not credentials.
 --
 -- WHAT IT PROVES:
 --   A. The old UNIQUE (organization_id, service_type) is gone and the new
@@ -109,7 +109,7 @@ BEGIN
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
   VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'slack', 'bot_token', NULL,
-          '{"bot_token":"planted-bot-token-2334","default_channel":"#alerts"}', 'planted-ciphertext-2334-c', 'bidding_ring',
+          '{"default_channel":"#alerts"}', 'planted-ciphertext-2334-c', 'bidding_ring',
           '22222222-2222-2222-2222-22222222334a', 'scc2332@example.test')
   ON CONFLICT (organization_id, service_type, name) DO UPDATE SET
     auth_type = EXCLUDED.auth_type, cf_secret_key = EXCLUDED.cf_secret_key, config = EXCLUDED.config,
@@ -120,7 +120,7 @@ BEGIN
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
   VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'slack', 'bot_token', NULL,
-          '{"bot_token":"planted-bot-token-2334","default_channel":"#alerts-2"}', 'planted-ciphertext-2334-d', 'bidding_ring',
+          '{"default_channel":"#alerts-2"}', 'planted-ciphertext-2334-d', 'bidding_ring',
           '22222222-2222-2222-2222-22222222334a', 'scc2332@example.test')
   ON CONFLICT (organization_id, service_type, name) DO UPDATE SET
     auth_type = EXCLUDED.auth_type, cf_secret_key = EXCLUDED.cf_secret_key, config = EXCLUDED.config,
@@ -148,7 +148,7 @@ BEGIN
     INSERT INTO public.service_connections
       (organization_id, service_type, auth_type, cf_secret_key, config, credential_enc, sealed_for)
     VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'bot_token', '',
-            '{"bot_token":"planted-bot-token-2334","default_channel":"#old"}', 'planted-ciphertext-2334-e', 'bidding_ring')
+            '{"default_channel":"#old"}', 'planted-ciphertext-2334-e', 'bidding_ring')
     ON CONFLICT (organization_id, service_type) DO UPDATE SET config = EXCLUDED.config;
   EXCEPTION WHEN OTHERS THEN
     state := SQLSTATE;

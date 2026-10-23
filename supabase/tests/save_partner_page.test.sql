@@ -16,29 +16,22 @@
 -- number written there (L288). IS DISTINCT FROM, never <>.
 --
 -- Mutations tried (each turned its case red, then was put back):
--- - the wrapper's set_config('bidspoke.audit_handled', 'save_buyer_profile')
---   moved into _apply_buyer_profile: case 5 red (the setting reads
---   save_buyer_profile after a page save);
 -- - 'save_partner_page' left off the child table detector's skip list: case 5
 --   red (direct_sql rows for the windows and tiers the save rewrote);
--- - save_buyer_profile checking the partner with a plain EXISTS instead of
---   locking its row first: case 9 red (deadlock detected);
 -- - the profile version compared only when the partner version matches: case 3
 --   red;
 -- - last_save_id not set on the profile row: case 1 red.
+--
+-- Case 9 (a concurrent save_buyer_profile does not deadlock with a page save)
+-- went with that function (#2187): with save_partner_page the only writer of a
+-- profile, every save locks the partner row and then the profile row in that
+-- order, so there is no second lock order to deadlock against.
 
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
 
--- run.sh hands over the container's own address (self_host) for the
--- concurrency case's second and third sessions. Checked before anything is
--- created, so a refusal leaves nothing behind.
-\if :{?self_host}
-\else
-  \echo 'save_partner_page.test.sql needs -v self_host=<container address>; run it through scripts/sql-suite/run.sh'
-  SELECT 1 / 0;
-\endif
-SELECT set_config('spp_test.self_host', :'self_host', false) AS self_host_set \gset
+-- Profile saves go through save_partner_page (helpers/save_profile.sql, #2187).
+\i /sql-suite-fixtures/tests/save_profile.sql
 
 DO $do$
 BEGIN
@@ -64,15 +57,15 @@ DO $do$
 DECLARE
   n integer;
 BEGIN
-  FOR n IN 1..9 LOOP
+  FOR n IN 1..8 LOOP
     INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_type, is_active, accept_signals, updated_by, updated_by_email, updated_by_name)
     VALUES (format('33333333-3333-3333-3333-00002133000%s', n)::uuid, '11111111-1111-1111-1111-000021330001', format('Page Buyer %s', n), format('page-buyer-2133-%s', n),
             'buyer', true, '[{"field":"ok","equals":true}]'::jsonb, '22222222-2222-2222-2222-00002133000a', 'carol@example.test', 'Carol Suite');
   END LOOP;
-  -- Every fixture but 6 and 9 starts with a saved offer profile at version 1.
+  -- Every fixture but 6 starts with a saved offer profile at version 1.
   FOR n IN 1..8 LOOP
     CONTINUE WHEN n = 6;
-    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-000021330001', format('33333333-3333-3333-3333-00002133000%s', n)::uuid, 0,
+    PERFORM pg_temp.save_profile('11111111-1111-1111-1111-000021330001', format('33333333-3333-3333-3333-00002133000%s', n)::uuid, 0,
       '{"sold_on":"offer","is_enabled":false,"priority":1,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[{"day_of_week":1,"opens_minute":540,"closes_minute":1020}],"blackout_dates":[],"tiers":[{"population":"engine","debt_from":10000,"debt_to":null,"multiplier":0.01}]}'::jsonb,
       '22222222-2222-2222-2222-00002133000a', 'carol@example.test');
   END LOOP;
@@ -166,8 +159,10 @@ DO $do$
 DECLARE
   pv0 integer;
   v_msg text;
+  press0 uuid;
 BEGIN
-  SELECT version INTO pv0 FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-000021330004';
+  -- The fixture's own save recorded its press; the refused one must leave it as it was.
+  SELECT version, last_save_id INTO pv0, press0 FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-000021330004';
   BEGIN
     -- The only tier starts above the debt minimum: tiers_gap.
     PERFORM public.save_partner_page(
@@ -180,7 +175,7 @@ BEGIN
   END;
   IF v_msg IS DISTINCT FROM 'tiers_gap' THEN RAISE EXCEPTION 'expected tiers_gap, got %', v_msg; END IF;
   IF (SELECT daily_cap FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-000021330004') IS NOT NULL THEN RAISE EXCEPTION 'the partner patch survived the profile refusal'; END IF;
-  IF (SELECT last_save_id FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-000021330004') IS NOT NULL THEN RAISE EXCEPTION 'the press was recorded on a refused save'; END IF;
+  IF (SELECT last_save_id FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-000021330004') IS DISTINCT FROM press0 THEN RAISE EXCEPTION 'the press was recorded on a refused save'; END IF;
   IF (SELECT count(*) FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-000021330004' AND changes ? 'daily_cap') IS DISTINCT FROM 0::bigint THEN
     RAISE EXCEPTION 'the refused save left a partner audit row';
   END IF;
@@ -285,11 +280,8 @@ BEGIN
 END
 $do$;
 
--- ── 8. Another org's partner, and the legacy wrapper ─────────────────────────
+-- ── 8. Another org's partner is not reached ──────────────────────────────────
 DO $do$
-DECLARE
-  doc jsonb;
-  ch jsonb;
 BEGIN
   BEGIN
     PERFORM public.save_partner_page(
@@ -298,96 +290,15 @@ BEGIN
     RAISE EXCEPTION 'another org reached the partner';
   EXCEPTION WHEN SQLSTATE 'P0002' THEN NULL;
   END;
-  -- save_buyer_profile keeps its signature and behaviour, and tags its row as the legacy route's.
-  doc := public.save_buyer_profile('11111111-1111-1111-1111-000021330001', '33333333-3333-3333-3333-000021330008', 1,
-    '{"sold_on":"offer","is_enabled":false,"priority":3,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[{"day_of_week":1,"opens_minute":540,"closes_minute":1020}],"blackout_dates":[],"tiers":[{"population":"engine","debt_from":10000,"debt_to":null,"multiplier":0.01}]}'::jsonb,
-    '22222222-2222-2222-2222-00002133000a', 'carol@example.test');
-  IF (doc->>'version')::int IS DISTINCT FROM 2 OR (doc->>'priority')::int IS DISTINCT FROM 3 THEN RAISE EXCEPTION 'the wrapper did not save: %', doc; END IF;
-  IF current_setting('bidspoke.audit_handled', true) IS DISTINCT FROM 'save_buyer_profile' THEN RAISE EXCEPTION 'the wrapper did not announce itself'; END IF;
-  SELECT changes INTO ch FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-000021330008' ORDER BY changed_at DESC LIMIT 1;
-  IF ch->>'_route' IS DISTINCT FROM 'legacy_buyer_profile' THEN RAISE EXCEPTION 'the legacy route row is not tagged: %', ch; END IF;
-  IF ch ? '_actor' THEN RAISE EXCEPTION 'the legacy row changed shape beyond its tag: %', ch; END IF;
-  INSERT INTO suite_cases(name) VALUES ('org scoping and the legacy wrapper');
+  INSERT INTO suite_cases(name) VALUES ('org scoping');
 END
 $do$;
-
--- ── 9. A concurrent save_buyer_profile does not deadlock with a page save ────
--- Session A's page save holds the partner row and is held asleep inside its
--- partner UPDATE by a trigger this case adds; session B's save_buyer_profile
--- starts while A sleeps. Both create the same new profile. If B did not lock
--- the partner row first, B would insert the profile and then wait on A's
--- partner lock for its foreign key check while A waited on B's profile row:
--- deadlock. Locked in the same order, B waits on A, then finds the version A
--- produced and is refused as stale.
---
--- The trigger is created and dropped by statements of their own, committed:
--- created inside the case's block it would be invisible to the other sessions,
--- and its lock on partner_configs would hold session A, while this session
--- waited on A's answer, for ever. It sleeps only in a session that asks.
-CREATE OR REPLACE FUNCTION public.spp_test_sleep() RETURNS trigger LANGUAGE plpgsql AS $f$
-BEGIN
-  IF current_setting('spp_test.sleep', true) = 'on' THEN PERFORM pg_sleep(1.5); END IF;
-  RETURN NEW;
-END
-$f$;
-DROP TRIGGER IF EXISTS spp_test_sleep ON public.partner_configs;
-CREATE TRIGGER spp_test_sleep BEFORE UPDATE ON public.partner_configs FOR EACH ROW EXECUTE FUNCTION public.spp_test_sleep();
-
-DO $do$
-DECLARE
-  created boolean := NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink');
-  conn text := format('host=%s user=postgres password=postgres dbname=postgres', current_setting('spp_test.self_host'));
-  doc text := '{"sold_on":"offer","is_enabled":false,"priority":1,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[],"blackout_dates":[],"tiers":[{"population":"engine","debt_from":10000,"debt_to":null,"multiplier":0.01}]}';
-  call_a text;
-  call_b text;
-  a_err text;
-  b_err text;
-  pv0 integer;
-BEGIN
-  IF created THEN
-    CREATE EXTENSION dblink;
-  END IF;
-
-  SELECT version INTO pv0 FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-000021330009';
-  call_a := format($q$SELECT public.save_partner_page('11111111-1111-1111-1111-000021330001', '33333333-3333-3333-3333-000021330009', %s, '{"daily_cap": 9}'::jsonb, 0, %L::jsonb, 'aaaaaaaa-0000-4000-8000-00000000213b', '22222222-2222-2222-2222-00002133000b', 'dave@example.test', 'Dave Suite')::text$q$, pv0, doc);
-  call_b := format($q$SELECT public.save_buyer_profile('11111111-1111-1111-1111-000021330001', '33333333-3333-3333-3333-000021330009', 0, %L::jsonb, '22222222-2222-2222-2222-00002133000a', 'carol@example.test')::text$q$, doc);
-
-  PERFORM dblink_connect('spp_a', conn);
-  PERFORM dblink_connect('spp_b', conn);
-  PERFORM dblink_exec('spp_a', $q$SET spp_test.sleep = 'on'$q$);
-  PERFORM dblink_exec('spp_a', $q$SET deadlock_timeout = '200ms'$q$);
-  PERFORM dblink_exec('spp_b', $q$SET deadlock_timeout = '200ms'$q$);
-  PERFORM dblink_send_query('spp_a', call_a);
-  PERFORM pg_sleep(0.5);
-  PERFORM dblink_send_query('spp_b', call_b);
-  PERFORM * FROM dblink_get_result('spp_a', false) AS t(r text);
-  a_err := dblink_error_message('spp_a');
-  PERFORM * FROM dblink_get_result('spp_a', false) AS t(r text);
-  PERFORM * FROM dblink_get_result('spp_b', false) AS t(r text);
-  b_err := dblink_error_message('spp_b');
-  PERFORM * FROM dblink_get_result('spp_b', false) AS t(r text);
-  PERFORM dblink_disconnect('spp_a');
-  PERFORM dblink_disconnect('spp_b');
-  IF created THEN
-    DROP EXTENSION dblink;
-  END IF;
-
-  IF a_err IS DISTINCT FROM 'OK' THEN RAISE EXCEPTION 'the page save failed: %', a_err; END IF;
-  IF b_err ILIKE '%deadlock%' THEN RAISE EXCEPTION 'the two saves deadlocked: %', b_err; END IF;
-  IF b_err NOT ILIKE '%stale_version%' THEN RAISE EXCEPTION 'the profile save should be refused as stale after the page save, got: %', b_err; END IF;
-  IF (SELECT version FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-000021330009') IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'the profile was written twice'; END IF;
-  INSERT INTO suite_cases(name) VALUES ('no deadlock with save_buyer_profile');
-END
-$do$;
-
-DROP TRIGGER IF EXISTS spp_test_sleep ON public.partner_configs;
-DROP FUNCTION IF EXISTS public.spp_test_sleep();
 
 DO $do$
 DECLARE n integer;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 9 THEN RAISE EXCEPTION 'save_partner_page.test.sql: expected 9 cases, % ran', n; END IF;
+  IF n IS DISTINCT FROM 8 THEN RAISE EXCEPTION 'save_partner_page.test.sql: expected 8 cases, % ran', n; END IF;
   RAISE NOTICE 'save_partner_page.test.sql: % cases passed', n;
 END
 $do$;

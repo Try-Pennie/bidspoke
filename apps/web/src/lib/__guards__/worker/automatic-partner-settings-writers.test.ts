@@ -40,7 +40,6 @@ const PARTNER_SETTINGS_TABLES = [
 const PARTNER_SAVE_RPCS = [
   'save_partner_config',
   'save_partner_page',
-  'save_buyer_profile',
   'change_partner_uuid',
   'rename_partner_step_namespace',
   'delete_partner_config',

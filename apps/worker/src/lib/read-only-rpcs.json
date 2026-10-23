@@ -31,7 +31,6 @@
   ],
   "mutating": [
     "record_archive_day_measurement",
-    "save_buyer_profile",
     "record_buyer_sale",
     "delete_partner_config",
     "rename_partner_step_namespace",

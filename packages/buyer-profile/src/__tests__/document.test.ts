@@ -1,6 +1,6 @@
 /**
  * The profile DOCUMENT is the wire shape the API and the form exchange and the
- * shape save_buyer_profile returns (snake_case, windows and blackouts with
+ * shape buyer_profile_document returns (snake_case, windows and blackouts with
  * notes, tiers). BuyerProfile is the evaluator's shape. One mapping between
  * them here (#1412), so the form's worked example, the API's validation and
  * the engine cannot disagree about a field (L83).

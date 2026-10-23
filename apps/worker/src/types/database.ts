@@ -3540,17 +3540,6 @@ export type Database = {
           outcome: string
         }[]
       }
-      save_buyer_profile: {
-        Args: {
-          p_actor: string
-          p_actor_email: string
-          p_expected_version: number
-          p_org: string
-          p_partner: string
-          p_profile: Json
-        }
-        Returns: Json
-      }
       save_partner_config: {
         Args: {
           p_actor: string
