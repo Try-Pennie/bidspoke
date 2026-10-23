@@ -36,6 +36,8 @@ vi.mock('../lib/stored-copy-ledger', async (importOriginal) => ({
 // The guard recorder's backoff takes no real time here: src/test-setup/guard-recorder.ts.
 const { default: worker } = await loadWorker()
 const { countCronGuardEvents } = await import('../lib/cron-guard-watch')
+const { runHeartbeatChecks } = await import('../lib/cron-heartbeat')
+const { cronTickKey } = await import('../lib/cron-once')
 
 function claimNamespace(): DurableObjectNamespace {
   const objects = new Map<string, AlertClaimObject>()
@@ -118,6 +120,23 @@ beforeEach(() => {
 
 describe('the scheduled handler runs each tick once (#1899)', () => {
   const minute = Date.parse('2026-10-08T14:37:00.000Z')
+
+  // #2610: the never finished page reads Cloudflare's retry of a run from the
+  // same claim objects the guard writes, so the check is handed a reader of them.
+  it('hands the heartbeat check a reader of the tick guard\'s own claims', async () => {
+    const ns = claimNamespace()
+    vi.mocked(runHeartbeatChecks).mockClear()
+    await fire(envWith(ns), '* * * * *', minute + 1_000)
+    expect(runHeartbeatChecks).toHaveBeenCalledTimes(1)
+    const read = vi.mocked(runHeartbeatChecks).mock.calls[0][4]
+    expect(typeof read).toBe('function')
+    const run = Date.parse('2026-10-08T14:23:00.000Z')
+    const stub = ns.get(ns.idFromName(cronTickKey('23 * * * *', run)))
+    const claim = (now: number, holder: string) => stub.fetch('https://do/tick-claim', { method: 'POST', body: JSON.stringify({ now, scheduled_time: run, holder }) })
+    await claim(run, 'killed')
+    await claim(run + 99_000, 'retry')
+    expect(await read!('23 * * * *', run)).toEqual({ retriedAtMs: run + 99_000, finished: false })
+  })
 
   it('starts no job for the second delivery of the same tick', async () => {
     const env = envWith(claimNamespace())
