@@ -73,6 +73,8 @@ import { parseStoreRotatedEnvelopeAnswer, type OpsGatewayBinding, type StoreRota
 import type { OpsEnv } from './index'
 import { LoginMintError, type LoginMintKind, type MintFailureReason } from './connections/refusals'
 import { readAccessToken, requestToken, TOKEN_ENDPOINT_TIMEOUT_MS } from './connections/minters/token-endpoint'
+import { clientFor, oauthAppOf, type OAuthAppRead } from './connections/oauth-apps'
+import { idTokenAccount } from './connections/id-token-account'
 import {
   parseAccessTokenRequest, parseExchangeRequest, parseResealLoginRequest, parseWriteBackStateRequest, type AccessTokenAnswer, type ExchangeAnswer,
   type ResealLoginAnswer, type ResealLoginRequest, type TokenObjectFailure, type TokenObjectLogin, type WriteBackStateAnswer, type WriteBackStateRequest,
@@ -225,7 +227,12 @@ function ivOf(envelope: unknown): string {
   return (envelope as { iv: string }).iv
 }
 
-/** The opened login of a person bound connection: the app's client id, its secret when it has one, and (after consent) the refresh token. */
+/**
+ * The opened login of a person bound connection: the app's client id, its
+ * secret when the service keeps it in the login, and (after consent) the
+ * refresh token. A service whose app the ops Worker holds (oauth-apps.ts,
+ * #2338) keeps no secret in the login: clientFor supplies the app's.
+ */
 function loginOf(plaintext: string): Record<string, unknown> {
   let parsed: unknown
   try {
@@ -240,9 +247,9 @@ function loginOf(plaintext: string): Record<string, unknown> {
   return login
 }
 
-function withClient(body: URLSearchParams, login: Record<string, unknown>): URLSearchParams {
-  body.set('client_id', login.client_id as string)
-  if (typeof login.client_secret === 'string') body.set('client_secret', login.client_secret)
+function withClient(body: URLSearchParams, client: { clientId: string; clientSecret: string | null }): URLSearchParams {
+  body.set('client_id', client.clientId)
+  if (client.clientSecret !== null) body.set('client_secret', client.clientSecret)
   return body
 }
 
@@ -270,6 +277,12 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
   sealKeys: () => SealKeys = () => opsSealKeys(this.env)
   gateway: () => OpsGatewayBinding | undefined = () => this.env.OPS_GATEWAY
   gatewayDeadlineMs: number = WRITE_BACK_DEADLINE_MS
+  /**
+   * The sign in app the ops Worker holds for a service (#2338): read from its
+   * own secret each time, so a secret set or rotated is used at once. A field a
+   * test replaces.
+   */
+  oauthApp: (service: string) => OAuthAppRead = (service) => oauthAppOf(this.env as unknown as Readonly<Record<string, unknown>>, service)
 
   private held: HeldToken | null = null
   private inFlight: { startedAt: number; promise: Promise<AccessTokenAnswer> } | null = null
@@ -346,6 +359,7 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
         }
       }
       let generation = 0
+      let account: string | null = null
       const answer = await this.holdFlight(this.clock(), async () => {
         // Read only now, under this flight: a refresh that just finished may have stored a newer login.
         const stored = await this.readLogin()
@@ -353,9 +367,10 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
         const result = await this.exchangeCode(request, stored)
         if (!result.ok) return result
         generation = result.generation
+        account = result.account
         return result.token
       })
-      return answer.ok ? { ok: true, generation } : answer
+      return answer.ok ? { ok: true, generation, account } : answer
     } catch {
       return failure('token_object_unavailable', 'token_object_failed')
     }
@@ -625,12 +640,15 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     }
     const refreshToken = login.refresh_token
     if (typeof refreshToken !== 'string' || refreshToken === '') return failure('refused', 'login_malformed')
+    // The client the request names: the app's secret from ops where the service has one (#2338).
+    const client = clientFor(login, this.oauthApp(request.service))
+    if (!client.ok) return client
 
     let json: Readonly<Record<string, unknown>>
     let token: string
     const asked = this.clock()
     try {
-      json = await requestToken(this.tokenDeps(), request.tokenUrl, withClient(new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }), login))
+      json = await requestToken(this.tokenDeps(), request.tokenUrl, withClient(new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }), client))
       token = readAccessToken(json)
     } catch (err) {
       if (err instanceof LoginMintError) return failureOf(err as LoginMintError)
@@ -661,7 +679,7 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
 
   private async exchangeCode(
     request: ReturnType<typeof parseExchangeRequest>, stored: StoredLogin | null,
-  ): Promise<{ ok: true; generation: number; token: AccessTokenAnswer } | TokenObjectFailure> {
+  ): Promise<{ ok: true; generation: number; account: string | null; token: AccessTokenAnswer } | TokenObjectFailure> {
     const keys = this.sealKeys()
     if (keys.kid === null) return failure('token_object_unavailable', 'token_object_failed')
     let app: Record<string, unknown>
@@ -671,12 +689,15 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
       if (err instanceof LoginMintError) return failureOf(err as LoginMintError)
       return failure('token_object_unavailable', 'token_object_failed')
     }
+    // The client the request names: the app's secret from ops where the service has one (#2338).
+    const client = clientFor(app, this.oauthApp(request.service))
+    if (!client.ok) return client
     const body = withClient(new URLSearchParams({
       grant_type: 'authorization_code',
       code: request.code,
       code_verifier: request.verifier,
       redirect_uri: request.redirectUri,
-    }), app)
+    }), client)
     let json: Readonly<Record<string, unknown>>
     let token: string
     const asked = this.clock()
@@ -705,6 +726,8 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     }, asked)
     const held: HeldToken = { token, id: crypto.randomUUID(), expiresAtMs: expiryOf(json, asked), loginIv: envelope.iv }
     this.held = held
-    return { ok: true, generation, token: { ok: true, token, tokenId: held.id, expiresAtMs: held.expiresAtMs, minted: true } }
+    // Whom the person signed in as, from the id_token the endpoint answered directly (id-token-account.ts): never a token.
+    const account = idTokenAccount(json, client.clientId)
+    return { ok: true, generation, account, token: { ok: true, token, tokenId: held.id, expiresAtMs: held.expiresAtMs, minted: true } }
   }
 }

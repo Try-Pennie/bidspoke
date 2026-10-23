@@ -8,10 +8,10 @@
  * side of the pair can break it: a profile gaining a rule, or a canvas edit
  * dropping a template. So the same finder is asked from both saves:
  *
- *   - a buyer profile save (PUT /partners/:id/page and the legacy
- *     PUT /partners/:id/buyer-profile) refuses an enabled profile that a live
- *     workflow's step cannot read, naming the workflow, the step and the
- *     missing template, on the profile field whose rule needs it;
+ *   - a buyer profile save (PUT /partners/:id/page) refuses an enabled
+ *     profile that a live workflow's step cannot read, naming the workflow,
+ *     the step and the missing template, on the profile field whose rule
+ *     needs it;
  *   - a live workflow save (PUT, the switch on, a restore of an active
  *     workflow) refuses a definition whose buyer steps cannot read an enabled
  *     profile they judge, naming the buyer and the rule.

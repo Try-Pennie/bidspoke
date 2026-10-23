@@ -217,6 +217,19 @@ describe('verify: the credential is measured, never only declared', () => {
     expect(w.d.rec.sent).toEqual([])
   })
 
+  it('a service that signs in a person only for some targets refuses only those candidates, and verifies the rest (#2338)', async () => {
+    // Google: a person's own account is proven by its code exchange; a company mailbox is verified as before.
+    const entry = salesforceServiceEntry({ now: () => T0 })
+    const w = world({
+      services: () => ({
+        salesforce: { ...entry, oauthUser: { tokenUrl: () => 'https://oauth2.googleapis.com/token', expired: (r) => r.status === 401, covers: (t) => (t as { own_account?: unknown } | null)?.own_account === true } },
+      }),
+    })
+    expect(await verify(w, candidate({ target: { own_account: true } }))).toMatchObject({ ok: false, refused: 'candidate_not_refreshable' })
+    expect(w.d.rec.sent).toEqual([])
+    expect(await verify(w, candidate())).not.toMatchObject({ refused: 'candidate_not_refreshable' })
+  })
+
   it('a service with no identity measurement is refused by name, and an unknown service too: verify never passes unmeasured', async () => {
     const w = world({ services: () => ({ salesforce: { ...salesforceServiceEntry({ now: () => T0 }), identity: undefined } }) })
     expect(await verify(w)).toMatchObject({ ok: false, refused: 'verify_identity_unmeasurable' })
@@ -422,8 +435,69 @@ describe('exchangeOAuthCode: a person bound login\'s consent', () => {
     const answer = await exchangeConnectionCode(w.deps, {
       organization_id: ORG, connection_id: CONN, candidate: candidate({ service: 'gmail_user' }), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback',
     })
-    expect(answer).toEqual({ ok: true, generation: 2 })
+    expect(answer).toEqual({ ok: true, generation: 2, account: null, reauth_cleared: true })
     expect(exchanges).toEqual([expect.objectContaining({ organizationId: ORG, connectionId: CONN, generation: 2, code: 'auth-code', verifier: 'v'.repeat(43), redirectUri: 'https://bidspoke.trypennie.dev/callback' })])
+  })
+
+  it('answers the account the person signed in as (#2338)', async () => {
+    const w = world({
+      copy: usableCopy(committed, { state: 'not_found', envelope: null, service: null, generation: null }),
+      services: () => ({
+        gmail_user: {
+          rules: { ...salesforceServiceEntry({ now: () => T0 }).rules, service: 'gmail_user' },
+          oauthUser: { tokenUrl: () => 'https://oauth2.googleapis.com/token', expired: (r) => r.status === 401 },
+        },
+      }),
+    })
+    w.deps.tokens = {
+      get: () => ({
+        accessToken: async () => { throw new Error('not asked') },
+        exchange: async () => ({ ok: true, generation: 2, account: 'dan@trypennie.com' }),
+      }),
+    }
+    expect(await exchangeConnectionCode(w.deps, {
+      organization_id: ORG, connection_id: CONN, candidate: candidate({ service: 'gmail_user' }), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback',
+    })).toEqual({ ok: true, generation: 2, account: 'dan@trypennie.com', reauth_cleared: true })
+  })
+
+  describe('a consent is the person bound Reconnect, so it clears needs_reauth (#2338)', () => {
+    function personBound(exchangeAnswer: unknown) {
+      const w = world({
+        copy: usableCopy(committed, { service: 'gmail_user', generation: 2 }),
+        services: () => ({
+          gmail_user: {
+            rules: { ...salesforceServiceEntry({ now: () => T0 }).rules, service: 'gmail_user' },
+            oauthUser: { tokenUrl: () => 'https://oauth2.googleapis.com/token', expired: (r) => r.status === 401 },
+          },
+        }),
+      })
+      w.deps.tokens = { get: () => ({ accessToken: async () => { throw new Error('not asked') }, exchange: async () => exchangeAnswer }) }
+      return w
+    }
+    const exchange = (w: World) => exchangeConnectionCode(w.deps, {
+      organization_id: ORG, connection_id: CONN, candidate: candidate({ service: 'gmail_user' }), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback',
+    })
+
+    it('records the clearing once the object stored the consent\'s login, and only then', async () => {
+      const w = personBound({ ok: true, generation: 3 })
+      expect(await exchange(w)).toMatchObject({ ok: true, reauth_cleared: true })
+      expect(w.cleared).toEqual([{ organizationId: ORG, connectionId: CONN }])
+      const refused = personBound({ ok: false, kind: 'refused', reason: 'invalid_grant', retryAtMs: null })
+      expect(await exchange(refused)).toMatchObject({ ok: false, refused: 'connection_needs_reauth' })
+      expect(refused.cleared).toEqual([])
+    })
+
+    it('a clearing that cannot be written still answers the stored login, saying so: the login is not lost (L5)', async () => {
+      const w = personBound({ ok: true, generation: 3 })
+      w.deps.recordReauthCleared = async () => { throw new Error('the ops database did not answer') }
+      expect(await exchange(w)).toEqual({ ok: true, generation: 3, account: null, reauth_cleared: false })
+    })
+
+    it('a connection removed meanwhile is refused by name', async () => {
+      const w = personBound({ ok: true, generation: 3 })
+      w.deps.recordReauthCleared = async () => 'connection_removed'
+      expect(await exchange(w)).toMatchObject({ ok: false, refused: 'connection_removed' })
+    })
   })
 
   it('a service that is not person bound has no exchange, and a refused one keeps its name', async () => {

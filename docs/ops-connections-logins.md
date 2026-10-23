@@ -227,7 +227,8 @@ value, a refusal naming its cause. Each method has a ceiling
 | `revoke` | A removal. | the ops tombstone |
 | `health` | Each connection's status (`connection_status`). | nothing |
 | `lookup` | One level of a connection's schema, behind 60 lookups a minute per organization (`take_lookup_allowance`). | the allowance |
-| `exchangeOAuthCode` | A person bound login's consent, to its ConnectionTokenObject. | the object's storage |
+| `exchangeOAuthCode` | A person bound login's consent, to its ConnectionTokenObject, which answers the new generation and, where the provider's id_token names a verified email for this client, whom the person signed in as (`id-token-account.ts`, #2338). A consent is a person bound login's Reconnect (it is never verified as a candidate), so its success then records the clearing of needs_reauth; a clearing that cannot be written is answered `reauth_cleared: false`, never as a failed consent, since the login is already stored. | the object's storage, then `reauth_cleared_at` |
+| `signInClient` | The client id of the sign in app the ops Worker holds for a service (`connections/oauth-apps.ts`, #2338 build PR 13), for the bidding Worker's Sign in with Google link; never its secret. Refuses `sign_in_app_unset` or `sign_in_app_malformed` naming the secret, and `sign_in_not_offered` for a service with no sign in. Shipped ahead of the bidding route that calls it, so it is kept out of `OPS_CONNECTIONS_METHODS` until then, as the Google list's methods were. | nothing |
 
 - **No copy is written by any of these (F116, F126).** verify and clearReauth use
   the candidate (the bidding row's sealed envelope at its new generation) for
@@ -263,6 +264,7 @@ value, a refusal naming its cause. Each method has a ceiling
 | `snowflakeKeyPairAuth` | Snowflake | `{ "private_key": "<PEM>" }` | `{ account, user }`, and optionally `warehouse`, `role`, `database`, `schema` for the session (a lookup needs `database`) | 401 |
 | `salesforceClientCredentialsAuth` | Salesforce | `{ client_id, client_secret }` of the org's ops connected app | `{ instance_url, client_id }` | 401 (INVALID_SESSION_ID), the money path's own rule |
 | `googleDelegationAuth` | Google (Sheets, Gmail, Calendar, Drive) | nothing: the service account key JSON Google issues is the ops Worker's own secret, `GOOGLE_DELEGATION_KEY` (#2337), never a connection's login, which is empty | `{ subject: "<mailbox>", drives?: ["<shared drive id>"] }` | 401 |
+| `oauthUserAuth` | Google, a person's own account (#2338): the same service and actions, chosen by its target | `{ client_id, refresh_token }`: the sign in app's client id and the person's refresh token, never the app's secret, which is the ops Worker's own `GOOGLE_OAUTH_CLIENT` | `{ own_account: true }` | 401 |
 
 - Tokens are held per isolate in a `TokenMemo` keyed by connection, generation,
   mailbox and scope, so two mailboxes never share a token and a reconnect never
@@ -300,6 +302,53 @@ value, a refusal naming its cause. Each method has a ceiling
   acts as the mailbox.
 - Every failure is a `LoginMintError` whose message is its kind and reason alone
   (F120), and connectionFetch forwards none of it.
+
+## Google: a person's own account (Sign in with Google, #2338)
+
+A Google connection signs in one of two ways, and its target says which
+(`google-service.ts`): a company mailbox on the organization's list, through
+domain wide delegation (`{ subject }`, above), or a person's own account, signed
+in with Sign in with Google (`{ own_account: true }`, R17). Both are the one
+`google` service, so they share its tile, its group on the Connections page and
+its actions. The entry chooses the minter by the target: an own account never
+meets the company list or the delegation key, and a company mailbox never
+reaches a token object.
+
+- **The login.** An OAuth user login (`minters/oauth-user.ts`), kept by the
+  connection's ConnectionTokenObject: the sign in app's client id and the
+  person's refresh token, sealed to the ops key. The app's **client secret lives
+  only on the ops Worker** (Dan's decision of 2026-10-22, on #2338), as its own
+  secret `GOOGLE_OAUTH_CLIENT`, the client JSON Google Cloud downloads for the
+  app. The token object reads it at the code exchange and at every refresh
+  (`connections/oauth-apps.ts`, `clientFor`): the login's client id goes with the
+  app's secret. A login carrying a secret of its own is refused
+  (`login_malformed`: the bidding Worker never seals one), as is a login issued
+  to another app than the one held (`client_id_mismatch`, so the person signs in
+  again); an app unset or unreadable refuses by rule (`oauth_app_unset`,
+  `oauth_app_malformed`), nothing sent and nothing recorded against the
+  connection. Rotating the secret is one secret change: Google lets a client
+  carry a new secret under the same client id, so every connection keeps working.
+- **The client id** the authorize link names comes from the same secret, through
+  `OpsConnections.signInClient`, so the link and the exchange cannot name two
+  apps.
+- **Whom it acts as.** The authorize link asks for `openid email` beside the
+  catalogue's four scopes, so Google's answer to the code exchange carries an
+  id_token, which the token object receives directly from Google's token
+  endpoint over TLS. Its verified email for this client is answered with the new
+  generation (`id-token-account.ts`; OpenID Connect Core 3.1.3.7 item 6 is why
+  its signature is not checked), and the bidding Worker records it as the
+  connection's acts as. Verify and the connection check of the committed copy
+  read the Gmail profile, as for a mailbox, with no list to compare against: a
+  refresh token answers for the one account that consented.
+- **Proven by its code exchange.** A candidate of an own account is never
+  verified (`candidate_not_refreshable`), since refreshing an uncommitted login
+  for one call would spend a rotating refresh token (L5). Its token request goes
+  to `https://oauth2.googleapis.com/token`, a host the Google entry declares
+  (#2337).
+- **A revoked sign in.** When the person removes Bidspoke's access in their
+  Google account, or the refresh token expires, the next refresh is answered
+  `invalid_grant`: `needs_reauth` at once, cause `login_refused: invalid_grant`,
+  and the person signs in again.
 
 ## A failing login (Dan's decision 2)
 
@@ -471,3 +520,20 @@ trypennie org is the only one approved so far (table above). To approve another:
 3. Prove it by attempting the forbidden case on the live ops Worker: a connection
    naming a mailbox not on the list must be refused with `mailbox_not_allowed`
    before any token is asked for.
+
+### Google sign in app (a person's own account, #2338)
+
+1. In Google Cloud, in the project that holds the ops service account, set the
+   OAuth consent screen to **Internal** (only the Workspace's own accounts can
+   sign in), with the scopes `openid`, `email` and the four above.
+2. Create an OAuth client of type **Web application**, named `Bidspoke sign in`,
+   with the authorized redirect URI
+   `https://bidspoke.trypennie.dev/connections/google/callback` (the bidding
+   Worker's `APP_URL` and the Connections page's sign in return). It needs no
+   JavaScript origin.
+3. Download its JSON at creation and set it on the ops Worker, piped in, never
+   typed: from `apps/worker`, `wrangler secret put GOOGLE_OAUTH_CLIENT --config
+   wrangler.ops.toml`. Never on the bidding Worker. It is allowed and not yet
+   required (`OPS_OPTIONAL_SECRETS`); once set, it moves to
+   `OPS_REQUIRED_SECRETS` (L65). Until it is set, `signInClient` refuses
+   `sign_in_app_unset` and nobody can sign in.

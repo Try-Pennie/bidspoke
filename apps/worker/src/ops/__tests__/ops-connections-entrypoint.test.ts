@@ -20,7 +20,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers'
 import * as opsModule from '../index'
 import type { OpsEnv } from '../index'
 import { OpsConnections, delegationListAnswer, opsConnectionsAnswer } from '../ops-connections-entrypoint'
-import { OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, parseHealthRequest } from '../../lib/ops-connections-contract'
+import { OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OPS_SIGN_IN_METHODS, parseHealthRequest } from '../../lib/ops-connections-contract'
 import { KEYGEN_TIMEOUT_MS, opsKeyPair } from './ops-key-fixture'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
@@ -43,11 +43,12 @@ function opsDatabase(answers: Record<string, unknown>) {
 const configured: Partial<OpsEnv> = { LANE: 'ops', OPS_SUPABASE_URL: 'https://zwihpjxouklvkvngkvmw.supabase.co', OPS_SUPABASE_SECRET_KEY: 'sb_secret_test_not_real' }
 
 describe('OpsConnections stays exported from the ops Worker (Phase 0 spike, #2330)', () => {
-  it('is a named export of the main module, a WorkerEntrypoint, with exactly OPS_CONNECTIONS_METHODS, the methods the bidding Worker calls', () => {
+  it('is a named export of the main module, a WorkerEntrypoint, with exactly OPS_CONNECTIONS_METHODS, the methods the bidding Worker calls, and the sign in method that ships first', () => {
     expect(opsModule.OpsConnections).toBe(OpsConnections)
     expect(Object.getPrototypeOf(OpsConnections)).toBe(WorkerEntrypoint)
+    // signInClient (#2338, build PR 13) ships on ops before bidding calls it, as the Google list's methods did.
     expect(Object.getOwnPropertyNames(OpsConnections.prototype).filter((n) => n !== 'constructor').sort())
-      .toEqual([...OPS_CONNECTIONS_METHODS].sort())
+      .toEqual([...OPS_CONNECTIONS_METHODS, ...OPS_SIGN_IN_METHODS].sort())
   })
 
   it('is not the default export, which the public route reaches', () => {
@@ -58,7 +59,7 @@ describe('OpsConnections stays exported from the ops Worker (Phase 0 spike, #233
 describe('every answer is a value, refused by name', () => {
   it.each([[undefined, 'lane_unset'], ['', 'lane_unset'], ['money', 'lane_not_ops']])('outside the ops lane (LANE %j), every method refuses %s', async (lane, code) => {
     const e = entry({ ...configured, LANE: lane })
-    for (const method of OPS_CONNECTIONS_METHODS) {
+    for (const method of [...OPS_CONNECTIONS_METHODS, ...OPS_SIGN_IN_METHODS]) {
       expect(await (e[method] as (r: unknown) => Promise<unknown>)({ organization_id: ORG })).toMatchObject({ ok: false, refused: code })
     }
   })
@@ -125,6 +126,32 @@ describe('every answer is a value, refused by name', () => {
     // The entrypoint's own methods parse the same way: a list with no organization reaches nothing.
     expect(await e.listDelegationSubjects({})).toMatchObject({ ok: false, refused: 'ops_connections_request_invalid' })
     expect(db.calls).toHaveLength(3)
+  })
+
+  it('signInClient answers the client id of the sign in app the ops Worker holds, never its secret, and needs no database (#2338)', async () => {
+    // Joined at run time so the secret scan does not read a test value as a key.
+    const canary = ['GOCSPX', 'canary', '2338'].join('-')
+    const app = JSON.stringify({ web: { client_id: '1234-sign-in.apps.googleusercontent.com', client_secret: canary, token_uri: 'https://oauth2.googleapis.com/token' } })
+    // Only the lane and the app: no ops database, no ops private key.
+    const e = entry({ LANE: 'ops', GOOGLE_OAUTH_CLIENT: app })
+    const answer = await e.signInClient({ organization_id: ORG, service: 'google' })
+    expect(answer).toEqual({ ok: true, service: 'google', client_id: '1234-sign-in.apps.googleusercontent.com' })
+    expect(JSON.stringify(answer)).not.toContain('GOCSPX')
+  })
+
+  it.each([
+    ['unset', { LANE: 'ops' }, 'google', 'sign_in_app_unset'],
+    ['not a web client\'s JSON', { LANE: 'ops', GOOGLE_OAUTH_CLIENT: 'GOCSPX-just-a-secret' }, 'google', 'sign_in_app_malformed'],
+    ['for a service no one signs in to', { LANE: 'ops', GOOGLE_OAUTH_CLIENT: '{}' }, 'salesforce', 'sign_in_not_offered'],
+  ] as const)('signInClient refuses by name when the app is %s, and says no more than which secret', async (_what, env, service, code) => {
+    const answer = await entry(env).signInClient({ organization_id: ORG, service })
+    expect(answer).toMatchObject({ ok: false, refused: code, retry_at: null })
+    expect(JSON.stringify(answer)).not.toContain('GOCSPX')
+    if (code !== 'sign_in_not_offered') expect((answer as { detail: string }).detail).toMatch(/GOOGLE_OAUTH_CLIENT/)
+  })
+
+  it('signInClient refuses a malformed request by the field', async () => {
+    expect(await entry({ LANE: 'ops' }).signInClient({ organization_id: ORG })).toMatchObject({ ok: false, refused: 'ops_connections_request_invalid' })
   })
 
   it('a Google list method past its ceiling answers ops_connections_timeout', async () => {
