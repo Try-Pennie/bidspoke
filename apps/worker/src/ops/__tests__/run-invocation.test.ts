@@ -498,6 +498,19 @@ describe('invokeRun: how the body ends the run', () => {
     expect(report).toMatchObject({ end: { outcome: 'failed', error: 'partner 500' } })
   })
 
+  // #2339: a send that was answered, by an action that then cannot tell
+  // whether what it asked for was applied (a 5xx after a write), is the body's
+  // to judge; it ends the run for a person, never as a plain failure.
+  it('a body may end its run needs_human with send_outcome_unknown', async () => {
+    const h = harness()
+    const report = await h.run(async (ctx) => {
+      await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: h.forwardWith('post', async () => answered(502, 1)) })
+      return { outcome: 'needs_human', reason: 'send_outcome_unknown', error: 'step post: answered 502 after the send; it may have landed' }
+    })
+    expect(report).toMatchObject({ end: { outcome: 'needs_human', reason: 'send_outcome_unknown', error: 'step post: answered 502 after the send; it may have landed' } })
+    expect(h.db.calls.at(-1)).toBe('complete:needs_human')
+  })
+
   it('a send the connection never made is marked failed and thrown to the body as StepNotSent', async () => {
     const h = harness()
     let caught: unknown = null
