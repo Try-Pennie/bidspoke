@@ -206,6 +206,8 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'sign_in_app_malformed',
   /** The service has no person bound sign in on this Worker. */
   'sign_in_not_offered',
+  /** A person signed in as another account than the one the exchange named (their own Bidspoke address, Dan 2026-10-23). Nothing was stored. */
+  'exchange_account_mismatch',
 ] as const
 export type OpsConnectionsOwnRefusal = (typeof OPS_CONNECTIONS_REFUSAL_CODES)[number]
 export type OpsConnectionsRefusalCode = OpsConnectionsOwnRefusal | ConnectionRefusalCode | SchemaLookupCode
@@ -270,6 +272,12 @@ export interface ExchangeOAuthCodeRequest {
   /** The PKCE verifier, 43 to 128 characters. */
   verifier: string
   redirect_uri: string
+  /**
+   * The account the person must sign in as, lower case: their own Bidspoke
+   * address (#2338, Dan's decision of 2026-10-23). A consent as anyone else is
+   * refused (exchange_account_mismatch) and nothing is stored.
+   */
+  expected_account: string
 }
 
 /** What verify measured the credential as. Each service adds its own kind with its measurement (Phase 7). */
@@ -524,6 +532,9 @@ export function parseExchangeOAuthCodeRequest(raw: unknown): ExchangeOAuthCodeRe
   if (typeof r.code !== 'string' || r.code === '' || r.code.length > 4096) throw new OpsConnectionsContractError('the exchange\'s code is missing')
   if (typeof r.verifier !== 'string' || r.verifier.length < 43 || r.verifier.length > 128) throw new OpsConnectionsContractError('the exchange\'s PKCE verifier is not 43 to 128 characters')
   if (typeof r.redirect_uri !== 'string' || r.redirect_uri === '' || r.redirect_uri.length > 2048) throw new OpsConnectionsContractError('the exchange\'s redirect_uri is missing')
+  if (typeof r.expected_account !== 'string' || r.expected_account.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(r.expected_account.trim())) {
+    throw new OpsConnectionsContractError('the exchange\'s expected_account is not one address')
+  }
   return {
     organization_id: uuidField(r, 'organization_id'),
     connection_id: uuidField(r, 'connection_id'),
@@ -531,5 +542,6 @@ export function parseExchangeOAuthCodeRequest(raw: unknown): ExchangeOAuthCodeRe
     code: r.code,
     verifier: r.verifier,
     redirect_uri: r.redirect_uri,
+    expected_account: r.expected_account.trim().toLowerCase(),
   }
 }

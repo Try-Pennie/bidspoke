@@ -99,8 +99,15 @@ describe('the OpsConnections contract', () => {
   })
 
   it('an exchange carries the sealed app login as a candidate, the code, a PKCE verifier of 43 to 128 characters and the redirect URI', () => {
-    const ok = { organization_id: ORG, connection_id: CONN, candidate: CANDIDATE, code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback' }
+    const ok = {
+      organization_id: ORG, connection_id: CONN, candidate: CANDIDATE, code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback',
+      expected_account: 'dan@trypennie.com',
+    }
     expect(parseExchangeOAuthCodeRequest(ok)).toEqual(ok)
+    // The account the person must sign in as (Dan, 2026-10-23): one address, read lower case, and never absent.
+    expect(parseExchangeOAuthCodeRequest({ ...ok, expected_account: ' Dan@TryPennie.com ' }).expected_account).toBe('dan@trypennie.com')
+    expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, expected_account: undefined }))).toMatch(/expected_account/)
+    expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, expected_account: 'not an address' }))).toMatch(/expected_account/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, verifier: 'v'.repeat(42) }))).toMatch(/verifier/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, verifier: 'v'.repeat(129) }))).toMatch(/verifier/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, code: '' }))).toMatch(/code/)

@@ -363,6 +363,14 @@ reaches a token object.
   alarm the moment it stores it; a failed exchange then removes the row. A
   Reconnect signs in again only as the person the connection belongs to, and
   exchanges with the row's own login.
+- **Only the person's own account** (Dan's decision of 2026-10-23, on #2338).
+  The Google account a person signs in with must be their Bidspoke email. The
+  exchange names it (`expected_account`), and the token object drops any other
+  account's consent before storing anything (`account_mismatch`, answered as
+  `exchange_account_mismatch`; the route says `google_sign_in_wrong_account`).
+  A new connection's row is then removed, and ops is told. So a connection's
+  account is always its owner's, and a Reconnect can never change it. That
+  only the owner may use it in a step is the ops executor's to enforce (#2339).
 
 ## A failing login (Dan's decision 2)
 

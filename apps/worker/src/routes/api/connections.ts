@@ -1167,6 +1167,14 @@ const SIGN_IN_STATUS: Readonly<Record<SignInRefusalCode, 400 | 403 | 404 | 409 |
   google_code_refused: 422,
   google_sign_in_not_person: 422,
   google_sign_in_not_owner: 403,
+  google_sign_in_wrong_account: 422,
+  google_sign_in_no_email: 422,
+}
+
+/** The address a person signs in to Google as: their own Bidspoke email, lower case, or null when they have none. */
+function ownAccountOf(email: string | null | undefined): string | null {
+  const e = typeof email === 'string' ? email.trim().toLowerCase() : ''
+  return /^[^\s@]+@[^\s@]+$/.test(e) && e.length <= 320 ? e : null
 }
 
 /** The columns a sign in Reconnect reads: never config. */
@@ -1238,11 +1246,14 @@ connections.post('/google/sign-in', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const body = readSignInStartBody(await c.req.text())
   if (!body.ok) return signInRefuse(c, orgId, 'sign_in_request_invalid', { detail: body.problem })
+  // The person signs in to Google as their own Bidspoke address and no one else (Dan, 2026-10-23).
+  const account = ownAccountOf(email)
+  if (account === null) return signInRefuse(c, orgId, 'google_sign_in_no_email')
   const supabase = createSupabaseClient(c.env)
 
   let connectionId: string
   let name: string | null = null
-  let loginHint: string | null = email || null
+  const loginHint = account
   if (body.kind === 'new') {
     const named = connectionNameOf(body.name)
     if (!named.ok) return signInRefuse(c, orgId, named.code)
@@ -1258,9 +1269,8 @@ connections.post('/google/sign-in', async (c) => {
   } else {
     const found = await signInRowFor(supabase, orgId, userId, body.connectionId)
     if (found.kind === 'refused') return found.code === 'connection_not_found' ? noSuchConnection(c) : signInRefuse(c, orgId, found.code)
+    // Its account is its owner's, the caller's: the same one is offered, and the finish accepts no other.
     connectionId = found.row.id
-    // Offer the account it signed in as before, so a Reconnect keeps acting as the same person.
-    loginHint = found.row.acts_as ?? loginHint
   }
 
   const app = await callOpsConnections(c.env, 'signInClient', { organization_id: orgId, service: 'google' })
@@ -1338,6 +1348,7 @@ connections.post('/google/sign-in/finish', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const body = readSignInFinishBody(await c.req.text())
   if (!body.ok) return signInRefuse(c, orgId, 'sign_in_request_invalid', { detail: body.problem })
+  const ownAccount = ownAccountOf(email)
   const supabase = createSupabaseClient(c.env)
 
   // 1. The state.
@@ -1357,6 +1368,7 @@ connections.post('/google/sign-in/finish', async (c) => {
 
   // 2. Google's own answer.
   if (body.error !== null) return signInRefuse(c, orgId, body.error === 'access_denied' ? 'google_sign_in_denied' : 'google_sign_in_failed', { google_error: body.error })
+  if (ownAccount === null) return signInRefuse(c, orgId, 'google_sign_in_no_email')
 
   const exchange = (generation: number, envelope: SealedEnvelope) => callOpsConnections(c.env, 'exchangeOAuthCode', {
     organization_id: orgId,
@@ -1365,7 +1377,12 @@ connections.post('/google/sign-in/finish', async (c) => {
     code: body.code as string,
     verifier: state.verifier,
     redirect_uri: state.redirectUri,
+    // Ops stores nothing signed in as anyone else (Dan, 2026-10-23).
+    expected_account: ownAccount,
   })
+  // A consent as another account, said by ops, or by an ops deploy older than that rule naming another or none: refused alike.
+  const wrongAccount = (answer: Awaited<ReturnType<typeof exchange>>) =>
+    answer.ok ? answer.account !== ownAccount : answer.refused === 'exchange_account_mismatch'
   const recordAccount = async (account: string | null): Promise<string | null> => {
     if (account === null) return null
     const { error } = await requireRowsAffected(`service_connections ${state.connectionId} acts_as`, () => supabase
@@ -1393,6 +1410,11 @@ connections.post('/google/sign-in/finish', async (c) => {
     }
     if (!isRecordValue(envelope)) return signInRefuse(c, orgId, 'connection_store_failed')
     const answer = await exchange(found.row.credential_generation, envelope as unknown as SealedEnvelope)
+    if (wrongAccount(answer)) {
+      // An ops that already stored another account's login is a defect in it: named, so it is found.
+      if (answer.ok) console.error(JSON.stringify({ event: 'google_sign_in_reconnect_other_account_stored', organization_id: orgId, connection_id: found.row.id }))
+      return signInRefuse(c, orgId, 'google_sign_in_wrong_account')
+    }
     if (!answer.ok) return signInRefuse(c, orgId, exchangeRefusal(answer), { detail: answer.detail })
     const actsAs = (await recordAccount(answer.account)) ?? found.row.acts_as
     await writeAuditLog(supabase, orgId, 'service_connection', found.row.id, 'connection_signed_in_again', userId, { generation: answer.generation })
@@ -1438,16 +1460,19 @@ connections.post('/google/sign-in/finish', async (c) => {
   }
 
   const answer = await exchange(1, envelope)
-  if (!answer.ok) {
+  const wrong = wrongAccount(answer)
+  if (!answer.ok || wrong) {
     // Nothing usable was stored, so the row that holds no login goes, on bidding and on ops.
     const { error: removeError } = await supabase.rpc('remove_ops_connection', { p_organization_id: orgId, p_connection_id: state.connectionId, p_actor: userId })
     if (removeError) {
       console.error(JSON.stringify({ event: 'google_sign_in_row_left', organization_id: orgId, connection_id: state.connectionId, error: formatErr(removeError), why: 'the exchange failed and the row it was for could not be removed' }))
     } else {
-      const revoked = await callOpsConnections(c.env, 'revoke', { organization_id: orgId, connection_id: state.connectionId, generation: 1, removed_at: new Date().toISOString() })
+      // Every generation the exchange may have made: the one it answered, or the 2 a consent from generation 1 seals, whose answer may have been lost.
+      const revoked = await callOpsConnections(c.env, 'revoke', { organization_id: orgId, connection_id: state.connectionId, generation: answer.ok ? answer.generation : 2, removed_at: new Date().toISOString() })
       if (!revoked.ok) console.error(JSON.stringify({ event: 'google_sign_in_revoke_failed', organization_id: orgId, connection_id: state.connectionId, refused: revoked.refused }))
     }
-    return signInRefuse(c, orgId, exchangeRefusal(answer), { detail: answer.detail })
+    if (wrong) return signInRefuse(c, orgId, 'google_sign_in_wrong_account')
+    return signInRefuse(c, orgId, exchangeRefusal(answer as Exclude<typeof answer, { ok: true }>), { detail: (answer as { detail?: string }).detail })
   }
   const actsAs = await recordAccount(answer.account)
   console.log(JSON.stringify({ event: 'connection_created', organization_id: orgId, connection_id: state.connectionId, service: 'google', person_bound: true }))

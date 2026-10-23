@@ -80,6 +80,8 @@ export const NOT_VERIFY_REFUSALS = [
   'sign_in_app_unset',
   'sign_in_app_malformed',
   'sign_in_not_offered',
+  // exchangeOAuthCode's (#2338): the sign in route words it as google_sign_in_wrong_account.
+  'exchange_account_mismatch',
 ] as const satisfies readonly OpsConnectionsOwnRefusal[]
 
 export type VerifyRefusalCode =

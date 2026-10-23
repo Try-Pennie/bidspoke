@@ -433,7 +433,7 @@ describe('exchangeOAuthCode: a person bound login\'s consent', () => {
       }),
     }
     const answer = await exchangeConnectionCode(w.deps, {
-      organization_id: ORG, connection_id: CONN, candidate: candidate({ service: 'gmail_user' }), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback',
+      organization_id: ORG, connection_id: CONN, candidate: candidate({ service: 'gmail_user' }), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback', expected_account: 'dan@trypennie.com',
     })
     expect(answer).toEqual({ ok: true, generation: 2, account: null, reauth_cleared: true })
     expect(exchanges).toEqual([expect.objectContaining({ organizationId: ORG, connectionId: CONN, generation: 2, code: 'auth-code', verifier: 'v'.repeat(43), redirectUri: 'https://bidspoke.trypennie.dev/callback' })])
@@ -456,7 +456,7 @@ describe('exchangeOAuthCode: a person bound login\'s consent', () => {
       }),
     }
     expect(await exchangeConnectionCode(w.deps, {
-      organization_id: ORG, connection_id: CONN, candidate: candidate({ service: 'gmail_user' }), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback',
+      organization_id: ORG, connection_id: CONN, candidate: candidate({ service: 'gmail_user' }), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback', expected_account: 'dan@trypennie.com',
     })).toEqual({ ok: true, generation: 2, account: 'dan@trypennie.com', reauth_cleared: true })
   })
 
@@ -475,7 +475,7 @@ describe('exchangeOAuthCode: a person bound login\'s consent', () => {
       return w
     }
     const exchange = (w: World) => exchangeConnectionCode(w.deps, {
-      organization_id: ORG, connection_id: CONN, candidate: candidate({ service: 'gmail_user' }), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback',
+      organization_id: ORG, connection_id: CONN, candidate: candidate({ service: 'gmail_user' }), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback', expected_account: 'dan@trypennie.com',
     })
 
     it('records the clearing once the object stored the consent\'s login, and only then', async () => {
@@ -493,6 +493,12 @@ describe('exchangeOAuthCode: a person bound login\'s consent', () => {
       expect(await exchange(w)).toEqual({ ok: true, generation: 3, account: null, reauth_cleared: false })
     })
 
+    it('a consent as another account than the person\'s own is refused by its own name, and nothing is cleared (Dan, 2026-10-23)', async () => {
+      const w = personBound({ ok: false, kind: 'not_allowed', reason: 'account_mismatch', retryAtMs: null })
+      expect(await exchange(w)).toMatchObject({ ok: false, refused: 'exchange_account_mismatch' })
+      expect(w.cleared).toEqual([])
+    })
+
     it('a connection removed meanwhile is refused by name', async () => {
       const w = personBound({ ok: true, generation: 3 })
       w.deps.recordReauthCleared = async () => 'connection_removed'
@@ -503,7 +509,7 @@ describe('exchangeOAuthCode: a person bound login\'s consent', () => {
   it('a service that is not person bound has no exchange, and a refused one keeps its name', async () => {
     const w = world()
     expect(await exchangeConnectionCode(w.deps, {
-      organization_id: ORG, connection_id: CONN, candidate: candidate(), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback',
+      organization_id: ORG, connection_id: CONN, candidate: candidate(), code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback', expected_account: 'dan@trypennie.com',
     })).toMatchObject({ ok: false, refused: 'connection_service_unknown' })
   })
 })

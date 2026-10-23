@@ -35,6 +35,12 @@ export interface ExchangeRequest extends TokenObjectLogin {
   readonly code: string
   readonly verifier: string
   readonly redirectUri: string
+  /**
+   * The account the person must sign in as, lower case (#2338, Dan's decision
+   * of 2026-10-23: their own Bidspoke address), or null for a service whose
+   * consent names no one. A consent as anyone else is refused and nothing stored.
+   */
+  readonly expectedAccount: string | null
 }
 
 export interface TokenObjectFailure {
@@ -116,7 +122,11 @@ export function parseExchangeRequest(raw: unknown): ExchangeRequest {
   // RFC 7636: a verifier is 43 to 128 characters.
   if (typeof verifier !== 'string' || verifier.length < 43 || verifier.length > 128) throw new TokenObjectContractError('the request carries no PKCE verifier')
   if (!isTokenUrl(redirectUri)) throw new TokenObjectContractError('the redirect URI is not an https URL')
-  return { ...login, code, verifier, redirectUri }
+  const expected = (raw as Record<string, unknown>).expectedAccount ?? null
+  if (expected !== null && (typeof expected !== 'string' || expected.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(expected.trim()))) {
+    throw new TokenObjectContractError('the expected account is not one address')
+  }
+  return { ...login, code, verifier, redirectUri, expectedAccount: expected === null ? null : expected.trim().toLowerCase() }
 }
 
 function parseFailure(raw: Record<string, unknown>): TokenObjectFailure {

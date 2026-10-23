@@ -404,6 +404,7 @@ export async function exchangeConnectionCode(deps: OpsConnectionsDeps, request: 
   try {
     const { generation, account } = await exchangeOAuthCode({ tokens: deps.tokens, readCopy: deps.connection.readCopy }, oauthUser, {
       organizationId, connectionId: request.connection_id, candidate: candidateOf(request.candidate), code: request.code, verifier: request.verifier, redirectUri: request.redirect_uri,
+      expectedAccount: request.expected_account,
     })
     // A consent is a person bound login's Reconnect (it is never verified as a candidate), so its
     // success clears needs_reauth, as clearReauth does for every other login (#2338). The object has
@@ -418,6 +419,9 @@ export async function exchangeConnectionCode(deps: OpsConnectionsDeps, request: 
     if (cleared === 'connection_removed') return refuse('connection_removed', 'the connection was removed while the person signed in')
     return { ok: true, generation, account, reauth_cleared: cleared === 'recorded' }
   } catch (err) {
+    if (err instanceof ConnectionRefusal && err.mintReason === 'account_mismatch') {
+      return refuse('exchange_account_mismatch', 'the person signed in as another account than the one the sign in was for, so nothing was stored')
+    }
     if (err instanceof ConnectionRefusal) return fromRefusal(err, false)
     return unexpected(err, 'the code exchange')
   }

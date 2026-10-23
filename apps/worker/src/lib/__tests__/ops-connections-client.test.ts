@@ -137,7 +137,7 @@ describe('callOpsConnections', () => {
     const lines = captureLogs()
     const { binding: b } = binding(never)
     await callOpsConnections({ OPS_CONNECTIONS: b }, 'exchangeOAuthCode', {
-      organization_id: ORG, connection_id: ORG, code: 'plain-oauth-code-canary', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/cb',
+      organization_id: ORG, connection_id: ORG, code: 'plain-oauth-code-canary', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/cb', expected_account: 'dan@trypennie.com',
       candidate: { service: 'gmail', generation: 1, envelope: { v: 1, kid: 'ops-2026-10', wrapped_key: 'd3JhcA==', iv: 'aXY=', ct: 'Y3Q=' }, target: null, public_config: {} },
     }, { delay: async () => {} })
     const logged = lines.join('\n')

@@ -200,6 +200,8 @@ export const MINT_FAILURE_REASONS = {
     'oauth_app_unset',
     /** The ops Worker's sign in app is not a web client's JSON it can read, or names another token endpoint. Nothing was sent. */
     'oauth_app_malformed',
+    /** A person signed in as another account than the one the sign in was for (Dan, 2026-10-23: their own Bidspoke address). Nothing was stored. */
+    'account_mismatch',
   ],
   check_unavailable: ['delegation_allowlist_unreadable'],
   token_object_unavailable: [

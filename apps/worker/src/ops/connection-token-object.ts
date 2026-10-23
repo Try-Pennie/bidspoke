@@ -708,6 +708,10 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
       if (err instanceof LoginMintError) return failureOf(err as LoginMintError)
       return failure('unavailable', 'token_endpoint_unreachable')
     }
+    // Whom the person signed in as, from the id_token the endpoint answered directly (id-token-account.ts): never a token.
+    const account = idTokenAccount(json, client.clientId)
+    // Only the account the sign in was for (Dan, 2026-10-23): anyone else's consent is dropped here, before anything is stored.
+    if (request.expectedAccount !== null && account !== request.expectedAccount) return failure('not_allowed', 'account_mismatch')
     const refreshToken = json.refresh_token
     if (typeof refreshToken !== 'string' || refreshToken === '') return failure('refused', 'refresh_token_missing')
 
@@ -726,8 +730,6 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     }, asked)
     const held: HeldToken = { token, id: crypto.randomUUID(), expiresAtMs: expiryOf(json, asked), loginIv: envelope.iv }
     this.held = held
-    // Whom the person signed in as, from the id_token the endpoint answered directly (id-token-account.ts): never a token.
-    const account = idTokenAccount(json, client.clientId)
     return { ok: true, generation, account, token: { ok: true, token, tokenId: held.id, expiresAtMs: held.expiresAtMs, minted: true } }
   }
 }

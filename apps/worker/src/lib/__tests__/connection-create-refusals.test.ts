@@ -33,7 +33,7 @@ describe('the create refusals', () => {
   it('leave out only codes verify never answers', () => {
     // The Google list's methods, the lookups', health's, revoke's, the Reconnect's clearing and signInClient's (#2338, build PR 13).
     for (const code of NOT_VERIFY_REFUSALS) {
-      expect(code).toMatch(/^(delegation_|lookup_|health_|revoke_|reauth_clear_|sign_in_)/)
+      expect(code).toMatch(/^(delegation_|lookup_|health_|revoke_|reauth_clear_|sign_in_|exchange_)/)
     }
   })
 
@@ -80,7 +80,7 @@ describe('the Reconnect, Remove and Google list refusals (build PR 6)', () => {
 
   it('cover every ops refusal those routes pass on: the Reconnect\'s clearing and the Google list\'s', () => {
     // health's, the lookups' and signInClient's belong to other routes, and a failed revoke is never a refusal: the removal stands.
-    const relayed = NOT_VERIFY_REFUSALS.filter((c) => !/^(health_|lookup_|sign_in_)/.test(c) && c !== 'revoke_unrecorded')
+    const relayed = NOT_VERIFY_REFUSALS.filter((c) => !/^(health_|lookup_|sign_in_|exchange_)/.test(c) && c !== 'revoke_unrecorded')
     expect(relayed.filter((c) => !(CONNECTION_ROUTE_REFUSAL_CODES as readonly string[]).includes(c))).toEqual([])
     expect(relayed.length).toBeGreaterThanOrEqual(7)
   })

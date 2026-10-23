@@ -15,7 +15,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { open } from '@bidspoke/connection-seal'
 import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
-import { parseExchangeOAuthCodeRequest, parseSignInClientRequest } from '../../../lib/ops-connections-contract'
+import { parseExchangeOAuthCodeRequest, parseRevokeRequest, parseSignInClientRequest } from '../../../lib/ops-connections-contract'
 import { pkceChallenge } from '../../../lib/google-sign-in'
 import { makeKeys, type TestKeys } from '../../../ops/connections/__tests__/harness'
 import { rpcStub } from '../../../test-setup/rpc-stub'
@@ -328,6 +328,8 @@ describe('finishing a sign in: a new connection', () => {
     expect(exchange).toEqual({
       organization_id: ORG, connection_id: state().connection_id, code: CODE, verifier: 'v'.repeat(43), redirect_uri: CALLBACK,
       candidate: { service: 'google', generation: 1, envelope, target: { own_account: true }, public_config: {} },
+      // The person's own Bidspoke address: ops stores nothing signed in as anyone else (Dan, 2026-10-23).
+      expected_account: 'dan@trypennie.com',
     })
     expect(db.updates[0]).toEqual({
       values: expect.objectContaining({ acts_as: 'dan@trypennie.com', updated_by: USER }),
@@ -335,14 +337,36 @@ describe('finishing a sign in: a new connection', () => {
     })
   })
 
-  it('a provider that named no account saves the connection with no one named, rather than a guess', async () => {
+  it('a sign in as another Google account than the person\'s Bidspoke one is refused by name, and the row it was for is removed on bidding and ops (Dan, 2026-10-23)', async () => {
     const order: string[] = []
-    vi.mocked(createSupabaseClient).mockReturnValue(store(order, { states: [state()] }) as never)
-    const { env } = makeEnv(order, { exchangeOAuthCode: async () => ({ ok: true, generation: 2, account: null, reauth_cleared: true }) })
+    const db = store(order, { states: [state()] })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env } = makeEnv(order, {
+      exchangeOAuthCode: async () => ({ ok: false, refused: 'exchange_account_mismatch', detail: 'the person signed in as another account than the one asked for', retry_at: null }),
+    })
     const res = await finish(env, { state: STATE, code: CODE })
-    expect(res.status).toBe(201)
-    expect(((await res.json()) as { connection: { acts_as: unknown } }).connection.acts_as).toBeNull()
-    expect(order).not.toContain('update')
+    expect(res.status).toBe(422)
+    const body = (await res.json()) as Answer
+    expect(body.error).toBe('google_sign_in_wrong_account')
+    expect(body.message).toMatch(/^You signed in to Google as another account than your Bidspoke one\. Nothing was saved\./)
+    expect(order).toEqual(['rpc:claim_oauth_state', 'insert', 'exchangeOAuthCode', 'rpc:remove_ops_connection', 'revoke'])
+    expect(db.table.find((r) => r.id === state().connection_id)).toBeUndefined()
+  })
+
+  it.each([
+    ['another account', 'someone.else@trypennie.com'],
+    ['no account at all', null],
+  ])('an ops Worker that answers %s for the sign in is refused the same way, never saved (an ops deploy older than this one)', async (_what, account) => {
+    const order: string[] = []
+    const db = store(order, { states: [state()] })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv(order, { exchangeOAuthCode: async () => ({ ok: true, generation: 3, account, reauth_cleared: true }) })
+    const res = await finish(env, { state: STATE, code: CODE })
+    expect(((await res.json()) as Answer).error).toBe('google_sign_in_wrong_account')
+    // The generation the exchange answered is withdrawn on ops too.
+    expect(parseRevokeRequest(binding.revoke.mock.calls[0][0]).generation).toBe(3)
+    expect(order).toEqual(['rpc:claim_oauth_state', 'insert', 'exchangeOAuthCode', 'rpc:remove_ops_connection', 'revoke'])
+    expect(db.table.find((r) => r.id === state().connection_id)).toBeUndefined()
   })
 
   it('denied consent says so by name, and writes nothing', async () => {
@@ -458,6 +482,20 @@ describe('finishing a sign in: a Reconnect', () => {
     expect(exchange.candidate).toEqual({ service: 'google', generation: 4, envelope: ENVELOPE, target: { own_account: true }, public_config: {} })
     expect(db.inserts).toEqual([])
     expect(writeAuditLog).toHaveBeenCalledWith(expect.anything(), ORG, 'service_connection', OWN, 'connection_signed_in_again', USER, { generation: 5 })
+  })
+
+  it('a Reconnect as another Google account is refused by name, and the connection keeps its account (Dan, 2026-10-23)', async () => {
+    const order: string[] = []
+    const db = store(order, { states: [state({ connection_id: OWN, reconnect: true, name: null })] })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv(order, {
+      exchangeOAuthCode: async () => ({ ok: false, refused: 'exchange_account_mismatch', detail: 'x', retry_at: null }),
+    })
+    const res = await finish(env, { state: STATE, code: CODE })
+    expect(((await res.json()) as Answer).error).toBe('google_sign_in_wrong_account')
+    expect(parseExchangeOAuthCodeRequest(binding.exchangeOAuthCode.mock.calls[0][0]).expected_account).toBe('dan@trypennie.com')
+    expect(order).toEqual(['rpc:claim_oauth_state', 'exchangeOAuthCode'])
+    expect(db.table.find((r) => r.id === OWN)).toMatchObject({ acts_as: 'dan@trypennie.com', credential_generation: 4 })
   })
 
   it('a Reconnect whose exchange is refused changes nothing on bidding', async () => {
