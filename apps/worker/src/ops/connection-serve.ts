@@ -74,7 +74,7 @@ export async function saveServedConnections(db: ConnectionServeDb, fetchConnecti
 
   const copies: ConnectionCopyInput[] = list.connections.map((c) => ({
     connectionId: c.id, organizationId: c.organization_id, service: c.service, generation: c.generation,
-    envelope: c.envelope, publicConfig: c.public_config, target: c.target, serveUntil: c.serve_until,
+    envelope: c.envelope, publicConfig: c.public_config, target: c.target, ownerUserId: c.owner_user_id, serveUntil: c.serve_until,
   }))
   // A list too long for one save is saved in parts and withdraws nothing, since no one part is the whole list.
   const oneSave = copies.length <= MAX_COPIES_PER_SAVE

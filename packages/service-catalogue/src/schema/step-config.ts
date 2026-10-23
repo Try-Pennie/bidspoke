@@ -2,7 +2,8 @@ import type { ActionSchema } from './types'
 
 /**
  * An app_action step's settings (#2339, plan section 3.0): `{ service, action,
- * actionVersion, connection, args }`. One reading of them, shared by the
+ * actionVersion, connection, args }`, and `boundBy`, who bound the step, which
+ * the bidding Worker's save stamps and a client never sets. One reading of them, shared by the
  * definition validator at save and the ops executor at run, so the two can never
  * disagree about what a step holds (L342).
  *
@@ -24,6 +25,13 @@ export interface AppActionConfig {
   readonly actionVersion: number
   readonly connection: string
   readonly args: Readonly<Record<string, unknown>>
+  /**
+   * The users.id of whoever bound the step to its connection (#2339), stamped by
+   * the bidding Worker's save and never taken from a client; null when the step
+   * carries none or something that is not a user id. A person's own account may
+   * be used only by its owner, which the ops executor holds a step to.
+   */
+  readonly boundBy: string | null
 }
 
 export const APP_ACTION_CONFIG_REFUSALS = [
@@ -49,7 +57,7 @@ const refuse = (reason: AppActionConfigRefusal, message: string): AppActionConfi
 /** The step's settings, or the first thing missing in the setup order (service and action, version, connection). */
 export function readAppActionConfig(config: unknown): AppActionConfigReading {
   const c = isRecord(config) ? config : {}
-  const { service, action, actionVersion, connection, args } = c
+  const { service, action, actionVersion, connection, args, boundBy } = c
   if (blank(service) || blank(action) || typeof service !== 'string' || typeof action !== 'string') {
     return refuse('action_not_chosen', 'No service and action chosen')
   }
@@ -62,7 +70,10 @@ export function readAppActionConfig(config: unknown): AppActionConfigReading {
     return refuse('connection_id_invalid', 'The connection is not a connection id; choose the connection again')
   }
   if (args !== undefined && args !== null && !isRecord(args)) return refuse('args_not_object', 'The arguments are not a set of named values')
-  return { ok: true, config: { service, action, actionVersion, connection, args: isRecord(args) ? args : {} } }
+  return {
+    ok: true,
+    config: { service, action, actionVersion, connection, args: isRecord(args) ? args : {}, boundBy: typeof boundBy === 'string' && UUID.test(boundBy) ? boundBy : null },
+  }
 }
 
 export const STEP_ARG_PROBLEMS = [

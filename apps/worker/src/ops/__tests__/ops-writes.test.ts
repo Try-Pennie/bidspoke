@@ -393,8 +393,9 @@ describe('the ops connection wrappers (#2334)', () => {
   const envelope = { v: 1, kid: 'ops-2026-10', wrapped_key: 'd2s', iv: 'aXY', ct: 'Y3Q' }
   const copy = {
     connectionId: CONN, organizationId: ORG, service: 'salesforce', generation: 2, envelope, publicConfig: { name: 'trypennie' },
-    target: { instance_url: 'https://trypennie.my.salesforce.com' }, serveUntil: '2026-10-17T16:00:00Z',
+    target: { instance_url: 'https://trypennie.my.salesforce.com' }, ownerUserId: null, serveUntil: '2026-10-17T16:00:00Z',
   }
+  const OWNER = '00000000-0000-4000-8000-0000000023f1'
 
   it('save_connection_copies sends each copy and reads every count', async () => {
     const { client, calls } = rpcFetch([{ inserted: 1, updated: 0, confirmed: 0, refused_older: 0, refused_expired: 0, refused_removed: 0, withdrawn: 0 }])
@@ -407,7 +408,7 @@ describe('the ops connection wrappers (#2334)', () => {
         p_served_at: '2026-10-17T10:00:00Z', p_complete: true,
         p_copies: [{
           connection_id: CONN, organization_id: ORG, service: 'salesforce', generation: 2, envelope, public_config: { name: 'trypennie' },
-          target: { instance_url: 'https://trypennie.my.salesforce.com' }, serve_until: '2026-10-17T16:00:00Z',
+          target: { instance_url: 'https://trypennie.my.salesforce.com' }, owner_user_id: null, serve_until: '2026-10-17T16:00:00Z',
         }],
       },
     })
@@ -420,6 +421,23 @@ describe('the ops connection wrappers (#2334)', () => {
       .rejects.toThrow(/serve_until more than 6 hours after it was served/)
     await expect(saveConnectionCopies(client, '2026-10-17T10:00:00Z', false, Array.from({ length: 1001 }, () => copy))).rejects.toThrow(/more than one save carries/)
     expect(calls).toEqual([])
+  })
+
+  // #2339: a person's own account may be used only by its owner.
+  it('save_connection_copies sends a person bound copy\'s owner, and connection_copy reads it back, nobody when the database answers none', async () => {
+    const saved = rpcFetch([{ inserted: 1, updated: 0, confirmed: 0, refused_older: 0, refused_expired: 0, refused_removed: 0, withdrawn: 0 }])
+    await saveConnectionCopies(saved.client, '2026-10-17T10:00:00Z', true, [{ ...copy, ownerUserId: OWNER }])
+    expect((saved.calls[0].body as { p_copies: Array<Record<string, unknown>> }).p_copies[0].owner_user_id).toBe(OWNER)
+
+    const row = {
+      state: 'usable', connection_id: CONN, service: 'google', generation: 2, envelope, public_config: {}, target: { own_account: true },
+      served_at: '2026-10-17T10:00:00+00:00', serve_until: '2026-10-17T16:00:00+00:00', db_now: '2026-10-17T10:01:00+00:00',
+    }
+    expect(await readConnectionCopy(rpcFetch([{ ...row, owner_user_id: OWNER }]).client, ORG, CONN)).toMatchObject({ ownerUserId: OWNER })
+    expect(await readConnectionCopy(rpcFetch([{ ...row, owner_user_id: null }]).client, ORG, CONN)).toMatchObject({ ownerUserId: null })
+    // An ops database older than the owner answers no such column: nobody, so an own account step is refused.
+    expect(await readConnectionCopy(rpcFetch([row]).client, ORG, CONN)).toMatchObject({ ownerUserId: null })
+    await expect(readConnectionCopy(rpcFetch([{ ...row, owner_user_id: 'dan' }]).client, ORG, CONN)).rejects.toThrow(/owner_user_id/)
   })
 
   it('connection_copy hands back the envelope only for a usable copy, and refuses an unknown state', async () => {

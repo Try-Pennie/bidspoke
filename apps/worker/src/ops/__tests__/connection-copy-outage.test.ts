@@ -117,6 +117,7 @@ function opsDb() {
       servedAt: kept.servedAt,
       serveUntil: kept.input.serveUntil,
       dbNow: new Date(clock.value).toISOString(),
+      ownerUserId: kept.input.ownerUserId,
     }
   }
   return { db, readCopy, copies }

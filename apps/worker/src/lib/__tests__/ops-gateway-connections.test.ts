@@ -27,7 +27,7 @@ const envelope = { v: 1, kid: 'ops-2026-10', wrapped_key: 'd3JhcHBlZA==', iv: 'a
 const connection = (over: Record<string, unknown> = {}) => ({
   id: CONN, organization_id: ORG, service: 'salesforce', generation: 2, envelope,
   public_config: { name: 'trypennie' }, target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' },
-  serve_until: UNTIL, ...over,
+  owner_user_id: null, serve_until: UNTIL, ...over,
 })
 const tombstone = (over: Record<string, unknown> = {}) => ({
   connection_id: CONN_B, organization_id: ORG, generation: 3, removed_at: '2026-10-18T21:00:00.000Z', ...over,
@@ -73,6 +73,7 @@ describe('parseServedOpsConnections', () => {
     ['a serve_until past the 6 hour window', { serve_until: new Date(NOW + CONNECTION_SERVE_WINDOW_MS + 1000).toISOString() }, /serve_until/],
     ['a serve_until not after it was served', { serve_until: SERVED_AT }, /serve_until/],
     ['an unreadable serve_until', { serve_until: 'soon' }, /serve_until/],
+    ['an owner that is not a uuid', { owner_user_id: 'dan@trypennie.com' }, /owner/],
   ])('refuses a connection with %s by name, keeps the rest, and does not call the list complete', (_label, over, why) => {
     const { list: parsed, refused } = parseServedOpsConnections(list([connection({ id: CONN_B }), connection(over)]))
     expect(parsed.connections.map((c) => c.id)).toEqual([CONN_B])
@@ -127,6 +128,17 @@ describe('parseServedOpsConnections', () => {
   })
 })
 
+// #2339: a person's own account may be used only by its owner, so ops keeps who owns each connection.
+describe('the owner of a person bound connection', () => {
+  const OWNER = '00000000-0000-4000-8000-0000000023f1'
+
+  it('reads the served owner, and a row served with none, or by a bidding Worker older than the owner, as owning nobody', () => {
+    expect(parseServedOpsConnections(list([connection({ owner_user_id: OWNER })])).list.connections[0].owner_user_id).toBe(OWNER)
+    const { owner_user_id: _dropped, ...older } = connection()
+    expect(parseServedOpsConnections(list([older])).list.connections[0].owner_user_id).toBeNull()
+  })
+})
+
 describe('the rotated envelope request still refuses by the same names (the envelope rule is now shared)', () => {
   const request = (env: unknown) => ({ organization_id: ORG, connection_id: CONN, expected_generation: 1, generation: 2, envelope: env })
   it.each([
@@ -158,7 +170,7 @@ function servedDb(tables: { service_connections?: unknown[]; connection_tombston
 
 const row = (over: Record<string, unknown> = {}) => ({
   id: CONN, organization_id: ORG, service_type: 'salesforce', sealed_for: 'ops_key', credential_generation: 2,
-  credential_enc: JSON.stringify(envelope), config: { name: 'trypennie' },
+  credential_enc: JSON.stringify(envelope), config: { name: 'trypennie' }, person_bound: false, user_id: null,
   target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' }, ...over,
 })
 
@@ -172,6 +184,19 @@ describe('readOpsConnections, the bidding side of the serve', () => {
     const q = queries.find((u) => u.pathname === '/rest/v1/service_connections')!
     expect(q.searchParams.get('sealed_for')).toBe('eq.ops_key')
     expect(q.searchParams.get('credential_enc')).toBe('not.is.null')
+  })
+
+  it('serves the owner of a person bound connection, and nobody for a company connection whatever user it names', async () => {
+    const OWNER = '00000000-0000-4000-8000-0000000023f1'
+    const { client, queries } = servedDb({
+      service_connections: [row({ person_bound: true, user_id: OWNER }), row({ id: CONN_B, person_bound: false, user_id: OWNER })],
+      connection_tombstones: [],
+    })
+    const served = await readOpsConnections(client, NOW)
+    expect(served.connections.map((c) => [c.id, c.owner_user_id])).toEqual([[CONN, OWNER], [CONN_B, null]])
+    const q = queries.find((u) => u.pathname === '/rest/v1/service_connections')!
+    expect(q.searchParams.get('select')).toContain('person_bound')
+    expect(q.searchParams.get('select')).toContain('user_id')
   })
 
   it('drops a bidding_ring row the filter let through, so the Slack token\'s ciphertext never reaches ops, and does not call the list complete', async () => {
