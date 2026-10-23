@@ -214,6 +214,22 @@ describe('AlertClaimObject cron tick claim (#1899)', () => {
     expect(await tick(obj, { now: NOW + 10 * TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'next' })).toMatchObject({ run: true, reason: 'first' })
   })
 
+  // #2610: the never finished page reads whether Cloudflare's retry of the run took the tick and finished.
+  it('tick-read says what it holds, and when a same scheduled time retry took the tick over', async () => {
+    const obj = new AlertClaimObject(makeDOState().state)
+    const read = async () => (await obj.fetch(req('/tick-read', {}))).json()
+    expect(await read()).toEqual({ found: false })
+    await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'killed' })
+    expect(await read()).toEqual({ found: true, status: 'running', scheduled_time: NOW, started_at: NOW, retried_at: null })
+    await tick(obj, { now: NOW + 99_000, scheduled_time: NOW, holder: 'retry' })
+    expect(await read()).toEqual({ found: true, status: 'running', scheduled_time: NOW, started_at: NOW + 99_000, retried_at: NOW + 99_000 })
+    await done(obj, 'retry')
+    expect(await read()).toMatchObject({ status: 'done', retried_at: NOW + 99_000 })
+    // A duplicate with another scheduled time is no retry and changes nothing.
+    await tick(obj, { now: NOW + 120_000, scheduled_time: NOW + 36_000, holder: 'twin' })
+    expect(await read()).toMatchObject({ status: 'done', retried_at: NOW + 99_000 })
+  })
+
   it('answers 400 to a malformed body rather than granting on it', async () => {
     const obj = new AlertClaimObject(makeDOState().state)
     expect((await obj.fetch(req('/tick-claim', { now: NOW }))).status).toBe(400)
