@@ -85,7 +85,7 @@ import { DEFAULT_ALERT_OVER_PERCENT } from '@bidspoke/buyer-profile'
 import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
 import { noChangesMessage, saveFinished, saveOutcomeMessage } from '@/lib/save-outcome'
 import { restoreVersion } from '@/lib/version-restore'
-import { canvasSaveReducer, classifySaveRefusal, initialCanvasSave, pressKeys, type CanvasSaveState, type StaleSave } from '@/lib/workflow-save-conflict'
+import { canvasSaveReducer, initialCanvasSave, loadTheirsFailure, pressKeys, saveFailureOutcome, type CanvasSaveState, type StaleSave } from '@/lib/workflow-save-conflict'
 import { SaveConflictBar } from './SaveConflictBar'
 import { TOOLBAR_BUTTON, TOOLBAR_BUTTON_REST } from './toolbar-button'
 import { applyFormulaRenames } from '@/lib/formula-renames'
@@ -2886,13 +2886,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       // A save made after someone else's is shown in the save conflict strip;
       // this canvas's own earlier press, its answer lost, is saved on top of
       // once; anything else is shown as the Worker worded it (#2599).
-      const refusal = classifySaveRefusal(e, keys.save_id)
-      if (refusal) dispatchSave({ type: 'refused', refusal })
-      if (refusal?.kind === 'own_save_landed' && !afterOwnSave) {
-        landedEarlier = canvasSaveReducer(from, { type: 'refused', refusal })
-      } else if (refusal?.kind !== 'stale') {
-        setSaveError(e instanceof Error ? e.message : 'Save failed')
-      }
+      const outcome = saveFailureOutcome(e, keys.save_id, from, afterOwnSave)
+      if (outcome.event) dispatchSave(outcome.event)
+      if (outcome.message) setSaveError(outcome.message)
+      landedEarlier = outcome.saveAgainFrom
     } finally {
       setSaving(false)
     }
@@ -2914,7 +2911,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       dispatchSave({ type: 'loaded', version: stored.version })
       setSaveError(null)
     } catch (e) {
-      setSaveError(`Their version was not loaded: ${e instanceof Error ? e.message : 'the request failed'}. Your changes are still on the canvas.`)
+      setSaveError(loadTheirsFailure(e))
     }
   }
 

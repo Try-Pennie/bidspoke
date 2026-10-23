@@ -4,11 +4,15 @@ import {
   classifySaveRefusal,
   initialCanvasSave,
   loadTheirsDialog,
+  loadTheirsFailure,
   pressKeys,
+  saveFailureOutcome,
   saveOverDialog,
   staleWorkflowSentence,
   type CanvasSaveState,
 } from '../workflow-save-conflict'
+import type { WorkflowSaveBody } from '../api'
+import type { WorkflowDef } from '@/types/workflow'
 
 // The settled design's fixture (Maria Lopez, saved 2026-10-23T02:41:00Z), as
 // the design's frames read it.
@@ -166,3 +170,68 @@ describe('canvasSaveReducer and pressKeys', () => {
     expect(pressKeys(s, ids('next'))).toEqual({ expected_version: 5, save_id: 'next' })
   })
 })
+
+// What the canvas does when a save fails (#2599): WorkflowCanvas cannot be
+// mounted in jsdom (#737), so the decision is made here and the canvas only
+// applies it.
+describe('saveFailureOutcome', () => {
+  const from = initialCanvasSave(4)
+  const stale409 = (lastSaveId: string) => refused(409, { code: 'stale_version', error: 'Not saved. Someone else saved.', current: { version: 7 }, last_save_id: lastSaveId, changed_by_name: 'Maria Lopez', changed_at: fixture.changedAt })
+
+  it("someone else's save: the strip shows it, no sentence beside it, no second save", () => {
+    expect(saveFailureOutcome(stale409('theirs'), 'mine', from, false)).toEqual({
+      event: { type: 'refused', refusal: { kind: 'stale', stale: { version: 7, changedByName: 'Maria Lopez', changedAt: fixture.changedAt } } },
+      message: null,
+      saveAgainFrom: null,
+    })
+  })
+
+  it("this canvas's own lost press landed: saves once more on top of it, naming its version and a new press", () => {
+    const out = saveFailureOutcome(stale409('mine'), 'mine', { ...from, unansweredSaveId: 'mine' }, false)
+    expect(out.message).toBeNull()
+    expect(out.saveAgainFrom).toEqual({ baseVersion: 7, unansweredSaveId: null, conflict: null })
+    expect(out.event).toEqual({ type: 'refused', refusal: { kind: 'own_save_landed', version: 7 } })
+  })
+
+  it('never saves a third time: a second own landed answer is shown as the Worker worded it', () => {
+    // The client copies the Worker's sentence into the error's message; this test's error carries 'refused'.
+    expect(saveFailureOutcome(stale409('mine'), 'mine', from, true)).toMatchObject({ message: 'refused', saveAgainFrom: null })
+  })
+
+  it('no answer at all: shows the failure and keeps the press for the next one', () => {
+    expect(saveFailureOutcome(new TypeError('Failed to fetch'), 'lost', from, false)).toEqual({
+      event: { type: 'refused', refusal: { kind: 'unanswered', saveId: 'lost' } },
+      message: 'Failed to fetch',
+      saveAgainFrom: null,
+    })
+  })
+
+  it('any other refusal, 428 included: shows the Worker\'s sentence and changes no save state', () => {
+    expect(saveFailureOutcome(refused(428, { code: 'reload_required', error: 'Not saved. Reload.' }), 'p', from, false)).toEqual({ event: null, message: 'refused', saveAgainFrom: null })
+    expect(saveFailureOutcome('a thrown string', 'p', from, false)).toMatchObject({ message: 'Save failed' })
+  })
+})
+
+describe('loadTheirsFailure', () => {
+  it('says their version was not loaded and the changes are still on the canvas', () => {
+    expect(loadTheirsFailure(new Error('API 500'))).toBe('Their version was not loaded: API 500. Your changes are still on the canvas.')
+    expect(loadTheirsFailure('x')).toBe('Their version was not loaded: the request failed. Your changes are still on the canvas.')
+  })
+})
+
+// Every canvas save sends both keys because the save body's type will not
+// compile a definition without them (#2599). Typechecked, not run: if the type
+// ever allows it, the expected errors below go unused and the typecheck fails.
+describe('WorkflowSaveBody', () => {
+  const definition: WorkflowDef = { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } }
+  it('will not take a definition without the version and the press, and takes a rename without either', () => {
+    // @ts-expect-error a definition save names the version it was edited from and its press
+    const neither: WorkflowSaveBody = { definition }
+    // @ts-expect-error a definition save names its press too
+    const noPress: WorkflowSaveBody = { definition, expected_version: 4 }
+    const both: WorkflowSaveBody = { definition, expected_version: 4, save_id: 'press' }
+    const rename: WorkflowSaveBody = { name: 'Renamed' }
+    expect([neither, noPress, both, rename]).toHaveLength(4)
+  })
+})
+

@@ -128,3 +128,32 @@ export function canvasSaveReducer(state: CanvasSaveState, event: CanvasSaveEvent
 export function pressKeys(state: CanvasSaveState, newSaveId: () => string): { expected_version: number; save_id: string } {
   return { expected_version: state.baseVersion, save_id: state.unansweredSaveId ?? newSaveId() }
 }
+
+/**
+ * What the canvas does with a failed save (#2599), decided here because the
+ * canvas cannot be mounted in jsdom (#737): the save state event to apply, the
+ * sentence to show in the save error strip (null when the save conflict strip
+ * says it), and the state to save once more from when the failure was this
+ * canvas's own lost press having landed. That second save is made at most
+ * once (`afterOwnSave` on it), so it can never loop.
+ */
+export function saveFailureOutcome(err: unknown, saveId: string, from: CanvasSaveState, afterOwnSave: boolean): {
+  event: CanvasSaveEvent | null
+  message: string | null
+  saveAgainFrom: CanvasSaveState | null
+} {
+  const refusal = classifySaveRefusal(err, saveId)
+  const event: CanvasSaveEvent | null = refusal ? { type: 'refused', refusal } : null
+  const shown = err instanceof Error ? err.message : 'Save failed'
+  if (refusal?.kind === 'stale') return { event, message: null, saveAgainFrom: null }
+  if (refusal?.kind === 'own_save_landed' && !afterOwnSave) {
+    return { event, message: null, saveAgainFrom: canvasSaveReducer(from, { type: 'refused', refusal }) }
+  }
+  return { event, message: shown, saveAgainFrom: null }
+}
+
+/** R4's failure: their version could not be read, and nothing on the canvas changed. */
+export function loadTheirsFailure(err: unknown): string {
+  return `Their version was not loaded: ${err instanceof Error ? err.message : 'the request failed'}. Your changes are still on the canvas.`
+}
+
