@@ -7,7 +7,10 @@ import { applyCandidate, candidateProblems, parseCandidate, parseSeed, seedDefec
 import { compareOutcomes, runNode, type ValidationOutcome } from '../outcomes'
 import lendswift from '../candidates/rml-lendswift.json'
 import leadEconomy from '../candidates/lead-economy.json'
-import leadEconomyDef from '../../fixtures/definitions/89b1a6af-7e0f-43de-bc66-1e888184551f.json'
+// Lead Economy's version 39, the version before its swap (#2594): the money gate's
+// definition runs the node since version 40, so the copy kept in swap/replaced is
+// the definition that still holds the code step a candidate replaces.
+import leadEconomyDef from '../replaced/lead-economy-v39.json'
 
 const candidate = () => structuredClone(lendswift) as unknown as SwapCandidate
 

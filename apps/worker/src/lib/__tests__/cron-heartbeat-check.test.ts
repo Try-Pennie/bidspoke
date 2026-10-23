@@ -204,6 +204,8 @@ describe('runHeartbeatChecks: a run that started and never finished (#985)', () 
       expect.any(Number),
       // Nor can a first report say nothing has changed (#1768).
       false,
+      // No retry reader was given, so nothing is said of a retry (#2610).
+      null,
     )
     expect(results.filter((x) => x.jobId !== archive.id).every((x) => x.status === 'healthy')).toBe(true)
   })
