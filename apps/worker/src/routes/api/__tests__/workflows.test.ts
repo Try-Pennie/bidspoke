@@ -51,6 +51,7 @@ import { pushWorkflowToGitHub } from '../../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../../lib/github-backup-alert'
 import { uuidv7 } from '@bidspoke/uuidv7'
 import api from '../index'
+import { RELOAD_REQUIRED_WORKFLOW_MESSAGE } from '../workflows'
 
 /** One call of write_workflow, as the route sent it (#1947). */
 interface WriteArgs {
@@ -2846,13 +2847,30 @@ describe('a save made from a version no longer stored is refused, never written 
     app = await makeApp()
   })
 
-  // Today's canvas names no version (its change waits on a design round, #1947):
-  // its save is made from the version this request read, so a write landing
-  // while the request runs is still refused rather than written over.
-  it('a save naming no version is made from the version the request read, and names no press', async () => {
+  // The canvas names the version it was loaded from and its press on every save
+  // (#2599). A canvas opened before that sends neither, and its save would be
+  // made from whatever version the request read, writing over a newer save, so
+  // it is refused before anything is read, its edits left on the canvas (L598).
+  it.each([
+    ['no version', { save_id: saveKeys.save_id }],
+    ['no press', { expected_version: 4 }],
+    ['neither', {}],
+  ])('answers a definition save naming %s with 428 reload_required, reading and writing nothing', async (_, keys) => {
     const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, version: 9 } } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...keys, definition } })
+    expect(res.status).toBe(428)
+    expect(await res.json()).toEqual({ code: 'reload_required', error: RELOAD_REQUIRED_WORKFLOW_MESSAGE })
+    expect(sb.calls.workflows ?? []).toEqual([])
+    expect(sb.writes).toEqual([])
+  })
+
+  // A rename from the list sends no definition, so it overwrites nothing anyone
+  // edited on a canvas: it is made from the version the request read.
+  it('a save sending no definition and no version is made from the version the request read', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, version: 9 } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
     expect(res.status).toBe(200)
     expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'save', p_expected_version: 9, p_save_id: null })])
   })

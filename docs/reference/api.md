@@ -84,7 +84,9 @@ Response `201`:
 
 ### Save a workflow (create a version)
 
-`PUT /api/workflows/:id`. Send the full `definition`. The save creates a numbered version snapshot, invalidates the workflow's KV cache so the next trigger loads the new definition, deploys any Code node bundles, and (best-effort, asynchronously) pushes the definition to the GitHub backup repo. An optional `message` is stored on the version row.
+`PUT /api/workflows/:id`. Send the full `definition`, with `expected_version`, the workflow's `version` as you read it (GET returns it), and `save_id`, a UUID you make for this save. The save creates a numbered version snapshot, invalidates the workflow's KV cache so the next trigger loads the new definition, deploys any Code node bundles, and (best-effort, asynchronously) pushes the definition to the GitHub backup repo. An optional `message` is stored on the version row.
+
+A save that sends a `definition` without both `expected_version` and `save_id` is refused with `428`, `code: reload_required` (#2599). A save made from a version that is no longer stored, because someone saved after you read it, is refused with `409`, `code: stale_version`, carrying `current` (the stored row), `last_save_id`, `changed_by_name` and `changed_at`; nothing is written. Read the workflow again, or send its current `version` to save over theirs. A save sending no definition (a rename) may leave both out and is made from the version the request reads.
 
 ```bash
 curl -X PUT https://bidspoke.trypennie.dev/api/workflows/8f3c2b10-... \
@@ -92,6 +94,8 @@ curl -X PUT https://bidspoke.trypennie.dev/api/workflows/8f3c2b10-... \
   -H "Content-Type: application/json" \
   -d '{
     "definition": { "nodes": [], "edges": [], "trigger": { "type": "http_webhook", "config": { "method": "POST", "auth_method": "api_key" } } },
+    "expected_version": 12,
+    "save_id": "0b6f2a3e-8c1d-4e5f-9a7b-1c2d3e4f5a6b",
     "message": "Add validation filter"
   }'
 ```
