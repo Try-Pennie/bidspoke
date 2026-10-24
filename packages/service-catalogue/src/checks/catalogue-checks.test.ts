@@ -188,6 +188,11 @@ describe('every action decides its own traits (R11)', () => {
     expect(await codes(said)).not.toContain('real_send_missing')
   })
 
+  it('treats an argument drawn on several lines as display, not a change to the version (#2338)', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, arguments: a.arguments.map((arg) => ({ ...arg, multiline: true })) }))
+    expect(await codes(edited)).toEqual([])
+  })
+
   it('refuses real send words on a read, which a test never asks about', async () => {
     const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, realSend: 'sends a real echo' }))
     expect(await codes(edited)).toEqual(['real_send_on_read'])

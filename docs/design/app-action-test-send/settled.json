@@ -6,7 +6,7 @@
  ],
  "chrome": {
   "captured": "chrome.html",
-  "from": "http://localhost:3989/dev/app-action?frame=app-action-card at 1440 by 1300, main at 063ab06 with the preview step set to Gmail Send an email for this capture only, step opened and Test this node expanded, the page root pinned to 1300 high, no sign in needed, 2026-10-23",
+  "from": "http://localhost:3991/dev/app-action?frame=send-unticked at 1440 by 1300, recaptured on 2026-10-24 once the step panel drew the App Action settings form (#2338): the step opened and Test this node expanded, its section emptied as the slot, the page root pinned to 1300 high, no sign in needed. First captured from the same preview on 2026-10-23.",
   "slot": "#dr-test",
   "width": 1440
  },

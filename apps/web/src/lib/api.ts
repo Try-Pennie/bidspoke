@@ -665,6 +665,18 @@ export interface ConnectionList {
   statuses: { as_of: string | null; stale: boolean; unavailable: { cause: string; detail: string } | null }
 }
 
+/** An ops step's kept test result, as GET /api/workflows/:id/test-results/:nodeId answers it (#2339). */
+export interface StepTestResult {
+  node_id: string
+  namespace: string
+  tested_at: string
+  status: 'completed' | 'failed'
+  output: unknown
+  output_bytes: number | null
+  error: string | null
+  duration_ms: number
+}
+
 /** What POST /api/connections/:id/lookup/:key found. */
 export type ConnectionLookupAnswer =
   | { key: 'objects' | 'tables'; entries: { name: string; label: string }[] }
@@ -970,6 +982,9 @@ export const api = {
         duration_ms: number
         deploy?: { deployed: boolean; skipped: boolean; error?: string }
       }>(`/api/workflows/${id}/test-node`, { method: 'POST', body: JSON.stringify(data), timeoutMs: LONG_TIMEOUT_MS }),
+    // An ops step's kept test result (#2339), null once none is under 7 days old.
+    testResult: (id: string, nodeId: string) =>
+      req<{ result: StepTestResult | null }>(`/api/workflows/${id}/test-results/${encodeURIComponent(nodeId)}`),
     saveTestPayloads: (id: string, test_payloads: Array<{ name: string; payload: unknown }>) =>
       req<{ test_payloads: Array<{ name: string; payload: unknown }> }>(`/api/workflows/${id}/test-payloads`, {
         method: 'PATCH',

@@ -14,6 +14,10 @@ import { appActionDisplay } from '@/lib/app-action-display'
 import fixture from '../../../../../../../docs/design/app-action-node-card.fixture.json'
 import { PREVIEW_STEP_CONFIG, PREVIEW_WORKFLOW, SEND_CONNECTIONS, SEND_STEP_CONFIG, SEND_WORKFLOW, SETTLED_FRAMES, TEST_SEND_FRAMES, previewFrameOf } from '../app-action-preview-source'
 import sendFixture from '../../../../../../../docs/design/app-action-test-send.fixture.json'
+import formFixture from '../../../../../../../docs/design/app-action-step-form.fixture.json'
+import { FORM_CONNECTIONS, FORM_FRAMES, formStepConfig, formWorkflow } from '../app-action-preview-source'
+import { appActionSchema } from '@/lib/app-action-display'
+import { sampleLabel, sampleRows } from '@bidspoke/references'
 import { appActionRealSend } from '@/lib/app-action-display'
 
 const notFound = vi.fn(() => { throw new Error('NEXT_NOT_FOUND') })
@@ -56,6 +60,27 @@ describe('the App Action card preview', () => {
     expect(step).toMatchObject({ label: sendFixture.label, namespace: sendFixture.namespace, config: SEND_STEP_CONFIG })
     const name = SEND_CONNECTIONS.connections.find((c) => c.id === SEND_STEP_CONFIG.connection)?.name ?? null
     expect(appActionRealSend(SEND_STEP_CONFIG, name)).toBe(`Send for real. This ${sendFixture.realSend} from ${sendFixture.connection}. It cannot be taken back.`)
+  })
+
+  it('lists the form frames exactly as the settings form\'s settled design does (#2338)', () => {
+    const spec = JSON.parse(readFileSync(path.resolve(__dirname, '../../../../../../../docs/design/app-action-step-form/settled.json'), 'utf8')) as { frames: { id: string }[] }
+    expect([...FORM_FRAMES]).toEqual(spec.frames.map((f) => f.id))
+  })
+
+  it('the form fixture\'s fields are the catalogue\'s, so the settled design draws what the form draws', () => {
+    const schema = appActionSchema(formStepConfig('form-finished'))
+    expect(schema?.arguments.map((a) => ({ key: a.key, label: sampleLabel(a.key), required: a.required, insert: a.allowsVariables, multiline: a.multiline === true || a.type === 'code' })))
+      .toEqual(formFixture.fields)
+    expect(appActionDisplay(formStepConfig('form-finished'))).toMatchObject({ service: formFixture.service, action: formFixture.action })
+    expect(FORM_CONNECTIONS.connections[0]).toMatchObject({ name: formFixture.connection, acts_as: formFixture.actsAs })
+    expect(sampleRows('trigger.payload', formFixture.triggerPayload).rows.map((r) => r.label)).toEqual(['Email', 'First name', 'Last name', 'Phone', 'Enrolled debt'])
+  })
+
+  it('the unfinished frame has no connection and no To, the finished one both', () => {
+    expect(formStepConfig('form-unfinished')).not.toHaveProperty('connection')
+    expect((formStepConfig('form-unfinished').args as Record<string, unknown>).to).toBeUndefined()
+    expect(formStepConfig('form-finished')).toHaveProperty('connection')
+    expect(formWorkflow('form-picker').test_payloads).toEqual([{ name: 'Lead', payload: formFixture.triggerPayload }])
   })
 
   it('answers 404 in a production build', async () => {

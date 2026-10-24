@@ -42,11 +42,13 @@ export interface ConnectionFieldProps {
   loadList?: () => Promise<ConnectionList>
   clock?: ComboboxClock
   disabled?: boolean
+  /** The field's label: Connection, or Connection (required) where a form marks what it needs (#2338's App Action step). */
+  label?: string
 }
 
 const liveList = () => api.connections.list()
 
-export function ConnectionField({ id, service, value, onChange, loadList = liveList, clock = realClock, disabled }: ConnectionFieldProps) {
+export function ConnectionField({ id, service, value, onChange, loadList = liveList, clock = realClock, disabled, label = 'Connection' }: ConnectionFieldProps) {
   const serviceName = CATALOGUE.find((s) => s.key === service)?.name ?? service
   const loader = useCallback(async (): Promise<ConnectionView[]> => {
     let answer: ConnectionList
@@ -73,7 +75,7 @@ export function ConnectionField({ id, service, value, onChange, loadList = liveL
 
   return (
     <div data-part="connection-field">
-      <Field id={id} label="Connection">
+      <Field id={id} label={label}>
         <ComboboxControl
           id={id}
           value={value ?? ''}

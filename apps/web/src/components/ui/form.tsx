@@ -543,7 +543,7 @@ export function TickRow({ checked, onChange, label, disabled }: { checked: boole
  */
 export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost' | 'row' | 'quiet' | 'remove'
 
-export function Button({ variant, type = 'button', form, onClick, disabled, busy, children, 'aria-label': ariaLabel, describedBy: db, title, className, keepFocus, current, part }: {
+export function Button({ variant, type = 'button', form, onClick, disabled, busy, children, 'aria-label': ariaLabel, describedBy: db, title, className, keepFocus, current, part, popup }: {
   variant: ButtonVariant
   type?: 'button' | 'submit'
   /** The form a submit button belongs to when it is drawn outside it (the partners save bar, #2138). */
@@ -567,12 +567,17 @@ export function Button({ variant, type = 'button', form, onClick, disabled, busy
   current?: boolean
   /** A data-part name a settled design's checks read the button by (#2338), never a styling hook. */
   part?: string
+  /** The button opens a list (the data picker, #2338): whether it is open, and the list's id while it is. */
+  popup?: { expanded: boolean; controls?: string }
 }) {
   return (
     <button
       type={type}
       form={form}
       data-part={part}
+      aria-haspopup={popup ? 'listbox' : undefined}
+      aria-expanded={popup ? popup.expanded : undefined}
+      aria-controls={popup?.controls}
       aria-current={current ? 'true' : undefined}
       onMouseDown={keepFocus ? (e) => e.preventDefault() : undefined}
       aria-describedby={db}

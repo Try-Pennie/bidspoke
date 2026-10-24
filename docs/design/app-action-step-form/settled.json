@@ -1,0 +1,55 @@
+{
+ "title": "App Action step: its settings form (#2338)",
+ "intro": "The settings an ops workflow's App Action step shows in the canvas's step panel: what it runs, the connection it sends through, and the action's own fields, with a data picker for values from earlier steps. For whoever builds an ops workflow. Settled by Dan on 2026-10-24 in three rounds (recorded on #2338), drawn in the real step panel captured from the canvas, on Gmail's Send an email.",
+ "requirements": [
+  {"number": "2338", "text": "An App Action step is set up in the plan's fixed order, what it runs, then its connection, then its fields, and is not finished until all three are set (section 3.3 of #1689)."},
+  {"number": "2339", "text": "The data picker offers each earlier step's tested values, flattened into rows of a name, a reference and a sample, and inserts the reference where the cursor is."}
+ ],
+ "chromes": [
+  {"name": "unfinished", "captured": "chrome.html", "from": "the rounds' capture: http://localhost:3992/dev/app-action?frame=app-action-card at 1440 by 1300, main at 063ab06, the preview step set to Gmail Send an email with no connection, step opened, the page root pinned to 1300 high, no sign in needed, 2026-10-23", "slot": "#dr-fields", "width": 1440},
+  {"name": "finished", "captured": "chrome-finished.html", "from": "http://localhost:3991/dev/app-action?frame=form-finished at 1440 by 1300, the step finished so the canvas counts one unconfigured node and the card carries no unconfigured mark, its fields block emptied as the slot, the page root pinned to 1300 high, no sign in needed, 2026-10-24", "slot": "#dr-fields", "width": 1440}
+ ],
+ "builder": "builder.js",
+ "fixture": "../app-action-step-form.fixture.json",
+ "frames": [
+  {"id": "form-finished", "title": "A finished step: Gmail's Send an email through Ops mailbox, To and Body set", "width": 1440, "height": 1300, "chrome": "finished", "variant": {"state": "finished"}},
+  {"id": "form-unfinished", "title": "An unfinished step: no connection chosen and To empty, nothing else added", "width": 1440, "height": 1300, "chrome": "unfinished", "variant": {"state": "unfinished"}},
+  {"id": "form-picker", "title": "The data picker open on To, from the trigger's test payload", "width": 1440, "height": 1300, "chrome": "finished", "variant": {"state": "picker"}}
+ ],
+ "decisions": [
+  {"id": "F1", "decision": "The step says what it runs with two dropdowns under its Step ID, Service then Action, the Action list holding only that service's actions, as the Salesforce step has Operation and Object.",
+   "why": "Round 1: Dan chose two dropdowns.",
+   "requirement": "2338", "frames": ["form-finished", "form-unfinished", "form-picker"],
+   "check": "Below Step ID the panel reads a field Service (required) showing the fixture's service, then Action (required) showing its action, each a dropdown, then Connection (required)."},
+  {"id": "F2", "decision": "A required field says so in its label, \"Body (required)\", on a finished step and an unfinished one alike, and nothing else marks an unfinished step: no error line, no colour.",
+   "why": "Round 2: Dan chose labels that say required, the same finished or not.",
+   "requirement": "2338", "frames": ["form-finished", "form-unfinished", "form-picker"],
+   "check": "Each argument field's label is its name, followed by (required) exactly when the fixture marks it required, in the fixture's order, and no red text shows in the panel."},
+  {"id": "F3", "decision": "The connection is the step form's own Connection field, the chosen connection's name with Acts as under it, or Choose a connection when none is chosen.",
+   "why": "As #2338's settled step form draws it (docs/design/connections-step-form.html).",
+   "requirement": "2338", "frames": ["form-finished", "form-unfinished"],
+   "check": "The Connection field shows the fixture's connection with Acts as its address under it on a finished step, and Choose a connection with no Acts as line on the unfinished one."},
+  {"id": "F4", "decision": "Every argument that can read earlier steps carries a small Insert button on its label line; a field that cannot (its own text only) has none.",
+   "why": "Round 3: Dan chose \"A button on the field\", so nobody needs to know to type {{.",
+   "requirement": "2339", "frames": ["form-finished", "form-unfinished", "form-picker"],
+   "check": "Each argument field the fixture marks insert has a button reading Insert on its label's line, to the right of the label, and no other argument field has one."},
+  {"id": "F5", "decision": "Insert opens the app's dropdown list under the field, as wide as the field, headed From Trigger, each row the value's name with its sample from the last test as the second line, the first row highlighted.",
+   "why": "Round 3: the list opens under the field it fills, with the rows held identical in every option.",
+   "requirement": "2339", "frames": ["form-picker"],
+   "check": "Under the To field a list headed From the fixture's step holds one row per trigger payload value, each its name then its sample, the first highlighted in the highlight colour, and its left and right edges are the field's."},
+  {"id": "F6", "decision": "Choosing a value inserts {{<path>}} at the cursor, and the picker's paths join the field's {{ autocomplete rather than replacing it.",
+   "why": "Plan 3.3 of #1689: the picker extends the existing steps.* autocomplete.",
+   "requirement": "2339", "verify": "elsewhere",
+   "provenBy": "apps/web/src/components/canvas/__tests__/AppActionConfig.test.tsx"},
+  {"id": "F7", "decision": "A workflow holding an unfinished App Action step cannot be switched on: the server refuses it by name.",
+   "why": "Plan 3.3 of #1689, enforced in validateDefinition from its schema version.",
+   "requirement": "2338", "verify": "elsewhere",
+   "provenBy": "apps/worker/src/routes/api/__tests__/workflows.test.ts"}
+ ],
+ "exceptions": [],
+ "idioms": [
+  "The form is drawn in a captured copy of the canvas's step panel at 1440 by 1300; the canvas, the panel, Display name, Step ID, Notes, Advanced and Test this node are the product as it is today, not decisions.",
+  "The panel's heading reading app_action is the product today (#2765), not a decision of this design.",
+  "The rounds drew three of Gmail's fields as a sample, To marked required; the catalogue's Send an email has eleven, of which only Body is required, and this design draws them as the catalogue holds them."
+ ]
+}

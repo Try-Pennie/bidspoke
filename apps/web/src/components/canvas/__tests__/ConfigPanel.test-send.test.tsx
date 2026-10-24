@@ -16,7 +16,8 @@ import type { ConnectionList } from '@/lib/api'
 vi.mock('next/dynamic', () => ({ default: () => function MockMonaco() { return <div /> } }))
 vi.mock('@/lib/api', () => ({
   api: {
-    connections: { list: vi.fn().mockRejectedValue(new Error('not in this test')) },
+    connections: { list: vi.fn().mockRejectedValue(new Error('not in this test')), lookup: vi.fn() },
+    workflows: { testResult: vi.fn() },
     partners: { list: vi.fn().mockResolvedValue([]) },
     executions: {
       stepDurationStats: vi.fn().mockResolvedValue({
@@ -25,6 +26,7 @@ vi.mock('@/lib/api', () => ({
       }),
     },
   },
+  CONNECTIONS_LIST_TIMEOUT_MS: 15_000,
 }))
 
 type PanelProps = React.ComponentProps<typeof ConfigPanel>
