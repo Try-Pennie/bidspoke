@@ -412,6 +412,65 @@ describe('PUT /workflows/:id', () => {
     })
   })
 
+  // #2338, plan 3.3: an App Action step is incomplete until what it runs, its
+  // connection and its required fields are set, and a workflow holding one
+  // cannot be switched on. The rule is validateDefinition's; these prove each
+  // route that makes a definition live asks it, and refuses writing nothing.
+  describe('unfinished App Action steps (#2338)', () => {
+    const CONN = '33333333-3333-4333-8333-333333333333'
+    const appDefinition = (config: Record<string, unknown>) => ({
+      nodes: [{ id: 'post', namespace: 'post', type: 'app_action', config }],
+      edges: [{ id: 'e0', source: 'trigger', target: 'post' }],
+      trigger: { type: 'schedule', config: { cron: '0 13 * * *', timezone: 'America/New_York' } },
+    })
+    const unfinished = appDefinition({ service: 'slack', action: 'slack.send-message', actionVersion: 1, args: { channel: 'C0OPS', text: 'hi' } })
+    const opsWorkflow = { ...existingWorkflow, lane: 'ops' }
+    const sentence = 'Nothing was saved. Step post is not finished: No connection chosen. A workflow with an unfinished step cannot be switched on.'
+
+    it('refuses the save of a switched on workflow holding one, naming the step and what it lacks', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({ users: { single: testUser }, workflows: { single: { ...opsWorkflow, is_active: true } } }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: unfinished } })
+      expect(res.status).toBe(422)
+      expect(await res.json()).toMatchObject({ error: 'step_unfinished', message: sentence, steps: [{ nodeId: 'post', namespace: 'post' }] })
+      expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    })
+
+    it('refuses to switch on a workflow whose stored step is unfinished, and switches nothing', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({ users: { single: testUser }, workflows: [{ single: { ...opsWorkflow, is_active: false, definition: unfinished, definition_schema_version: 1 } }] }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(422)
+      expect(await res.json()).toMatchObject({ error: 'step_unfinished', message: sentence })
+      expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    })
+
+    it('refuses to switch on a definition stamped with a version this server cannot judge, never reading it as finished', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({ users: { single: testUser }, workflows: [{ single: { ...opsWorkflow, is_active: false, definition: appDefinition({ service: 'slack', action: 'slack.send-message', actionVersion: 1, connection: CONN, args: { channel: 'C0OPS', text: 'hi' } }), definition_schema_version: 99 } }] }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(422)
+      expect(await res.json()).toMatchObject({ error: 'step_unjudged' })
+    })
+
+    it('refuses to restore an unfinished step onto a switched on workflow', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({
+          users: { single: testUser },
+          workflows: [{ single: { ...opsWorkflow, is_active: true } }],
+          workflow_versions: [{ single: { id: 'ver-1', definition: unfinished, version_number: 1 } }],
+        }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+      expect(res.status).toBe(422)
+      expect(await res.json()).toMatchObject({ error: 'step_unfinished', message: sentence })
+      expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    })
+  })
+
   // write_workflow numbers the snapshot under the row lock now (#1947), so the
   // version-number lookup #303 guarded is gone; a database error from the write
   // itself is a 500, with nothing audited or refreshed.

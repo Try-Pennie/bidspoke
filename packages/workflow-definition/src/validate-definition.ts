@@ -376,6 +376,35 @@ export function validateDefinition(definition: unknown, options: ValidateDefinit
   return judgeDefinition(definition, options, DEFINITION_RULES, DEFINITION_SCHEMA_VERSION)
 }
 
+/** An App Action step a live write may not hold, by its step id and what it lacks first. */
+export interface UnfinishedStep {
+  nodeId: string
+  namespace: string
+  message: string
+}
+
+/**
+ * The App Action steps that are not finished (#2338, plan section 3.3 of
+ * #1689): a step is incomplete until what it runs, its connection and its
+ * required fields are set, and a workflow holding one cannot be switched on.
+ * Read from validateDefinition at the definition's own stamp (its node_config
+ * rule, through appActionConfigProblem), so the routes that make a definition
+ * live refuse exactly what the rules in force at that stamp say. A stamp this
+ * build cannot judge is answered as such, never as finished.
+ */
+export function unfinishedAppActionSteps(definition: unknown, options: ValidateDefinitionOptions):
+  | { kind: 'judged'; steps: UnfinishedStep[] }
+  | Exclude<DefinitionVerdict, { kind: 'judged' }> {
+  const verdict = validateDefinition(definition, options)
+  if (verdict.kind !== 'judged') return verdict
+  const nodes = isRecord(definition) && Array.isArray(definition.nodes) ? (definition.nodes as unknown[]) : []
+  const appSteps = new Set(nodes.filter((n): n is { id: string; type: string } => isRecord(n) && n.type === 'app_action' && typeof n.id === 'string').map((n) => n.id))
+  const steps = verdict.problems
+    .filter((p) => p.rule === 'node_config' && p.nodeId !== undefined && appSteps.has(p.nodeId))
+    .map((p) => ({ nodeId: p.nodeId as string, namespace: p.namespace ?? (p.nodeId as string), message: p.message }))
+  return { kind: 'judged', steps }
+}
+
 /** The problems that refuse a save: errors on every save, and on a live save the live rules too. Advice and warnings never refuse. */
 export function blockingProblems(problems: readonly DefinitionProblem[], { live }: { live: boolean }): DefinitionProblem[] {
   return problems.filter((p) => p.severity === 'error' && (p.enforce === 'every_save' || (live && p.enforce === 'live_save')))

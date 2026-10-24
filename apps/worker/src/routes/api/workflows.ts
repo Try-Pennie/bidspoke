@@ -7,7 +7,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
-import { definitionShapeProblems, findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems } from '@bidspoke/workflow-definition'
+import { definitionShapeProblems, findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems, unfinishedAppActionSteps } from '@bidspoke/workflow-definition'
 import { reportDefinition } from '../../lib/definition-report'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
@@ -145,6 +145,36 @@ function leadValidationRefusal(definition: unknown, live: boolean): string | nul
   const edges = Array.isArray(def.edges) ? (def.edges as WorkflowDefinition['edges']) : []
   const problem = findLeadValidationPlacementProblems(nodes, edges)[0] ?? (live ? findLeadValidationProblems(nodes, edges)[0] : undefined)
   return problem ? `${problem.namespace}: ${problem.message}` : null
+}
+
+/**
+ * An App Action step that is not finished, on a write that makes the
+ * definition live (#2338, plan section 3.3 of #1689): a step is incomplete
+ * until what it runs, its connection and its required fields are set, and a
+ * workflow holding one cannot be switched on. Judged by validateDefinition at
+ * the stamp the definition is stored under (unfinishedAppActionSteps), and asked
+ * by the save of a switched on workflow, the switch on and a restore onto a
+ * switched on workflow. A switched off draft saves half built, as every other
+ * unconfigured step does. A stamp this build cannot judge refuses rather than
+ * passing as finished.
+ */
+function unfinishedStepRefusal(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  definition: unknown,
+  lane: unknown,
+  schemaVersion: unknown,
+): Response | null {
+  const judged = unfinishedAppActionSteps(definition, { lane: lane === 'ops' ? 'ops' : 'money', schemaVersion })
+  if (judged.kind !== 'judged') {
+    return c.json({ error: 'step_unjudged', message: 'Nothing was saved. This server cannot judge the workflow\'s steps at the version they were saved under, so it cannot be switched on yet.' }, 422)
+  }
+  const first = judged.steps[0]
+  if (!first) return null
+  return c.json({
+    error: 'step_unfinished',
+    message: `Nothing was saved. Step ${first.namespace} is not finished: ${first.message}. A workflow with an unfinished step cannot be switched on.`,
+    steps: judged.steps,
+  }, 422)
 }
 
 /**
@@ -548,6 +578,10 @@ workflows.put('/:id', async (c) => {
     if (sfProblem) return c.json({ error: sfProblem }, 400)
     const validationProblem = leadValidationRefusal(def, existing.is_active === true)
     if (validationProblem) return c.json({ error: validationProblem }, 400)
+    if (existing.is_active === true) {
+      const unfinished = unfinishedStepRefusal(c, def, existing.lane, writtenDefinitionStamp())
+      if (unfinished) return unfinished
+    }
     // A live workflow's buyer steps must read every rule they judge (#2149).
     if (existing.is_active === true) {
       const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: body.name ?? existing.name, definition: body.definition })
@@ -820,6 +854,8 @@ workflows.patch('/:id', async (c) => {
     // since a switched off draft may have been saved half built.
     const validationProblem = leadValidationRefusal(owner.definition, true)
     if (validationProblem) return c.json({ error: validationProblem }, 400)
+    const unfinished = unfinishedStepRefusal(c, owner.definition, owner.lane, owner.definition_schema_version)
+    if (unfinished) return unfinished
     const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: owner.name, definition: owner.definition })
     if (unread) return unread
     // And every connection it names must still be a live one of this
@@ -1051,6 +1087,10 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // always, the configuration when the restore makes it live at once.
   const restoreProblem = leadValidationRefusal(version.definition, owner.is_active === true)
   if (restoreProblem) return c.json({ error: restoreProblem }, 400)
+  if (owner.is_active === true) {
+    const unfinished = unfinishedStepRefusal(c, version.definition, owner.lane, writtenDefinitionStamp())
+    if (unfinished) return unfinished
+  }
 
   // A restore onto a live workflow makes the old definition live at once (#2149).
   if (owner.is_active === true) {
