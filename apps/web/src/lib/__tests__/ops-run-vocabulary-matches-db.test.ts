@@ -19,6 +19,7 @@ import {
   DELEGATION_ADD_OUTCOMES,
   DELEGATION_CHECK_OUTCOMES,
   STEP_TEST_STATUSES,
+  OPS_STEP_RECORD_STATUSES,
   DELEGATION_KINDS,
   DELEGATION_REMOVE_OUTCOMES,
   REFRESH_OUTCOMES,
@@ -106,6 +107,8 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     ['google_delegation_subjects_kind_check', DELEGATION_KINDS],
     // A step's test result (#2339).
     ['step_test_results_status_check', STEP_TEST_STATUSES],
+    // Each step of an ops run (#2703).
+    ['ops_step_records_status_check', OPS_STEP_RECORD_STATUSES],
   ] as const)('%s', (name, values) => {
     expect(sorted(constraintValues(SQL, name))).toEqual(sorted(values))
   })

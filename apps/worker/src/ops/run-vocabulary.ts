@@ -231,3 +231,20 @@ export type SfBudgetSource = (typeof SF_BUDGET_SOURCES)[number]
 /** How a step's test ended: its action answered, or it did not (the error says why). */
 export const STEP_TEST_STATUSES = ['completed', 'failed'] as const
 export type StepTestStatus = (typeof STEP_TEST_STATUSES)[number]
+
+// ── each step of an ops run (#2703, supabase-ops migration 20261024150000) ──
+
+/**
+ * How a step a run walked ended: it answered, or it did not (the error says
+ * why, and whether it ended the run as failed, a retry or for a person).
+ */
+export const OPS_STEP_RECORD_STATUSES = ['completed', 'failed'] as const
+export type OpsStepRecordStatus = (typeof OPS_STEP_RECORD_STATUSES)[number]
+
+/**
+ * What record_ops_step answers: recorded, already_recorded (this place already
+ * holds this step, a repeat after a lost answer), or stale (the run is not this
+ * holder's running attempt any more, and nothing was written).
+ */
+export const OPS_STEP_RECORD_OUTCOMES = ['recorded', 'already_recorded', 'stale'] as const
+export type OpsStepRecordOutcome = (typeof OPS_STEP_RECORD_OUTCOMES)[number]
