@@ -157,6 +157,7 @@ function fake(opts: {
   /** What each page of the observation purge answers (#1950). */
   observationsPurge?: { purged: number; more: boolean }
   stepTestsPurge?: { purged: number; more: boolean }
+  stepRecordsPurge?: { purged: number; more: boolean }
   /** The database clock, when a case needs another time than DB_NOW. */
   dbNow?: string
   /** The versions missing_workflow_definitions lists (#1950); none by default. */
@@ -248,6 +249,7 @@ function fake(opts: {
     },
     async purgeObservations(limit: number) { fail('purgeObservations'); calls.push(`purgeObservations:${limit}`); return opts.observationsPurge ?? { purged: 0, more: false } },
     async purgeStepTests(limit: number) { fail('purgeStepTests'); calls.push(`purgeStepTests:${limit}`); return opts.stepTestsPurge ?? { purged: 0, more: false } },
+    async purgeStepRecords(limit: number) { fail('purgeStepRecords'); calls.push(`purgeStepRecords:${limit}`); return opts.stepRecordsPurge ?? { purged: 0, more: false } },
     async sfLimitsTargets(limit: number) {
       fail('sfLimitsTargets'); calls.push(`sfLimitsTargets:${limit}`)
       return { targets: opts.sfTargets ?? [], reachedLimit: false }
@@ -950,6 +952,33 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     expect(f.db.calls).toContain('purgeStepTests:1000')
     expect(report.counts.step_tests_purged).toBe(3)
     expect(report.problem_keys).toContain('sweep_failed:observation_purge')
+  })
+
+  // #2703: each step of an ops run is kept 7 days, deleted with its run, the
+  // same as run history; this nightly sweep deletes the records past that.
+  it('purges the step records of runs past 7 days in the same night, paging while there is more, and counts them', async () => {
+    const f = fake({ dbNow: NIGHT, stepRecordsPurge: { purged: 1000, more: true } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls).toContain('purgeStepRecords:1000')
+    expect(f.db.calls.filter((c) => c === 'purgeStepRecords')).toHaveLength(10)
+    expect(report.counts.step_records_purged).toBe(10_000)
+    const quiet = fake({})
+    await runOpsTick(quiet.ports)
+    expect(quiet.db.calls).not.toContain('purgeStepRecords')
+  })
+
+  it('each of the three purges runs that night whatever the others did, and a failure of any is the sweep\'s problem', async () => {
+    const both = fake({ dbNow: NIGHT, failing: { purgeObservations: new Error('lock timeout'), purgeStepTests: new Error('lock timeout') }, stepRecordsPurge: { purged: 4, more: false } })
+    const report = await runOpsTick(both.ports)
+    expect(both.db.calls).toContain('purgeStepRecords:1000')
+    expect(report.counts.step_records_purged).toBe(4)
+    expect(report.problem_keys).toContain('sweep_failed:observation_purge')
+
+    const records = fake({ dbNow: NIGHT, failing: { purgeStepRecords: new Error('lock timeout') }, observationsPurge: { purged: 2, more: false }, stepTestsPurge: { purged: 1, more: false } })
+    const failed = await runOpsTick(records.ports)
+    expect(failed.counts.observations_purged).toBe(2)
+    expect(failed.counts.step_tests_purged).toBe(1)
+    expect(failed.problem_keys).toContain('sweep_failed:observation_purge')
   })
 
   it('a failed step test purge is the sweep\'s problem and stops nothing else', async () => {

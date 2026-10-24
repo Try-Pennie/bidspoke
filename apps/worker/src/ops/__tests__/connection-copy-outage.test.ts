@@ -66,6 +66,7 @@ function opsDb() {
     purgeTombstones: async () => { throw new Error('not claimed') },
     purgeObservations: async () => { throw new Error('not claimed') },
     purgeStepTests: async () => { throw new Error('not claimed') },
+    purgeStepRecords: async () => { throw new Error('not claimed') },
     // Every version held: this test is about the connection copies.
     missingDefinitions: async () => ({ missing: [], reachedLimit: false }),
     saveDefinition: async () => { throw new Error('nothing is missing') },
