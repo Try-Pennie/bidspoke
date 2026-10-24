@@ -122,13 +122,56 @@ describe('POST test-node for an ops workflow\'s app_action step', () => {
     expect(await res.json()).toMatchObject({ error: 'ops_connections_unavailable', cause: 'binding_absent' })
   })
 
-  it('refuses a test built from a run, whose history ops keeps, before calling ops', async () => {
+  // #2703: a run's steps are recorded on ops, so a step is tested with a past run's data there.
+  it('forwards a test from a past run to ops with the run\'s id, leaving its payload and steps to the run unless the browser gave its own', async () => {
+    withWorkflow({ id: WF, lane: 'ops' })
+    const EXEC = '0199f0a0-0000-7000-8000-0000000000e1'
+    const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
+    const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition, execution_id: EXEC, confirm_send: true })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ status: 'completed', output: { ok: true, ts: '1729.1' } })
+    expect(ops.calls).toEqual([{
+      method: 'testStep',
+      request: {
+        organization_id: ORG, workflow_id: WF, tested_by: DAN, execution_id: EXEC,
+        node: { id: 'node_1', namespace: 'notify', config: { ...appStep.config, boundBy: DAN } }, confirm_send: true,
+      },
+    }])
+
+    const given = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
+    await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: given.binding } as never, {
+      namespace: 'notify', definition, execution_id: EXEC, trigger_payload: { name: 'Ada' }, steps: { earlier: { output: 1, status: 'completed' } },
+    })
+    expect(given.calls[0].request).toMatchObject({ execution_id: EXEC, trigger_payload: { name: 'Ada' }, steps: { earlier: { output: 1, status: 'completed' } } })
+  })
+
+  it('refuses an execution id that is not one, before calling ops', async () => {
     withWorkflow({ id: WF, lane: 'ops' })
     const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
     const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition, execution_id: 'exec-1' })
     expect(res.status).toBe(400)
-    expect(await res.json()).toMatchObject({ error: 'step_test_from_run_unsupported' })
+    expect(await res.json()).toMatchObject({ error: 'execution_id_invalid', message: expect.stringContaining('Nothing was sent') })
     expect(ops.calls).toEqual([])
+  })
+
+  it('words each refusal of a test from a past run, saying nothing was sent', async () => {
+    const cases: Array<[string, number]> = [
+      ['step_test_run_not_found', 404],
+      ['step_test_run_records_gone', 410],
+      ['step_test_run_steps_missing', 409],
+      ['step_test_run_output_not_kept', 409],
+      ['step_test_run_payload_not_held', 409],
+      ['step_test_run_unavailable', 503],
+    ]
+    for (const [refused, status] of cases) {
+      withWorkflow({ id: WF, lane: 'ops' })
+      const ops = opsBinding({ testStep: { ok: false, refused, detail: 'the run recorded no earlier, which it reads, so nothing was sent', retry_at: null } })
+      const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition, execution_id: '0199f0a0-0000-7000-8000-0000000000e1' })
+      expect(res.status, refused).toBe(status)
+      const body = await res.json() as { error: string; message: string }
+      expect(body.error, refused).toBe(refused)
+      expect(body.message, refused).toMatch(/Nothing was sent\./)
+    }
   })
 
   it('another organization\'s workflow is not found, and ops is never called', async () => {
