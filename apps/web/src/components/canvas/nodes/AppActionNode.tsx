@@ -2,27 +2,25 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { Box } from 'lucide-react'
 import type { CanvasNodeData } from '@/types/workflow'
+import { SERVICE_MARKS } from '@bidspoke/service-catalogue/schema'
 import { appActionDisplay, type AppActionMark } from '@/lib/app-action-display'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
-/** Google Drive's own mark (#2339, round 2: "Service's own icon"). */
-function GoogleDriveMark() {
+/**
+ * The service's own mark (#2339, round 2: "Service's own icon"), from the
+ * catalogue's display data (marks.ts), each drawn at Google Drive's size and
+ * place. A service with no mark (Slack, Salesforce, OpenAI) draws the plain box.
+ */
+function ServiceMark({ mark }: { mark: AppActionMark | null }) {
+  const drawn = mark !== null ? SERVICE_MARKS[mark] : undefined
+  if (!drawn) return <Box className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 87.3 78" className="h-4 w-4 shrink-0" aria-hidden="true">
-      <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da" />
-      <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47" />
-      <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335" />
-      <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d" />
-      <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc" />
-      <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00" />
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox={drawn.viewBox} className="h-4 w-4 shrink-0" aria-hidden="true" data-mark={mark}>
+      {drawn.paths.map((p) => (p.stroke
+        ? <path key={p.d} d={p.d} fill="none" stroke={p.stroke} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+        : <path key={p.d} d={p.d} fill={p.fill} />))}
     </svg>
   )
-}
-
-function ServiceMark({ mark }: { mark: AppActionMark | null }) {
-  if (mark === 'google-drive') return <GoogleDriveMark />
-  // A service whose own mark the build does not hold yet draws the plain box.
-  return <Box className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
 }
 
 /**

@@ -1,4 +1,4 @@
-import { CATALOGUE, catalogueActions, resolveActionVersion } from '@bidspoke/service-catalogue/schema'
+import { CATALOGUE, catalogueActions, markKeyFor, resolveActionVersion } from '@bidspoke/service-catalogue/schema'
 
 /**
  * What an App Action step's card says (#2339; settled in
@@ -16,7 +16,8 @@ import { CATALOGUE, catalogueActions, resolveActionVersion } from '@bidspoke/ser
  * plain box until its mark is added (the catalogue holds no marks).
  */
 
-export type AppActionMark = 'google-drive'
+/** A key of SERVICE_MARKS (@bidspoke/service-catalogue/schema marks.ts): the mark the card draws. */
+export type AppActionMark = string
 
 export interface AppActionDisplay {
   service: string
@@ -26,11 +27,11 @@ export interface AppActionDisplay {
 
 const ACTIONS = catalogueActions(CATALOGUE)
 
-const GOOGLE_PRODUCTS: ReadonlyArray<{ prefix: string; name: string; mark: AppActionMark | null }> = [
-  { prefix: 'google.drive-', name: 'Google Drive', mark: 'google-drive' },
-  { prefix: 'google.sheets-', name: 'Google Sheets', mark: null },
-  { prefix: 'google.gmail-', name: 'Gmail', mark: null },
-  { prefix: 'google.calendar-', name: 'Google Calendar', mark: null },
+const GOOGLE_PRODUCTS: ReadonlyArray<{ prefix: string; name: string }> = [
+  { prefix: 'google.drive-', name: 'Google Drive' },
+  { prefix: 'google.sheets-', name: 'Google Sheets' },
+  { prefix: 'google.gmail-', name: 'Gmail' },
+  { prefix: 'google.calendar-', name: 'Google Calendar' },
 ]
 
 const capitalised = (s: string) => (s.length === 0 ? s : s[0].toUpperCase() + s.slice(1))
@@ -47,7 +48,7 @@ export function appActionDisplay(config: Record<string, unknown>): AppActionDisp
   const name = product?.name ?? service?.name ?? 'App action'
   let chip: string | null = null
   if (action !== null) chip = product ? capitalised(action.name.replace(/^[^:]+:\s*/, '')) : action.name
-  return { service: name, action: chip, mark: product?.mark ?? null }
+  return { service: name, action: chip, mark: markKeyFor(serviceKey, actionKey) }
 }
 
 /**
