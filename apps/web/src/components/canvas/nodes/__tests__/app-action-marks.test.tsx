@@ -29,6 +29,7 @@ describe('the App Action card\'s mark', () => {
     ['google.calendar', { service: 'google', action: 'google.calendar-create-event', actionVersion: 1 }],
     ['snowflake', { service: 'snowflake', action: 'snowflake.execute-sql-query', actionVersion: 1 }],
     ['anthropic', { service: 'anthropic', action: 'anthropic.chat', actionVersion: 1 }],
+    ['salesforce', { service: 'salesforce', action: 'salesforce.create-record', actionVersion: 1 }],
   ])('draws %s\'s own mark at Drive\'s size, in its colours', (key, config) => {
     const svg = card(config).querySelector(`svg[data-mark="${key}"]`)
     expect(svg).not.toBeNull()
@@ -40,6 +41,11 @@ describe('the App Action card\'s mark', () => {
   it('keeps Google Drive\'s mark exactly as the settled card draws it', () => {
     const fills = [...(card({ service: 'google', action: 'google.drive-list-files', actionVersion: 1 }).querySelectorAll('svg[data-mark] path'))].map((p) => p.getAttribute('fill'))
     expect(fills).toEqual(['#0066da', '#00ac47', '#ea4335', '#00832d', '#2684fc', '#ffba00'])
+  })
+
+  it('draws Salesforce\'s lettering with its own even odd rule, as its logo does', () => {
+    const paths = [...(card({ service: 'salesforce', action: 'salesforce.create-record', actionVersion: 1 }).querySelectorAll('svg[data-mark] path'))]
+    expect(paths.filter((p) => p.getAttribute('fill-rule') === 'evenodd')).toHaveLength(6)
   })
 
   it('draws the plain box for a service with no mark', () => {

@@ -33,11 +33,20 @@ describe('service marks', () => {
 
   it('every mark records its source at an exact version, and draws at least one path with a colour', () => {
     for (const [key, mark] of Object.entries(SERVICE_MARKS)) {
-      expect(mark.source, key).toMatch(/Simple Icons \d+\.\d+\.\d+ \(CC0 1\.0\)|lucide-react \d+\.\d+\.\d+ \(ISC\)|settled card design/)
+      expect(mark.source, key).toMatch(/Simple Icons \d+\.\d+\.\d+ \(CC0 1\.0\)|lucide-react \d+\.\d+\.\d+ \(ISC\)|settled card design|https:\/\/www\.[a-z]+\.com\/\S+ .*fetched \d{4}-\d{2}-\d{2}.*used under/)
       expect(mark.paths.length, key).toBeGreaterThan(0)
       for (const p of mark.paths) expect(p.fill ?? p.stroke, key).toMatch(/^#[0-9a-fA-F]{6}$/)
     }
     expect(SIMPLE_ICONS_VERSION).toMatch(/^\d+\.\d+\.\d+$/)
+  })
+
+  it('Salesforce\'s official logo is held, unaltered, and Slack and OpenAI keep the plain box with the reason Dan reads', () => {
+    expect(SERVICE_MARKS.salesforce?.viewBox).toBe('0 0 205.73 144')
+    expect(SERVICE_MARKS.salesforce?.paths[0].fill).toBe('#00b3ff')
+    expect(SERVICE_MARKS.salesforce?.paths).toHaveLength(11)
+    expect(Object.keys(MARKLESS).sort()).toEqual(['openai', 'slack'])
+    expect(MARKLESS.slack).toMatch(/written licence/)
+    expect(MARKLESS.openai).toMatch(/403/)
   })
 
   it('HTTP and Supabase have marks ready for their services', () => {

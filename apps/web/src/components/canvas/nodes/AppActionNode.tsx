@@ -9,7 +9,7 @@ import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution
 /**
  * The service's own mark (#2339, round 2: "Service's own icon"), from the
  * catalogue's display data (marks.ts), each drawn at Google Drive's size and
- * place. A service with no mark (Slack, Salesforce, OpenAI) draws the plain box.
+ * place. A service with no mark (Slack, OpenAI) draws the plain box.
  */
 function ServiceMark({ mark }: { mark: AppActionMark | null }) {
   const drawn = mark !== null ? SERVICE_MARKS[mark] : undefined
@@ -18,7 +18,7 @@ function ServiceMark({ mark }: { mark: AppActionMark | null }) {
     <svg xmlns="http://www.w3.org/2000/svg" viewBox={drawn.viewBox} className="h-4 w-4 shrink-0" aria-hidden="true" data-mark={mark}>
       {drawn.paths.map((p) => (p.stroke
         ? <path key={p.d} d={p.d} fill="none" stroke={p.stroke} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-        : <path key={p.d} d={p.d} fill={p.fill} />))}
+        : <path key={p.d} d={p.d} fill={p.fill} fillRule={p.fillRule} />))}
     </svg>
   )
 }
