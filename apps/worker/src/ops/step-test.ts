@@ -41,22 +41,16 @@ import { organizationIdFrom, type OrganizationId } from './ops-db'
 import type { ClaimedRun, StepTestRecord, StoredStepTest } from './ops-writes'
 import { RunStopped, StepNotSent, stepRequestId, type RunContext, type StepSend } from './run-invocation'
 import { StepEndsRun } from './run-walk'
+import { STEP_OUTPUT_MAX_BYTES, byteLength, clip, clipError, keepOutput } from './step-output'
 
-/**
- * The largest answer kept, in bytes of JSON as this Worker writes it. The
- * database holds the answer to 256 KB of its own text form, which spaces each
- * separator and so can be up to half as long again: 160 KB stays under it.
- */
-export const STEP_TEST_OUTPUT_MAX_BYTES = 160_000
+/** The largest answer kept: the one cap a run's step records share (step-output.ts, #2703). */
+export const STEP_TEST_OUTPUT_MAX_BYTES = STEP_OUTPUT_MAX_BYTES
 
 /** The requests kept, in bytes of JSON: the database's 64 KB, by the same half again margin. */
 export const STEP_TEST_REQUESTS_MAX_BYTES = 40_000
 
 /** One request's body is kept to this many characters. */
 const REQUEST_BODY_MAX = 2_000
-
-/** The database keeps an error to 2,000 characters. */
-const ERROR_MAX = 2_000
 
 export interface StepTestDeps {
   /** The executor's dependencies, as a run's (run-live.ts). */
@@ -69,10 +63,6 @@ export interface StepTestDeps {
   /** A fresh id per test: the step request ids the action hands the service derive from it. */
   newRunId(): string
 }
-
-const byteLength = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value ?? null)).length
-
-const clip = (text: string, max: number): string => (text.length <= max ? text : `${text.slice(0, max)} [${text.length - max} more characters not kept]`)
 
 /** Collects each sanitised request, keeping what fits and counting what does not. */
 function requestCollector(): { record: (request: RecordedRequest) => Promise<void>; kept: () => unknown[] } {
@@ -105,12 +95,15 @@ function testRun(request: TestStepRequest, organizationId: OrganizationId, runRe
   }
 }
 
-function testContext(run: ClaimedRun, signal: AbortSignal): RunContext {
+function testContext(run: ClaimedRun, signal: AbortSignal, now: () => number): RunContext {
   return {
     run,
     executionId: run.runRequestId,
     attempt: 1,
     signal,
+    now,
+    // A test keeps its result as a test (record_step_test), never as a run's step; the executor never records.
+    recordStep: () => Promise.reject(new Error('a step test keeps its result as a test result, not as a run step')),
     async send<T>(step: StepSend<T>) {
       if (signal.aborted) throw new RunStopped()
       let answer
@@ -163,7 +156,7 @@ export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, 
   let output: unknown = null
   let error: string | null = null
   try {
-    const result = await handler({ node, ctx, run: testContext(run, signal) })
+    const result = await handler({ node, ctx, run: testContext(run, signal, deps.now) })
     if (result.error) error = result.error
     else output = result.output ?? null
   } catch (err) {
@@ -172,18 +165,17 @@ export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, 
     else error = formatErr(err)
   }
 
-  const outputBytes = error === null ? byteLength(output) : null
   // Only an answer over the cap is kept by its size; a plain null answer is kept as null.
-  const overCap = outputBytes !== null && outputBytes > STEP_TEST_OUTPUT_MAX_BYTES
-  const kept = overCap ? null : output
+  const kept = error === null ? keepOutput(output) : null
+  const outputBytes = kept === null ? null : kept.bytes
   const result: StepTestRecord = {
     nodeId: request.node.id,
     namespace: request.node.namespace,
     testedBy: request.tested_by,
     status: error === null ? 'completed' : 'failed',
-    output: kept,
-    outputBytes: overCap ? outputBytes : null,
-    error: error === null ? null : clip(error, ERROR_MAX - 60),
+    output: kept === null ? null : kept.output,
+    outputBytes: kept === null ? null : kept.outputBytes,
+    error: error === null ? null : clipError(error),
     requests: collector.kept(),
     durationMs: Math.max(0, deps.now() - started),
   }

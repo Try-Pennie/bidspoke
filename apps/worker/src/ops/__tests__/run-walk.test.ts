@@ -8,9 +8,10 @@
  */
 import { describe, expect, it } from 'vitest'
 import { organizationIdFrom } from '../ops-db'
-import type { ClaimedRun } from '../ops-writes'
-import { RunStopped, type RunContext, type StepSend } from '../run-invocation'
-import { OPS_WALK_MAX_STEPS, walkOpsDefinition, type OpsStepHandler } from '../run-walk'
+import type { ClaimedRun, OpsStepRecord } from '../ops-writes'
+import { RunStopped, StepUnrecorded, type RunContext, type StepSend } from '../run-invocation'
+import { OPS_WALK_MAX_STEPS, StepEndsRun, walkOpsDefinition, type OpsStepHandler } from '../run-walk'
+import { STEP_OUTPUT_MAX_BYTES } from '../step-output'
 
 const RUN: ClaimedRun = {
   runRequestId: '0192f4a0-0000-7000-8000-000000000001', organizationId: organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'),
@@ -19,8 +20,13 @@ const RUN: ClaimedRun = {
   executionChainId: '0192f4a0-0000-7000-9000-000000000001', resumedFromExecutionId: null, payload: { slot: '2026-10-17T10:00:00Z', amount: 7 }, payloadRef: null,
 }
 
-function runCtx() {
+const T0 = Date.parse('2026-10-24T14:00:00.000Z')
+
+/** A run context whose sends and step records are kept; its clock moves 5 ms each time it is read. */
+function runCtx(over: { recordStep?: (record: OpsStepRecord) => Promise<void> } = {}) {
   const sent: Array<StepSend<unknown>> = []
+  const records: OpsStepRecord[] = []
+  let t = T0
   const ctx: RunContext = {
     run: RUN, executionId: '0192f4a0-0000-7000-8000-0000000000ee', attempt: 1, signal: new AbortController().signal,
     send: async <T>(step: StepSend<T>) => {
@@ -29,8 +35,10 @@ function runCtx() {
       if (a.kind !== 'answered') throw new Error(`not answered: ${a.kind}`)
       return { status: a.status, value: a.value }
     },
+    now: () => (t += 5),
+    recordStep: over.recordStep ?? (async (record) => { records.push(record) }),
   }
-  return { ctx, sent }
+  return { ctx, sent, records }
 }
 
 const node = (id: string, type: string, config: Record<string, unknown> = {}) => ({ id, namespace: id, type, config })
@@ -167,5 +175,93 @@ describe('walkOpsDefinition', () => {
     const end = await walkOpsDefinition(def, runCtx().ctx, { action_a: answering, action_b: r.handler })
     expect(end).toEqual({ outcome: 'done' })
     expect(r.seen.map((s) => s.node)).toEqual(['wired'])
+  })
+})
+
+// Each step of an ops run, recorded (#2703): one record per step as it finishes.
+describe('walkOpsDefinition records each step (#2703)', () => {
+  const twoSteps = {
+    nodes: [node('shape', 'transform', { mappings: [{ source: 'trigger.payload.amount', target: 'amount' }] }), node('act', 'action_a')],
+    edges: [edge('trigger', 'shape'), edge('shape', 'act')],
+  }
+
+  it('records each step as it finishes, in order: its place, node, step id, type, status, start, duration and output', async () => {
+    const run = runCtx()
+    expect(await walkOpsDefinition(twoSteps, run.ctx, { action_a: recorder(() => ({ id: 42 })).handler })).toEqual({ outcome: 'done' })
+    expect(run.records).toEqual([
+      { seq: 0, nodeId: 'shape', namespace: 'shape', stepType: 'transform', status: 'completed', startedAt: new Date(T0 + 5), durationMs: 5, output: { amount: 7 }, outputBytes: null, error: null },
+      { seq: 1, nodeId: 'act', namespace: 'act', stepType: 'action_a', status: 'completed', startedAt: new Date(T0 + 15), durationMs: 5, output: { id: 42 }, outputBytes: null, error: null },
+    ])
+  })
+
+  it('records a step before the next one runs, so a later step never runs ahead of its record', async () => {
+    const order: string[] = []
+    const run = runCtx({ recordStep: async (r) => { order.push(`record:${r.nodeId}`) } })
+    const handler: OpsStepHandler = async ({ node: n }) => { order.push(`run:${n.id}`); return { output: null } }
+    const def = { nodes: [node('a', 'action_a'), node('b', 'action_a')], edges: [edge('trigger', 'a'), edge('a', 'b')] }
+    await walkOpsDefinition(def, run.ctx, { action_a: handler })
+    expect(order).toEqual(['run:a', 'record:a', 'run:b', 'record:b'])
+  })
+
+  it('records a step that failed, threw or ended the run, with its error, and ends the run as before', async () => {
+    const def = { nodes: [node('act', 'action_a')], edges: [edge('trigger', 'act')] }
+    const cases: Array<[OpsStepHandler, Record<string, unknown>]> = [
+      [async () => ({ output: null, error: 'partner refused' }), { outcome: 'failed', error: 'step act (action_a): partner refused' }],
+      [async () => { throw new Error('boom') }, { outcome: 'failed', error: 'step act (action_a): boom' }],
+      [async () => { throw new StepEndsRun({ outcome: 'needs_human', reason: 'send_outcome_unknown', error: 'example_failed: no answer' }) },
+        { outcome: 'needs_human', reason: 'send_outcome_unknown', error: 'step act (action_a): example_failed: no answer' }],
+    ]
+    for (const [handler, end] of cases) {
+      const run = runCtx()
+      expect(await walkOpsDefinition(def, run.ctx, { action_a: handler })).toEqual(end)
+      expect(run.records).toEqual([expect.objectContaining({ seq: 0, nodeId: 'act', status: 'failed', output: null, outputBytes: null, error: end.error })])
+    }
+  })
+
+  it('records nothing for a step stopped with its run, or for a definition refused before any step ran', async () => {
+    const stopped = runCtx()
+    await expect(walkOpsDefinition({ nodes: [node('act', 'action_a')], edges: [edge('trigger', 'act')] }, stopped.ctx, {
+      action_a: async () => { throw new RunStopped() },
+    })).rejects.toBeInstanceOf(RunStopped)
+    expect(stopped.records).toEqual([])
+    const refused = runCtx()
+    await walkOpsDefinition({ nodes: [node('call', 'webhook')], edges: [edge('trigger', 'call')] }, refused.ctx, {})
+    expect(refused.records).toEqual([])
+  })
+
+  it('keeps an output over the cap by its size alone, and a plain null output as null', async () => {
+    const run = runCtx()
+    const big = { text: 'x'.repeat(STEP_OUTPUT_MAX_BYTES) }
+    const def = { nodes: [node('big', 'action_a'), node('none', 'action_b')], edges: [edge('trigger', 'big'), edge('big', 'none')] }
+    await walkOpsDefinition(def, run.ctx, { action_a: recorder(() => big).handler, action_b: recorder(() => null).handler })
+    expect(run.records[0]).toMatchObject({ status: 'completed', output: null, outputBytes: JSON.stringify(big).length })
+    expect(run.records[1]).toMatchObject({ status: 'completed', output: null, outputBytes: null })
+  })
+
+  it('a step whose record cannot be kept ends the run there, named, and no later step runs', async () => {
+    const later = recorder()
+    const run = runCtx({ recordStep: async () => { throw new StepUnrecorded('shape', 'record_ops_step failed (57014): canceling statement') } })
+    const def = { ...twoSteps, nodes: [twoSteps.nodes[0], node('act', 'action_a')] }
+    const end = await walkOpsDefinition(def, run.ctx, { action_a: later.handler })
+    expect(end).toEqual({
+      outcome: 'retry',
+      error: 'step shape (transform): its step record was not kept (record_ops_step failed (57014): canceling statement), so the run stopped after it',
+    })
+    expect(later.seen).toEqual([])
+  })
+
+  it('a failed step whose record cannot be kept still ends the run failed, saying the record was not kept either', async () => {
+    const run = runCtx({ recordStep: async () => { throw new StepUnrecorded('act', 'deadline') } })
+    const end = await walkOpsDefinition({ nodes: [node('act', 'action_a')], edges: [edge('trigger', 'act')] }, run.ctx, {
+      action_a: async () => ({ output: null, error: 'partner refused' }),
+    })
+    expect(end).toEqual({ outcome: 'failed', error: 'step act (action_a): partner refused; its step record was not kept either (deadline)' })
+  })
+
+  it('a record that finds the run stopped stops the walk, never read as recorded', async () => {
+    const later = recorder()
+    const run = runCtx({ recordStep: async () => { throw new RunStopped() } })
+    await expect(walkOpsDefinition(twoSteps, run.ctx, { action_a: later.handler })).rejects.toBeInstanceOf(RunStopped)
+    expect(later.seen).toEqual([])
   })
 })

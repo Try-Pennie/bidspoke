@@ -120,6 +120,7 @@ class LedgerDb implements RunDb {
     this.results.push(result)
     return 'recorded' as const
   }
+  async recordStep() { return 'recorded' as const }
   async complete(_run: ClaimedRun, end: CompleteOutcome) {
     this.completes.push(end)
     return { outcome: 'completed' as const, runStatus: end.outcome }
