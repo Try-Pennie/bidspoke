@@ -1,0 +1,46 @@
+{
+ "title": "App Action step: agreeing to a test that sends for real (#2339)",
+ "intro": "What the step's Test this node section asks before testing an ops step that really sends, such as Gmail's Send an email from the Ops mailbox connection. For whoever builds or checks an ops workflow. Settled by Dan on 2026-10-23 in one round (recorded on #2339), drawn in the real step panel captured from the canvas.",
+ "requirements": [
+  {"number": "2339", "text": "A test of an ops step that changes something in its service sends for real only once the person has agreed to it, told what it sends and the connection it sends from."}
+ ],
+ "chrome": {
+  "captured": "chrome.html",
+  "from": "http://localhost:3989/dev/app-action?frame=app-action-card at 1440 by 1300, main at 063ab06 with the preview step set to Gmail Send an email for this capture only, step opened and Test this node expanded, the page root pinned to 1300 high, no sign in needed, 2026-10-23",
+  "slot": "#dr-test",
+  "width": 1440
+ },
+ "builder": "builder.js",
+ "fixture": "../app-action-test-send.fixture.json",
+ "frames": [
+  {"id": "send-unticked", "title": "Gmail's Send an email, before the tick: Run cold waits", "width": 1440, "height": 1300, "variant": {"ticked": false}},
+  {"id": "send-ticked", "title": "Gmail's Send an email, ticked: Run cold works", "width": 1440, "height": 1300, "variant": {"ticked": true}}
+ ],
+ "decisions": [
+  {"id": "T1", "decision": "Above the Build from run and Run cold buttons, a tick box reads \"Send for real. This sends a real email from Ops mailbox. It cannot be taken back.\": what the action sends, from the catalogue, and the connection it sends from, by its name, never fixed copy.",
+   "why": "Round 1: Dan chose \"A tick first\" over a dialog and over a question in the panel, so the person agrees to the real send before pressing, and nothing covers the canvas.",
+   "requirement": "2339", "frames": ["send-unticked", "send-ticked"],
+   "check": "In the step's test section a checkbox reads the fixture's words (Send for real, This, its realSend, from, its connection, It cannot be taken back), sits above the Run cold button, and its last line holds at least two words."},
+  {"id": "T2", "decision": "Run cold stays disabled until the box is ticked; ticked, it works.",
+   "why": "Round 1: the tick is the agreement, so the button that sends cannot be pressed without it.",
+   "requirement": "2339", "frames": ["send-unticked", "send-ticked"],
+   "check": "Unticked, the checkbox is not checked and Run cold is disabled; ticked, the checkbox is checked and Run cold is enabled."},
+  {"id": "T3", "decision": "The tick box is the app's own TickRow: a navy edged white square, filled navy with a white tick when ticked, its words in navy after it.",
+   "why": "Nothing native (L607): the app's own checkbox control, where the round drew a plain one.",
+   "requirement": "2339", "frames": ["send-unticked", "send-ticked"],
+   "check": "The checkbox's square has a navy border, a white fill when not checked and a navy fill when checked, and its words are navy."},
+  {"id": "T4", "decision": "Ticking sends the agreement with that one test, and the tick clears after each test, so every real send is agreed to again.",
+   "why": "Not one of Dan's round answers: the build brief's call of 2026-10-23, that an agreement covers one send, open for Dan to change.",
+   "requirement": "2339", "verify": "elsewhere",
+   "provenBy": "apps/web/src/components/canvas/__tests__/ConfigPanel.test-send.test.tsx"},
+  {"id": "T5", "decision": "A read only action (one that changes nothing in its service) shows no tick box, and Run cold works at once.",
+   "why": "A read sends nothing, so there is nothing to agree to.",
+   "requirement": "2339", "verify": "elsewhere",
+   "provenBy": "apps/web/src/components/canvas/__tests__/ConfigPanel.test-send.test.tsx"}
+ ],
+ "exceptions": [],
+ "idioms": [
+  "The section is drawn in a captured copy of the canvas's step panel at 1440 by 1300; the canvas, the panel and everything else in the section are the product as it is today, not decisions.",
+  "The panel's heading reading app_action is the product today, recorded as a finding, not a decision of this design."
+ ]
+}

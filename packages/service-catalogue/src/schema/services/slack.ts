@@ -48,6 +48,7 @@ export const SLACK_SEND_MESSAGE_V1: ActionSchema = {
     optional('username', false),
     optional('icon_emoji', false),
   ],
+  realSend: 'posts a real Slack message',
   sideEffect: true,
   idempotent: false,
   idempotentBecause:

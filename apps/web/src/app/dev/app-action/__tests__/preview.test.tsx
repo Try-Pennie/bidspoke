@@ -12,7 +12,9 @@ import { ReactFlow, ReactFlowProvider } from '@xyflow/react'
 import { nodeTypes } from '@/components/canvas/nodes/registry'
 import { appActionDisplay } from '@/lib/app-action-display'
 import fixture from '../../../../../../../docs/design/app-action-node-card.fixture.json'
-import { PREVIEW_STEP_CONFIG, PREVIEW_WORKFLOW, SETTLED_FRAMES } from '../app-action-preview-source'
+import { PREVIEW_STEP_CONFIG, PREVIEW_WORKFLOW, SEND_CONNECTIONS, SEND_STEP_CONFIG, SEND_WORKFLOW, SETTLED_FRAMES, TEST_SEND_FRAMES, previewFrameOf } from '../app-action-preview-source'
+import sendFixture from '../../../../../../../docs/design/app-action-test-send.fixture.json'
+import { appActionRealSend } from '@/lib/app-action-display'
 
 const notFound = vi.fn(() => { throw new Error('NEXT_NOT_FOUND') })
 vi.mock('next/navigation', () => ({ notFound: () => notFound() }))
@@ -40,6 +42,20 @@ describe('the App Action card preview', () => {
       </ReactFlowProvider>,
     )
     for (const text of [fixture.service, fixture.action, fixture.label, fixture.namespace]) expect(screen.getByText(text)).toBeTruthy()
+  })
+
+  it('lists the send frames exactly as the tick box\'s settled design does (#2339)', () => {
+    const spec = JSON.parse(readFileSync(path.resolve(__dirname, '../../../../../../../docs/design/app-action-test-send/settled.json'), 'utf8')) as { frames: { id: string }[] }
+    expect([...TEST_SEND_FRAMES]).toEqual(spec.frames.map((f) => f.id))
+    for (const frame of TEST_SEND_FRAMES) expect(previewFrameOf(frame)).toBe(frame)
+  })
+
+  it('the send frames\' step and connection read as the fixture\'s, so the tick box says the design\'s words', () => {
+    expect(appActionDisplay(SEND_STEP_CONFIG)).toMatchObject({ service: sendFixture.service, action: sendFixture.action })
+    const step = SEND_WORKFLOW.definition.nodes.find((n) => n.type === 'app_action')
+    expect(step).toMatchObject({ label: sendFixture.label, namespace: sendFixture.namespace, config: SEND_STEP_CONFIG })
+    const name = SEND_CONNECTIONS.connections.find((c) => c.id === SEND_STEP_CONFIG.connection)?.name ?? null
+    expect(appActionRealSend(SEND_STEP_CONFIG, name)).toBe(`Send for real. This ${sendFixture.realSend} from ${sendFixture.connection}. It cannot be taken back.`)
   })
 
   it('answers 404 in a production build', async () => {

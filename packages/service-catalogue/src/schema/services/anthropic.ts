@@ -43,6 +43,7 @@ export const ANTHROPIC_CHAT_V1: ActionSchema = {
     // The output format, such as { "type": "json_schema", "schema": { ... } }; the answer is then parsed.
     json('output_format'),
   ],
+  realSend: 'sends a real request to Claude',
   sideEffect: true,
   idempotent: false,
   idempotentBecause:
