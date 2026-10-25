@@ -6,7 +6,7 @@
  ],
  "chrome": {
   "captured": "chrome.html",
-  "from": "http://localhost:3979/dev/connection-field?frame=step-healthy at 1440 wide, zoomed to about full size, the real WorkflowCanvas on its preview workflow (main at 3a3ecb9c), no sign in needed, 2026-10-23",
+  "from": "http://localhost:3989/dev/app-action?frame=app-action-card at 1440 by 900 on main 063ab06, after data-preview-ready (zoom 1.0368, no step selected), the real WorkflowCanvas with the App Action step in place, its card removed and the slot left empty with the card's two connection handles kept, no sign in needed, 2026-10-23 (recaptured so the steps around the card sit where a real App Action card puts them; the rounds drew it in place of a Salesforce card on /dev/connection-field)",
   "slot": "#dr-card",
   "width": 1440
  },
@@ -32,7 +32,7 @@
  ],
  "exceptions": [],
  "idioms": [
-  "The card is drawn in place of the Salesforce step's card in a captured copy of the canvas at 1440 wide; the canvas, its header and the cards around it are the product as it is today, not decisions.",
+  "The card is drawn into the empty slot of an App Action step in a captured copy of the canvas at 1440 wide (the rounds drew it in place of a Salesforce step's card); the step's two connection handles are kept beside the slot inside a transparent box with the card's 1 px border, so they sit where the real card places them. The canvas, its header, the handles and the cards around it are the product as it is today, not decisions.",
   "Google Drive's mark is drawn inline as an SVG; the build draws the same SVG."
  ]
 }
