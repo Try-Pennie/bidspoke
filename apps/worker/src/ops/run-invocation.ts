@@ -81,7 +81,7 @@ export const HEARTBEAT_EVERY_MS = 20_000
 export const RUN_DB_DEADLINE_MS = OPS_RPC_DEADLINE_MS
 /** One forward, shorter than the lease, so a hung partner reads as unknown, never as slow (L110). */
 export const SEND_DEADLINE_MS = 45_000
-/** How many times complete, and a send's result, are tried. Each is safe to repeat. */
+/** How many times complete, a send's result and a step record (#2703) are tried. Each is safe to repeat. */
 const WRITE_TRIES = 3
 
 /** The ops database as a run uses it, each call bound to this run's organization. The live one wraps ops-writes.ts. */
