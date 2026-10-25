@@ -29,7 +29,7 @@ import { Button, SecretBlock, SecretInput, TextInput, TickRow } from '@/componen
 import { Select } from '@/components/ui/Select'
 import type { LeaveRequest } from '@/lib/leave-guard'
 import { reconnectFieldsFor, workingLabel, type FormService } from './add-form-model'
-import { SaveLine } from './AddConnectionPanel'
+import { GoogleSignIn, SaveLine, SIGN_IN_WORKING_LABEL } from './AddConnectionPanel'
 import type { ConnectionView } from './connection-model'
 import type { DialogState, UnsavedWork } from './connections-state'
 
@@ -44,7 +44,7 @@ function Labelled({ id, label, children }: { id: string; label: string; children
   )
 }
 
-export function ReconnectDialog({ dialog, connection, service, now, onField, onSave, onClose }: {
+export function ReconnectDialog({ dialog, connection, service, now, onField, onSave, onSignIn, onClose }: {
   dialog: Open<'reconnect'>
   connection: ConnectionView
   /** Its catalogue entry; null for a service the catalogue does not declare, which has nothing to ask. */
@@ -52,6 +52,8 @@ export function ReconnectDialog({ dialog, connection, service, now, onField, onS
   now: number
   onField: (field: string, text: string) => void
   onSave: () => void
+  /** A person's own Google account reconnects by signing in again (build PR 13): Google's own button in place of Save. */
+  onSignIn: () => void
   onClose: () => void
 }) {
   const base = useId()
@@ -66,9 +68,11 @@ export function ReconnectDialog({ dialog, connection, service, now, onField, onS
       onDismiss={() => { if (!saving && !typed) onClose() }}
       actions={
         <>
-          <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onSave} disabled={saving}>Save</Button>
+          {connection.ownAccount
+            ? <GoogleSignIn onClick={onSignIn} disabled={saving} />
+            : <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onSave} disabled={saving}>Save</Button>}
           <Button variant="secondary" className="cx-btn-quiet" onClick={onClose}>Cancel</Button>
-          <SaveLine save={dialog.save} now={now} label={workingLabel(service?.name ?? connection.serviceName)} />
+          <SaveLine save={dialog.save} now={now} label={connection.ownAccount ? SIGN_IN_WORKING_LABEL : workingLabel(service?.name ?? connection.serviceName)} />
         </>
       }
     >

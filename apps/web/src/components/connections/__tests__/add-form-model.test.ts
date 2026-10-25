@@ -19,7 +19,7 @@ const snowflake = (): FormService => catalogueServices().find((s) => s.key === '
 const view = (over: Partial<ConnectionView>): ConnectionView => ({
   id: 'c1', name: 'Pennie Salesforce', service: 'salesforce', serviceName: 'Salesforce', actsAs: 'integration@trypennie.com', status: 'ok',
   org: 'trypennie.my.salesforce.com', target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: 'cid' }, workflows: [], lastCheckedAt: null,
-  problemSince: null, problemCause: null, alertLogin: false, ...over,
+  problemSince: null, problemCause: null, alertLogin: false, ownAccount: false, ...over,
 })
 
 const draftFor = (service: string, values: Record<string, string>, name = 'Achieve Salesforce 2'): AddDraft => ({ ...EMPTY_ADD_DRAFT, service, name, values: { [service]: values } })
@@ -149,7 +149,7 @@ describe('the connection a save made, as the list shows it (R18)', () => {
     expect(createdView({ id: 'new1', name: 'Achieve Salesforce 2', service: 'salesforce', acts_as: 'pennie.api@achieve.example', target: { instance_url: 'https://achieve.my.salesforce.com', client_id: 'c' }, created_at: '2026-10-20T16:41:00Z' }, salesforce(), now)).toEqual({
       id: 'new1', name: 'Achieve Salesforce 2', service: 'salesforce', serviceName: 'Salesforce', actsAs: 'pennie.api@achieve.example', status: 'ok',
       org: 'achieve.my.salesforce.com', target: { instance_url: 'https://achieve.my.salesforce.com', client_id: 'c' }, workflows: [],
-      lastCheckedAt: '2026-10-20T16:41:00.000Z', problemSince: null, problemCause: null, alertLogin: false,
+      lastCheckedAt: '2026-10-20T16:41:00.000Z', problemSince: null, problemCause: null, alertLogin: false, ownAccount: false,
     })
   })
 })

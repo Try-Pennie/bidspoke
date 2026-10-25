@@ -39,16 +39,19 @@ import { clearFieldProblem, OpsGatewayContractError, parseSealedEnvelope, type S
  * method CI's deployed ops check (.github/scripts/ops-exports-entrypoint.mjs)
  * requires the LIVE ops Worker to export.
  *
- * The last three are the Google mailboxes and drives list's (#2338, R10,
- * finding F129): add, remove and list an organization's
+ * After the first six come the Google mailboxes and drives list's three
+ * (#2338, R10, finding F129): add, remove and list an organization's
  * google_delegation_subjects, each change written on ops with who made it and
  * when. They shipped on ops first, in build PR 2, kept out of this list so that
  * pull request did not require them of the deploy it preceded; build PR 6 moved
  * them here once the ops deploy carried them (Deploy Ops Worker, 2026-10-20),
- * with the bidding routes that call them.
+ * with the bidding routes that call them. signInClient, last, followed the same
+ * order: shipped on ops in build PR 13a (#2739), moved here in build PR 13b
+ * with the Sign in with Google routes.
  */
 export const OPS_CONNECTIONS_METHODS = [
   'verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode', 'addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects',
+  'signInClient',
 ] as const
 export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
 
@@ -60,7 +63,7 @@ export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
 export const OPS_DELEGATION_METHODS = ['addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects'] as const satisfies readonly OpsConnectionsMethod[]
 export type OpsDelegationMethod = (typeof OPS_DELEGATION_METHODS)[number]
 /** The methods the entrypoint runs with the connections' dependencies (connections/ops-connections.ts). */
-export type OpsConnectionsCoreMethod = Exclude<OpsConnectionsMethod, OpsDelegationMethod>
+export type OpsConnectionsCoreMethod = Exclude<OpsConnectionsMethod, OpsDelegationMethod | OpsSignInMethod>
 
 /** At most this many entries are answered by listDelegationSubjects; reached_limit says so. */
 export const DELEGATION_LIST_LIMIT = 1000
@@ -72,20 +75,15 @@ export const DELEGATION_LIST_LIMIT = 1000
  * leaves ops (Dan's decision of 2026-10-22), and the id is read from the same
  * secret the exchange sends with it, so the two cannot disagree.
  *
- * Kept apart from OPS_CONNECTIONS_METHODS on purpose, as the Google list's
- * methods were in build PR 2: CI's deployed ops check requires the LIVE ops
- * Worker to export every method on that list, on every pull request that
- * touches ops, so the pull request adding this one cannot also require it of
- * the deploy it precedes. The bidding routes that call it move it onto that
- * list once the ops deploy carries it.
+ * It shipped on ops first (build PR 13a), kept out of OPS_CONNECTIONS_METHODS
+ * as the Google list's methods were in build PR 2, since CI's deployed ops
+ * check requires the LIVE ops Worker to export every method on that list; the
+ * bidding sign in routes that call it moved it onto the list once the ops
+ * deploy carried it. The entrypoint runs it with one secret of the ops
+ * Worker's own as its only dependency.
  */
-export const OPS_SIGN_IN_METHODS = ['signInClient'] as const
+export const OPS_SIGN_IN_METHODS = ['signInClient'] as const satisfies readonly OpsConnectionsMethod[]
 export type OpsSignInMethod = (typeof OPS_SIGN_IN_METHODS)[number]
-
-/** Reading one secret of the Worker's own: no database, no network. */
-export const OPS_SIGN_IN_CEILINGS_MS: Readonly<Record<OpsSignInMethod, number>> = {
-  signInClient: 5_000,
-}
 
 /**
  * How long the entrypoint lets each method run before it answers
@@ -115,6 +113,8 @@ export const OPS_CONNECTIONS_CEILINGS_MS: Readonly<Record<OpsConnectionsMethod, 
   addDelegationSubject: 10_000,
   removeDelegationSubject: 10_000,
   listDelegationSubjects: 10_000,
+  // Reading one secret of the ops Worker's own: no database, no network.
+  signInClient: 5_000,
 }
 
 /**
@@ -206,6 +206,8 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'sign_in_app_malformed',
   /** The service has no person bound sign in on this Worker. */
   'sign_in_not_offered',
+  /** A person signed in as another account than the one the exchange named (their own Bidspoke address, Dan 2026-10-23). Nothing was stored. */
+  'exchange_account_mismatch',
 ] as const
 export type OpsConnectionsOwnRefusal = (typeof OPS_CONNECTIONS_REFUSAL_CODES)[number]
 export type OpsConnectionsRefusalCode = OpsConnectionsOwnRefusal | ConnectionRefusalCode | SchemaLookupCode
@@ -270,6 +272,12 @@ export interface ExchangeOAuthCodeRequest {
   /** The PKCE verifier, 43 to 128 characters. */
   verifier: string
   redirect_uri: string
+  /**
+   * The account the person must sign in as, lower case: their own Bidspoke
+   * address (#2338, Dan's decision of 2026-10-23). A consent as anyone else is
+   * refused (exchange_account_mismatch) and nothing is stored.
+   */
+  expected_account: string
 }
 
 /** What verify measured the credential as. Each service adds its own kind with its measurement (Phase 7). */
@@ -524,6 +532,9 @@ export function parseExchangeOAuthCodeRequest(raw: unknown): ExchangeOAuthCodeRe
   if (typeof r.code !== 'string' || r.code === '' || r.code.length > 4096) throw new OpsConnectionsContractError('the exchange\'s code is missing')
   if (typeof r.verifier !== 'string' || r.verifier.length < 43 || r.verifier.length > 128) throw new OpsConnectionsContractError('the exchange\'s PKCE verifier is not 43 to 128 characters')
   if (typeof r.redirect_uri !== 'string' || r.redirect_uri === '' || r.redirect_uri.length > 2048) throw new OpsConnectionsContractError('the exchange\'s redirect_uri is missing')
+  if (typeof r.expected_account !== 'string' || r.expected_account.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(r.expected_account.trim())) {
+    throw new OpsConnectionsContractError('the exchange\'s expected_account is not one address')
+  }
   return {
     organization_id: uuidField(r, 'organization_id'),
     connection_id: uuidField(r, 'connection_id'),
@@ -531,5 +542,6 @@ export function parseExchangeOAuthCodeRequest(raw: unknown): ExchangeOAuthCodeRe
     code: r.code,
     verifier: r.verifier,
     redirect_uri: r.redirect_uri,
+    expected_account: r.expected_account.trim().toLowerCase(),
   }
 }

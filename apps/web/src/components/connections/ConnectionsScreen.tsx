@@ -45,7 +45,10 @@ import {
 import {
   catalogueServices, createBodyOf, createdView, knownOrgs, reconnectBodyOf, saveFailureSentence, stalledSentence, type CreateBody, type CreatedConnection, type FormService,
 } from './add-form-model'
+import { GOOGLE_OWN_ACCOUNT_TARGET } from '@bidspoke/service-catalogue/schema'
 import { AddConnectionPanel } from './AddConnectionPanel'
+import type { KeptSignIns } from './google-sign-in-kept'
+import { FINISHING_LABEL, NO_SIGN_IN, type SignInFinishBody, type SignInReturn } from './google-sign-in-return'
 import { LeaveConnectionDialog, ReconnectDialog, RemoveDialog, RemovedDialog, ReplaceDialog } from './ConnectionDialogs'
 import { leaveThen, useLeaveGuard, type LeaveRequest } from '@/lib/leave-guard'
 import type { ComboboxOption } from '@/components/ui/Combobox'
@@ -64,6 +67,17 @@ export interface ConnectionsSource {
   create(body: CreateBody): Promise<{ connection: CreatedConnection }>
   /** POST /api/connections/:id/reconnect: a new login, or none to check the stored one again (build PR 6). */
   reconnect(id: string, body: { fields?: Record<string, string> }): Promise<{ outcome: 'reconnected' | 'checked'; connection: { id: string; acts_as: string | null } }>
+  /** POST /api/connections/google/sign-in: Google's link, for a new own account connection or a Reconnect of one (build PR 13, R17). */
+  startGoogleSignIn(body: { name: string } | { connection_id: string }): Promise<{ url: string }>
+  /** Sends the browser to Google's link; the preview stays where it is. */
+  goTo(url: string): void
+  /** POST /api/connections/google/sign-in/finish: what Google returned, finished on this page (D1, 2026-10-23). */
+  finishGoogleSignIn(body: SignInFinishBody): Promise<
+    | { outcome: 'created'; connection: { id: string; name: string; service: string; acts_as: string | null } }
+    | { outcome: 'reconnected'; connection: { id: string; acts_as: string | null }; cleared: boolean }
+  >
+  /** What the form held when the browser left for Google, kept under the sign in's state for its return. */
+  keptSignIns: KeptSignIns
   /** DELETE /api/connections/:id: refused while a workflow uses it (build PR 6). */
   remove(id: string): Promise<{ outcome: 'removed'; ops: { told: true } | { told: false; message: string } }>
   /** GET /api/integrations/slack: the Slack alerts login's alert settings (build PR 14). */
@@ -98,6 +112,15 @@ function changeSentence(err: unknown, what: string): string {
   return `${what}: ${requestFailureCause(err)}.`
 }
 
+/** The state a Sign in with Google link carries, which its return comes back under. */
+function stateOfLink(url: string): string | null {
+  try {
+    return new URL(url).searchParams.get('state')
+  } catch {
+    return null
+  }
+}
+
 export function loadedOf(answer: ConnectionList): LoadedList {
   return { connections: answer.connections.map(viewOf), statuses: { stale: answer.statuses.stale, asOf: answer.statuses.as_of } }
 }
@@ -111,7 +134,7 @@ function workflowsOfRefusal(err: unknown): ConnectionView['workflows'] | undefin
     .map((w) => ({ id: w.id, name: w.name, deleted: w.deleted === true }))
 }
 
-export function ConnectionsScreen({ source, clock = browserClock, orgNames = {}, services: servicesProp, initialChosen, initialTab, initialEvents, noInitialLoad, initialFocus, initialLeaveTo, initialChannelQuery }: {
+export function ConnectionsScreen({ source, clock = browserClock, orgNames = {}, services: servicesProp, initialChosen, initialTab, initialEvents, noInitialLoad, initialFocus, initialLeaveTo, initialChannelQuery, signInReturn }: {
   source: ConnectionsSource
   clock?: ConnectionsClock
   /** Salesforce orgs Bidspoke knows by name, by host: the notice names an org by it, and the form offers it. */
@@ -133,6 +156,8 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   initialLeaveTo?: string
   /** What the alert channel's search box opens holding: only the preview passes it, to draw the open menu. */
   initialChannelQuery?: string
+  /** What Google sent back, when the page was opened from its sign in (D1): finished here, in the form or dialog it left. */
+  signInReturn?: SignInReturn | null
 }) {
   const services = useMemo(() => servicesProp ?? catalogueServices(), [servicesProp])
   const [state, dispatch] = useReducer(connectionsReducer, undefined, () => (initialEvents ?? []).reduce(connectionsReducer, {
@@ -270,6 +295,115 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     )
   }, [source, clock, services])
 
+  // ── Sign in with Google (build PR 13, R17) ──
+  // Google's link, once the Worker gives it, is followed only after the form or dialog closes, so the
+  // page holds nothing it would lose and the leave guard does not ask: the sign in carries the name.
+  const [signInLink, setSignInLink] = useState<string | null>(null)
+
+  const signIn = useCallback(() => {
+    const s = latest.current
+    if (!s.add || s.add.draft.service !== 'google' || s.add.save.kind === 'saving' || s.list.kind !== 'loaded') return
+    const attempt = ++changeNumber.current.save
+    if (attempt <= s.lastChange.save) return
+    const ms = s.deadlines.saveDeadlineMs
+    dispatch({ type: 'save_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'saved') })
+    const name = s.add.draft.name
+    source.startGoogleSignIn({ name }).then(
+      (a) => {
+        // A form cancelled, or a newer press, while the link was fetched goes nowhere: its state just expires.
+        const now = latest.current.add
+        if (!now || now.started !== attempt || now.save.kind !== 'saving') return
+        // The form's values, for the return to put back (D1).
+        const state = stateOfLink(a.url)
+        if (state) source.keptSignIns.keep(state, { kind: 'new', name })
+        dispatch({ type: 'add_closed' })
+        setSignInLink(a.url)
+      },
+      (err: unknown) => dispatch({ type: 'save_refused', attempt, sentence: saveFailureSentence(err, 'Google', ms, 'saved') }),
+    )
+  }, [source, clock])
+
+  const signInAgain = useCallback(() => {
+    const s = latest.current
+    const d = s.dialog
+    if (d?.kind !== 'reconnect' || d.save.kind === 'saving' || s.list.kind !== 'loaded') return
+    const attempt = ++changeNumber.current.reconnect
+    if (attempt <= s.lastChange.reconnect) return
+    const ms = s.deadlines.saveDeadlineMs
+    dispatch({ type: 'reconnect_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'reconnected') })
+    source.startGoogleSignIn({ connection_id: d.id }).then(
+      (a) => {
+        // A dialog cancelled while the link was fetched goes nowhere: its state just expires.
+        const now = latest.current.dialog
+        if (now?.kind !== 'reconnect' || now.id !== d.id || now.save.kind !== 'saving' || latest.current.lastChange.reconnect !== attempt) return
+        const state = stateOfLink(a.url)
+        if (state) source.keptSignIns.keep(state, { kind: 'reconnect', connectionId: d.id })
+        dispatch({ type: 'dialog_closed' })
+        setSignInLink(a.url)
+      },
+      (err: unknown) => dispatch({ type: 'reconnect_refused', attempt, sentence: saveFailureSentence(err, 'Google', ms, 'reconnected') }),
+    )
+  }, [source, clock])
+
+  // ── Back from Google (D1, D2, Dan 2026-10-23) ──
+  // Finished here, once the list has loaded, in the form or dialog the sign in left: the working line
+  // under its buttons while it runs, the new connection opened when saved, the reason in red when not.
+  const returned = useRef(false)
+  const listLoaded = state.list.kind === 'loaded'
+  useEffect(() => {
+    if (!signInReturn || returned.current || !listLoaded) return
+    returned.current = true
+    const s = latest.current
+    if (s.list.kind !== 'loaded') return
+    const kept = signInReturn.state ? source.keptSignIns.take(signInReturn.state) : null
+    const ms = s.deadlines.saveDeadlineMs
+    const body = signInReturn.body
+    const reconnecting = kept?.kind === 'reconnect' ? s.list.data.connections.find((c) => c.id === kept.connectionId) : undefined
+    if (reconnecting) {
+      dispatch({ type: 'choose', chosen: { kind: 'connection', id: reconnecting.id } })
+      dispatch({ type: 'dialog_opened', dialog: 'reconnect', id: reconnecting.id })
+      const attempt = ++changeNumber.current.reconnect
+      dispatch({ type: 'reconnect_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'reconnected'), label: FINISHING_LABEL })
+      if (!body) {
+        dispatch({ type: 'reconnect_refused', attempt, sentence: NO_SIGN_IN })
+        return
+      }
+      source.finishGoogleSignIn(body).then(
+        (a) => dispatch({ type: 'reconnect_answered', attempt, id: reconnecting.id, actsAs: a.connection.acts_as, at: clock.now() }),
+        (err: unknown) => dispatch({ type: 'reconnect_refused', attempt, sentence: saveFailureSentence(err, 'Google', ms, 'reconnected') }),
+      )
+      return
+    }
+    // The catalogue always holds Google; a page without it cannot draw the form, so it fails loudly
+    // here, before the single use state is spent, rather than finishing into a form it cannot show.
+    const google = services.find((x) => x.key === 'google')
+    if (!google) throw new Error('The Connections page has no Google service to finish a sign in with')
+    dispatch({ type: 'add_opened' })
+    dispatch({ type: 'add_service', service: 'google' })
+    dispatch({ type: 'add_google', way: 'own' })
+    dispatch({ type: 'add_name', text: kept?.kind === 'new' ? kept.name : '' })
+    const attempt = ++changeNumber.current.save
+    dispatch({ type: 'save_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'saved'), label: FINISHING_LABEL })
+    if (!body) {
+      dispatch({ type: 'save_refused', attempt, sentence: NO_SIGN_IN })
+      return
+    }
+    source.finishGoogleSignIn(body).then(
+      (a) => {
+        // Its kept values gone, a Reconnect lands here: the existing connection signed in again, so it opens, working.
+        if (a.outcome === 'reconnected') {
+          dispatch({ type: 'reconnect_answered', attempt, id: a.connection.id, actsAs: a.connection.acts_as, at: clock.now() })
+          dispatch({ type: 'add_closed' })
+          dispatch({ type: 'choose', chosen: { kind: 'connection', id: a.connection.id } })
+          return
+        }
+        const created = { ...a.connection, target: { ...GOOGLE_OWN_ACCOUNT_TARGET }, created_at: new Date(clock.now()).toISOString() }
+        dispatch({ type: 'save_answered', attempt, connection: createdView(created, google, clock.now()) })
+      },
+      (err: unknown) => dispatch({ type: 'save_refused', attempt, sentence: saveFailureSentence(err, 'Google', ms, 'saved') }),
+    )
+  }, [signInReturn, listLoaded, source, clock, services])
+
   const remove = useCallback(() => {
     const s = latest.current
     const d = s.dialog
@@ -344,6 +478,12 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   useLeaveGuard({ blocking, onAsk: (request) => setLeaveAsk((open) => open ?? request) })
   // The question goes once there is nothing left to lose (a save landed while it was asked); the person can go again.
   useEffect(() => { if (!blocking) setLeaveAsk(null) }, [blocking])
+  // Google's link, followed once the form or dialog that asked for it has closed (build PR 13).
+  useEffect(() => {
+    if (signInLink === null || blocking) return
+    setSignInLink(null)
+    source.goTo(signInLink)
+  }, [signInLink, blocking, source])
   const choose = useCallback((c: Chosen, name: string) => {
     leaveThen({ kind: 'page', name }, () => { setLeaveAsk(null); dispatch({ type: 'choose', chosen: c }) })
   }, [])
@@ -424,6 +564,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
                   onField={(field, text, typedNew) => dispatch({ type: 'add_field', field, text, typedNew })}
                   onGoogle={(way) => dispatch({ type: 'add_google', way })}
                   onSave={save}
+                  onSignIn={signIn}
                   onCancel={() => dispatch({ type: 'add_closed' })}
                   onGoogleRetry={loadGoogle}
                 />
@@ -465,6 +606,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
           now={state.now}
           onField={(field, text) => dispatch({ type: 'dialog_field', field, text })}
           onSave={reconnect}
+          onSignIn={signInAgain}
           onClose={() => dispatch({ type: 'dialog_closed' })}
         />
       )}

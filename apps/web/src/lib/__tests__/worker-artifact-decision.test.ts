@@ -351,7 +351,9 @@ describe('deploy.yml wires the gate in (#727)', () => {
     // so hashing the directory would measure the harness and never match (#725).
     const job = jobBlock('worker_artifact')
     expect(job).toContain('apps/worker/dist/index.js')
-    expect(job).not.toMatch(/sha256sum\s+-?\S*\s*apps\/worker\/dist\s*$/m)
+    // Both sides hash through the one script that runs on either runner (#2768).
+    expect(job.match(/sha256\.sh apps\/worker\/dist\/index\.js\)/g) ?? []).toHaveLength(2)
+    expect(job).not.toMatch(/sha256\S*\s+-?\S*\s*apps\/worker\/dist\/?\s*[)|]/m)
   })
 
   it('tolerates a failed build on either side instead of failing the job', () => {

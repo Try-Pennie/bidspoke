@@ -7,7 +7,8 @@
  * here before the bidding routes that call them (build PR 6), the same deploy
  * order as below; and signInClient (#2338, build PR 13;
  * connections/sign-in-client.ts), the client id of the Google sign in app this
- * Worker holds, shipped here before the bidding sign in route that calls it.
+ * Worker holds, which the bidding Worker's sign in route
+ * (POST /api/connections/google/sign-in) reads.
  *
  * WHO MAY CALL IT. Only a Worker holding a service binding to this named
  * entrypoint of bidspoke-worker-ops: the bidding Worker, through the
@@ -43,11 +44,11 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { raceDeadline } from '../lib/alert-claim'
 import {
-  OPS_CONNECTIONS_CEILINGS_MS, OPS_SIGN_IN_CEILINGS_MS, OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest,
+  OPS_CONNECTIONS_CEILINGS_MS, OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest,
   parseExchangeOAuthCodeRequest, parseHealthRequest, parseListDelegationSubjectsRequest, parseLookupRequest, parseRemoveDelegationSubjectRequest,
   parseRevokeRequest, parseSignInClientRequest, parseVerifyRequest, type AddDelegationSubjectAnswer, type ClearReauthAnswer, type ExchangeOAuthCodeAnswer,
   type HealthAnswer, type ListDelegationSubjectsAnswer, type LookupAnswer, type OpsConnectionsCoreMethod, type OpsConnectionsMethod, type OpsConnectionsRefused,
-  type OpsDelegationMethod, type OpsSignInMethod, type RemoveDelegationSubjectAnswer, type RevokeAnswer, type SignInClientAnswer, type VerifyAnswer,
+  type OpsDelegationMethod, type RemoveDelegationSubjectAnswer, type RevokeAnswer, type SignInClientAnswer, type VerifyAnswer,
 } from '../lib/ops-connections-contract'
 import { oauthAppOf } from './connections/oauth-apps'
 import { signInClient } from './connections/sign-in-client'
@@ -87,8 +88,8 @@ export interface OpsConnectionsAnswerOptions<Req, Ans> {
 
 const refused = (code: OpsConnectionsRefused['refused'], detail: string): OpsConnectionsRefused => ({ ok: false, refused: code, detail, retry_at: null })
 
-/** Every method the entrypoint answers: the ones bidding calls, and the sign in method shipped ahead of its caller (#2338). */
-type EntrypointMethod = OpsConnectionsMethod | OpsSignInMethod
+/** Every method the entrypoint answers: the ones bidding calls. */
+type EntrypointMethod = OpsConnectionsMethod
 
 function logAnswer(method: EntrypointMethod, answer: { ok: boolean; refused?: string }, organizationId: string | null): void {
   console.log(JSON.stringify({ event: 'ops_connections', method, outcome: answer.ok ? 'ok' : answer.refused, organization_id: organizationId }))
@@ -144,7 +145,7 @@ export async function delegationListAnswer(
  * the ops database nor the ops private key. Exported for the tests.
  */
 export async function signInClientAnswer(env: OpsEnv, raw: unknown, options: { delay?: (ms: number) => Promise<void> } = {}): Promise<SignInClientAnswer> {
-  return answerMethod(env, 'signInClient', raw, parseSignInClientRequest, OPS_SIGN_IN_CEILINGS_MS.signInClient,
+  return answerMethod(env, 'signInClient', raw, parseSignInClientRequest, OPS_CONNECTIONS_CEILINGS_MS.signInClient,
     () => ({ app: (service: string) => oauthAppOf(env as unknown as Readonly<Record<string, unknown>>, service) }),
     (deps, request) => Promise.resolve(signInClient(deps, request)), options.delay)
 }
@@ -233,7 +234,7 @@ export class OpsConnections extends WorkerEntrypoint<OpsEnv> {
     return delegationListAnswer(this.env, 'listDelegationSubjects', request) as Promise<ListDelegationSubjectsAnswer>
   }
 
-  // Sign in with Google (#2338, build PR 13). Not in OPS_CONNECTIONS_METHODS until the bidding routes call it: see the contract.
+  // Sign in with Google (#2338, build PR 13): called by the bidding Worker's sign in route.
   signInClient(request: unknown): Promise<SignInClientAnswer> {
     return signInClientAnswer(this.env, request)
   }

@@ -9,6 +9,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { describe, expect, it, vi } from 'vitest'
 import type { ConnectionList, ConnectionListRow } from '@/lib/api'
 import { CONNECTIONS_LIST_TIMEOUT_MS } from '@/lib/api'
+import { keptSignInsIn } from '../google-sign-in-kept'
 import { ConnectionsScreen, LIST_DEADLINE_MS, type ConnectionsClock, type ConnectionsSource } from '../ConnectionsScreen'
 import type { DelegationEntry } from '../connection-model'
 
@@ -71,6 +72,10 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     slackAlerts: vi.fn(async () => ({ connected: true, default_channel: '#bidspoke-alerts' })),
     updateSlackAlerts: vi.fn(async () => ({ ok: true })),
     searchSlackChannels: vi.fn(async () => ({ channels: [] })),
+    startGoogleSignIn: vi.fn(async () => ({ url: 'https://accounts.google.com/o/oauth2/v2/auth?state=s' })),
+    goTo: vi.fn(),
+    finishGoogleSignIn: vi.fn(async () => { throw new Error('not called') }),
+    keptSignIns: keptSignInsIn(null),
     ...over,
   }
 }
