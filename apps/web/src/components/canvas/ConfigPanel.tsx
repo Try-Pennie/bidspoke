@@ -543,8 +543,13 @@ function NodeTestSection({
   onTest: (namespace: string, opts: NodeTestOptions) => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
-  // Agreed to for one test only: cleared after each, so every real send is agreed to again.
-  const [sendAgreed, setSendAgreed] = useState(false)
+  // Agreed to for one test of one step only: cleared after each test, and held
+  // as the step and words it was given for, so opening another step (or this
+  // step's send changing) never carries the tick over to a send nobody agreed to.
+  const sendKey = realSend === null ? null : `${namespace}\u0000${realSend}`
+  const [agreedFor, setAgreedFor] = useState<string | null>(null)
+  const sendAgreed = sendKey !== null && agreedFor === sendKey
+  const setSendAgreed = (agreed: boolean) => setAgreedFor(agreed ? sendKey : null)
   const [payloadText, setPayloadText] = useState(() => JSON.stringify(defaultPayload ?? {}, null, 2))
   const [parseError, setParseError] = useState<string | null>(null)
   const [running, setRunning] = useState<null | 'run' | 'cold'>(null)
@@ -594,7 +599,7 @@ function NodeTestSection({
           <div className="flex items-center gap-2">
             <button
               onClick={() => run(true)}
-              disabled={!canBuildFromRun || running !== null}
+              disabled={!canBuildFromRun || running !== null || (realSend !== null && !sendAgreed)}
               title={canBuildFromRun ? 'Run this node using the upstream outputs from the last run' : 'Run the workflow once to enable'}
               className="inline-flex items-center gap-1.5 rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-40"
             >

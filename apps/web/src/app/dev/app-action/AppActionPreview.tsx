@@ -18,9 +18,11 @@ export const SEND_VIEW = { x: 383.13024, y: 46.0128 }
 /**
  * The App Action step's card as the canvas draws it (#2339), on the workflow the
  * settled design's canvas was captured from, with its step in place of the
- * Salesforce step: the real WorkflowCanvas in edit mode, no step opened, zoomed
- * and scrolled as the capture was, by pressing the canvas's own zoom in button
- * and dragging its pane as a person does. When the last press has settled the page is marked
+ * Salesforce step: the real WorkflowCanvas in edit mode, zoomed and scrolled as
+ * the capture was, by pressing the canvas's own zoom in button and dragging its
+ * pane as a person does. The card frame opens no step; the send frames (#2339)
+ * then open the step and Test this node, and send-ticked also ticks the box,
+ * each by pressing as a person does. When the last press has settled the page is marked
  * data-preview-ready, which the design score waits for. Next's development
  * badge is hidden: it is no part of the product. No auth and no network.
  */
