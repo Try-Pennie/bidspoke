@@ -16,7 +16,7 @@ const NOW = Date.parse('2026-10-20T16:00:00Z') // 12:00 PM ET
 
 const conn = (over: Partial<ConnectionView>): ConnectionView => ({
   id: over.name ?? 'c', name: 'c', service: 'salesforce', serviceName: 'Salesforce', actsAs: null, status: 'ok', org: null, target: null,
-  workflows: [], lastCheckedAt: null, problemSince: null, problemCause: null, alertLogin: false, ...over,
+  workflows: [], lastCheckedAt: null, problemSince: null, problemCause: null, alertLogin: false, ownAccount: false, ...over,
 })
 
 describe('listGroups (R3, D3)', () => {
@@ -101,6 +101,15 @@ describe('problemNotice (R7, D7)', () => {
   it('gives no notice to a working connection', () => {
     expect(problemNotice(conn({}), NOW)).toBeNull()
   })
+
+  it('words a person\'s own Google account by its sign in: revoked or expired, and fixed by signing in again (#2338)', () => {
+    const own = conn({ name: 'My Google', service: 'google', serviceName: 'Google', status: 'reauth', ownAccount: true, problemCause: 'login_refused: invalid_grant', problemSince: '2026-10-20T13:52:00Z' })
+    expect(problemNotice(own, NOW)).toEqual({ cause: 'Since 9:52 AM ET, Google has refused its sign in, which was revoked or has expired.', effect: null, fix: 'Reconnect to sign in with Google again.' })
+    // A token endpoint that kept failing, not a refusal: said differently.
+    expect(problemNotice({ ...own, problemCause: 'refresh_failing_exhausted: token_endpoint_5xx' }, NOW)!.cause).toBe('Since 9:52 AM ET, Google has stopped accepting its sign in.')
+    // A company mailbox keeps the login wording.
+    expect(problemNotice({ ...own, ownAccount: false }, NOW)!.fix).not.toMatch(/sign in/)
+  })
 })
 
 describe('times, in Eastern', () => {
@@ -130,6 +139,12 @@ describe('viewOf', () => {
     expect(viewOf(row({}))).toMatchObject({ lastCheckedAt: '2026-10-20T14:00:00Z', problemSince: '2026-10-20T13:52:00Z', problemCause: 'login_refused: invalid_client', org: 'achieve.my.salesforce.com' })
     expect(viewOf(row({ status: 'failing' }))).toMatchObject({ problemSince: '2026-10-20T14:00:00Z', problemCause: 'timeout' })
     expect(viewOf(row({ status: 'ok' }))).toMatchObject({ problemSince: null })
+  })
+
+  it('reads a person\'s own Google account from its target (#2338)', () => {
+    expect(viewOf(row({ service: 'google', target: { own_account: true } })).ownAccount).toBe(true)
+    expect(viewOf(row({ service: 'google', target: { subject: 'ops@trypennie.com' } })).ownAccount).toBe(false)
+    expect(viewOf(row({})).ownAccount).toBe(false)
   })
 
   it('reads a Worker answer from before build PR 9 without its new fields', () => {

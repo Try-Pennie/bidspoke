@@ -6,7 +6,9 @@ import WorkflowCanvas from '@/components/canvas/WorkflowCanvas'
 import { ConnectionField } from '@/components/connections/ConnectionField'
 import { realClock } from '@/components/ui/Combobox'
 import { Select } from '@/components/ui/Select'
+import { panTo } from '../canvas-view'
 import { chosenIdOf, PREVIEW_STEP, PREVIEW_WORKFLOW, previewLoadList, stillClock, type PreviewFrame } from './connection-field-preview-source'
+import type { StaleSave } from '@/lib/workflow-save-conflict'
 
 /**
  * A step's Connection field (#2338, build PR 11) as the canvas will show it,
@@ -21,7 +23,11 @@ import { chosenIdOf, PREVIEW_STEP, PREVIEW_WORKFLOW, previewLoadList, stillClock
  * Operation and Object the app's Select), drawn into the panel's body in place
  * of the Salesforce step's form.
  */
-export function ConnectionFieldPreview({ frame }: { frame: PreviewFrame }) {
+export function ConnectionFieldPreview({ frame, saveConflict }: {
+  frame: PreviewFrame
+  /** A refused save the canvas shows from the start: the save conflict preview (/dev/canvas-save-conflict, #2599) draws on this canvas. */
+  saveConflict?: StaleSave
+}) {
   const [body, setBody] = useState<HTMLElement | null>(null)
   useEffect(() => {
     // The step is opened as a person opens it, by a click on its card once the canvas has
@@ -47,7 +53,7 @@ export function ConnectionFieldPreview({ frame }: { frame: PreviewFrame }) {
     <>
       {/* The Salesforce step's own form is hidden; the preview's body takes its place. */}
       <style>{'#step-panel-body > :not([data-preview-step]) { display: none; }'}</style>
-      <WorkflowCanvas workflow={PREVIEW_WORKFLOW} mode="edit" />
+      <WorkflowCanvas workflow={PREVIEW_WORKFLOW} mode="edit" initialSaveConflict={saveConflict} />
       {body && createPortal(<StepBody frame={frame} />, body)}
     </>
   )
@@ -55,32 +61,6 @@ export function ConnectionFieldPreview({ frame }: { frame: PreviewFrame }) {
 
 /** Where the settled design's captured canvas was scrolled to (its viewport's translate). */
 const DESIGN_VIEW = { x: 425, y: 242.75 }
-
-/**
- * Pans the canvas so its view starts at `to`, by a drag on its empty pane, the
- * way a person moves it: React Flow keeps its viewport inside the canvas, out
- * of the preview's reach.
- */
-function panTo(to: { x: number; y: number }) {
-  const viewport = document.querySelector<HTMLElement>('.react-flow__viewport')
-  const pane = document.querySelector<HTMLElement>('.react-flow__pane')
-  if (!viewport || !pane) return
-  const now = new DOMMatrixReadOnly(getComputedStyle(viewport).transform)
-  const dx = to.x - now.m41
-  const dy = to.y - now.m42
-  if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return
-  const box = pane.getBoundingClientRect()
-  const x = box.left + 20
-  const y = box.top + 20
-  // Built as PointerEvents, which keep a fraction of a pixel where a MouseEvent rounds it away, so
-  // the view lands where the design's did, its background dots included.
-  const at = (type: string, cx: number, cy: number, target: EventTarget) =>
-    target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: type === 'mouseup' ? 0 : 1 }))
-  at('mousedown', x, y, pane)
-  at('mousemove', x + dx / 2, y + dy / 2, window)
-  at('mousemove', x + dx, y + dy, window)
-  at('mouseup', x + dx, y + dy, window)
-}
 
 function StepBody({ frame }: { frame: PreviewFrame }) {
   const [connection, setConnection] = useState<string | null>(() => chosenIdOf(frame))

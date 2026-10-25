@@ -135,6 +135,7 @@ export const PALETTE_HIDDEN: Readonly<Partial<Record<NodeType, string>>> = {
   partner_bid: 'retired (#645): Bid Group replaced it; the engine still executes saved ones',
   branch_end: 'created by the canvas when a branch is dropped, never placed by hand',
   parallel_end: 'created by the canvas when a parallel is dropped, never placed by hand',
+  app_action: 'an ops catalogue step (#2339): offered once its step form is built, which money workflows never carry',
 }
 
 interface Props {

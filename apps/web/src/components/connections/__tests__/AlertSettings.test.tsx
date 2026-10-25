@@ -9,6 +9,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { describe, expect, it, vi } from 'vitest'
 import { SLACK_ALERT_LOGIN_LINK_ID } from '@bidspoke/service-catalogue/schema'
 import type { ConnectionList, ConnectionListRow, SlackAlertSettingsAnswer } from '@/lib/api'
+import { keptSignInsIn } from '../google-sign-in-kept'
 import { ConnectionsScreen, type ConnectionsClock, type ConnectionsSource } from '../ConnectionsScreen'
 
 vi.mock('next/link', () => ({ default: ({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) => <a href={href} className={className}>{children}</a> }))
@@ -45,6 +46,10 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     slackAlerts: vi.fn(async () => SETTINGS),
     updateSlackAlerts: vi.fn(async () => ({ ok: true })),
     searchSlackChannels: vi.fn(async (q: string) => ({ channels: ['ops-alerts', 'ops-bidding'].filter((c) => c.includes(q)).map((name) => ({ id: name, name })) })),
+    startGoogleSignIn: vi.fn(async () => { throw new Error('not called') }),
+    goTo: vi.fn(),
+    finishGoogleSignIn: vi.fn(async () => { throw new Error('not called') }),
+    keptSignIns: keptSignInsIn(null),
     ...over,
   }
 }

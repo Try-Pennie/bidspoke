@@ -193,6 +193,7 @@ Common node types and what they do:
 - response/exit: terminate with HTTP response
 - salesforce: SF object create/update
 - webhook: outbound HTTP call
+- app_action: an ops step running one catalogue action (Slack, Salesforce, Google, Snowflake and others) through a saved connection
 
 Rules:
 - Past tense, sentence case, no trailing period.

@@ -32,6 +32,7 @@ export const NODE_TYPES = [
   'buyer_click_send',
   'buyer_click_check',
   'lead_validation',
+  'app_action',
 ] as const
 
 export type NodeType = (typeof NODE_TYPES)[number]
@@ -57,11 +58,14 @@ export function isWorkflowLane(value: unknown): value is WorkflowLane {
 
 /**
  * Which workflows may run a node type: `money` only in a money workflow,
- * `shared` in either. A node is money only when it reads partner config,
- * partner credentials, buyer ledgers or the bid matrix, or writes state money
- * flows share (the SUBMISSIONS store), so an ops workflow can never reach one.
+ * `ops` only in an ops workflow, `shared` in either. A node is money only when
+ * it reads partner config, partner credentials, buyer ledgers or the bid
+ * matrix, or writes state money flows share (the SUBMISSIONS store), so an ops
+ * workflow can never reach one. A node is ops only when it sends through an
+ * ops connection (#2339: app_action), whose login only the ops Worker holds,
+ * so a money workflow can never carry one.
  */
-export type NodeLane = 'money' | 'shared'
+export type NodeLane = 'money' | 'ops' | 'shared'
 
 export interface NodeTraits {
   /** Which workflow lanes may run it: required, so a new type has to decide. */
@@ -89,7 +93,11 @@ export interface NodeTraits {
   referencesPartners: boolean
   /** Outgoing handle ids fixed by the type, or null when there are none or they come from config. */
   staticHandles: readonly string[] | null
-  /** The executor's file name under engine/nodes, or null for the walk only and inline types. */
+  /**
+   * The executor's file name under engine/nodes, or null for the walk only and
+   * inline types and for an ops only type, which the ops run body
+   * (apps/worker src/ops/run-walk.ts) runs and engine/nodes never does.
+   */
   executorFile: string | null
   /**
    * How a canvas test run differs for this node from a live run, or null when it
@@ -224,11 +232,18 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   // Money only: its reasons are what a lead source is told, and it reads the
   // Constants node, which is money only too.
   lead_validation: inMemory({ lane: 'money', shadowRun: SENDS_NOTHING, executorFile: 'lead-validation' }),
+  // One catalogue action (packages/service-catalogue) at the version the step
+  // pinned, sent through the ops connection the step names (#2339). Ops only:
+  // the login lives on the ops Worker and nowhere else. Every run reaches a
+  // service, so it is a network node. A shadow run is a money lane run and the
+  // money lane refuses this step by name before any step runs, so no shadow
+  // run ever reaches it; stubbed, never trusted to send nothing.
+  app_action: inMemory({ lane: 'ops', shadowRun: STUBBED, network: true }),
 }
 
 const NODE_TYPES_BY_LANE: Record<WorkflowLane, readonly NodeType[]> = {
   money: NODE_TYPES.filter((t) => NODE_TRAITS[t].lane === 'money' || NODE_TRAITS[t].lane === 'shared'),
-  ops: NODE_TYPES.filter((t) => NODE_TRAITS[t].lane === 'shared'),
+  ops: NODE_TYPES.filter((t) => NODE_TRAITS[t].lane === 'ops' || NODE_TRAITS[t].lane === 'shared'),
 }
 
 /** The node types a workflow in this lane may carry. */

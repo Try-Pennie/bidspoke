@@ -1,0 +1,33 @@
+{
+  "title": "Sign in with Google, coming back (#2338)",
+  "intro": "Where a person lands when Google sends them back from Sign in with Google, settled by Dan over two rounds on 2026-10-23 (recorded Settled for #2338): straight back in the add form on the Connections page, with the reason, or the finish running, under the sign in button.",
+  "chrome": {"captured": "chrome.html", "from": "http://localhost:3961/dev/connections?frame=add-google-own at 1440 wide, the real Connections page from its preview data on next dev with DESIGN_SCORE_PREVIEW=1 (branch issue-2338-pr13b-google-sign-in, the D1 and D2 build), no sign in needed, 2026-10-23. The sidebar logo is not inlined: on a signed out preview the image optimiser answers 400 for it, the same on the design and on the build", "slot": "#main-content", "width": 1440},
+  "builder": "builder.js",
+  "fixture": "../google-sign-in-return.fixture.json",
+  "frames": [
+    {"id": "add-google-own-finishing", "title": "Back from Google, the sign in finishing", "width": 1440, "variant": {"state": "finishing"}},
+    {"id": "add-google-own-declined", "title": "Back from Google, the sign in declined", "width": 1440, "variant": {"state": "declined"}}
+  ],
+  "decisions": [
+    {
+      "id": "D1",
+      "decision": "When Google sends the person back, they land straight back on the Connections page in the Add a connection form they left, with everything they chose kept (service Google, the name, Acts as My own Google account), and the line under the Sign in with Google and Cancel row says what is happening: the working line while the finish runs, the reason when the sign in did not go through. No separate page and no Back to Connections link.",
+      "why": "Round 1 (Dan picked Connections, in the form): the person is back where they were, ready to try again, rather than on a page they must leave.",
+      "requirement": "R17",
+      "frames": ["add-google-own-finishing", "add-google-own-declined"],
+      "check": "The add form is open with the Google tile chosen, the name Dan's drive, My own Google account chosen, no link reading Back to Connections, and the save line the very next element after the Sign in with Google and Cancel row, reading Finishing the sign in with Google, 3 s on the finishing frame and the declined sentence on the declined frame."
+    },
+    {
+      "id": "D2",
+      "decision": "The sentence when the sign in did not go through is the product's error red (FieldError), as every refusal sentence in that place is.",
+      "why": "Round 2 (Dan picked Red): one colour for a sign in that did not go through, the one every failed save already uses.",
+      "requirement": "R14",
+      "frames": ["add-google-own-declined"],
+      "check": "The declined frame's save line is drawn in the colour FieldError draws, the app's failure red, and is announced as an alert."
+    }
+  ],
+  "exceptions": [],
+  "idioms": [
+    "The working line's spinner turns in the product; the design draws it still, as the score draws both sides still."
+  ]
+}

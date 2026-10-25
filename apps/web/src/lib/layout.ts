@@ -44,6 +44,7 @@ const NODE_H: Record<NodeType | 'trigger' | 'default', number> = {
   buyer_click_send: STANDARD_NODE_H,
   buyer_click_check: STANDARD_NODE_H,
   lead_validation: STANDARD_NODE_H,
+  app_action:     STANDARD_NODE_H,
   default:        STANDARD_NODE_H,
 }
 

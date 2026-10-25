@@ -1,10 +1,12 @@
 /**
  * The executor registry is built from each node type's lane trait (#1707, plan
- * 0.C). The money registry runs every type; the ops registry is a filter on it
- * that holds no money executor, so the ops Worker (0.E) cannot reach partner
- * config, partner credentials or a buyer ledger through any node.
+ * 0.C). The money registry runs every type but the ops only ones (app_action,
+ * #2339, which an ops run walks in src/ops); the ops registry holds no money
+ * executor, so the ops Worker (0.E) cannot reach partner config, partner
+ * credentials or a buyer ledger through any node, and its app_action entry
+ * refuses by name, since the ops run body, not this engine, runs it.
  *
- * The money only list is written out here rather than read from the traits, so
+ * The money only and ops only lists are written out here rather than read from the traits, so
  * a trait flipped by mistake turns this red instead of agreeing with itself
  * (L70, L721).
  */
@@ -18,6 +20,9 @@ const MONEY_ONLY: NodeType[] = [
   'latency_gate', 'lead_validation', 'partner_bid', 'salesforce',
 ]
 
+/** Ops only (#2339): a catalogue step, which the money registry must never hold. */
+const OPS_ONLY: NodeType[] = ['app_action']
+
 const ctx = (): ExecutionContext => ({
   trigger: { payload: {}, source: 'test', workflow_id: 'wf', org_id: '', trace_id: 'trace' },
   steps: {},
@@ -26,8 +31,12 @@ const ctx = (): ExecutionContext => ({
 const node = (type: NodeType): NodeDefinition => ({ id: 'n1', namespace: `${type}_1`, type, config: {} })
 
 describe('executor registry', () => {
-  it('the money registry has an executor for every node type', () => {
-    expect([...executorTypesForLane('money')].sort()).toEqual([...NODE_TYPES].sort())
+  it('the money registry has an executor for every node type but the ops only ones', () => {
+    expect([...executorTypesForLane('money')].sort()).toEqual(NODE_TYPES.filter((t) => !OPS_ONLY.includes(t)).sort())
+  })
+
+  it('an ops only type in the engine\'s ops registry refuses by name: an ops run walks it in src/ops (#2339)', async () => {
+    await expect(createNodeExecutor('ops')(node('app_action'), ctx(), {} as never)).rejects.toThrow('runs only in an ops run')
   })
 
   it('the ops registry holds no money executor', () => {

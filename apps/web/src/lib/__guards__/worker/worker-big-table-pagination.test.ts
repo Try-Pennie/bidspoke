@@ -124,6 +124,7 @@ const SMALL_TABLES: Record<string, string> = {
   environment_variables: '62 rows on 2026-10-18, created since 2026-04-21. One per variable a person sets.',
   service_connections: '1 row on 2026-10-18. One per connected service per organization.',
   connection_tombstones: '0 rows on 2026-10-18. One per removed service connection generation, which a person does by hand.',
+  oauth_states: 'New on 2026-10-23 (#2338). One per Sign in with Google a person starts, and create_oauth_state deletes those expired over a day ago.',
   service_presets: '0 rows on 2026-10-21, and nothing writes it: HTTP Services presets were retired by #2338, and #2638 drops the table.',
   api_sources: '7 rows on 2026-10-18. One per source holding a webhook key.',
   webhook_endpoints: '9 rows on 2026-10-18. One per custom endpoint.',

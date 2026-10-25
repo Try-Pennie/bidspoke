@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, type Plugin } from 'vitest/config'
+import { runnerTimeouts } from '../../vitest.runner-timeouts'
 
 /**
  * Serves the kept Engine canvas scripts as text (#1472).
@@ -31,6 +32,8 @@ export default defineConfig({
     alias: { 'cloudflare:workers': fileURLToPath(new URL('./src/test-setup/cloudflare-workers-stub.ts', import.meta.url)) },
   },
   test: {
+    // Wider only on a self-hosted runner, the shared Mac (#2768).
+    ...runnerTimeouts,
     // money-gate/lib holds the money gate's pure parts and their tests (#1704).
     include: ['src/**/*.test.ts', 'money-gate/**/*.test.ts'],
     // The Workers test project (vitest.do.config.mts, `pnpm run test:do`) owns

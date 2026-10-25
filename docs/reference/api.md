@@ -84,7 +84,9 @@ Response `201`:
 
 ### Save a workflow (create a version)
 
-`PUT /api/workflows/:id`. Send the full `definition`. The save creates a numbered version snapshot, invalidates the workflow's KV cache so the next trigger loads the new definition, deploys any Code node bundles, and (best-effort, asynchronously) pushes the definition to the GitHub backup repo. An optional `message` is stored on the version row.
+`PUT /api/workflows/:id`. Send the full `definition`, with `expected_version`, the workflow's `version` as you read it (GET returns it), and `save_id`, a UUID you make for this save. The save creates a numbered version snapshot, invalidates the workflow's KV cache so the next trigger loads the new definition, deploys any Code node bundles, and (best-effort, asynchronously) pushes the definition to the GitHub backup repo. An optional `message` is stored on the version row.
+
+A save that sends a `definition` without both `expected_version` and `save_id` is refused with `428`, `code: reload_required` (#2599). A save made from a version that is no longer stored, because someone saved after you read it, is refused with `409`, `code: stale_version`, carrying `current` (the stored row), `last_save_id`, `changed_by_name` and `changed_at`; nothing is written. Read the workflow again, or send its current `version` to save over theirs. A save sending no definition (a rename) may leave both out and is made from the version the request reads.
 
 ```bash
 curl -X PUT https://bidspoke.trypennie.dev/api/workflows/8f3c2b10-... \
@@ -92,6 +94,8 @@ curl -X PUT https://bidspoke.trypennie.dev/api/workflows/8f3c2b10-... \
   -H "Content-Type: application/json" \
   -d '{
     "definition": { "nodes": [], "edges": [], "trigger": { "type": "http_webhook", "config": { "method": "POST", "auth_method": "api_key" } } },
+    "expected_version": 12,
+    "save_id": "0b6f2a3e-8c1d-4e5f-9a7b-1c2d3e4f5a6b",
     "message": "Add validation filter"
   }'
 ```
@@ -352,6 +356,8 @@ Response `201` (the only time the key is shown in full):
 | GET | `/api/connections/google/subjects` | The organization's Google mailboxes and shared drives that Google connections may act as: `{ subjects: [{ kind, subject, display_name, added_by, added_at }], reached_limit }`. A list that cannot be read is `503` `delegation_list_unavailable`, never an empty list. |
 | POST | `/api/connections/google/subjects` | Adds one, body `{ "kind": "mailbox" \| "drive", "subject", "display_name"? }` (a drive's id, and its name). `201` `{ outcome: "added", entry }`, or `200` `{ outcome: "already_listed", entry }`. Refused by name: `delegation_subject_invalid` (not one address or drive id), `delegation_subject_listed_elsewhere` (`409`, on another organization's list). Any signed in user may add; the ops Worker records who and when. |
 | DELETE | `/api/connections/google/subjects/:kind/:subject` | Removes one. `200` `{ outcome: "removed" }`, or `404` `delegation_subject_not_listed`. Refused while a saved connection of the organization acts as it (its target names the mailbox, or the drive among its drives): `409` `delegation_subject_in_use` with `connections: [{ id, name, service }]`. |
+| POST | `/api/connections/google/sign-in` | Starts Sign in with Google for a person's own Google account (#2338), body `{ "name" }` for a new connection or `{ "connection_id" }` to sign one in again (only the person it signs in as may). `200` `{ url }`: Google's page, which names the sign in app's client id and a single use state that expires in 10 minutes; the app's secret lives only on the ops Worker. Refused by name: a taken name (`409`), `503` `google_sign_in_unset` (the app is not set up yet), `403` `google_sign_in_not_owner`, `422` `google_sign_in_not_person` (a company mailbox connection). |
+| POST | `/api/connections/google/sign-in/finish` | Finishes it, body `{ "state", "code" }` or `{ "state", "error" }` as Google returned them to `/connections/google/callback`, which hands them back to `/connections` to post. The state is claimed once, and only by the person and organization that started it. A new connection: `201` `{ outcome: "created", connection: { id, name, service, acts_as } }`; signed in again: `200` `{ outcome: "reconnected", connection: { id, acts_as }, cleared }`. Each failure has its own code and sentence, and nothing is saved: `google_sign_in_denied` (the person did not allow it), `410` `google_sign_in_expired`, `409` `google_sign_in_used`, `404` `google_sign_in_unknown` (not this person's state), `google_code_refused` (Google refused the code), `google_sign_in_wrong_account` (signed in as another Google account than the person's Bidspoke email, which is the only one accepted, so a connection's account never changes). A connection whose sign in is later revoked in the Google account shows Needs reconnecting, and its Reconnect signs in again. |
 
 The legacy `DELETE /api/connections/:service_type` and `POST /api/connections/:service_type/sync-schema` were retired in #2338 and answer `404`.
 

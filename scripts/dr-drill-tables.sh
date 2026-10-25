@@ -58,6 +58,9 @@ DRILL_STRUCTURE_ONLY_TABLES=(
   partner_page_live_misses
   # The cron guard's fail-open record (#2166): seven days of monitor history
   cron_guard_fail_opens
+  # Sign in with Google's single use states (#2338): ten minutes each, with a
+  # PKCE verifier, and nothing a restore needs
+  oauth_states
   # Every cron delivery and what the guard decided (#2284): seven days of monitor history
   cron_tick_deliveries
   # The field presence rollup watermark (#1150): one timestamp. After a restore

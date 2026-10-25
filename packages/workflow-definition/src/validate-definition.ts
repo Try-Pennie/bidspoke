@@ -22,6 +22,7 @@
  * blockingProblems applies those to a save.
  */
 import { NODE_TRAITS, isNodeType, nodeTypeRunsInLane, type WorkflowLane } from '@bidspoke/node-types'
+import { appActionSaveProblems } from './app-action'
 import { findBranchLabelConflicts } from './branch-validation'
 import { findLeadValidationPlacementProblems, findLeadValidationProblems } from './lead-validation'
 import { validateDefinitionReferences } from './reference-validation'
@@ -52,6 +53,8 @@ export const DEFINITION_RULE_IDS = [
   'salesforce_options',
   'lead_validation_placement',
   'lead_validation_config',
+  'app_action',
+  'connection_lane',
 ] as const
 export type DefinitionRuleId = (typeof DEFINITION_RULE_IDS)[number]
 
@@ -240,6 +243,39 @@ export const DEFINITION_RULES: readonly DefinitionRule[] = [
     since: 1,
     enforce: 'live_save',
     check: (d) => findLeadValidationProblems(d.nodes, d.edges).map(fromValidationError('lead_validation_invalid')),
+  },
+  {
+    // An ops catalogue step (#2339): a version the catalogue does not have,
+    // arguments that version would refuse, a connection that is not an id.
+    // Since version 1, because no stored definition has ever held an app_action
+    // step (measured on production, 2026-10-23: 0 of 56 workflows and 0 of 610
+    // saved versions), so no row's meaning changes (L1013).
+    id: 'app_action',
+    since: 1,
+    enforce: 'every_save',
+    check: (d) =>
+      d.nodes.flatMap((n) =>
+        n.type === 'app_action'
+          ? appActionSaveProblems(n.config ?? {}).map((p) => ({ reason: p.reason, severity: 'error' as const, message: `step ${n.namespace}: ${p.message}`, nodeId: n.id, namespace: n.namespace }))
+          : [],
+      ),
+  },
+  {
+    // A second check beside node_lane (#2339): a connection is an ops login, so
+    // a money step bound to one is refused, whatever its type. Since version 1:
+    // no stored definition has ever held a connection field (0 of 610 saved
+    // versions, measured 2026-10-23).
+    id: 'connection_lane',
+    since: 1,
+    enforce: 'every_save',
+    check: (d, { lane }) =>
+      lane !== 'money'
+        ? []
+        : d.nodes.flatMap((n) =>
+          n.config !== undefined && Object.hasOwn(n.config, 'connection') && n.config.connection !== null && n.config.connection !== undefined && n.config.connection !== ''
+            ? [{ reason: 'connection_on_money_lane', severity: 'error' as const, message: `step ${n.namespace} is bound to a connection, which only an ops workflow may use`, nodeId: n.id, namespace: n.namespace }]
+            : [],
+        ),
   },
 ]
 

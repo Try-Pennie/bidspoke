@@ -216,6 +216,15 @@ function actorOf(c: Context<{ Bindings: Env; Variables: Variables }>) {
 }
 
 /**
+ * A save of a definition from a canvas opened before every canvas save named
+ * the version it was loaded from and its press (#2599). Its save would be made
+ * from whatever version the request read, writing over a newer save, so it is
+ * refused before anything is read, with its edits left on the canvas (L598).
+ */
+export const RELOAD_REQUIRED_WORKFLOW_MESSAGE =
+  'Not saved. This page was opened before an update to how workflows are saved. Your changes are still on the canvas: copy the steps you changed, reload the page, and paste them back. A release can take a few minutes to reach your browser, so if this comes back after reloading, wait a few minutes and try again.'
+
+/**
  * A save made from a version that is no longer stored (#1947). Nothing was
  * written, and the caller's edits are its own. It is the `error` a page shows
  * as it stands (this route's sentences are its errors), with `code` naming it
@@ -492,12 +501,16 @@ workflows.put('/:id', async (c) => {
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ name?: string; description?: string; definition?: unknown; message?: string; slack_channel?: string | null; expected_version?: unknown; save_id?: unknown }>()
 
-  // A save may name the version it was edited from and the press that made it
+  // A save names the version it was edited from and the press that made it
   // (#1947); write_workflow refuses it as stale when that version is no longer
-  // stored. A save naming none (today's canvas, a rename from the list) is made
-  // from the version read below, so a write landing during this request is
-  // still caught. Requiring it of a definition save, once the canvas sends it,
-  // is the follow up named in #1947.
+  // stored. A save of a definition must name both (#2599): one naming neither
+  // comes from a canvas opened before the canvas sent them. A save sending no
+  // definition (a rename from the list) may name none, and is then made from
+  // the version read below, so a write landing during this request is still
+  // caught.
+  if (body.definition !== undefined && (body.expected_version === undefined || body.save_id === undefined)) {
+    return c.json({ code: 'reload_required', error: RELOAD_REQUIRED_WORKFLOW_MESSAGE }, 428)
+  }
   const versionRefusal = expectedVersionRefusal(c, body.expected_version)
   if (versionRefusal) return versionRefusal
   if (body.save_id !== undefined && (typeof body.save_id !== 'string' || !UUID.test(body.save_id))) {

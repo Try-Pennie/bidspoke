@@ -18,7 +18,7 @@ const REMOVE_DEADLINE = 30_000
 const conn = (over: Partial<ConnectionView>): ConnectionView => ({
   id: 'c1', name: 'Pennie Salesforce', service: 'salesforce', serviceName: 'Salesforce', actsAs: 'integration@trypennie.com', status: 'ok',
   org: 'trypennie.my.salesforce.com', target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: 'cid' },
-  workflows: [{ id: 'w1', name: 'Lead Completed sync', deleted: false }], lastCheckedAt: null, problemSince: null, problemCause: null, alertLogin: false, ...over,
+  workflows: [{ id: 'w1', name: 'Lead Completed sync', deleted: false }], lastCheckedAt: null, problemSince: null, problemCause: null, alertLogin: false, ownAccount: false, ...over,
 })
 
 const LIST: LoadedList = {

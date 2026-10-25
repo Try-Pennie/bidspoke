@@ -4,6 +4,7 @@ import { filterHasCondition } from './filter-condition'
 import { alertOverPercentOf, partnerIdOf, POPULATIONS } from '@bidspoke/buyer-profile'
 import { salesforceConfigProblem } from './salesforce-write-options'
 import { leadValidationConfigProblem } from './lead-validation'
+import { appActionConfigProblem } from './app-action'
 
 export interface ValidationError {
   nodeId: string
@@ -192,6 +193,10 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       // list, no half filled row. Whether each reference runs before the node is
       // findLeadValidationProblems's, which needs the graph.
       return leadValidationConfigProblem(config)
+    case 'app_action':
+      // What a half built ops catalogue step lacks, in the setup order (#2339);
+      // what no save may hold is appActionSaveProblems, a rule of its own.
+      return appActionConfigProblem(config)
     case 'salesforce':
       // Its required fields have working defaults, but the relay port's write
       // options (#2170) are refused when malformed, by the rule the executor uses.

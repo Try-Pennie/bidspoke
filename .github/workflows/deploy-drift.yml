@@ -52,7 +52,7 @@ concurrency:
 jobs:
   drift:
     name: Deploy targets match main
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     # measured max 14s per target over 6 runs when healthy. Bounds a HANG, not
     # slowness (#1062). Twenty five rather than ten since #1371 and #1373: with
     # every target down, both looks at the site, the tail worker and the main
@@ -313,7 +313,7 @@ jobs:
           build_hash() {
             ( cd "$1" && pnpm install --frozen-lockfile >/dev/null 2>&1 \
               && pnpm --filter=worker run build >/dev/null 2>&1 \
-              && sha256sum apps/worker/dist/index.js | cut -d' ' -f1 ) || true
+              && bash "$GITHUB_WORKSPACE/head/.github/scripts/sha256.sh" apps/worker/dist/index.js ) || true
           }
           # The bundle is only half of what a deploy changes (#1420). Both sides
           # are measured with the HEAD copy of the hashing script, so the two are
