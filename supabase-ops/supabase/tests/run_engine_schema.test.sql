@@ -152,6 +152,8 @@ BEGIN
     AND p.proname <> ALL (ARRAY['connection_check_targets'])
     -- The observation purge and the workflow definition copies (#1950), held to the same rules by run_invocation.test.sql.
     AND p.proname <> ALL (ARRAY['purge_schedule_observations', 'save_workflow_definition', 'workflow_definition', 'missing_workflow_definitions'])
+    -- A step's test result (#2339), held to the same rules by step_test_results.test.sql.
+    AND p.proname <> ALL (ARRAY['record_step_test', 'step_test_result', 'purge_step_test_results'])
     AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') IS FALSE
     AND p.proowner = 'postgres'::regrole;
   IF v_count <> 0 THEN RAISE EXCEPTION '% public function(s) executable by service_role are not on the run engine list', v_count; END IF;

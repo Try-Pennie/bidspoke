@@ -39,9 +39,11 @@
  *    since nothing was changed. invokeRun still fails a retry after a send that
  *    cannot be repeated, and itself ends a send that may have landed.
  *
- * WHAT IT RECORDS. Nothing but the send ledger row run.send writes before each
- * non GET send (method, host, the attempt key), which holds no header and no
- * body, so connectionFetch is told no request is recorded. A login is applied
+ * WHAT IT RECORDS. In a run, nothing but the send ledger row run.send writes
+ * before each non GET send (method, host, the attempt key), which holds no
+ * header and no body, so connectionFetch is told no request is recorded. A step
+ * test (step-test.ts, #2339) passes its own record target instead, and keeps
+ * each request as connectionFetch sanitised it, before the login was applied. A login is applied
  * after that and never reaches the step output, the ledger, the run's end or a
  * log line, even from a service that echoes it back, since connectionFetch
  * scrubs every answer it hands the action (__tests__/app-action.test.ts proves
@@ -52,7 +54,7 @@ import { ActionFailure, resolveRuntimeAction, type ActionArgs, type ActionContex
 import { resolveValue } from '../engine/context'
 import { formatErr } from '../lib/format-error'
 import type { StepExecutionResult } from '../types'
-import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps } from './connections/connection-fetch'
+import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps, type RecordTarget } from './connections/connection-fetch'
 import { isOwnAccountTarget } from './connections/google-service'
 import { ConnectionRefusal, RequeueAt, type ConnectionRefusalCode } from './connections/refusals'
 import { RunStopped, StepNotSent, StepTimedOut, stepRequestId, type ForwardAnswer } from './run-invocation'
@@ -69,6 +71,12 @@ export interface AppActionDeps {
   resolveAction(key: string, version: number): ResolvedAction<RuntimeAction>
   /** Every wait an action makes (a poll's interval). */
   sleep(ms: number): Promise<void>
+  /**
+   * Where each request's sanitised record goes before it is sent. A run records
+   * nothing beyond its send ledger row (RECORDS_NOTHING); a step test keeps
+   * them with its result (#2339, step-test.ts).
+   */
+  record?: RecordTarget
 }
 
 /**
@@ -163,7 +171,7 @@ export function appActionHandler(deps: AppActionDeps): OpsStepHandler {
           source: { kind: 'copy' },
           purpose: 'step',
           workflowId: run.run.workflowId,
-          record: RECORDS_NOTHING,
+          record: deps.record ?? RECORDS_NOTHING,
           signal,
         }, url, { ...init, method }),
       })

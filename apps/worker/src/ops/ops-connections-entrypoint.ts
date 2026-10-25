@@ -9,6 +9,9 @@
  * connections/sign-in-client.ts), the client id of the Google sign in app this
  * Worker holds, which the bidding Worker's sign in route
  * (POST /api/connections/google/sign-in) reads.
+ * And testStep and stepTestResult (#2339, step-test.ts), the ops step test and
+ * its kept result, shipped with the bidding route that calls them but kept off
+ * OPS_CONNECTIONS_METHODS until the ops deploy carries them.
  *
  * WHO MAY CALL IT. Only a Worker holding a service binding to this named
  * entrypoint of bidspoke-worker-ops: the bidding Worker, through the
@@ -44,7 +47,8 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { raceDeadline } from '../lib/alert-claim'
 import {
-  OPS_CONNECTIONS_CEILINGS_MS, OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest,
+  OPS_CONNECTIONS_CEILINGS_MS, OPS_STEP_TEST_CEILINGS_MS, OpsConnectionsContractError, parseStepTestResultRequest, parseTestStepRequest,
+  type OpsStepTestMethod, type StepTestResultAnswer, type TestStepAnswer, parseAddDelegationSubjectRequest, parseClearReauthRequest,
   parseExchangeOAuthCodeRequest, parseHealthRequest, parseListDelegationSubjectsRequest, parseLookupRequest, parseRemoveDelegationSubjectRequest,
   parseRevokeRequest, parseSignInClientRequest, parseVerifyRequest, type AddDelegationSubjectAnswer, type ClearReauthAnswer, type ExchangeOAuthCodeAnswer,
   type HealthAnswer, type ListDelegationSubjectsAnswer, type LookupAnswer, type OpsConnectionsCoreMethod, type OpsConnectionsMethod, type OpsConnectionsRefused,
@@ -59,7 +63,8 @@ import {
 import type { SealRegistryOf } from './connection-token-object'
 import { OPS_LANE, type OpsEnv } from './index'
 import { OpsDatabaseConfigError } from './ops-db'
-import { liveDelegationListDeps, liveOpsConnectionsDeps, OpsConnectionsNotConfigured } from './ops-connections-live'
+import { liveDelegationListDeps, liveOpsConnectionsDeps, liveStepTestDeps, OpsConnectionsNotConfigured } from './ops-connections-live'
+import { readStepTest, runStepTest, type StepTestDeps } from './step-test'
 
 type Runner<Req, Ans> = (deps: OpsConnectionsDeps, request: Req, signal: AbortSignal) => Promise<Ans>
 
@@ -88,8 +93,8 @@ export interface OpsConnectionsAnswerOptions<Req, Ans> {
 
 const refused = (code: OpsConnectionsRefused['refused'], detail: string): OpsConnectionsRefused => ({ ok: false, refused: code, detail, retry_at: null })
 
-/** Every method the entrypoint answers: the ones bidding calls. */
-type EntrypointMethod = OpsConnectionsMethod
+/** Every method the entrypoint answers: the ones bidding calls, and the step test's, shipped ahead of their place on that list (#2339). */
+type EntrypointMethod = OpsConnectionsMethod | OpsStepTestMethod
 
 function logAnswer(method: EntrypointMethod, answer: { ok: boolean; refused?: string }, organizationId: string | null): void {
   console.log(JSON.stringify({ event: 'ops_connections', method, outcome: answer.ok ? 'ok' : answer.refused, organization_id: organizationId }))
@@ -148,6 +153,32 @@ export async function signInClientAnswer(env: OpsEnv, raw: unknown, options: { d
   return answerMethod(env, 'signInClient', raw, parseSignInClientRequest, OPS_CONNECTIONS_CEILINGS_MS.signInClient,
     () => ({ app: (service: string) => oauthAppOf(env as unknown as Readonly<Record<string, unknown>>, service) }),
     (deps, request) => Promise.resolve(signInClient(deps, request)), options.delay)
+}
+
+export interface StepTestAnswerOptions {
+  /** For tests: the dependencies, in place of the live ones. */
+  deps?: StepTestDeps
+  /** For tests: the ops database client's fetch, under the live dependencies. */
+  opsFetch?: typeof fetch
+  /** For tests: the ceiling's timer. */
+  delay?: (ms: number) => Promise<void>
+}
+
+/**
+ * The step test (#2339, step-test.ts): testStep runs one app_action step for
+ * real and keeps its result on ops; stepTestResult reads that result back.
+ * Answered as the others are: the lane, the contract's parse, the live
+ * dependencies, then the method against its ceiling. Exported for the tests.
+ */
+export async function stepTestAnswer(env: OpsEnv, method: 'testStep', raw: unknown, options?: StepTestAnswerOptions): Promise<TestStepAnswer>
+export async function stepTestAnswer(env: OpsEnv, method: 'stepTestResult', raw: unknown, options?: StepTestAnswerOptions): Promise<StepTestResultAnswer>
+export async function stepTestAnswer(env: OpsEnv, method: OpsStepTestMethod, raw: unknown, options: StepTestAnswerOptions = {}): Promise<TestStepAnswer | StepTestResultAnswer> {
+  const makeDeps = () => options.deps ?? liveStepTestDeps(env, options.opsFetch ? { opsFetch: options.opsFetch } : {})
+  if (method === 'testStep') {
+    return answerMethod(env, method, raw, parseTestStepRequest, OPS_STEP_TEST_CEILINGS_MS.testStep, makeDeps, runStepTest, options.delay)
+  }
+  return answerMethod(env, method, raw, parseStepTestResultRequest, OPS_STEP_TEST_CEILINGS_MS.stepTestResult, makeDeps,
+    (deps, request) => readStepTest(deps, request), options.delay)
 }
 
 async function answerMethod<D, Req extends { organization_id: string }, Ans extends { ok: boolean }>(
@@ -237,5 +268,14 @@ export class OpsConnections extends WorkerEntrypoint<OpsEnv> {
   // Sign in with Google (#2338, build PR 13): called by the bidding Worker's sign in route.
   signInClient(request: unknown): Promise<SignInClientAnswer> {
     return signInClientAnswer(this.env, request)
+  }
+
+  // The step test (#2339). Not in OPS_CONNECTIONS_METHODS until the ops deploy carries them: see the contract.
+  testStep(request: unknown): Promise<TestStepAnswer> {
+    return stepTestAnswer(this.env, 'testStep', request)
+  }
+
+  stepTestResult(request: unknown): Promise<StepTestResultAnswer> {
+    return stepTestAnswer(this.env, 'stepTestResult', request)
   }
 }

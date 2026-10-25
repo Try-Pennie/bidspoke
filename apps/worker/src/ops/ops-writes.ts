@@ -48,6 +48,7 @@ import {
   OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES, REFRESH_OUTCOMES, RESOURCE_WAIT_CAUSES, SF_BUDGET_SOURCES, SF_LEASE_OUTCOMES, SF_LEASE_PURPOSES, TRIGGER_KINDS,
   type ConnectionCopyState, type DelegationAddOutcome, type DelegationCheckOutcome, type DelegationKind, type DelegationRemoveOutcome, type HolderFailedReason, type RefreshOutcome, type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule,
   type ResourceWaitCause, type SfBudgetSource, type SfLeaseOutcome, type SfLeasePurpose, type TriggerKind,
+  STEP_TEST_STATUSES, type StepTestStatus,
 } from './run-vocabulary'
 import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
@@ -1483,4 +1484,74 @@ export async function readMissingWorkflowDefinitions(
     }
   })
   return { missing, reachedLimit: missing.length === limit }
+}
+
+// ── a step's test result (#2339, ops migration 20261024010000) ──────────────
+
+export interface StepTestRecord {
+  nodeId: string
+  namespace: string
+  /** The users.id of the person who ran the test. */
+  testedBy: string
+  status: StepTestStatus
+  /** The action's answer, scrubbed of the connection's secrets; null for a failure or an answer over the cap. */
+  output: unknown
+  /** The answer's size: given for one over the cap (output null), so it is named, never read as empty; measured by the database otherwise. */
+  outputBytes: number | null
+  /** Why it failed; null when it completed. */
+  error: string | null
+  /** Each request the step made, sanitised before its login was applied. */
+  requests: unknown[]
+  durationMs: number
+}
+
+export interface StoredStepTest extends StepTestRecord {
+  testedAt: string
+}
+
+/** Keeps a step's latest test result, replacing the one before. Answers when it was recorded, on the database clock. */
+export async function recordStepTest(
+  client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, result: StepTestRecord, options?: OpsRpcOptions,
+): Promise<string> {
+  const name = 'record_step_test'
+  if (!(STEP_TEST_STATUSES as readonly string[]).includes(result.status)) throw new OpsWriteError(`${name}: ${String(result.status)} is not a test status`)
+  if (result.status === 'failed' && (result.error === null || result.error === '')) throw new OpsWriteError(`${name}: a failed test needs its error`)
+  const data = await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_workflow_id: workflowId, p_node_id: result.nodeId, p_namespace: result.namespace, p_tested_by: result.testedBy,
+    p_status: result.status, p_output: result.output ?? null, p_output_bytes: result.outputBytes, p_error: result.error, p_requests: result.requests, p_duration_ms: result.durationMs,
+  }, options)
+  if (!isTime(data)) throw new OpsWriteError(`${name} returned something other than a time`)
+  return data
+}
+
+/** One step's latest test result in the organization, or null: none, or one past 7 days on the database clock. */
+export async function readStepTestResult(
+  client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, nodeId: string, options?: OpsRpcOptions,
+): Promise<StoredStepTest | null> {
+  const name = 'step_test_result'
+  const all = rows(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_workflow_id: workflowId, p_node_id: nodeId }, options))
+  if (all.length > 1) throw new OpsWriteError(`${name} returned ${all.length} rows, expected at most 1`)
+  if (all.length === 0) return null
+  const row = all[0]
+  const requests = row.requests
+  if (!Array.isArray(requests)) throw new OpsWriteError(`${name} returned requests that are not a list`)
+  return {
+    nodeId: field(name, row, 'node_id', isString, 'text'),
+    namespace: field(name, row, 'namespace', isString, 'text'),
+    testedBy: field(name, row, 'tested_by', isString, 'an id'),
+    testedAt: field(name, row, 'tested_at', isTime, 'a time'),
+    status: field(name, row, 'status', oneOf(STEP_TEST_STATUSES), 'a test status'),
+    output: row.output ?? null,
+    outputBytes: field(name, row, 'output_bytes', isIntOrNull, 'a whole number or null'),
+    error: field(name, row, 'error', isStringOrNull, 'text or null'),
+    requests,
+    durationMs: field(name, row, 'duration_ms', isInt, 'a whole number'),
+  }
+}
+
+/** The nightly purge of step test results tested more than 7 days ago, by the database clock. */
+export async function purgeStepTestResults(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_step_test_results'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
 }
