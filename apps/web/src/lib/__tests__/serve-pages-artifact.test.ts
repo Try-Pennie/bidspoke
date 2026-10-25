@@ -19,21 +19,33 @@ import { REPO_ROOT } from './_scan-utils'
  */
 const script = path.join(REPO_ROOT, '.github/scripts/serve-pages-artifact.sh')
 
-/** A stand in for wrangler: `serve` answers /login on the --port it is given, `exit` dies at once, `mute` never answers. */
-function fakeWrangler(kind: 'serve' | 'exit' | 'mute'): string {
+type Kind = 'serve' | 'exit' | 'mute' | 'busy-once' | 'busy-always'
+
+/**
+ * A stand in for wrangler: `serve` answers /login on the --port it is given,
+ * `exit` dies at once, `mute` never answers; `busy-once` reports the address
+ * in use on its first start and serves on the next, and `busy-always` reports
+ * it every time, as wrangler does when its port was taken after it was picked.
+ */
+function fakeWrangler(kind: Kind): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'fake-wrangler-'))
   const file = path.join(dir, 'wrangler')
+  const serve = `const p = Number(process.argv[process.argv.indexOf('--port') + 1]); require('http').createServer((q, r) => { r.statusCode = q.url === '/login' ? 200 : 404; r.end() }).listen(p); setTimeout(() => process.exit(0), 20000)`
+  const busy = `console.error('[ERROR] Address already in use. Please check that you are not already running a server on this address'); process.exit(1)`
+  const starts = path.join(dir, 'starts')
   const body = {
-    serve: `const p = Number(process.argv[process.argv.indexOf('--port') + 1]); require('http').createServer((q, r) => { r.statusCode = q.url === '/login' ? 200 : 404; r.end() }).listen(p); setTimeout(() => process.exit(0), 20000)`,
-    exit: `console.error('fake wrangler: address in use'); process.exit(1)`,
+    serve,
+    exit: `console.error('fake wrangler: refused to start'); process.exit(1)`,
     mute: `setTimeout(() => process.exit(0), 20000)`,
+    'busy-once': `const fs = require('fs'); const n = fs.existsSync(${JSON.stringify(starts)}) ? 1 : 0; fs.writeFileSync(${JSON.stringify(starts)}, 'x'); if (n === 0) { ${busy} } else { ${serve} }`,
+    'busy-always': busy,
   }[kind]
   writeFileSync(file, `#!/usr/bin/env node\n${body}\n`)
   chmodSync(file, 0o755)
   return file
 }
 
-function run(kind: 'serve' | 'exit' | 'mute') {
+function run(kind: Kind) {
   const tmp = mkdtempSync(path.join(tmpdir(), 'serve-pages-'))
   const env = path.join(tmp, 'github_env')
   writeFileSync(env, '')
@@ -59,7 +71,25 @@ describe('serve-pages-artifact.sh', () => {
     const r = run('exit')
     expect(r.status).not.toBe(0)
     expect(r.out).toMatch(/exited before it answered/)
-    expect(r.out).toMatch(/address in use/)
+    expect(r.out).toMatch(/refused to start/)
+    expect(r.githubEnv).toBe('')
+  })
+
+  // The port is picked free and then released, and wrangler opens its own
+  // internal ports from the same pool before it binds the one it was given, so
+  // now and then that one is gone by then (CI on 2026-10-25, port 36935). A
+  // port lost that way is retried on a fresh one; any other failure is not.
+  it('tries a fresh port when the one it picked was taken before the server bound it', () => {
+    const r = run('busy-once')
+    expect(r.status, r.out).toBe(0)
+    expect(r.out).toMatch(/in use by the time the server started, trying another/)
+    expect(r.githubEnv).toMatch(/^BASE_URL=http:\/\/localhost:\d+$/m)
+  })
+
+  it('gives up after three ports, each taken, and says so', () => {
+    const r = run('busy-always')
+    expect(r.status).not.toBe(0)
+    expect(r.out).toMatch(/3 ports were each in use/)
     expect(r.githubEnv).toBe('')
   })
 
