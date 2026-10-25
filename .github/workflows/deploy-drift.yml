@@ -52,7 +52,7 @@ concurrency:
 jobs:
   drift:
     name: Deploy targets match main
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # measured max 14s per target over 6 runs when healthy. Bounds a HANG, not
     # slowness (#1062). Twenty five rather than ten since #1371 and #1373: with
     # every target down, both looks at the site, the tail worker and the main
