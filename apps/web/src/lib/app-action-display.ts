@@ -75,3 +75,64 @@ export function realSendConnectionOf(nodeType: string, config: Record<string, un
   if (nodeType !== 'app_action' || typeof config.connection !== 'string') return null
   return appActionRealSend(config, null) === null ? null : config.connection
 }
+
+/**
+ * The step form's Service dropdown (#2338, settled in
+ * docs/design/app-action-step-form.html): every catalogue service as a person
+ * knows it, Google split into the products its actions run in (Gmail, Google
+ * Sheets and so on), the same names the card shows. `value` is the choice's own
+ * key; `service` the catalogue service the step stores; `prefix` the action keys
+ * it offers.
+ */
+export interface AppActionServiceChoice {
+  value: string
+  label: string
+  service: string
+  prefix: string
+}
+
+export const APP_ACTION_SERVICE_CHOICES: readonly AppActionServiceChoice[] = CATALOGUE.flatMap((s): AppActionServiceChoice[] =>
+  s.key === 'google'
+    ? GOOGLE_PRODUCTS.map((p) => ({ value: p.prefix.replace(/[.-]$/, '').replace('.', ':'), label: p.name, service: 'google', prefix: p.prefix }))
+    : [{ value: s.key, label: s.name, service: s.key, prefix: `${s.key}.` }],
+).sort((a, b) => a.label.localeCompare(b.label))
+
+/** The choice a step's settings fall under: its action's product, else its service; null when nothing is chosen. */
+export function appActionServiceChoice(config: Record<string, unknown>): AppActionServiceChoice | null {
+  const action = typeof config.action === 'string' ? config.action : null
+  const service = typeof config.service === 'string' ? config.service : null
+  if (action !== null) {
+    const byAction = APP_ACTION_SERVICE_CHOICES.find((c) => action.startsWith(c.prefix))
+    if (byAction) return byAction
+  }
+  const byService = APP_ACTION_SERVICE_CHOICES.filter((c) => c.service === service)
+  return byService.length === 1 ? byService[0] : null
+}
+
+/** One action a choice offers, at its newest version: what a step pins when it is chosen. */
+export interface AppActionChoice {
+  value: string
+  label: string
+  version: number
+}
+
+/** The Action dropdown: only the chosen service's actions, each named as the card names it. */
+export function appActionChoices(choice: AppActionServiceChoice | null): AppActionChoice[] {
+  if (choice === null) return []
+  const newest = new Map<string, (typeof ACTIONS)[number]>()
+  for (const a of ACTIONS) {
+    if (!a.key.startsWith(choice.prefix)) continue
+    const seen = newest.get(a.key)
+    if (!seen || a.version > seen.version) newest.set(a.key, a)
+  }
+  const isProduct = choice.service === 'google'
+  return [...newest.values()].map((a) => ({ value: a.key, label: isProduct ? capitalised(a.name.replace(/^[^:]+:\s*/, '')) : a.name, version: a.version }))
+}
+
+/** The pinned action version's schema, or null for none or a version the catalogue does not have. */
+export function appActionSchema(config: Record<string, unknown>) {
+  const actionKey = typeof config.action === 'string' ? config.action : null
+  const version = config.actionVersion
+  const resolved = actionKey !== null && typeof version === 'number' ? resolveActionVersion(ACTIONS, actionKey, version) : null
+  return resolved?.ok ? resolved.action : null
+}

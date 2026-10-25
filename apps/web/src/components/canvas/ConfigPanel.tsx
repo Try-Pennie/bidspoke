@@ -32,6 +32,7 @@ import JsonTreeView from './JsonTreeView'
 import { TickRow } from '@/components/ui/form'
 import { appActionRealSend, realSendConnectionOf } from '@/lib/app-action-display'
 import { useConnectionName } from './connection-names'
+import { AppActionConfig, type UpstreamStep } from './AppActionConfig'
 import type { ReferenceProblem } from '@/lib/reference-validation'
 
 interface Props {
@@ -41,7 +42,7 @@ interface Props {
   onDuplicate?: (id: string) => void
   onClose: () => void
   nodeNamespaces: string[]
-  nodeOptions?: { id: string; namespace: string; label?: string }[]
+  nodeOptions?: { id: string; namespace: string; label?: string; type?: string }[]
   refs?: string[]
   // True when this node's namespace is referenced by another node's config /
   // variables / fallback. Auto-deriving the Step ID from the Display name stops
@@ -81,6 +82,36 @@ interface Props {
   onKeyEditorValidityChange?: (valid: boolean) => void
 }
 
+/**
+ * The App Action steps that run before this one (#2338): of every step a path
+ * of edges leads from to it, the App Action ones, whose kept test results the
+ * data picker offers. Nearest first.
+ */
+export function upstreamAppSteps(
+  nodeId: string,
+  edges: readonly { source: string; target: string }[],
+  nodes: readonly { id: string; namespace: string; label?: string; type?: string }[],
+): UpstreamStep[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const seen = new Set<string>([nodeId])
+  const out: UpstreamStep[] = []
+  let frontier = [nodeId]
+  while (frontier.length > 0) {
+    const next: string[] = []
+    for (const id of frontier) {
+      for (const e of edges) {
+        if (e.target !== id || seen.has(e.source)) continue
+        seen.add(e.source)
+        next.push(e.source)
+        const n = byId.get(e.source)
+        if (n && n.type === 'app_action') out.push({ id: n.id, namespace: n.namespace, label: n.label })
+      }
+    }
+    frontier = next
+  }
+  return out
+}
+
 // Retries always resolves to a number (never null/empty): erasing the field
 // lands on 0, anything else is parsed and clamped to 0–5. Mirrors the engine
 // default of 2, which the input shows when the value is unset.
@@ -95,8 +126,8 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
-  // A test of a step that changes something in its service sends for real, so it is agreed to first (#2339).
-  // Not a section of its own: the step's form is not built yet (node-type-coverage.test.ts).
+  // A test of a step that changes something in its service sends for real, so it is agreed to first (#2339),
+  // in the test section rather than the step's form, beside the buttons the agreement is for.
   const sendConnection = realSendConnectionOf(type, data.config)
   const sendConnectionName = useConnectionName(sendConnection)
   const realSend = sendConnection === null ? null : appActionRealSend(data.config, sendConnectionName)
@@ -404,6 +435,20 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
             </p>
           )}
         </Field>
+
+        {/* An App Action step's settings sit under its Step ID, above Notes, as settled (#2338,
+            docs/design/app-action-step-form.html): what it runs, its connection, then its fields. */}
+        {type === 'app_action' && (
+          <AppActionConfig
+            key={node.id}
+            config={data.config}
+            onChange={updateConfig}
+            workflowId={workflowId}
+            upstream={upstreamAppSteps(node.id, edges, nodeOptions)}
+            triggerPayload={defaultTestPayload}
+            refs={refs}
+          />
+        )}
 
         {/* Notes — free-form per-step annotation, surfaced as a small icon on the canvas */}
         <div>

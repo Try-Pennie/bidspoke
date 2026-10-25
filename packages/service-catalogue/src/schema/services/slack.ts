@@ -36,7 +36,7 @@ export const SLACK_SEND_MESSAGE_V1: ActionSchema = {
   arguments: [
     // A channel, private channel, group DM or DM id, or a user id (its DM with the bot).
     { key: 'channel', type: 'text', required: true, allowsVariables: true, parseJson: false },
-    { key: 'text', type: 'text', required: true, allowsVariables: true, parseJson: false },
+    { key: 'text', type: 'text', required: true, allowsVariables: true, parseJson: false, multiline: true },
     // Another message's ts, to reply in its thread.
     optional('thread_ts', false),
     // The four settings are booleans: true or false, parsed as JSON.

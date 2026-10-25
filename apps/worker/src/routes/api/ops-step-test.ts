@@ -25,7 +25,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { callOpsStepTest, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
 import type { OpsConnectionsRefused, StepTestView } from '../../lib/ops-connections-contract'
-import { stepTestRows } from '../../lib/step-test-rows'
+import { sampleRows } from '@bidspoke/references'
 
 type Ctx = Context<{ Bindings: Env; Variables: AuthVariables }>
 
@@ -33,7 +33,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 
 /** The picker's rows beside the kept result; a failure has none. */
 function withRows(result: StepTestView) {
-  const { rows, truncated } = result.status === 'completed' && result.output !== null ? stepTestRows(result.namespace, result.output) : { rows: [], truncated: false }
+  const { rows, truncated } = result.status === 'completed' && result.output !== null ? sampleRows(`steps.${result.namespace}.output`, result.output) : { rows: [], truncated: false }
   return { ...result, rows, rows_truncated: truncated }
 }
 
