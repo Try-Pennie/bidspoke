@@ -9,14 +9,16 @@ import { appActionDisplay, appActionRealSend, realSendConnectionOf } from '../ap
  */
 describe('appActionDisplay', () => {
   it('names a Google step by the product its action runs in, and its action without the product prefix', () => {
-    expect(appActionDisplay({ service: 'google', action: 'google.drive-list-files', actionVersion: 1 })).toEqual({ service: 'Google Drive', action: 'List files', mark: 'google-drive' })
-    expect(appActionDisplay({ service: 'google', action: 'google.sheets-add-row', actionVersion: 1 })).toMatchObject({ service: 'Google Sheets', action: 'Add a row' })
-    expect(appActionDisplay({ service: 'google', action: 'google.gmail-send-email', actionVersion: 1 })).toMatchObject({ service: 'Gmail', action: 'Send an email' })
-    expect(appActionDisplay({ service: 'google', action: 'google.calendar-create-event', actionVersion: 1 })).toMatchObject({ service: 'Google Calendar', action: 'Create an event' })
+    expect(appActionDisplay({ service: 'google', action: 'google.drive-list-files', actionVersion: 1 })).toEqual({ service: 'Google Drive', action: 'List files', mark: 'google.drive' })
+    expect(appActionDisplay({ service: 'google', action: 'google.sheets-add-row', actionVersion: 1 })).toMatchObject({ service: 'Google Sheets', action: 'Add a row', mark: 'google.sheets' })
+    expect(appActionDisplay({ service: 'google', action: 'google.gmail-send-email', actionVersion: 1 })).toMatchObject({ service: 'Gmail', action: 'Send an email', mark: 'google.gmail' })
+    expect(appActionDisplay({ service: 'google', action: 'google.calendar-create-event', actionVersion: 1 })).toMatchObject({ service: 'Google Calendar', action: 'Create an event', mark: 'google.calendar' })
   })
 
-  it('names any other service by its catalogue name, its action by the pinned version\'s name, with no mark of its own', () => {
+  it('names any other service by its catalogue name and its own mark, and a markless one (Slack) with none', () => {
     expect(appActionDisplay({ service: 'slack', action: 'slack.send-message', actionVersion: 1 })).toEqual({ service: 'Slack', action: 'Send message', mark: null })
+    expect(appActionDisplay({ service: 'snowflake', action: 'snowflake.execute-sql-query', actionVersion: 1 })).toMatchObject({ service: 'Snowflake', mark: 'snowflake' })
+    expect(appActionDisplay({ service: 'anthropic' })).toMatchObject({ service: 'Anthropic', mark: 'anthropic' })
   })
 
   it('shows no chip while no action is chosen, or for a version the catalogue does not have, rather than a newer version\'s name', () => {
