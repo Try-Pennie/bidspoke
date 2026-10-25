@@ -35,9 +35,14 @@ export interface AddPanelProps {
   onField: (field: string, text: string, typedNew?: boolean) => void
   onGoogle: (way: GoogleWay) => void
   onSave: () => void
+  /** Sign in with Google for a person's own account (R17): the link from the Worker, then Google (build PR 13). */
+  onSignIn: () => void
   onCancel: () => void
   onGoogleRetry: () => void
 }
+
+/** The line's words while a sign in fetches Google's link, before the browser goes there (build PR 13). */
+export const SIGN_IN_WORKING_LABEL = 'Opening Google'
 
 /** The words a Google connection's two cards say (R16, D16). */
 const GOOGLE_WAYS: ReadonlyArray<{ value: GoogleWay; label: string; hint: string }> = [
@@ -60,7 +65,7 @@ export function SaveLine({ save, now, label }: { save: SaveState; now: number; l
   if (save.kind === 'saving') {
     return (
       <div className="ad-line" data-part="save-line" data-state="saving">
-        <Outcome state={{ kind: 'working', label, startedAt: save.startedAt, now }} />
+        <Outcome state={{ kind: 'working', label: save.label ?? label, startedAt: save.startedAt, now }} />
       </div>
     )
   }
@@ -68,10 +73,10 @@ export function SaveLine({ save, now, label }: { save: SaveState; now: number; l
   return null
 }
 
-/** Google's own Sign in with Google button, with its logo (R17, D17). It starts the sign in from build PR 13; until then it does nothing. */
-function GoogleSignIn() {
+/** Google's own Sign in with Google button, with its logo (R17, D17): it starts the sign in (build PR 13), and is held while one starts. */
+export function GoogleSignIn({ onClick, disabled }: { onClick: () => void; disabled: boolean }) {
   return (
-    <Button variant="secondary" className="g-btn" part="google-sign-in">
+    <Button variant="secondary" className="g-btn" part="google-sign-in" onClick={onClick} disabled={disabled}>
       <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
         <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.5l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.6 5.4 2.6 13.3l7.8 6C12.3 13.6 17.7 9.5 24 9.5z" />
         <path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4 7.1-10 7.1-17.5z" />
@@ -84,7 +89,7 @@ function GoogleSignIn() {
 }
 
 export function AddConnectionPanel(props: AddPanelProps) {
-  const { add, now, services, orgs, google, onService, onName, onField, onGoogle, onSave, onCancel, onGoogleRetry } = props
+  const { add, now, services, orgs, google, onService, onName, onField, onGoogle, onSave, onSignIn, onCancel, onGoogleRetry } = props
   const base = useId()
   const draft = add.draft
   const service = services.find((s) => s.key === draft.service) ?? null
@@ -202,11 +207,11 @@ export function AddConnectionPanel(props: AddPanelProps) {
 
         <div className="ad-foot">
           {service && (own
-            ? <GoogleSignIn />
+            ? <GoogleSignIn onClick={onSignIn} disabled={saving} />
             : <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onSave} disabled={saving}>Save</Button>)}
           <Button variant="secondary" className="cx-btn-quiet" onClick={onCancel}>Cancel</Button>
         </div>
-        {service && <SaveLine save={add.save} now={now} label={workingLabel(service.name)} />}
+        {service && <SaveLine save={add.save} now={now} label={own ? SIGN_IN_WORKING_LABEL : workingLabel(service.name)} />}
       </div>
     </section>
   )

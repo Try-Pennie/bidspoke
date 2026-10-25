@@ -7,7 +7,7 @@
  * Status words are the catalogue's (CONNECTION_STATUS_WORDS in
  * @bidspoke/service-catalogue), never typed here, and every time is Eastern.
  */
-import { CATALOGUE, CONNECTION_STATUS_WORDS, connectionSecretLabel, isConnectionProblem, type ConnectionPageStatus } from '@bidspoke/service-catalogue/schema'
+import { CATALOGUE, CONNECTION_STATUS_WORDS, connectionSecretLabel, isConnectionProblem, isOwnAccountTarget, type ConnectionPageStatus } from '@bidspoke/service-catalogue/schema'
 import type { ConnectionListRow } from '@/lib/api'
 
 const ET = 'America/New_York'
@@ -58,6 +58,8 @@ export interface ConnectionView {
   problemSince: string | null
   problemCause: string | null
   alertLogin: boolean
+  /** A Google connection signed in with a person's own account (#2338, R17): it reconnects by signing in again. */
+  ownAccount: boolean
 }
 
 export function viewOf(row: ConnectionListRow): ConnectionView {
@@ -80,6 +82,7 @@ export function viewOf(row: ConnectionListRow): ConnectionView {
     problemSince: since,
     problemCause: cause,
     alertLogin: row.alert_login === true,
+    ownAccount: isOwnAccountTarget(row.target ?? null),
   }
 }
 
@@ -207,7 +210,12 @@ export function problemNotice(c: ConnectionView, now: number, orgNames: Readonly
   let cause: string
   if (c.status === 'reauth') {
     const refused = c.alertLogin || (c.problemCause ?? '').startsWith('login_refused')
-    cause = refused ? `${c.serviceName} has refused its ${secret}.` : `${c.serviceName} has stopped accepting its ${secret}.`
+    if (c.ownAccount) {
+      // A sign in Google refuses was taken back in the Google account, or has expired (#2338, build PR 13).
+      cause = refused ? `${c.serviceName} has refused its sign in, which was revoked or has expired.` : `${c.serviceName} has stopped accepting its sign in.`
+    } else {
+      cause = refused ? `${c.serviceName} has refused its ${secret}.` : `${c.serviceName} has stopped accepting its ${secret}.`
+    }
   } else {
     cause = `Bidspoke's checks of this login with ${c.serviceName} have failed.`
   }
@@ -219,7 +227,7 @@ export function problemNotice(c: ConnectionView, now: number, orgNames: Readonly
   const orgName = c.org ? orgNames[c.org] : undefined
   const from = orgName ? `${orgName}'s ${c.serviceName} admin` : c.org ? `the ${c.serviceName} admin of ${c.org}` : `the ${c.serviceName} admin`
   const fix = c.status === 'reauth'
-    ? c.alertLogin ? 'Reconnect with a new token from the Slack app.' : `Reconnect with a new ${secret} from ${from}.`
+    ? c.alertLogin ? 'Reconnect with a new token from the Slack app.' : c.ownAccount ? `Reconnect to sign in with ${c.serviceName} again.` : `Reconnect with a new ${secret} from ${from}.`
     : 'Reconnect to check the login again.'
   return { cause: said(cause), effect, fix }
 }
@@ -248,6 +256,7 @@ export function historyWhat(e: HistoryEntry, secret: string): string {
   if (e.action === 'INSERT') return 'Added'
   if (e.action === 'DELETE') return 'Removed'
   if (e.action === 'connection_rechecked') return 'Login checked again'
+  if (e.action === 'connection_signed_in_again') return 'Signed in again with Google'
   // The Slack alert row's first seal (#2331): sealed_for goes from none to the
   // ring. The stored token may be the same one (checking it again seals it) or a
   // new one; the history row cannot say which, so the words claim neither.

@@ -182,6 +182,8 @@ export interface ExchangeOAuthCodeCall {
   readonly code: string
   readonly verifier: string
   readonly redirectUri: string
+  /** The account the person must sign in as (Dan, 2026-10-23: their own Bidspoke address); the object stores nothing else's. */
+  readonly expectedAccount: string
 }
 
 export interface ExchangeOAuthCodeDeps {
@@ -224,6 +226,9 @@ export async function exchangeOAuthCode(
   if (typeof call.code !== 'string' || call.code === '' || call.code.length > 4096) throw invalid('the authorization code is missing')
   if (typeof call.verifier !== 'string' || call.verifier.length < 43 || call.verifier.length > 128) throw invalid('the PKCE verifier is not 43 to 128 characters')
   if (!isTokenUrl(call.redirectUri)) throw invalid('the redirect URI is not an https URL')
+  if (typeof call.expectedAccount !== 'string' || call.expectedAccount.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(call.expectedAccount.trim())) {
+    throw invalid('the expected account is not one address')
+  }
   if (!isPersonBoundTarget(service, call.candidate.target)) {
     throw new ConnectionRefusal('connection_target_invalid', `the ${call.candidate.service} candidate's target is not a login signed in as a person`)
   }
@@ -249,6 +254,7 @@ export async function exchangeOAuthCode(
       code: call.code,
       verifier: call.verifier,
       redirectUri: call.redirectUri,
+      expectedAccount: call.expectedAccount.trim().toLowerCase(),
     })
   } catch {
     throw new ConnectionRefusal('connection_token_object_unavailable', `the ${call.candidate.service} login's token object could not be reached`)
@@ -264,6 +270,8 @@ export async function exchangeOAuthCode(
       EXCHANGE_REFUSALS[answer.kind],
       `the ${call.candidate.service} authorization code exchange failed: ${answer.kind}: ${answer.reason}`,
       answer.retryAtMs === null ? null : new Date(answer.retryAtMs),
+      // By name, so a caller can tell a consent as another account from any other refusal (#2338).
+      answer.reason,
     )
   }
   return { generation: answer.generation, account: answer.account }
