@@ -19,6 +19,7 @@
  */
 import type { createSupabaseClient } from './supabase'
 import type { Database, Json } from '../types/database'
+import { stampAppActionBinders } from './app-action-binders'
 import { connectionRefusalOfWriteError, type ConnectionCheckRefusal } from './workflow-connection-check'
 
 type Supabase = ReturnType<typeof createSupabaseClient>
@@ -38,6 +39,14 @@ export interface WriteWorkflowCall {
   /** The save press, so a retried press can recognise its own landed save. */
   saveId: string | null
   actor: { id: string; email: string; name: string | null | undefined }
+  /**
+   * The definition stored now, which the written one replaces, or null when
+   * there is none (a create, a duplicate's new row, or an op writing no
+   * definition). Required, so no caller can leave it out: every definition
+   * written has each app_action step's boundBy stamped against it (#2339,
+   * lib/app-action-binders.ts), never taken from the client.
+   */
+  storedDefinition: unknown
 }
 
 export type WriteWorkflowResult =
@@ -75,6 +84,10 @@ function staleOf(details: unknown): WriteWorkflowResult {
 }
 
 export async function writeWorkflow(supabase: Supabase, call: WriteWorkflowCall): Promise<WriteWorkflowResult> {
+  // Who bound each app_action step is the server's stamp on every definition written (#2339).
+  const fields = Object.hasOwn(call.fields, 'definition')
+    ? { ...call.fields, definition: stampAppActionBinders(call.fields.definition, call.storedDefinition, call.actor.id) }
+    : call.fields
   let answer: { data: unknown; error: unknown }
   try {
     answer = await supabase.rpc('write_workflow', {
@@ -84,7 +97,7 @@ export async function writeWorkflow(supabase: Supabase, call: WriteWorkflowCall)
       // the function is given for an absent workflow, version or save.
       p_id: call.workflowId as string,
       p_expected_version: call.expectedVersion as number,
-      p_fields: call.fields as Json,
+      p_fields: fields as Json,
       p_save_id: call.saveId as string,
       p_actor: call.actor.id,
       p_actor_email: call.actor.email,

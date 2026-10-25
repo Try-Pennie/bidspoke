@@ -31,8 +31,18 @@ describe('readAppActionConfig', () => {
   it('reads the service, the action key, its pinned version, the connection and the arguments', () => {
     expect(readAppActionConfig({ service: 'fixture', action: 'fixture.send', actionVersion: 2, connection: CONNECTION, args: { text: 'hi' } })).toEqual({
       ok: true,
-      config: { service: 'fixture', action: 'fixture.send', actionVersion: 2, connection: CONNECTION, args: { text: 'hi' } },
+      config: { service: 'fixture', action: 'fixture.send', actionVersion: 2, connection: CONNECTION, args: { text: 'hi' }, boundBy: null },
     })
+  })
+
+  // #2339: who bound the step, stamped by the bidding Worker's save, never taken from the client.
+  it('reads who bound the step as a user id, and anything else as nobody', () => {
+    const base = { service: 'fixture', action: 'fixture.send', actionVersion: 2, connection: CONNECTION }
+    const OWNER = '00000000-0000-4000-8000-0000000023f1'
+    expect(readAppActionConfig({ ...base, boundBy: OWNER })).toMatchObject({ ok: true, config: { boundBy: OWNER } })
+    for (const boundBy of ['dan@trypennie.com', 7, '', undefined]) {
+      expect(readAppActionConfig({ ...base, boundBy }), String(boundBy)).toMatchObject({ ok: true, config: { boundBy: null } })
+    }
   })
 
   it('names each thing a half built step lacks, in the setup order', () => {

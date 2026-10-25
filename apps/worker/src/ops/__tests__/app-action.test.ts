@@ -203,16 +203,36 @@ describe('app_action through the ledgered send and connectionFetch', () => {
   })
 
   // Dan's decision on #2338 (2026-10-23): a person's own Google account may be
-  // used only by its owner, so no workflow sends email as someone else. Ops
-  // holds no record yet of who owns such a connection or who bound a step to it,
-  // so the step is refused by name rather than run on a guess (L75).
-  it('refuses a step bound to a person\'s own account connection by name, with nothing sent, while who bound it is unrecorded', async () => {
-    const w = world()
-    w.d.setCopy(usableCopy(envelope, { target: { own_account: true } }))
-    const report = await w.run(definition(step()))
-    expect(report).toMatchObject({ end: { outcome: 'failed', error: expect.stringContaining('own_account_binder_unrecorded') } })
-    expect(w.d.rec.sent).toEqual([])
-    expect(w.db.intents).toEqual([])
+  // used only by its owner, so no workflow sends email as someone else. The step
+  // carries who bound it (boundBy, stamped by the bidding Worker's save) and the
+  // copy carries who owns the connection; anything short of a match is refused
+  // by name with nothing sent, never run on a guess (L75).
+  describe('a person\'s own account connection', () => {
+    const OWNER = '00000000-0000-4000-8000-0000000023f1'
+    const SOMEONE_ELSE = '00000000-0000-4000-8000-0000000023f2'
+    const own = { host: 'api.example.test', own_account: true }
+
+    it('runs a step its owner bound', async () => {
+      const w = world()
+      w.d.setCopy(usableCopy(envelope, { target: own, ownerUserId: OWNER }))
+      w.d.respond(Response.json({ id: 1 }))
+      expect(await w.run(definition(step({ boundBy: OWNER })))).toMatchObject({ end: { outcome: 'done' } })
+      expect(w.d.rec.sent).toHaveLength(1)
+    })
+
+    it.each([
+      ['someone other than its owner bound the step', { boundBy: SOMEONE_ELSE }, OWNER, 'own_account_not_owner'],
+      ['nobody is recorded as having bound the step', {}, OWNER, 'own_account_binder_unrecorded'],
+      ['what binds it is not a user id', { boundBy: 'dan@trypennie.com' }, OWNER, 'own_account_binder_unrecorded'],
+      ['ops holds no owner for the connection', { boundBy: OWNER }, null, 'own_account_owner_unrecorded'],
+    ] as const)('refuses by name, with nothing sent or written, when %s', async (_label, over, owner, reason) => {
+      const w = world()
+      w.d.setCopy(usableCopy(envelope, { target: own, ownerUserId: owner }))
+      const report = await w.run(definition(step(over)))
+      expect(report).toMatchObject({ end: { outcome: 'failed', error: expect.stringContaining(reason) } })
+      expect(w.d.rec.sent).toEqual([])
+      expect(w.db.intents).toEqual([])
+    })
   })
 
   it('a company connection whose target only resembles an own account is not refused for it', async () => {

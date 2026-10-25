@@ -599,6 +599,7 @@ const isTime = (v: unknown): v is string => typeof v === 'string' && Number.isFi
 const isTimeOrNull = (v: unknown): v is string | null => v === null || isTime(v)
 const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
 const isIntOrNull = (v: unknown): v is number | null => v === null || isInt(v)
+const isUuidOrNull = (v: unknown): v is string | null => v === null || (typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v))
 
 /** The database's clock: every fire is computed against it, never the Worker's (#1698 D8, L736). */
 export async function opsNow(client: OpsSupabaseClient, options?: OpsRpcOptions): Promise<string> {
@@ -805,6 +806,8 @@ export interface ConnectionCopyInput {
   envelope: unknown
   publicConfig: unknown
   target: unknown
+  /** The users.id a person bound connection acts as, or null (#2339). */
+  ownerUserId: string | null
   /** At most CONNECTION_SERVE_WINDOW_MS after the list's served_at. */
   serveUntil: string
 }
@@ -846,6 +849,7 @@ export async function saveConnectionCopies(
       envelope: c.envelope,
       public_config: c.publicConfig,
       target: c.target ?? null,
+      owner_user_id: c.ownerUserId,
       serve_until: c.serveUntil,
     })),
   }, options))
@@ -872,6 +876,12 @@ export interface ConnectionCopy {
   servedAt: string | null
   serveUntil: string | null
   dbNow: string
+  /**
+   * The users.id a person bound connection acts as, or null: a company
+   * connection, or an ops database or bidding Worker older than #2339, which
+   * the executor reads as an own account owning nobody, so it refuses the step.
+   */
+  ownerUserId: string | null
 }
 
 /**
@@ -898,6 +908,7 @@ export async function readConnectionCopy(
     servedAt: field(name, row, 'served_at', isTimeOrNull, 'a time or null'),
     serveUntil: field(name, row, 'serve_until', isTimeOrNull, 'a time or null'),
     dbNow: field(name, row, 'db_now', isTime, 'a time'),
+    ownerUserId: row.owner_user_id === undefined ? null : field(name, row, 'owner_user_id', isUuidOrNull, 'a uuid or null'),
   }
 }
 
