@@ -31,6 +31,12 @@ What a job must do to run on either machine:
   site through `.github/scripts/serve-pages-artifact.sh`, which picks a free port
   and sets `BASE_URL`.
 
-`apps/web/src/lib/__tests__/ci-runner-routing.test.ts` pins all of it: every job
+- A test gets 30 seconds rather than vitest's 5 on a self-hosted runner, where it
+  shares the machine: every vitest config spreads `runnerTimeouts` from
+  `vitest.runner-timeouts.ts`, keyed on `RUNNER_ENVIRONMENT`, and
+  `vitest-runner-timeouts.test.ts` holds every config to it. On GitHub and locally
+  the limits are vitest's own.
+
+`apps/web/src/lib/__tests__/ci-runner-routing.test.ts` pins the routing: every job
 routed, the Docker set, the twins, and a refusal of `sudo`, `sha256sum`, `timeout`,
 `setsid`, `apt-get`, `pipx`, a bare `pip install` and a fixed port in a routed job.

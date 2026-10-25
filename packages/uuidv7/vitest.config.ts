@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config'
+import { runnerTimeouts } from '../../vitest.runner-timeouts'
 
 // The timezone is PINNED, and to a non-UTC one on purpose (#869).
 //
@@ -14,6 +15,8 @@ process.env.TZ = 'America/New_York'
 
 export default defineConfig({
   test: {
+    // Wider only on a self-hosted runner, the shared Mac (#2768).
+    ...runnerTimeouts,
     include: ['src/**/*.test.ts'],
     environment: 'node',
   },
