@@ -366,7 +366,10 @@ jobs:
         if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         uses: actions/cache@v6
         with:
-          path: ~/.cache/ms-playwright
+          # The second path is where Playwright keeps browsers on a Mac runner (#2768).
+          path: |
+            ~/.cache/ms-playwright
+            ~/Library/Caches/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: ms-playwright-${{ runner.os }}-
 
