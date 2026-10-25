@@ -29,6 +29,8 @@ export interface ActionArgument {
   readonly dependsOn?: readonly string[]
   /** A lookup returning field definitions, one input per field (a sheet's columns). */
   readonly extraFieldsSource?: LookupRef
+  /** The step form draws it as a box of several lines (an email's body), not one (#2338). Display only. */
+  readonly multiline?: boolean
 }
 
 export interface ActionSchema {
@@ -106,4 +108,5 @@ export const ARGUMENT_FIELD_ROLES: Readonly<Record<keyof ActionArgument, FieldRo
   source: 'behaviour',
   dependsOn: 'behaviour',
   extraFieldsSource: 'behaviour',
+  multiline: 'display',
 }

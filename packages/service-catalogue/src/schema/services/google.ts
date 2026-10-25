@@ -122,7 +122,7 @@ export const GOOGLE_SHEETS_CLEAR_ROWS_V1: ActionSchema = {
 export const GOOGLE_GMAIL_SEND_EMAIL_V1: ActionSchema = {
   key: 'google.gmail-send-email', name: 'Gmail: send an email', version: 1,
   arguments: [
-    json('to'), json('cc'), json('bcc'), value('subject'), value('body', true), fixed('body_type', false), value('from_name'), value('from_email'), value('reply_to'),
+    json('to'), json('cc'), json('bcc'), value('subject'), { ...value('body', true), multiline: true }, fixed('body_type', false), value('from_name'), value('from_email'), value('reply_to'),
     value('in_reply_to_message_id'), json('attachments'),
   ],
   realSend: 'sends a real email',

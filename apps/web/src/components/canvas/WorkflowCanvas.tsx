@@ -1090,7 +1090,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     .filter((n) => n.id !== 'trigger' && n.type !== 'parallel_end')
     .map((n) => {
       const d = n.data as unknown as CanvasNodeData
-      return { id: n.id, namespace: d.namespace, label: d.label }
+      return { id: n.id, namespace: d.namespace, label: d.label, type: n.type }
     })
 
   // Compute validation errors for all attached, unconfigured nodes (edit mode only)

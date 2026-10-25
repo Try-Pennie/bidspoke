@@ -18,10 +18,12 @@ const clicks = vi.spyOn(HTMLElement.prototype, 'click')
 afterEach(() => { vi.useRealTimers(); clicks.mockClear(); panTo.mockClear() })
 
 describe('the preview reaching the design view', () => {
-  it('presses zoom in four times, then pans to the captured view, then marks the page ready', async () => {
+  it('waits for the canvas to settle, presses zoom in four times, then pans to the captured view, then marks the page ready', async () => {
     vi.useFakeTimers()
-    const { AppActionPreview, DESIGN_VIEW, DESIGN_ZOOM_PRESSES, PRESS_EVERY_MS } = await import('../AppActionPreview')
+    const { AppActionPreview, DESIGN_VIEW, DESIGN_ZOOM_PRESSES, PRESS_EVERY_MS, SETTLE_MS } = await import('../AppActionPreview')
     render(<AppActionPreview />)
+    act(() => { vi.advanceTimersByTime(SETTLE_MS) })
+    expect(clicks).not.toHaveBeenCalled()
     act(() => { vi.advanceTimersByTime(DESIGN_ZOOM_PRESSES * PRESS_EVERY_MS) })
     expect(clicks).toHaveBeenCalledTimes(4)
     expect(panTo).not.toHaveBeenCalled()
@@ -34,9 +36,9 @@ describe('the preview reaching the design view', () => {
 
   it('in a send frame, then opens the step, expands Test this node and ticks the box, as a person would, before marking ready (#2339)', async () => {
     vi.useFakeTimers()
-    const { AppActionPreview, DESIGN_ZOOM_PRESSES, PRESS_EVERY_MS, SEND_VIEW } = await import('../AppActionPreview')
+    const { AppActionPreview, DESIGN_ZOOM_PRESSES, PRESS_EVERY_MS, SEND_VIEW, SETTLE_MS } = await import('../AppActionPreview')
     render(<AppActionPreview frame="send-ticked" />)
-    act(() => { vi.advanceTimersByTime((DESIGN_ZOOM_PRESSES + 1) * PRESS_EVERY_MS) })
+    act(() => { vi.advanceTimersByTime(SETTLE_MS + (DESIGN_ZOOM_PRESSES + 1) * PRESS_EVERY_MS) })
     expect(panTo).toHaveBeenCalledWith(SEND_VIEW)
     const node = document.createElement('div')
     node.className = 'react-flow__node'

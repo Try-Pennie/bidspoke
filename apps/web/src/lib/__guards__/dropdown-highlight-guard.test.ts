@@ -37,6 +37,8 @@ const DROPDOWN_FILES = [
   'components/ui/SuggestInput.tsx',
   'components/rule-builder/FieldAutocomplete.tsx',
   'components/canvas/TemplateTextarea.tsx',
+  // The data picker (#2338): the Combobox's own list classes, combobox-item-active for its marked row.
+  'components/canvas/DataPicker.tsx',
 ]
 /** The two lists drawn by hand in their .tsx, which take their row colours from the shared classes. */
 const HAND_DRAWN = ['components/rule-builder/FieldAutocomplete.tsx', 'components/canvas/TemplateTextarea.tsx']
@@ -126,7 +128,7 @@ describe('an open dropdown highlights its row in pale grey (#2338 rounds 27 and 
     expect(contrastRatio(hint!, token!)).toBeLessThan(4.5)
   })
 
-  it('only the five known dropdowns draw a listbox option, and the two hand drawn lists use the shared classes', () => {
+  it('only the known dropdowns draw a listbox option, and the two hand drawn lists use the shared classes', () => {
     const drawing = listFiles(WEB_SRC, { exts: ['.tsx'] })
       .map((f) => path.relative(WEB_SRC, f).split(path.sep).join('/'))
       .filter((f) => !f.includes('__tests__') && !f.endsWith('.test.tsx'))

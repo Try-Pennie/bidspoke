@@ -93,7 +93,7 @@ describe('POST test-node for an ops workflow\'s app_action step', () => {
     expect(res.status).toBe(200)
     const json = await res.json() as Record<string, unknown>
     expect(json).toMatchObject({ status: 'completed', output: { ok: true, ts: '1729.1' }, error_message: null, duration_ms: 310, tested_at: view.tested_at, recorded: true })
-    expect(json.rows).toContainEqual({ label: 'ts', path: 'steps.notify.output.ts', sample: '1729.1' })
+    expect(json.rows).toContainEqual({ label: 'Ts', path: 'steps.notify.output.ts', sample: '1729.1' })
     expect(ops.calls).toEqual([{
       method: 'testStep',
       request: {
@@ -156,7 +156,7 @@ describe('GET test-results for an ops workflow\'s step', () => {
     expect(res.status).toBe(200)
     const json = await res.json() as { result: Record<string, unknown> }
     expect(json.result).toMatchObject({ status: 'completed', tested_at: view.tested_at, rows_truncated: false })
-    expect(json.result.rows).toContainEqual({ label: 'ok', path: 'steps.notify.output.ok', sample: 'true' })
+    expect(json.result.rows).toContainEqual({ label: 'Ok', path: 'steps.notify.output.ok', sample: 'true' })
     expect(ops.calls).toEqual([{ method: 'stepTestResult', request: { organization_id: ORG, workflow_id: WF, node_id: 'node_1' } }])
   })
 

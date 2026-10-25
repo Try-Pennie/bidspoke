@@ -10,6 +10,7 @@ import type { ConnectionList, ConnectionListRow } from '@/lib/api'
 import type { Workflow } from '@/types/workflow'
 import fixture from '../../../../../../docs/design/app-action-node-card.fixture.json'
 import sendFixture from '../../../../../../docs/design/app-action-test-send.fixture.json'
+import formFixture from '../../../../../../docs/design/app-action-step-form.fixture.json'
 import { PREVIEW_WORKFLOW as CONNECTION_FIELD_WORKFLOW } from '../connection-field/connection-field-preview-source'
 
 /** The settled frames (docs/design/app-action-node-card/settled.json): the design score's built side. */
@@ -20,9 +21,17 @@ export const SETTLED_FRAMES = ['app-action-card'] as const
  * node expanded, the box unticked and then ticked.
  */
 export const TEST_SEND_FRAMES = ['send-unticked', 'send-ticked'] as const
-export type PreviewFrame = (typeof SETTLED_FRAMES)[number] | (typeof TEST_SEND_FRAMES)[number]
+/**
+ * The step's settings form (#2338, docs/design/app-action-step-form/settled.json):
+ * a finished step, an unfinished one with no connection and To empty, and the
+ * data picker open on To.
+ */
+export const FORM_FRAMES = ['form-finished', 'form-unfinished', 'form-picker'] as const
+export type PreviewFrame = (typeof SETTLED_FRAMES)[number] | (typeof TEST_SEND_FRAMES)[number] | (typeof FORM_FRAMES)[number]
 
-const FRAMES: readonly string[] = [...SETTLED_FRAMES, ...TEST_SEND_FRAMES]
+const FRAMES: readonly string[] = [...SETTLED_FRAMES, ...TEST_SEND_FRAMES, ...FORM_FRAMES]
+
+export const isFormFrame = (frame: PreviewFrame): boolean => (FORM_FRAMES as readonly string[]).includes(frame)
 
 export function previewFrameOf(frame: string | undefined): PreviewFrame {
   return (FRAMES.includes(frame ?? '') ? frame : SETTLED_FRAMES[0]) as PreviewFrame
@@ -95,4 +104,37 @@ const SEND_CONNECTION: ConnectionListRow = {
 export const SEND_CONNECTIONS: ConnectionList = {
   connections: [SEND_CONNECTION],
   statuses: { as_of: '2026-10-23T16:00:00Z', stale: false, unavailable: null },
+}
+
+/** The form frames' connection: the fixture's mailbox, acting as its address. */
+export const FORM_CONNECTIONS: ConnectionList = {
+  connections: [{ ...SEND_CONNECTION, name: formFixture.connection, acts_as: formFixture.actsAs }],
+  statuses: SEND_CONNECTIONS.statuses,
+}
+
+/** Each form frame's step: Gmail's Send an email, finished, or with no connection and To empty. */
+export function formStepConfig(frame: PreviewFrame): Record<string, unknown> {
+  const unfinished = frame === 'form-unfinished'
+  const args = frame === 'form-finished' ? formFixture.finished : formFixture.unfinished
+  return {
+    service: 'google',
+    action: 'google.gmail-send-email',
+    actionVersion: 1,
+    ...(unfinished ? {} : { connection: SEND_CONNECTION_ID }),
+    args,
+  }
+}
+
+/** The form frames' workflow: the send step, with the trigger's test payload the picker reads. */
+export function formWorkflow(frame: PreviewFrame): Workflow {
+  return {
+    ...PREVIEW_WORKFLOW,
+    definition: {
+      ...PREVIEW_WORKFLOW.definition,
+      nodes: PREVIEW_WORKFLOW.definition.nodes.map((n) =>
+        n.id === 'n1' ? { ...n, namespace: formFixture.namespace, label: formFixture.label, config: formStepConfig(frame) } : n,
+      ),
+    },
+    test_payloads: [{ name: 'Lead', payload: formFixture.triggerPayload }],
+  } as Workflow
 }

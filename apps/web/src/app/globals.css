@@ -427,6 +427,12 @@ html {
   .combobox-failed {
     @apply flex flex-col items-start gap-2 px-2 py-1.5;
   }
+  /* The data picker (#2338, docs/design/app-action-step-form.html): the dropdown list opened
+     under an App Action argument field by its Insert button, as wide as the field. */
+  .data-picker {
+    @apply absolute inset-x-0 top-[calc(100%+4px)] w-auto focus:outline-none;
+    max-height: none;
+  }
   /* A step's Connection field (#2338 R8, D8, components/connections/
      ConnectionField.tsx): each line under the dropdown sits where the dropdown's
      own "Acts as" line does, 12px, wrapped so none ends on a lone word (D27).

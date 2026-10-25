@@ -11,6 +11,11 @@ import { api, type ConnectionList } from '@/lib/api'
  */
 const ConnectionListSource = createContext<() => Promise<ConnectionList>>(() => api.connections.list())
 
+/** The loader the canvas reads the connections through: the live route, or the preview's list. */
+export function useConnectionListLoader(): () => Promise<ConnectionList> {
+  return useContext(ConnectionListSource)
+}
+
 export function ConnectionListProvider({ load, children }: { load: () => Promise<ConnectionList>; children: ReactNode }) {
   return <ConnectionListSource.Provider value={load}>{children}</ConnectionListSource.Provider>
 }
