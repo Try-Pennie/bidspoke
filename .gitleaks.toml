@@ -6,15 +6,12 @@ title = "Bidspoke gitleaks config"
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "No production secrets: the Supabase publishable key (public by design), build output, test fixtures, doc examples, local-only files."
 # The Supabase publishable/anon key is public by design (embedded in client code;
 # RLS protects the data). Allow it by value wherever it legitimately appears.
 regexes = [
   '''sb_publishable_[A-Za-z0-9_-]{20,}''',
-  # The SQL suite's planted connection logins (supabase/tests, #2331, #2332):
-  # made up values a test writes and then asserts on, named so by their prefix.
-  '''CONN_(PLANTED|TEST)_[0-9]+(_[A-Z])?''',
 ]
 paths = [
   # Cloudflare/Vercel build output (now gitignored; regenerated at deploy time).
@@ -29,3 +26,12 @@ paths = [
   '''\.env''',
   '''\.claude/''',
 ]
+
+# The SQL suite's planted connection logins (#2331, #2332, #2777): made up values a
+# test writes and then asserts on, named so by their prefix. Exempt only where BOTH
+# hold, the SQL suite's path and that value, so the same string anywhere else still fails.
+[[allowlists]]
+description = "Planted CONN_ test logins in the SQL suite"
+condition = "AND"
+paths = ['''^supabase/tests/''']
+regexes = ['''CONN_(PLANTED|TEST)_[0-9]+(_[A-Z])?''']

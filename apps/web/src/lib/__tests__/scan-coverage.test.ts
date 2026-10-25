@@ -32,7 +32,7 @@ import { checkGitleaks, checkSemgrep, checkTrivy } from '../../../../../.github/
  *            audit. It is `[]` when semgrep ran over nothing, and semgrep still
  *            exits 0.
  *   gitleaks emits no coverage signal at all, so the run plants a canary secret
- *            and the scan has to FIND it. That proves the files were read AND
+ *            per credential shape and the scan has to FIND every one (#2777). That proves the files were read AND
  *            that the rules still fire, which a file count cannot: a broad
  *            allowlist would suppress every finding while coverage looked fine.
  */
@@ -195,6 +195,14 @@ describe('gitleaks coverage (#779)', () => {
       expect(r.ok).toBe(false)
       expect(r.reason).toContain(SLACK)
       expect(r.reason).not.toContain(`planted at ${CANARY}`)
+    })
+
+    it('fails when no canary is named, since an empty report then proves nothing', () => {
+      for (const none of [[], undefined, ''] as unknown as string[][]) {
+        const r = checkGitleaks([], none)
+        expect(r.ok).toBe(false)
+        expect(r.reason).toMatch(/no canary/i)
+      }
     })
 
     it('never counts a canary as a real leak', () => {

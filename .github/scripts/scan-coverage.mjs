@@ -114,7 +114,7 @@ export function checkSemgrep(report, requiredPrefixes) {
  *
  * Gitleaks emits no coverage signal of any kind: an empty report is what a clean
  * scan produces AND what a scan over nothing produces. So the run plants a secret
- * the ruleset must catch and requires it back. That proves more than a file count
+ * per credential shape the ruleset must catch and requires every one back (#2777). That proves more than a file count
  * could, because a broad allowlist would suppress every finding while the file
  * count still looked healthy.
  *
@@ -126,7 +126,9 @@ export function checkSemgrep(report, requiredPrefixes) {
  */
 export function checkGitleaks(findings, canaryFiles) {
   const all = Array.isArray(findings) ? findings : []
-  const canaries = Array.isArray(canaryFiles) ? canaryFiles : [canaryFiles]
+  const canaries = (Array.isArray(canaryFiles) ? canaryFiles : [canaryFiles]).filter(Boolean)
+  // With no canary named, an empty report is a scan over nothing reading as clean.
+  if (canaries.length === 0) return fail('gitleaks was given no canary file, so an empty report would prove nothing.')
   const isCanary = (f) => canaries.some((c) => String(f?.File ?? '').endsWith(c))
   const real = all.filter((f) => !isCanary(f))
 

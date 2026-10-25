@@ -918,7 +918,8 @@ jobs:
       #
       # Gitleaks emits NO coverage signal of any kind: an empty report is what a
       # clean scan produces and also what a scan over nothing produces. So the run
-      # plants a canary secret its ruleset must catch and requires it back (#779).
+      # plants a canary secret per credential shape its ruleset must catch, and
+      # requires every one back (#779, #2777).
       # That proves more than a file count could, because an allowlist broad enough
       # to suppress every finding would leave a healthy-looking count behind. The
       # canary is generated here and never committed.
