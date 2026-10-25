@@ -61,6 +61,9 @@ import {
   recordStepTest,
   readStepTestResult,
   purgeStepTestResults,
+  recordOpsStep,
+  readRunStepContext,
+  purgeOpsStepRecords,
 } from '../ops-writes'
 import type { ResourceWaitCause } from '../run-vocabulary'
 
@@ -873,5 +876,67 @@ describe('the step test result wrappers (#2339)', () => {
     const { client, calls } = rpcFetch([{ purged: 3, more: false }])
     expect(await purgeStepTestResults(client, 100)).toEqual({ purged: 3, more: false })
     expect(calls[0]).toEqual({ path: '/rest/v1/rpc/purge_step_test_results', body: { p_limit: 100 } })
+  })
+})
+
+// Each step of an ops run, recorded (#2703, ops migration 20261024150000).
+describe('the step record wrappers (#2703)', () => {
+  const EXEC = '0199f0a0-0000-7000-8000-0000000000e1'
+  const fence = { runRequestId: RUN, claimToken: TOKEN, executionId: EXEC }
+  const record = {
+    seq: 2, nodeId: 'n3', namespace: 'find_files', stepType: 'app_action', status: 'completed' as const, startedAt: new Date('2026-10-24T14:00:00.000Z'),
+    durationMs: 310, output: { files: [1] }, outputBytes: null, error: null,
+  }
+
+  it('record_ops_step sends the fence and every field, and answers its outcome', async () => {
+    const { client, calls } = rpcFetch('recorded')
+    expect(await recordOpsStep(client, ORG, fence, record)).toBe('recorded')
+    expect(calls[0]).toEqual({
+      path: '/rest/v1/rpc/record_ops_step',
+      body: {
+        p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_execution_id: EXEC, p_seq: 2, p_node_id: 'n3', p_namespace: 'find_files',
+        p_step_type: 'app_action', p_status: 'completed', p_started_at: '2026-10-24T14:00:00.000Z', p_duration_ms: 310, p_output: { files: [1] },
+        p_output_bytes: null, p_error: null,
+      },
+    })
+    expect(await recordOpsStep(rpcFetch('already_recorded').client, ORG, fence, record)).toBe('already_recorded')
+    expect(await recordOpsStep(rpcFetch('stale').client, ORG, fence, record)).toBe('stale')
+  })
+
+  it('record_ops_step refuses an answer it does not know, never reading it as recorded', async () => {
+    await expect(recordOpsStep(rpcFetch('maybe').client, ORG, fence, record)).rejects.toThrow(/record_ops_step returned/)
+    await expect(recordOpsStep(rpcFetch(null).client, ORG, fence, record)).rejects.toThrow(/record_ops_step returned/)
+  })
+
+  it('record_ops_step refuses, sending nothing, a status outside the list and a failure with no error', async () => {
+    const { client, calls } = rpcFetch('recorded')
+    await expect(recordOpsStep(client, ORG, fence, { ...record, status: 'running' as never })).rejects.toThrow(/status/)
+    await expect(recordOpsStep(client, ORG, fence, { ...record, status: 'failed', output: null, error: null })).rejects.toThrow(/error/)
+    expect(calls).toEqual([])
+  })
+
+  it('run_step_context reads one attempt\'s context, or none, and refuses a row it cannot read', async () => {
+    const row = {
+      execution_status: 'failed', started_at: '2026-10-24T14:00:00+00:00', within_retention: true, reached: true, payload: { name: 'Ada' },
+      payload_elsewhere: false, context_bytes: 15, steps: [{ namespace: 'shape', node_id: 'n1', seq: 0, output: { a: 1 }, output_kept: true }],
+      db_now: '2026-10-24T15:00:00+00:00',
+    }
+    const read = rpcFetch([row])
+    expect(await readRunStepContext(read.client, ORG, WF, EXEC, 'n3')).toEqual({
+      executionStatus: 'failed', startedAt: '2026-10-24T14:00:00+00:00', withinRetention: true, reached: true, payload: { name: 'Ada' },
+      payloadElsewhere: false, contextBytes: 15, steps: [{ namespace: 'shape', nodeId: 'n1', seq: 0, output: { a: 1 }, outputKept: true }],
+    })
+    expect(read.calls[0]).toEqual({ path: '/rest/v1/rpc/run_step_context', body: { p_organization_id: ORG, p_workflow_id: WF, p_execution_id: EXEC, p_node_id: 'n3' } })
+    expect(await readRunStepContext(rpcFetch([]).client, ORG, WF, EXEC, 'n3')).toBeNull()
+    expect((await readRunStepContext(rpcFetch([{ ...row, within_retention: false, steps: null, payload: null, context_bytes: null }]).client, ORG, WF, EXEC, 'n3'))?.steps).toBeNull()
+    await expect(readRunStepContext(rpcFetch([{ ...row, steps: [{ namespace: 'shape' }] }]).client, ORG, WF, EXEC, 'n3')).rejects.toThrow(/steps/)
+    await expect(readRunStepContext(rpcFetch([{ ...row, reached: 'yes' }]).client, ORG, WF, EXEC, 'n3')).rejects.toThrow(/reached/)
+    await expect(readRunStepContext(rpcFetch([row, row]).client, ORG, WF, EXEC, 'n3')).rejects.toThrow(/2 rows/)
+  })
+
+  it('purge_ops_step_records reads its page', async () => {
+    const { client, calls } = rpcFetch([{ purged: 4, more: true }])
+    expect(await purgeOpsStepRecords(client, 1000)).toEqual({ purged: 4, more: true })
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/purge_ops_step_records', body: { p_limit: 1000 } })
   })
 })

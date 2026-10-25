@@ -49,6 +49,8 @@ export const OPS_ORGANIZATION_RPCS = [
   'save_workflow_definition',
   // A step's latest test result (#2339).
   'record_step_test',
+  // Each step a run walks, fenced by its claim token (#2703).
+  'record_ops_step',
 ] as const
 
 /**
@@ -76,6 +78,8 @@ export const OPS_LANE_RPCS = [
   'purge_schedule_observations',
   // The same nightly sweep purges step test results past 7 days (#2339).
   'purge_step_test_results',
+  // And the records of run attempts started more than 7 days ago (#2703).
+  'purge_ops_step_records',
 ] as const
 
 /**
@@ -101,6 +105,8 @@ export const OPS_ORGANIZATION_READ_ONLY_RPCS = [
   'workflow_definition',
   // One step's latest test result, nothing past 7 days (#2339).
   'step_test_result',
+  // A past run's payload and recorded step outputs, for a step test from that run, nothing past 7 days (#2703).
+  'run_step_context',
 ] as const
 export const OPS_READ_ONLY_RPCS = [...OPS_LANE_READ_ONLY_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS] as const
 

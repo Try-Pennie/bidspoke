@@ -43,6 +43,13 @@
  * retry=true then runs the statement at most once, #2337). It is recorded as
  * the ledger row's attempt key.
  *
+ * A STEP'S RECORD (#2703). ctx.recordStep writes one step the body walked
+ * (record_ops_step), fenced by the claim token like every other run write: a
+ * stale answer is a lost claim. Each try has the database deadline and is
+ * repeated up to three times, since a repeat of a record that landed is
+ * answered already_recorded; after the last, StepUnrecorded names the step and
+ * the walk ends the run there (run-walk.ts).
+ *
  * HOW THE RUN ENDS. The first answer that decides the run (a lost claim, an
  * unknown send, a requeue) holds, whatever the body returns after it: a body
  * that catches the error and says done is still needs_human. A run that has
@@ -60,9 +67,11 @@ import { formatErr } from '../lib/format-error'
 import type { RequeueCause } from './connections/refusals'
 import {
   OPS_RPC_DEADLINE_MS, OpsClaimLostError,
-  type ClaimedRun, type CompleteOutcome, type CompletedRun, type SendIntent, type SendIntentResult, type StartedRun,
+  type ClaimedRun, type CompleteOutcome, type CompletedRun, type OpsStepRecord, type SendIntent, type SendIntentResult, type StartedRun,
 } from './ops-writes'
-import { LEDGER_METHODS, RESOURCE_WAIT_CAUSES, type HolderFailedReason, type LedgerMethod, type ResourceWaitCause } from './run-vocabulary'
+import {
+  LEDGER_METHODS, RESOURCE_WAIT_CAUSES, type HolderFailedReason, type LedgerMethod, type OpsStepRecordOutcome, type ResourceWaitCause,
+} from './run-vocabulary'
 
 /** The lease a claim gives and each renewal extends (#1698 D3, about 60 s from spike 0). */
 export const RUN_LEASE_SECONDS = 60
@@ -72,7 +81,7 @@ export const HEARTBEAT_EVERY_MS = 20_000
 export const RUN_DB_DEADLINE_MS = OPS_RPC_DEADLINE_MS
 /** One forward, shorter than the lease, so a hung partner reads as unknown, never as slow (L110). */
 export const SEND_DEADLINE_MS = 45_000
-/** How many times complete, and a send's result, are tried. Each is safe to repeat. */
+/** How many times complete, a send's result and a step record (#2703) are tried. Each is safe to repeat. */
 const WRITE_TRIES = 3
 
 /** The ops database as a run uses it, each call bound to this run's organization. The live one wraps ops-writes.ts. */
@@ -81,6 +90,8 @@ export interface RunDb {
   extend(run: ClaimedRun, leaseSeconds: number): Promise<boolean>
   recordIntent(run: ClaimedRun, intent: Omit<SendIntent, 'runRequestId' | 'claimToken'>): Promise<SendIntentResult>
   recordResult(run: ClaimedRun, ledgerId: string, result: { status: 'forwarded' | 'failed'; responseStatus?: number }): Promise<'recorded' | 'already_recorded' | 'not_found'>
+  /** record_ops_step (#2703): one step of the attempt executionId, fenced by the run's claim token. */
+  recordStep(run: ClaimedRun, executionId: string, record: OpsStepRecord): Promise<OpsStepRecordOutcome>
   complete(run: ClaimedRun, end: CompleteOutcome): Promise<CompletedRun>
 }
 
@@ -131,6 +142,15 @@ export interface RunContext {
   readonly signal: AbortSignal
   /** The one way a run's step reaches anything outside. Answers the status and value, or throws. */
   send<T>(step: StepSend<T>): Promise<{ status: number; value: T }>
+  /** The run's clock, for a step's start and duration. */
+  now(): number
+  /**
+   * Records one step the run walked (#2703), through record_ops_step, fenced
+   * by the claim token. Throws RunStopped when the run has stopped or its claim
+   * is lost (nothing is written then), and StepUnrecorded when the record could
+   * not be written after WRITE_TRIES tries, each under its deadline.
+   */
+  recordStep(record: OpsStepRecord): Promise<void>
 }
 
 /**
@@ -149,7 +169,7 @@ export type RunBody = (ctx: RunContext) => Promise<RunBodyEnd>
 export type RunInvocationReport =
   | { outcome: 'completed'; end: CompleteOutcome; runStatus: string | null }
   /** Not this holder's any more: nothing was completed, and the lease sweep owns the run. */
-  | { outcome: 'claim_lost'; during: 'start' | 'heartbeat' | 'send' | 'complete' }
+  | { outcome: 'claim_lost'; during: 'start' | 'heartbeat' | 'send' | 'record' | 'complete' }
   /** The start failed or passed its deadline, so nothing ran; if it landed, the lease lapses and is swept. */
   | { outcome: 'start_failed'; error: string }
   /** Every complete failed; the lease lapses and the sweep ends the run by its ledger rows. */
@@ -168,6 +188,18 @@ export class StepNotSent extends Error {
   constructor(readonly nodeId: string, readonly reason: string) {
     super(`step ${nodeId} sent nothing: ${reason}`)
     this.name = 'StepNotSent'
+  }
+}
+
+/**
+ * A step's record (#2703) could not be written: every try failed or passed its
+ * deadline. The run walk ends the run at that step rather than go on past a
+ * step it has no record of (run-walk.ts says how).
+ */
+export class StepUnrecorded extends Error {
+  constructor(readonly nodeId: string, readonly reason: string) {
+    super(`step ${nodeId}'s record was not kept: ${reason}`)
+    this.name = 'StepUnrecorded'
   }
 }
 
@@ -262,7 +294,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
   const lost = new AbortController()
   /** Aborted when the run must stop for any reason: the body's signal. */
   const halt = new AbortController()
-  let lostDuring: 'heartbeat' | 'send' | null = null
+  let lostDuring: 'heartbeat' | 'send' | 'record' | null = null
   let ending: CompleteOutcome | null = null
   /** A non idempotent send has been forwarded, or is in flight: the run may not start again. */
   let unrepeatable = false
@@ -271,7 +303,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
   let confirmedUntil = 0
   const inFlight = new Set<Promise<unknown>>()
 
-  const lose = (during: 'heartbeat' | 'send') => {
+  const lose = (during: 'heartbeat' | 'send' | 'record') => {
     if (lostDuring === null) {
       lostDuring = during
       log('claim_lost', { during })
@@ -455,8 +487,29 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
     return p
   }
 
+  // ── a step's record (#2703) ──
+  // Written as each step finishes, fenced by the claim token. stale, or a refusal
+  // as lost, is a lost claim. Each try has its deadline; a try that passed it may
+  // have landed, and its repeat is then answered already_recorded. After the last
+  // try the step is named as not kept, never taken as recorded.
+  const recordStep = async (record: OpsStepRecord): Promise<void> => {
+    if (halt.signal.aborted) throw new RunStopped()
+    let lastError = ''
+    for (let n = 1; n <= WRITE_TRIES; n++) {
+      const r = await within(clock, RUN_DB_DEADLINE_MS, () => db.recordStep(run, executionId, record))
+      if ((r.kind === 'ok' && r.value === 'stale') || (r.kind === 'threw' && r.error instanceof OpsClaimLostError)) {
+        lose('record')
+        throw new RunStopped()
+      }
+      if (r.kind === 'ok') return
+      lastError = r.kind === 'threw' ? formatErr(r.error) : `record_ops_step passed its ${RUN_DB_DEADLINE_MS} ms deadline`
+    }
+    log('step_unrecorded', { node_id: record.nodeId, seq: record.seq, error: lastError })
+    throw new StepUnrecorded(record.nodeId, lastError)
+  }
+
   // ── the body ──
-  const ctx: RunContext = { run, executionId, attempt, signal: halt.signal, send }
+  const ctx: RunContext = { run, executionId, attempt, signal: halt.signal, send, now: () => clock.now(), recordStep }
   type BodyResult = { kind: 'returned'; end: RunBodyEnd } | { kind: 'threw'; error: unknown } | { kind: 'halted' }
   const bodyDone: Promise<BodyResult> = (async () => {
     try {

@@ -77,6 +77,18 @@ describe('OpsInternal.run', () => {
     expect(db.names().indexOf('start_run_execution')).toBeLessThan(db.names().indexOf('complete_run_request'))
   })
 
+  it('records each step through record_ops_step, under the run\'s organization, claim token and execution (#2703)', async () => {
+    const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'trigger.payload.amount', target: 'amount' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
+    const db = opsDb({ ...LIFECYCLE, workflow_definition: [{ definition: def, saved_at: '2026-10-17T09:00:00Z' }], record_ops_step: 'recorded' })
+    const report = await runDispatched(env(), await signed({ kind: 'run', run: { ...RUN, payload: { amount: 7 } } }), deps(db.fetch))
+    expect(report).toMatchObject({ outcome: 'completed' })
+    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({
+      p_organization_id: ORG, p_run_request_id: RUN.runRequestId, p_claim_token: RUN.claimToken, p_execution_id: '0192f4a0-0000-7000-8000-0000000000ee',
+      p_seq: 0, p_node_id: 'shape', p_namespace: 'shape', p_step_type: 'transform', p_status: 'completed', p_output: { amount: 7 }, p_error: null,
+    })
+    expect(db.names().indexOf('record_ops_step')).toBeLessThan(db.names().indexOf('complete_run_request'))
+  })
+
   it('fetches a definition ops does not hold from the bidding Worker, freezes it, then runs', async () => {
     const asked: unknown[] = []
     const gateway = { opsWorkflowDefinitions: async (r: unknown) => { asked.push(r); return { definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: DEF }], unserved: [] } } }

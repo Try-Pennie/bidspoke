@@ -85,6 +85,13 @@ export const NOT_VERIFY_REFUSALS = [
   // The step test's (#2339): the test node route words them itself.
   'step_test_send_unconfirmed',
   'step_test_unavailable',
+  // A step test from a past run's (#2703): the test node route words them itself too.
+  'step_test_run_not_found',
+  'step_test_run_records_gone',
+  'step_test_run_steps_missing',
+  'step_test_run_output_not_kept',
+  'step_test_run_payload_not_held',
+  'step_test_run_unavailable',
 ] as const satisfies readonly OpsConnectionsOwnRefusal[]
 
 export type VerifyRefusalCode =

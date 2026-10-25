@@ -11,7 +11,7 @@ import { resolveActionVersion } from '@bidspoke/service-catalogue/schema'
 import { ActionFailure, implement, type ActionRun, type RuntimeAction } from '@bidspoke/service-catalogue/runtime'
 import { appActionHandler, type AppActionDeps } from '../app-action'
 import { ACCESS_TOKEN, CONN, LOGIN_SECRET, ORG, exampleRules, makeDoubles, makeKeys, sealLogin, usableCopy, type Doubles, type TestKeys } from '../connections/__tests__/harness'
-import type { ClaimedRun, CompleteOutcome, SendIntent } from '../ops-writes'
+import type { ClaimedRun, CompleteOutcome, OpsStepRecord, SendIntent } from '../ops-writes'
 import { invokeRun, stepRequestId, type RunBody, type RunDb, type RunInvocationReport } from '../run-invocation'
 import { walkOpsDefinition } from '../run-walk'
 
@@ -82,6 +82,12 @@ class FakeRunDb implements RunDb {
   }
   async recordResult(_run: ClaimedRun, ledgerId: string, result: unknown) {
     this.results.push({ ledgerId, ...(result as object) })
+    return 'recorded' as const
+  }
+  /** Each step record the walk wrote (#2703). */
+  steps: OpsStepRecord[] = []
+  async recordStep(_run: ClaimedRun, _executionId: string, record: OpsStepRecord) {
+    this.steps.push(record)
     return 'recorded' as const
   }
   async complete(_run: ClaimedRun, end: CompleteOutcome) {
@@ -291,19 +297,23 @@ describe('how an action\'s failure ends the run', () => {
 
 describe('a login never reaches a stored record or a log (#1689 3.0, from Revert)', () => {
   it('the known token is absent from the step output, the ledger, the run\'s end and every log line, while the service did receive it', async () => {
-    const outcomes: Array<() => Response | Error> = [
-      () => Response.json({ id: 42 }),
-      () => new Response('no', { status: 422 }),
-      () => new Response('reset', { status: 502 }),
-      () => new TypeError('network connection lost'),
+    // Each with the step records it leaves (#2703): a send whose outcome is unknown stops the
+    // run, and a step stopped with its run is not recorded (run-walk.ts); the run's end names it.
+    const outcomes: Array<[() => Response | Error, number]> = [
+      [() => Response.json({ id: 42 }), 1],
+      [() => new Response('no', { status: 422 }), 1],
+      [() => new Response('reset', { status: 502 }), 1],
+      [() => new TypeError('network connection lost'), 0],
     ]
-    for (const answer of outcomes) {
+    for (const [answer, records] of outcomes) {
       const w = world()
       w.d.respond(answer())
       const report = await w.run(definition(step()))
       // The positive control: the login really was applied to the request.
       expect(new Headers(w.d.rec.sent[0].init.headers).get('authorization')).toContain(ACCESS_TOKEN)
-      const stored = JSON.stringify({ report, outputs: w.outputs, intents: w.db.intents, results: w.db.results, completes: w.db.completes, logs: w.logs, reports: w.d.rec.reports })
+      // And the step was recorded where it ran to an end, so its record is among what is searched.
+      expect(w.db.steps).toHaveLength(records)
+      const stored = JSON.stringify({ report, outputs: w.outputs, intents: w.db.intents, results: w.db.results, completes: w.db.completes, logs: w.logs, reports: w.d.rec.reports, steps: w.db.steps })
       expect(stored).not.toContain(ACCESS_TOKEN)
       expect(stored).not.toContain(LOGIN_SECRET)
     }
@@ -321,11 +331,14 @@ describe('a login never reaches a stored record or a log (#1689 3.0, from Revert
       w.d.respond(answer())
       const report = await w.run(definition(step()))
       expect(report, outcome).toMatchObject({ end: { outcome } })
-      const stored = JSON.stringify({ report, outputs: w.outputs, intents: w.db.intents, results: w.db.results, completes: w.db.completes, logs: w.logs })
+      const stored = JSON.stringify({ report, outputs: w.outputs, intents: w.db.intents, results: w.db.results, completes: w.db.completes, logs: w.logs, steps: w.db.steps })
       expect(stored, outcome).not.toContain(ACCESS_TOKEN)
       expect(stored, outcome).not.toContain(LOGIN_SECRET)
       // The rest of what the service said is kept, with the login marked as removed.
       expect(stored, outcome).toContain('[redacted] for [redacted]')
+      // The step's own record (#2703) holds what the service said, the login removed, in its output or its error.
+      expect(w.db.steps, outcome).toHaveLength(1)
+      expect(JSON.stringify(w.db.steps[0]), outcome).toContain('[redacted] for [redacted]')
     }
   })
 })
