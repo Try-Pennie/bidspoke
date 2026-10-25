@@ -116,7 +116,7 @@ export async function supabaseRequest(ctx: ActionContext, request: SupabaseReque
     if (status === 429) {
       const retryAfter = response.headers.get('retry-after')
       const wait = retryAfter === null ? 'no Retry-After' : `Retry-After ${retryAfter} s`
-      throw new ActionFailure(named, `Supabase rate limited ${what} (${wait}); not sent`, 'not_applied')
+      throw new ActionFailure(named, `Supabase rate limited ${what} (${wait}): it refused it, so it did nothing`, 'not_applied')
     }
     if (status >= 500 || status < 400) throw new ActionFailure(named, `Supabase answered ${what} with ${said}`, uncertain)
     throw new ActionFailure(named, `Supabase refused ${what}: ${said}`, 'not_applied')

@@ -124,6 +124,16 @@ describe('supabase.insert-row@1', () => {
     expect(f.sent).toHaveLength(1)
   })
 
+  // The API received the request and refused it: the message says so, never that it was not sent.
+  it('a 429 reaching the action is not applied and says Supabase refused it', async () => {
+    const f = fakeSupabase()
+    f.respond(pgError(429, 'too_many_requests'))
+    const limited = await failure(INSERT.run(f.ctx, { table: 'leads', data: { a: 1 } }))
+    expect(limited.outcome).toBe('not_applied')
+    expect(limited.message).not.toMatch(/not sent/)
+    expect(limited.message).toMatch(/refused it, so it did nothing/)
+  })
+
   it('a timeout after send passes through unchanged, for the executor to record as outcome unknown and never retry', async () => {
     const timeout = new DOMException('The operation timed out.', 'TimeoutError')
     const f = fakeSupabase()
