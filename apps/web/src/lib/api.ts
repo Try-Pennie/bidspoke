@@ -839,6 +839,19 @@ async function fetchWithTimeout(url: string, init: ReqInit, headers: HeadersInit
   }
 }
 
+/**
+ * The body of PUT /api/workflows/:id. A save of a definition names the version
+ * it was edited from and the press that made it (#1947, #2599): the Worker
+ * refuses one naming neither (428 reload_required) and one made from a version
+ * no longer stored (409 stale_version, read by lib/workflow-save-conflict.ts),
+ * so the type will not let a definition be sent without both. A save with no
+ * definition (a rename) may name neither.
+ */
+export type WorkflowSaveBody = { name?: string; message?: string; slack_channel?: string | null } & (
+  | { definition?: undefined; expected_version?: number; save_id?: string }
+  | { definition: WorkflowDef; expected_version: number; save_id: string }
+)
+
 async function req<T>(path: string, init?: ReqInit): Promise<T> {
   let headers: HeadersInit
   try {
@@ -912,10 +925,11 @@ export const api = {
     get: (id: string) => req<Workflow>(`/api/workflows/${id}`),
     create: (name: string, folder_id?: string | null) =>
       req<Workflow>('/api/workflows', { method: 'POST', body: JSON.stringify({ name, folder_id: folder_id ?? null }) }),
-    save: (id: string, data: { name?: string; definition?: WorkflowDef; message?: string; slack_channel?: string | null }) =>
+    save: (id: string, data: WorkflowSaveBody) =>
       // no_changes (#569): the server short-circuits a save whose definition is
       // identical to what's stored: the row is untouched, so version_id and the
-      // Workflow body are absent. Callers branch on no_changes before reading them.
+      // Workflow body are absent, and version is the stored one. Callers branch
+      // on no_changes before reading the rest.
       req<Workflow & { deploy_errors?: { namespace: string; error: string }[]; stored_copy_warning?: string; version_id?: string; no_changes?: boolean }>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     draftChangelog: (id: string, definition: WorkflowDef) =>
       req<{ draft: string | null; reason?: 'no_previous_version' | 'no_changes' | 'unavailable' | 'error'; cached?: boolean }>(
@@ -1395,6 +1409,16 @@ export const api = {
         method: 'DELETE',
         timeoutMs: CONNECTION_REMOVE_TIMEOUT_MS,
       }),
+    // Sign in with your own Google account (build PR 13, R17): the link to Google for a new connection or a
+    // Reconnect of one, then the finish the Connections page posts once the callback route hands Google's answer back
+    // to it. Each refusal throws carrying the route's sentence.
+    startGoogleSignIn: (body: { name: string } | { connection_id: string }) =>
+      req<{ url: string }>('/api/connections/google/sign-in', { method: 'POST', body: JSON.stringify(body), timeoutMs: CONNECTION_SAVE_TIMEOUT_MS }),
+    finishGoogleSignIn: (body: { state: string; code: string } | { state: string; error: string }) =>
+      req<
+        | { outcome: 'created'; connection: { id: string; name: string; service: string; acts_as: string | null } }
+        | { outcome: 'reconnected'; connection: { id: string; acts_as: string | null }; cleared: boolean }
+      >('/api/connections/google/sign-in/finish', { method: 'POST', body: JSON.stringify(body), timeoutMs: CONNECTION_SAVE_TIMEOUT_MS }),
     // The History tab (build PR 9): newest first, each naming who made it.
     history: (id: string) =>
       req<{ entries: Array<{ id: string; action: string; at: string; by: string | null; credential_changed: boolean; changes: unknown }> }>(`/api/connections/${encodeURIComponent(id)}/history`),

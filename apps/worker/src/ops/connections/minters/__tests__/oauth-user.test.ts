@@ -211,7 +211,7 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
   const REDIRECT = 'https://bidspoke.trypennie.dev/oauth/callback'
 
   function exchangeCall(candidate: CandidateConnection, over: Record<string, unknown> = {}) {
-    return { organizationId: ORG, connectionId: CONN, candidate, code: CODE, verifier: VERIFIER, redirectUri: REDIRECT, ...over }
+    return { organizationId: ORG, connectionId: CONN, candidate, code: CODE, verifier: VERIFIER, redirectUri: REDIRECT, expectedAccount: 'dan@trypennie.com', ...over }
   }
   const appCandidate = (generation = 1): CandidateConnection => ({ service: 'example', generation, envelope, target: TARGET, publicConfig: {} })
 
@@ -221,6 +221,7 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
     await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: null })
     expect(objects.exchangeCalls).toEqual([{
       organizationId: ORG, connectionId: CONN, service: 'example', generation: 1, envelope, tokenUrl: TOKEN_URL, code: CODE, verifier: VERIFIER, redirectUri: REDIRECT,
+      expectedAccount: 'dan@trypennie.com',
     }])
   })
 
@@ -238,6 +239,15 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
     expect((err as ConnectionRefusal).code).toBe('connection_target_invalid')
     expect(objects.exchangeCalls).toEqual([])
     await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, covering, exchangeCall({ ...appCandidate(), target: { person: true } }))).resolves.toEqual({ generation: 2, account: null })
+  })
+
+  it('a consent as another account than the one asked for is refused by name, the reason kept for the caller (Dan, 2026-10-23)', async () => {
+    const objects = tokenObjects({ ok: false, kind: 'not_allowed', reason: 'account_mismatch', retryAtMs: null })
+    const d = makeDoubles(keys, usableCopy(envelope), () => [])
+    const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate())).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ConnectionRefusal)
+    expect(err).toMatchObject({ code: 'connection_not_allowed', mintReason: 'account_mismatch' })
+    expect(d.rec.needsReauth).toEqual([])
   })
 
   it('a new connection with no copy on ops yet may exchange', async () => {
@@ -261,7 +271,7 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
   it('refuses a malformed call by name', async () => {
     const objects = tokenObjects({ ok: true, generation: 2 })
     const d = makeDoubles(keys, usableCopy(envelope), () => [])
-    for (const over of [{ organizationId: 'org' }, { connectionId: 'conn' }, { code: '' }, { verifier: 'short' }, { redirectUri: 'http://bidspoke.trypennie.dev/cb' }]) {
+    for (const over of [{ organizationId: 'org' }, { connectionId: 'conn' }, { code: '' }, { verifier: 'short' }, { redirectUri: 'http://bidspoke.trypennie.dev/cb' }, { expectedAccount: 'not an address' }]) {
       const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate(), over)).catch((e: unknown) => e)
       expect((err as ConnectionRefusal).code).toBe('connection_call_invalid')
     }

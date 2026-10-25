@@ -27,7 +27,7 @@ run-name: Outage Drill Weekly (${{ inputs.driver || 'schedule' }})
 jobs:
   outage-drill:
     name: Outage drill on main
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     # Measured locally at 426 s for all 288 fixtures on 2026-10-07; a runner is
     # slower and adds checkout, install and workerd start. Bounds a hang (#885).
     timeout-minutes: 25

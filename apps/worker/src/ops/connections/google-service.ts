@@ -46,6 +46,7 @@
  * token request goes to Google's token endpoint, oauth2.googleapis.com, a host
  * the entry declares (#2337).
  */
+import { GOOGLE_OWN_ACCOUNT_TARGET, isOwnAccountTarget } from '@bidspoke/service-catalogue/schema'
 import { GOOGLE_TOKEN_URI, googleDelegationAuth, type GoogleDelegationDeps } from './minters/google'
 import { IdentityMismatch, IdentityUnreadable, type IdentityProbe } from './identity'
 import { targetFields, targetString } from './minters/login-fields'
@@ -58,13 +59,8 @@ export const GOOGLE_HOSTS: readonly string[] = ['oauth2.googleapis.com', 'sheets
 /** What verify asks: the mailbox's Gmail profile, which every delegated mailbox may read under gmail.modify. */
 export const GOOGLE_VERIFY_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/profile'
 
-/** The target of a connection signed in with a person's own Google account (#2338): written by the bidding Worker's sign in route alone. */
-export const GOOGLE_OWN_ACCOUNT_TARGET: Readonly<{ own_account: true }> = Object.freeze({ own_account: true })
-
-/** Whether a Google target is a person's own account, signed in through Sign in with Google. Exactly the boolean true. */
-export function isOwnAccountTarget(target: unknown): boolean {
-  return target !== null && typeof target === 'object' && !Array.isArray(target) && (target as Record<string, unknown>).own_account === true
-}
+// The target of a connection signed in with a person's own Google account (#2338), in the catalogue, the one home both Workers read.
+export { GOOGLE_OWN_ACCOUNT_TARGET, isOwnAccountTarget }
 
 /** A person's own Google account as a person bound service: Google's token endpoint, the 401 Google answers an expired token with. */
 export const googleOwnAccount: OAuthUserService = {

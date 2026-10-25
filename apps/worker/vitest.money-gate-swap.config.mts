@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config'
+import { runnerTimeouts } from '../../vitest.runner-timeouts'
 
 /**
  * The verdict of the money gate's definition A/B mode (#2591), run in Node after
@@ -7,6 +8,8 @@ import { defineConfig } from 'vitest/config'
  */
 export default defineConfig({
   test: {
+    // Wider only on a self-hosted runner, the shared Mac (#2768).
+    ...runnerTimeouts,
     include: ['money-gate/swap/ab.gate.test.ts'],
     environment: 'node',
   },

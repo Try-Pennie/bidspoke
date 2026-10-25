@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OPS_SIGN_IN_CEILINGS_MS, OPS_SIGN_IN_METHODS,
+  LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OPS_SIGN_IN_METHODS,
   OPS_STEP_TEST_CEILINGS_MS, OPS_STEP_TEST_METHODS, STEP_TEST_CONTEXT_MAX_BYTES, parseStepTestResultRequest, parseTestStepRequest,
   OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest, parseExchangeOAuthCodeRequest, parseHealthRequest,
   parseListDelegationSubjectsRequest, parseLookupRequest, parseRemoveDelegationSubjectRequest, parseRevokeRequest, parseSignInClientRequest, parseVerifyRequest,
@@ -32,7 +32,7 @@ function refused(fn: () => unknown): string {
 describe('the OpsConnections contract', () => {
   it('names the methods the entrypoint answers, and a ceiling for each', () => {
     expect([...OPS_CONNECTIONS_METHODS].sort()).toEqual([
-      'addDelegationSubject', 'clearReauth', 'exchangeOAuthCode', 'health', 'listDelegationSubjects', 'lookup', 'removeDelegationSubject', 'revoke', 'verify',
+      'addDelegationSubject', 'clearReauth', 'exchangeOAuthCode', 'health', 'listDelegationSubjects', 'lookup', 'removeDelegationSubject', 'revoke', 'signInClient', 'verify',
     ])
     expect(Object.keys(OPS_CONNECTIONS_CEILINGS_MS).sort()).toEqual([...OPS_CONNECTIONS_METHODS].sort())
     for (const ms of Object.values(OPS_CONNECTIONS_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
@@ -40,12 +40,9 @@ describe('the OpsConnections contract', () => {
     expect(LOOKUP_RATE_PER_MINUTE).toBeLessThanOrEqual(600)
   })
 
-  it('keeps the sign in method apart from the methods bidding calls until the ops deploy carries it (#2338, build PR 13)', () => {
-    // CI requires the LIVE ops Worker to export every method on OPS_CONNECTIONS_METHODS, so a method ships on ops first.
+  it('calls the sign in method, which shipped on ops first (#2338, build PR 13a), among the methods bidding calls', () => {
     expect([...OPS_SIGN_IN_METHODS]).toEqual(['signInClient'])
-    for (const m of OPS_SIGN_IN_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).not.toContain(m)
-    expect(Object.keys(OPS_SIGN_IN_CEILINGS_MS)).toEqual([...OPS_SIGN_IN_METHODS])
-    for (const ms of Object.values(OPS_SIGN_IN_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
+    for (const m of OPS_SIGN_IN_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).toContain(m)
   })
 
   it('keeps the step test methods apart from the methods bidding calls until the ops deploy carries them (#2339)', () => {
@@ -146,8 +143,15 @@ describe('the OpsConnections contract', () => {
   })
 
   it('an exchange carries the sealed app login as a candidate, the code, a PKCE verifier of 43 to 128 characters and the redirect URI', () => {
-    const ok = { organization_id: ORG, connection_id: CONN, candidate: CANDIDATE, code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback' }
+    const ok = {
+      organization_id: ORG, connection_id: CONN, candidate: CANDIDATE, code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback',
+      expected_account: 'dan@trypennie.com',
+    }
     expect(parseExchangeOAuthCodeRequest(ok)).toEqual(ok)
+    // The account the person must sign in as (Dan, 2026-10-23): one address, read lower case, and never absent.
+    expect(parseExchangeOAuthCodeRequest({ ...ok, expected_account: ' Dan@TryPennie.com ' }).expected_account).toBe('dan@trypennie.com')
+    expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, expected_account: undefined }))).toMatch(/expected_account/)
+    expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, expected_account: 'not an address' }))).toMatch(/expected_account/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, verifier: 'v'.repeat(42) }))).toMatch(/verifier/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, verifier: 'v'.repeat(129) }))).toMatch(/verifier/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, code: '' }))).toMatch(/code/)
