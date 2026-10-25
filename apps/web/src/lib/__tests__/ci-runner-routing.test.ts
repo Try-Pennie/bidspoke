@@ -17,16 +17,32 @@ import { readWorkflow, workflowFiles, workflowIf, workflowJobBody, workflowJobId
  * A routed job must also be able to RUN on a Mac: a command macOS lacks fails it
  * as "command not found", and a fixed port collides with the other jobs (Slate's
  * included) sharing that one machine, or answers from somebody's dev server.
+ *
+ * The repository went public on 2026-10-25, so anybody can fork it and open a
+ * pull request, and a pull request job runs that stranger's code. On the Mac
+ * that is code run on Dan's work MacBook. So a job reaches the Mac only when
+ * its event carries no pull request, or a pull request whose head branch lives
+ * in this repository; a fork's, or one whose head repository is gone, goes to
+ * GitHub's runner whatever the variable says. Keyed on the payload rather than
+ * the event name, so a pull_request_target or review trigger added later is
+ * held to it too.
  */
 
-const ROUTED = /^\$\{\{ vars\.PENNIE_CI_RUNNER == 'pennie-mac' && '([\w-]+)' \|\| 'ubuntu-latest' \}\}$/
+const ROUTED =
+  /^\$\{\{ vars\.PENNIE_CI_RUNNER == 'pennie-mac' && \(!github\.event\.pull_request \|\| github\.event\.pull_request\.head\.repo\.full_name == github\.repository\) && '([\w-]+)' \|\| 'ubuntu-latest' \}\}$/
 
-/** What GitHub resolves a `runs-on` to for a value of the variable, or null when it is not routed. */
-function resolve(runsOn: string, variable: string): string | null {
+const REPOSITORY = 'Try-Pennie/bidspoke'
+
+/** The part of an event the expression reads: absent for a push or schedule, else the pull request's head repository. */
+type RunEvent = { pullRequestHead: string | null } | undefined
+
+/** What GitHub resolves a `runs-on` to for a value of the variable and an event, or null when it is not routed. */
+function resolve(runsOn: string, variable: string, event: RunEvent = undefined): string | null {
   const m = ROUTED.exec(runsOn)
   if (!m) return null
-  // `a == b && 'x' || 'y'`: the label is a non-empty string, so this is a ternary.
-  return variable === 'pennie-mac' ? m[1] : 'ubuntu-latest'
+  // `a && b && 'x' || 'y'`: the label is a non-empty string, so this is a ternary.
+  const ownCode = event === undefined || event.pullRequestHead === REPOSITORY
+  return variable === 'pennie-mac' && ownCode ? m[1] : 'ubuntu-latest'
 }
 
 // Jobs left on GitHub's runners, each with its reason. None today.
@@ -60,8 +76,15 @@ const jobs = workflowFiles().flatMap((file) => {
 
 describe('the runner switch', () => {
   it('resolves known answers', () => {
-    const expr = "${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}"
+    const expr =
+      "${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}"
     expect(resolve(expr, 'pennie-mac')).toBe('pennie-mac')
+    expect(resolve(expr, 'pennie-mac', { pullRequestHead: REPOSITORY })).toBe('pennie-mac')
+    // A stranger's fork, and a pull request whose fork was deleted, never reach the Mac.
+    expect(resolve(expr, 'pennie-mac', { pullRequestHead: 'someone/bidspoke' })).toBe('ubuntu-latest')
+    expect(resolve(expr, 'pennie-mac', { pullRequestHead: null })).toBe('ubuntu-latest')
+    // The routing #2768 shipped, with no fork clause, is refused.
+    expect(resolve("${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}", 'pennie-mac')).toBeNull()
     expect(resolve(expr, '')).toBe('ubuntu-latest')
     expect(resolve(expr, 'github')).toBe('ubuntu-latest')
     expect(resolve(expr, 'Pennie-Mac')).toBe('ubuntu-latest')
@@ -87,6 +110,7 @@ describe('the runner switch', () => {
     const expected = NEEDS_DOCKER.test(stripComments(job.body)) ? 'pennie-mac-docker' : 'pennie-mac'
     expect(resolve(runsOn!, 'pennie-mac')).toBe(expected)
     expect(resolve(runsOn!, '')).toBe('ubuntu-latest')
+    expect(resolve(runsOn!, 'pennie-mac', { pullRequestHead: 'someone/bidspoke' })).toBe('ubuntu-latest')
 
     const code = codeOnAMac(job.body)
     expect(LINUX_ONLY.exec(code)?.[0], 'a command a Mac runner lacks').toBeUndefined()
