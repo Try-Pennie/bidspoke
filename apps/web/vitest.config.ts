@@ -1,5 +1,6 @@
 import { configDefaults, defineConfig } from 'vitest/config'
 import path from 'path'
+import { runnerTimeouts } from '../../vitest.runner-timeouts'
 
 /** Files run only by the zone projects below, never by the lib and components projects. */
 const TZ_EXCLUDE = [...configDefaults.exclude, 'src/**/*.tz.test.ts', 'src/**/*.tz.test.tsx']
@@ -17,6 +18,8 @@ export default defineConfig({
     },
   },
   test: {
+    // Wider only on a self-hosted runner, the shared Mac (#2768).
+    ...runnerTimeouts,
     // Worker threads rather than forked child processes, for the lib and
     // components projects (#973); the zone projects below override it with
     // forks, because a zone is fixed when a process starts. The measurement

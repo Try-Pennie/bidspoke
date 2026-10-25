@@ -21,6 +21,9 @@ const nextConfig = {
   // because it exists to be ONE implementation the Worker and the browser share
   // (#869), and a compile step is another place the two could end up on different
   // versions of it.
+  // The design score's preview run (#2338): Next's development badge is in no settled design, so a
+  // score run (DESIGN_SCORE_PREVIEW=1 on next dev) draws without it. Every other run keeps the default.
+  ...(process.env.DESIGN_SCORE_PREVIEW === '1' ? { devIndicators: false } : {}),
   transpilePackages: ['@bidspoke/references', '@bidspoke/uuidv7', '@bidspoke/script-hygiene', '@bidspoke/buyer-profile', '@bidspoke/node-types', '@bidspoke/workflow-definition', '@bidspoke/partner-page-live', '@bidspoke/partner-history', '@bidspoke/service-catalogue'],
 }
 

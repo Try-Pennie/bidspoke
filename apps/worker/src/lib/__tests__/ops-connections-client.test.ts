@@ -15,11 +15,11 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OpsConnectionsContractError, parseHealthRequest,
+  OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_STEP_TEST_CEILINGS_MS, OPS_STEP_TEST_METHODS, OpsConnectionsContractError, parseHealthRequest,
   type OpsConnectionsBinding,
 } from '../ops-connections-contract'
 import {
-  callOpsConnections, OPS_CONNECTIONS_DEADLINES_MS, OPS_CONNECTIONS_PROBE_EXPECTED, OPS_CONNECTIONS_PROBE_REQUEST, probeOpsConnections,
+  callOpsConnections, callOpsStepTest, OPS_CONNECTIONS_DEADLINES_MS, OPS_STEP_TEST_DEADLINES_MS, OPS_CONNECTIONS_PROBE_EXPECTED, OPS_CONNECTIONS_PROBE_REQUEST, probeOpsConnections,
 } from '../ops-connections-client'
 import { OpsConnections } from '../../ops/ops-connections-entrypoint'
 import type { OpsEnv } from '../../ops/index'
@@ -61,8 +61,39 @@ describe('each per method deadline is longer than the ceiling ops answers by nam
   it('holds the stated values', () => {
     expect(OPS_CONNECTIONS_DEADLINES_MS).toEqual({
       verify: 50_000, clearReauth: 50_000, exchangeOAuthCode: 35_000, lookup: 30_000, revoke: 15_000, health: 15_000,
-      addDelegationSubject: 15_000, removeDelegationSubject: 15_000, listDelegationSubjects: 15_000,
+      addDelegationSubject: 15_000, removeDelegationSubject: 15_000, listDelegationSubjects: 15_000, signInClient: 10_000,
     })
+  })
+})
+
+describe('the step test methods (#2339), kept off the list CI requires of the live ops Worker', () => {
+  const refusal = { ok: false, refused: 'step_test_unavailable', detail: 'no read', retry_at: null }
+
+  it.each(OPS_STEP_TEST_METHODS)('%s: a deadline that exceeds the ops ceiling by at least 2 s', (method) => {
+    expect(Object.keys(OPS_STEP_TEST_DEADLINES_MS).sort()).toEqual([...OPS_STEP_TEST_METHODS].sort())
+    expect(OPS_STEP_TEST_DEADLINES_MS[method]).toBeGreaterThanOrEqual(OPS_STEP_TEST_CEILINGS_MS[method] + 2_000)
+  })
+
+  it.each(OPS_STEP_TEST_METHODS)('%s is called as the method itself through the binding', async (method) => {
+    const stub = rpcStub({ [method]: async () => refusal })
+    expect(await callOpsStepTest({ OPS_CONNECTIONS: stub }, method, { organization_id: ORG } as never)).toEqual(refusal)
+  })
+
+  it('a deployed ops Worker that does not export it yet is answered as unavailable, never as a pass', async () => {
+    captureLogs()
+    const stub = rpcStub({ health: async () => refusal })
+    expect(await callOpsStepTest({ OPS_CONNECTIONS: stub }, 'stepTestResult', { organization_id: ORG, workflow_id: ORG, node_id: 'n1' }))
+      .toMatchObject({ ok: false, refused: 'ops_connections_unavailable', cause: 'threw' })
+  })
+
+  it('waits the step test\'s own deadline, not a connections method\'s', async () => {
+    captureLogs()
+    const waited: number[] = []
+    const { binding: b } = binding(never)
+    const methods = b as unknown as Record<string, unknown>
+    methods.testStep = never
+    await callOpsStepTest({ OPS_CONNECTIONS: b }, 'testStep', { organization_id: ORG } as never, { delay: async (ms) => { waited.push(ms) } })
+    expect(waited).toEqual([OPS_STEP_TEST_DEADLINES_MS.testStep])
   })
 })
 
@@ -137,7 +168,7 @@ describe('callOpsConnections', () => {
     const lines = captureLogs()
     const { binding: b } = binding(never)
     await callOpsConnections({ OPS_CONNECTIONS: b }, 'exchangeOAuthCode', {
-      organization_id: ORG, connection_id: ORG, code: 'plain-oauth-code-canary', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/cb',
+      organization_id: ORG, connection_id: ORG, code: 'plain-oauth-code-canary', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/cb', expected_account: 'dan@trypennie.com',
       candidate: { service: 'gmail', generation: 1, envelope: { v: 1, kid: 'ops-2026-10', wrapped_key: 'd3JhcA==', iv: 'aXY=', ct: 'Y3Q=' }, target: null, public_config: {} },
     }, { delay: async () => {} })
     const logged = lines.join('\n')

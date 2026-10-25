@@ -670,6 +670,34 @@ describe('the sign in app\'s secret lives only on the ops Worker (#2338, Dan\'s 
     expect(JSON.stringify(answer)).not.toContain(APP_SECRET)
   })
 
+  it('a consent as another account than the one asked for is refused, and nothing is stored (Dan, 2026-10-23)', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    const endpoint = tokenEndpoint(signedIn())
+    await wire(stub, { endpoint, app: HELD })
+    const answer = await stub.exchange({ ...consent(conn, await sealGoogle(conn, 1, { client_id: CLIENT_ID })), expectedAccount: 'someone.else@trypennie.com' })
+    expect(answer).toEqual({ ok: false, kind: 'not_allowed', reason: 'account_mismatch', retryAtMs: null })
+    expect(await stored(stub)).toBeUndefined()
+    expect(await alarmAt(stub)).toBeNull()
+  })
+
+  it('a consent whose provider names no account is refused when one is asked for', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    await wire(stub, { endpoint: tokenEndpoint(signedIn('another-client')), app: HELD })
+    const answer = await stub.exchange({ ...consent(conn, await sealGoogle(conn, 1, { client_id: CLIENT_ID })), expectedAccount: 'dan@trypennie.com' })
+    expect(answer).toMatchObject({ ok: false, reason: 'account_mismatch' })
+    expect(await stored(stub)).toBeUndefined()
+  })
+
+  it('a consent as the account asked for, compared ignoring case, is stored', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    await wire(stub, { endpoint: tokenEndpoint(signedIn()), app: HELD })
+    const answer = await stub.exchange({ ...consent(conn, await sealGoogle(conn, 1, { client_id: CLIENT_ID })), expectedAccount: 'DAN@trypennie.com' })
+    expect(answer).toEqual({ ok: true, generation: 2, account: 'dan@trypennie.com' })
+  })
+
   it('an id_token issued for another client names no one', async () => {
     const conn = connection()
     const stub = stubFor(conn)

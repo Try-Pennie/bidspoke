@@ -13,8 +13,10 @@
  * connection by id; a value that is not an id, or a connection of another
  * service than the step names, is refused, never replaced (L75). A person's
  * own account (a target of { own_account: true }) may be used only by its owner
- * (Dan, 2026-10-23, on #2338); until ops holds who owns it and who bound the
- * step, such a step is refused by name (own_account_binder_unrecorded).
+ * (Dan, 2026-10-23, on #2338): such a step runs only when the step's boundBy
+ * (stamped by the bidding Worker's save, lib/app-action-binders.ts) is the
+ * copy's owner, and is refused by name otherwise (own_account_binder_unrecorded,
+ * own_account_owner_unrecorded, own_account_not_owner).
  *
  * ORDER.
  *  1. The step's settings and the pinned version (D1: never the newest), its
@@ -37,9 +39,11 @@
  *    since nothing was changed. invokeRun still fails a retry after a send that
  *    cannot be repeated, and itself ends a send that may have landed.
  *
- * WHAT IT RECORDS. Nothing but the send ledger row run.send writes before each
- * non GET send (method, host, the attempt key), which holds no header and no
- * body, so connectionFetch is told no request is recorded. A login is applied
+ * WHAT IT RECORDS. In a run, nothing but the send ledger row run.send writes
+ * before each non GET send (method, host, the attempt key), which holds no
+ * header and no body, so connectionFetch is told no request is recorded. A step
+ * test (step-test.ts, #2339) passes its own record target instead, and keeps
+ * each request as connectionFetch sanitised it, before the login was applied. A login is applied
  * after that and never reaches the step output, the ledger, the run's end or a
  * log line, even from a service that echoes it back, since connectionFetch
  * scrubs every answer it hands the action (__tests__/app-action.test.ts proves
@@ -50,7 +54,7 @@ import { ActionFailure, resolveRuntimeAction, type ActionArgs, type ActionContex
 import { resolveValue } from '../engine/context'
 import { formatErr } from '../lib/format-error'
 import type { StepExecutionResult } from '../types'
-import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps } from './connections/connection-fetch'
+import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps, type RecordTarget } from './connections/connection-fetch'
 import { isOwnAccountTarget } from './connections/google-service'
 import { ConnectionRefusal, RequeueAt, type ConnectionRefusalCode } from './connections/refusals'
 import { RunStopped, StepNotSent, StepTimedOut, stepRequestId, type ForwardAnswer } from './run-invocation'
@@ -67,6 +71,12 @@ export interface AppActionDeps {
   resolveAction(key: string, version: number): ResolvedAction<RuntimeAction>
   /** Every wait an action makes (a poll's interval). */
   sleep(ms: number): Promise<void>
+  /**
+   * Where each request's sanitised record goes before it is sent. A run records
+   * nothing beyond its send ledger row (RECORDS_NOTHING); a step test keeps
+   * them with its result (#2339, step-test.ts).
+   */
+  record?: RecordTarget
 }
 
 /**
@@ -135,11 +145,14 @@ export function appActionHandler(deps: AppActionDeps): OpsStepHandler {
       return fail(`connection_service_mismatch: the step's connection is a ${copy.service ?? 'unknown'} connection, not ${config.service}, so nothing was sent`)
     }
     // A person's own account may be used only by its owner (Dan, 2026-10-23, on #2338), so no
-    // workflow sends as someone else. Neither who owns such a connection nor who bound a step to it
-    // reaches ops yet, so the step is refused rather than run on a guess (L75). Lifted when both
-    // are recorded and compared here.
+    // workflow sends as someone else: the step must have been bound by the connection's owner.
+    // Who bound it is stamped on the step by the bidding Worker's save; who owns it is on the copy.
+    // Anything short of a recorded match is refused by name, never run on a guess (L75).
     if (isOwnAccountTarget(copy.target)) {
-      return fail('own_account_binder_unrecorded: the step\'s connection is a person\'s own account, which only its owner may use, and who bound this step is not recorded, so nothing was sent')
+      const own = 'the step\'s connection is a person\'s own account, which only its owner may use'
+      if (config.boundBy === null) return fail(`own_account_binder_unrecorded: ${own}, and who bound this step is not recorded, so nothing was sent`)
+      if (copy.ownerUserId === null) return fail(`own_account_owner_unrecorded: ${own}, and ops holds no owner for it, so nothing was sent`)
+      if (copy.ownerUserId !== config.boundBy) return fail(`own_account_not_owner: ${own}, and this step was bound by someone else, so nothing was sent`)
     }
 
     // 3. The action, every request through the ledgered send.
@@ -158,7 +171,7 @@ export function appActionHandler(deps: AppActionDeps): OpsStepHandler {
           source: { kind: 'copy' },
           purpose: 'step',
           workflowId: run.run.workflowId,
-          record: RECORDS_NOTHING,
+          record: deps.record ?? RECORDS_NOTHING,
           signal,
         }, url, { ...init, method }),
       })

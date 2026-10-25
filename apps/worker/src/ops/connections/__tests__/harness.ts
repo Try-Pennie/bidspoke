@@ -74,6 +74,7 @@ export function usableCopy(envelope: SealedEnvelope, overrides: Partial<Connecti
     servedAt: new Date(T0 - 60_000).toISOString(),
     serveUntil: new Date(T0 + 6 * 3600_000).toISOString(),
     dbNow: new Date(T0).toISOString(),
+    ownerUserId: null,
     ...overrides,
   }
 }

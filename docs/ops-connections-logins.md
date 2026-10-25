@@ -228,7 +228,7 @@ value, a refusal naming its cause. Each method has a ceiling
 | `health` | Each connection's status (`connection_status`). | nothing |
 | `lookup` | One level of a connection's schema, behind 60 lookups a minute per organization (`take_lookup_allowance`). | the allowance |
 | `exchangeOAuthCode` | A person bound login's consent, to its ConnectionTokenObject, which answers the new generation and, where the provider's id_token names a verified email for this client, whom the person signed in as (`id-token-account.ts`, #2338). A consent is a person bound login's Reconnect (it is never verified as a candidate), so its success then records the clearing of needs_reauth; a clearing that cannot be written is answered `reauth_cleared: false`, never as a failed consent, since the login is already stored. | the object's storage, then `reauth_cleared_at` |
-| `signInClient` | The client id of the sign in app the ops Worker holds for a service (`connections/oauth-apps.ts`, #2338 build PR 13), for the bidding Worker's Sign in with Google link; never its secret. Refuses `sign_in_app_unset` or `sign_in_app_malformed` naming the secret, and `sign_in_not_offered` for a service with no sign in. Shipped ahead of the bidding route that calls it, so it is kept out of `OPS_CONNECTIONS_METHODS` until then, as the Google list's methods were. | nothing |
+| `signInClient` | The client id of the sign in app the ops Worker holds for a service (`connections/oauth-apps.ts`, #2338 build PR 13), for the bidding Worker's Sign in with Google link; never its secret. Refuses `sign_in_app_unset` or `sign_in_app_malformed` naming the secret, and `sign_in_not_offered` for a service with no sign in. It shipped on ops ahead of the bidding route that calls it (build PR 13a, #2739), as the Google list's methods did, and joined `OPS_CONNECTIONS_METHODS` with that route (build PR 13b). | nothing |
 
 - **No copy is written by any of these (F116, F126).** verify and clearReauth use
   the candidate (the bidding row's sealed envelope at its new generation) for
@@ -349,6 +349,31 @@ reaches a token object.
   Google account, or the refresh token expires, the next refresh is answered
   `invalid_grant`: `needs_reauth` at once, cause `login_refused: invalid_grant`,
   and the person signs in again.
+- **The sign in itself** is the bidding Worker's (`POST /api/connections/google/sign-in`
+  and `.../sign-in/finish`, `routes/api/connections.ts`; `lib/google-sign-in.ts`),
+  since it holds the person's session. The start asks ops for the app's client
+  id, writes a single use state (`oauth_states`, bidding migration
+  20261024130000: who started it, the connection, the PKCE verifier, ten
+  minutes) and answers Google's link. Google sends the browser to
+  `/connections/google/callback`, a page of the web app that only hands what
+  Google said back to `/connections`. The Connections page posts the code and
+  state with the person's session, in the add form or Reconnect dialog the sign
+  in started from (D1 of `docs/design/google-sign-in-return.html`), the form's
+  values kept in the tab's session storage under the state; `claim_oauth_state` consumes the state
+  once, for that person and organization only. A new connection's row is
+  inserted first (person bound, owned by the caller, its login the client id
+  alone), because the token object writes the new login back to the row by its
+  alarm the moment it stores it; a failed exchange then removes the row. A
+  Reconnect signs in again only as the person the connection belongs to, and
+  exchanges with the row's own login.
+- **Only the person's own account** (Dan's decision of 2026-10-23, on #2338).
+  The Google account a person signs in with must be their Bidspoke email. The
+  exchange names it (`expected_account`), and the token object drops any other
+  account's consent before storing anything (`account_mismatch`, answered as
+  `exchange_account_mismatch`; the route says `google_sign_in_wrong_account`).
+  A new connection's row is then removed, and ops is told. So a connection's
+  account is always its owner's, and a Reconnect can never change it. That
+  only the owner may use it in a step is the ops executor's to enforce (#2339).
 
 ## A failing login (Dan's decision 2)
 

@@ -7,7 +7,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
-import { definitionShapeProblems, findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems } from '@bidspoke/workflow-definition'
+import { definitionShapeProblems, findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems, unfinishedAppActionSteps } from '@bidspoke/workflow-definition'
 import { reportDefinition } from '../../lib/definition-report'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
@@ -38,6 +38,8 @@ import { retirePartnerLastGood } from '../../lib/partner-last-good'
 import { checkDefinitionConnections, type ConnectionCheckedAction } from '../../lib/workflow-connection-check'
 import { copiedDefinitionStamp, writtenDefinitionStamp } from '../../lib/definition-stamp'
 import { writeWorkflow, type WriteWorkflowResult } from '../../lib/write-workflow'
+import { stampAppActionBinders } from '../../lib/app-action-binders'
+import { readOpsStepTest, testOpsStep } from './ops-step-test'
 import { assertNever } from '@bidspoke/node-types'
 
 type Variables = AuthVariables
@@ -146,6 +148,36 @@ function leadValidationRefusal(definition: unknown, live: boolean): string | nul
 }
 
 /**
+ * An App Action step that is not finished, on a write that makes the
+ * definition live (#2338, plan section 3.3 of #1689): a step is incomplete
+ * until what it runs, its connection and its required fields are set, and a
+ * workflow holding one cannot be switched on. Judged by validateDefinition at
+ * the stamp the definition is stored under (unfinishedAppActionSteps), and asked
+ * by the save of a switched on workflow, the switch on and a restore onto a
+ * switched on workflow. A switched off draft saves half built, as every other
+ * unconfigured step does. A stamp this build cannot judge refuses rather than
+ * passing as finished.
+ */
+function unfinishedStepRefusal(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  definition: unknown,
+  lane: unknown,
+  schemaVersion: unknown,
+): Response | null {
+  const judged = unfinishedAppActionSteps(definition, { lane: lane === 'ops' ? 'ops' : 'money', schemaVersion })
+  if (judged.kind !== 'judged') {
+    return c.json({ error: 'step_unjudged', message: 'Nothing was saved. This server cannot judge the workflow\'s steps at the version they were saved under, so it cannot be switched on yet.' }, 422)
+  }
+  const first = judged.steps[0]
+  if (!first) return null
+  return c.json({
+    error: 'step_unfinished',
+    message: `Nothing was saved. Step ${first.namespace} is not finished: ${first.message}. A workflow with an unfinished step cannot be switched on.`,
+    steps: judged.steps,
+  }, 422)
+}
+
+/**
  * A live workflow whose buyer steps cannot read a rule of an enabled buyer
  * profile they judge (#2149) is refused, naming the step, the buyer and the
  * rule: saved, the step would refuse every lead that buyer is offered as
@@ -213,6 +245,15 @@ function actorOf(c: Context<{ Bindings: Env; Variables: Variables }>) {
   const { userId, email, name } = c.get('user')
   return { id: userId, email, name }
 }
+
+/**
+ * A save of a definition from a canvas opened before every canvas save named
+ * the version it was loaded from and its press (#2599). Its save would be made
+ * from whatever version the request read, writing over a newer save, so it is
+ * refused before anything is read, with its edits left on the canvas (L598).
+ */
+export const RELOAD_REQUIRED_WORKFLOW_MESSAGE =
+  'Not saved. This page was opened before an update to how workflows are saved. Your changes are still on the canvas: copy the steps you changed, reload the page, and paste them back. A release can take a few minutes to reach your browser, so if this comes back after reloading, wait a few minutes and try again.'
 
 /**
  * A save made from a version that is no longer stored (#1947). Nothing was
@@ -309,6 +350,7 @@ workflows.post('/', async (c) => {
     },
     saveId: null,
     actor: actorOf(c),
+    storedDefinition: null,
   })
   if (result.kind !== 'written') return answerUnwritten(c, result)
 
@@ -367,6 +409,8 @@ workflows.post('/:id/duplicate', async (c) => {
     fields: { name: `${source.name} (copy)`, definition: cloneDefinition },
     saveId: null,
     actor: actorOf(c),
+    // The copy has no stored definition of its own: every step is bound by whoever duplicated it (#2339).
+    storedDefinition: null,
   })
   if (result.kind !== 'written') {
     return answerUnwritten(c, result, 'Not duplicated. This workflow was saved by someone else while it was being copied. Nothing was created. Try again.')
@@ -488,12 +532,16 @@ workflows.put('/:id', async (c) => {
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ name?: string; description?: string; definition?: unknown; message?: string; slack_channel?: string | null; expected_version?: unknown; save_id?: unknown }>()
 
-  // A save may name the version it was edited from and the press that made it
+  // A save names the version it was edited from and the press that made it
   // (#1947); write_workflow refuses it as stale when that version is no longer
-  // stored. A save naming none (today's canvas, a rename from the list) is made
-  // from the version read below, so a write landing during this request is
-  // still caught. Requiring it of a definition save, once the canvas sends it,
-  // is the follow up named in #1947.
+  // stored. A save of a definition must name both (#2599): one naming neither
+  // comes from a canvas opened before the canvas sent them. A save sending no
+  // definition (a rename from the list) may name none, and is then made from
+  // the version read below, so a write landing during this request is still
+  // caught.
+  if (body.definition !== undefined && (body.expected_version === undefined || body.save_id === undefined)) {
+    return c.json({ code: 'reload_required', error: RELOAD_REQUIRED_WORKFLOW_MESSAGE }, 428)
+  }
   const versionRefusal = expectedVersionRefusal(c, body.expected_version)
   if (versionRefusal) return versionRefusal
   if (body.save_id !== undefined && (typeof body.save_id !== 'string' || !UUID.test(body.save_id))) {
@@ -530,6 +578,10 @@ workflows.put('/:id', async (c) => {
     if (sfProblem) return c.json({ error: sfProblem }, 400)
     const validationProblem = leadValidationRefusal(def, existing.is_active === true)
     if (validationProblem) return c.json({ error: validationProblem }, 400)
+    if (existing.is_active === true) {
+      const unfinished = unfinishedStepRefusal(c, def, existing.lane, writtenDefinitionStamp())
+      if (unfinished) return unfinished
+    }
     // A live workflow's buyer steps must read every rule they judge (#2149).
     if (existing.is_active === true) {
       const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: body.name ?? existing.name, definition: body.definition })
@@ -559,7 +611,9 @@ workflows.put('/:id', async (c) => {
     nameUnchanged &&
     slackUnchanged &&
     descriptionNotTouched &&
-    jsonEqual(body.definition, existing.definition)
+    // Compared as writeWorkflow would write it: a canvas that never saw a step's binder stamp (#2339)
+    // still sends the definition unchanged.
+    jsonEqual(stampAppActionBinders(body.definition, existing.definition, actorOf(c).id), existing.definition)
   ) {
     const copyRefreshed = await copyCleared(async () => {
       await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
@@ -605,6 +659,7 @@ workflows.put('/:id', async (c) => {
     fields,
     saveId: typeof body.save_id === 'string' ? body.save_id : null,
     actor: actorOf(c),
+    storedDefinition: existing.definition,
   })
   if (result.kind !== 'written') return answerUnwritten(c, result)
   const updated = result.workflow
@@ -799,6 +854,8 @@ workflows.patch('/:id', async (c) => {
     // since a switched off draft may have been saved half built.
     const validationProblem = leadValidationRefusal(owner.definition, true)
     if (validationProblem) return c.json({ error: validationProblem }, 400)
+    const unfinished = unfinishedStepRefusal(c, owner.definition, owner.lane, owner.definition_schema_version)
+    if (unfinished) return unfinished
     const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: owner.name, definition: owner.definition })
     if (unread) return unread
     // And every connection it names must still be a live one of this
@@ -829,6 +886,7 @@ workflows.patch('/:id', async (c) => {
     fields,
     saveId: null,
     actor: actorOf(c),
+    storedDefinition: null,
   })
   if (result.kind !== 'written') {
     return answerUnwritten(c, result, 'Not switched on. This workflow was saved by someone else while it was being switched on, so the definition checked is no longer the one stored. Nothing was changed. Try again.')
@@ -876,7 +934,7 @@ workflows.delete('/:id', async (c) => {
 
   // Through write_workflow (#1947). A workflow that never existed, belongs to
   // another organization, or was already deleted is a 404 (#588).
-  const result = await writeWorkflow(supabase, { op: 'delete', orgId, workflowId: id, expectedVersion: null, fields: {}, saveId: null, actor: actorOf(c) })
+  const result = await writeWorkflow(supabase, { op: 'delete', orgId, workflowId: id, expectedVersion: null, fields: {}, saveId: null, actor: actorOf(c), storedDefinition: null })
   if (result.kind !== 'written') return answerUnwritten(c, result)
 
   const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
@@ -1004,7 +1062,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // 404 (not 403) to avoid leaking which workflow ids exist, matching siblings.
   const { data: owner, error: ownerError } = await supabase
     .from('workflows')
-    .select('id, name, is_active, lane, version')
+    .select('id, name, is_active, lane, version, definition')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -1029,6 +1087,10 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // always, the configuration when the restore makes it live at once.
   const restoreProblem = leadValidationRefusal(version.definition, owner.is_active === true)
   if (restoreProblem) return c.json({ error: restoreProblem }, 400)
+  if (owner.is_active === true) {
+    const unfinished = unfinishedStepRefusal(c, version.definition, owner.lane, writtenDefinitionStamp())
+    if (unfinished) return unfinished
+  }
 
   // A restore onto a live workflow makes the old definition live at once (#2149).
   if (owner.is_active === true) {
@@ -1065,6 +1127,8 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
     fields: { version_id: versionId, definition: restored, definition_report: report },
     saveId: null,
     actor: actorOf(c),
+    // A restored step keeps its binder only where its connection is the one bound now (#2339).
+    storedDefinition: owner.definition,
   })
   if (result.kind !== 'written') {
     return answerUnwritten(c, result, 'Not restored. This workflow was saved by someone else while it was being restored. Nothing was changed. Look at the latest version, then restore again if you still want to.')
@@ -1196,6 +1260,19 @@ workflows.post('/:id/test-node', async (c) => {
   const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
   if (ownerBlocked) return ownerBlocked
   if (!owner) return c.json({ error: 'Workflow not found' }, 404)
+  // An ops workflow's app_action step is tested on ops (#2339), which runs it
+  // and keeps its result; this Worker runs and writes nothing for it.
+  if (owner.lane === 'ops') {
+    const raw: unknown = await c.req.json().catch(() => null)
+    const opsBody = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
+    const nodes = (opsBody.definition as { nodes?: unknown } | undefined)?.nodes
+    const opsNode = Array.isArray(nodes)
+      ? (nodes as Array<{ id?: unknown; namespace?: unknown; type?: unknown; config?: unknown }>).find((n) => n?.namespace === opsBody.namespace)
+      : undefined
+    if (opsNode?.type === 'app_action' && typeof opsNode.id === 'string' && typeof opsNode.namespace === 'string') {
+      return testOpsStep(c, id, opsBody, { id: opsNode.id, namespace: opsNode.namespace, config: opsNode.config })
+    }
+  }
   // No engine runs around this node, so this is the only lane check it gets
   // (#1725): another lane's workflow is refused before its code is deployed or
   // any node of it runs, and the node runs through this Worker's lane executor.
@@ -1314,6 +1391,29 @@ workflows.post('/:id/test-node', async (c) => {
     const msg = formatErr(e)
     return c.json({ output: null, status: 'failed', error_message: msg, duration_ms: Date.now() - started, deploy: deployResult })
   }
+})
+
+// GET /api/workflows/:id/test-results/:nodeId: an ops workflow step's kept test
+// result, read from ops for the data picker (#2339). Null once none is under 7
+// days old, so the picker asks for a fresh test.
+workflows.get('/:id/test-results/:nodeId', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id')
+  const supabase = createSupabaseClient(c.env)
+  const { data: owner, error: ownerError } = await supabase
+    .from('workflows')
+    .select('id, lane')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+    .single()
+  const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
+  if (ownerBlocked) return ownerBlocked
+  if (!owner) return c.json({ error: 'Workflow not found' }, 404)
+  if (owner.lane !== 'ops') {
+    return c.json({ error: 'step_test_results_ops_only', message: 'Only an ops workflow keeps its steps\' test results. Test the step to see its output.' }, 422)
+  }
+  return readOpsStepTest(c, id, c.req.param('nodeId'))
 })
 
 // ─── Step ID rename ──────────────────────────────────────────────────────────

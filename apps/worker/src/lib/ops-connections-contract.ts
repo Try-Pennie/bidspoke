@@ -39,16 +39,19 @@ import { clearFieldProblem, OpsGatewayContractError, parseSealedEnvelope, type S
  * method CI's deployed ops check (.github/scripts/ops-exports-entrypoint.mjs)
  * requires the LIVE ops Worker to export.
  *
- * The last three are the Google mailboxes and drives list's (#2338, R10,
- * finding F129): add, remove and list an organization's
+ * After the first six come the Google mailboxes and drives list's three
+ * (#2338, R10, finding F129): add, remove and list an organization's
  * google_delegation_subjects, each change written on ops with who made it and
  * when. They shipped on ops first, in build PR 2, kept out of this list so that
  * pull request did not require them of the deploy it preceded; build PR 6 moved
  * them here once the ops deploy carried them (Deploy Ops Worker, 2026-10-20),
- * with the bidding routes that call them.
+ * with the bidding routes that call them. signInClient, last, followed the same
+ * order: shipped on ops in build PR 13a (#2739), moved here in build PR 13b
+ * with the Sign in with Google routes.
  */
 export const OPS_CONNECTIONS_METHODS = [
   'verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode', 'addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects',
+  'signInClient',
 ] as const
 export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
 
@@ -60,7 +63,7 @@ export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
 export const OPS_DELEGATION_METHODS = ['addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects'] as const satisfies readonly OpsConnectionsMethod[]
 export type OpsDelegationMethod = (typeof OPS_DELEGATION_METHODS)[number]
 /** The methods the entrypoint runs with the connections' dependencies (connections/ops-connections.ts). */
-export type OpsConnectionsCoreMethod = Exclude<OpsConnectionsMethod, OpsDelegationMethod>
+export type OpsConnectionsCoreMethod = Exclude<OpsConnectionsMethod, OpsDelegationMethod | OpsSignInMethod>
 
 /** At most this many entries are answered by listDelegationSubjects; reached_limit says so. */
 export const DELEGATION_LIST_LIMIT = 1000
@@ -72,20 +75,15 @@ export const DELEGATION_LIST_LIMIT = 1000
  * leaves ops (Dan's decision of 2026-10-22), and the id is read from the same
  * secret the exchange sends with it, so the two cannot disagree.
  *
- * Kept apart from OPS_CONNECTIONS_METHODS on purpose, as the Google list's
- * methods were in build PR 2: CI's deployed ops check requires the LIVE ops
- * Worker to export every method on that list, on every pull request that
- * touches ops, so the pull request adding this one cannot also require it of
- * the deploy it precedes. The bidding routes that call it move it onto that
- * list once the ops deploy carries it.
+ * It shipped on ops first (build PR 13a), kept out of OPS_CONNECTIONS_METHODS
+ * as the Google list's methods were in build PR 2, since CI's deployed ops
+ * check requires the LIVE ops Worker to export every method on that list; the
+ * bidding sign in routes that call it moved it onto the list once the ops
+ * deploy carried it. The entrypoint runs it with one secret of the ops
+ * Worker's own as its only dependency.
  */
-export const OPS_SIGN_IN_METHODS = ['signInClient'] as const
+export const OPS_SIGN_IN_METHODS = ['signInClient'] as const satisfies readonly OpsConnectionsMethod[]
 export type OpsSignInMethod = (typeof OPS_SIGN_IN_METHODS)[number]
-
-/** Reading one secret of the Worker's own: no database, no network. */
-export const OPS_SIGN_IN_CEILINGS_MS: Readonly<Record<OpsSignInMethod, number>> = {
-  signInClient: 5_000,
-}
 
 /**
  * How long the entrypoint lets each method run before it answers
@@ -115,6 +113,8 @@ export const OPS_CONNECTIONS_CEILINGS_MS: Readonly<Record<OpsConnectionsMethod, 
   addDelegationSubject: 10_000,
   removeDelegationSubject: 10_000,
   listDelegationSubjects: 10_000,
+  // Reading one secret of the ops Worker's own: no database, no network.
+  signInClient: 5_000,
 }
 
 /**
@@ -208,6 +208,12 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'sign_in_app_malformed',
   /** The service has no person bound sign in on this Worker. */
   'sign_in_not_offered',
+  /** A person signed in as another account than the one the exchange named (their own Bidspoke address, Dan 2026-10-23). Nothing was stored. */
+  'exchange_account_mismatch',
+  /** A step test of an action that changes something in the service, asked without confirming the real send (#2339). Nothing was sent. */
+  'step_test_send_unconfirmed',
+  /** The step's stored test result could not be read (#2339). */
+  'step_test_unavailable',
 ] as const
 export type OpsConnectionsOwnRefusal = (typeof OPS_CONNECTIONS_REFUSAL_CODES)[number]
 export type OpsConnectionsRefusalCode = OpsConnectionsOwnRefusal | ConnectionRefusalCode | SchemaLookupCode
@@ -272,6 +278,12 @@ export interface ExchangeOAuthCodeRequest {
   /** The PKCE verifier, 43 to 128 characters. */
   verifier: string
   redirect_uri: string
+  /**
+   * The account the person must sign in as, lower case: their own Bidspoke
+   * address (#2338, Dan's decision of 2026-10-23). A consent as anyone else is
+   * refused (exchange_account_mismatch) and nothing is stored.
+   */
+  expected_account: string
 }
 
 /** What verify measured the credential as. Each service adds its own kind with its measurement (Phase 7). */
@@ -339,7 +351,7 @@ function record(raw: unknown): Record<string, unknown> {
 }
 
 /** A uuid, read lower case: the database's spelling, and the one the seal's AAD binds. */
-function uuidField(raw: Record<string, unknown>, name: 'organization_id' | 'connection_id'): string {
+function uuidField(raw: Record<string, unknown>, name: 'organization_id' | 'connection_id' | 'workflow_id' | 'tested_by'): string {
   const value = raw[name]
   if (typeof value !== 'string' || !UUID.test(value)) throw new OpsConnectionsContractError(`the request's ${name} is not a uuid`)
   return value.toLowerCase()
@@ -527,6 +539,9 @@ export function parseExchangeOAuthCodeRequest(raw: unknown): ExchangeOAuthCodeRe
   if (typeof r.code !== 'string' || r.code === '' || r.code.length > 4096) throw new OpsConnectionsContractError('the exchange\'s code is missing')
   if (typeof r.verifier !== 'string' || r.verifier.length < 43 || r.verifier.length > 128) throw new OpsConnectionsContractError('the exchange\'s PKCE verifier is not 43 to 128 characters')
   if (typeof r.redirect_uri !== 'string' || r.redirect_uri === '' || r.redirect_uri.length > 2048) throw new OpsConnectionsContractError('the exchange\'s redirect_uri is missing')
+  if (typeof r.expected_account !== 'string' || r.expected_account.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(r.expected_account.trim())) {
+    throw new OpsConnectionsContractError('the exchange\'s expected_account is not one address')
+  }
   return {
     organization_id: uuidField(r, 'organization_id'),
     connection_id: uuidField(r, 'connection_id'),
@@ -534,5 +549,136 @@ export function parseExchangeOAuthCodeRequest(raw: unknown): ExchangeOAuthCodeRe
     code: r.code,
     verifier: r.verifier,
     redirect_uri: r.redirect_uri,
+    expected_account: r.expected_account.trim().toLowerCase(),
   }
+}
+
+// ── the step test (#2339) ───────────────────────────────────────────────────
+
+/**
+ * The step test methods (#2339, phase 9 of #1689): testStep runs one app_action
+ * step of an ops workflow for real, through the executor and connectionFetch,
+ * and keeps its result on the ops database (Dan's decision of 2026-10-23: the
+ * ops database only, the latest result per step, for 7 days); stepTestResult
+ * reads that result back for the data picker.
+ *
+ * Kept apart from OPS_CONNECTIONS_METHODS on purpose, as the sign in method is:
+ * CI's deployed ops check requires the LIVE ops Worker to export every method
+ * on that list, so the pull request adding these cannot also require them of
+ * the deploy it precedes. Until the ops deploy carries them, the bidding route
+ * that calls them answers ops_connections_unavailable, and they move onto that
+ * list in a later change.
+ */
+export const OPS_STEP_TEST_METHODS = ['testStep', 'stepTestResult'] as const
+export type OpsStepTestMethod = (typeof OPS_STEP_TEST_METHODS)[number]
+
+/**
+ *   testStep        the connection's copy, then the action's own sends, each
+ *                   under connectionFetch's deadline (an action may poll or
+ *                   send several times), then the one write of its result
+ *   stepTestResult  one ops database read (8 s statement timeout)
+ */
+export const OPS_STEP_TEST_CEILINGS_MS: Readonly<Record<OpsStepTestMethod, number>> = {
+  testStep: 90_000,
+  stepTestResult: 10_000,
+}
+
+/** The trigger payload and the earlier steps' outputs a test is given, together, at most this many bytes of JSON. */
+export const STEP_TEST_CONTEXT_MAX_BYTES = 512 * 1024
+
+const NODE_ID_MAX = 200
+const STEP_NAMESPACE = /^[a-zA-Z_][a-zA-Z0-9_]{0,199}$/
+
+export interface StepTestNode {
+  /** The canvas node id: the key the result is kept under. */
+  id: string
+  /** The step id, the root of the picker's paths (steps.<namespace>.output...). */
+  namespace: string
+  /** The app_action settings, boundBy stamped by the bidding Worker with tested_by. */
+  config: Record<string, unknown>
+}
+
+export interface TestStepRequest {
+  organization_id: string
+  workflow_id: string
+  /** The users.id of the person testing, from the verified JWT. */
+  tested_by: string
+  node: StepTestNode
+  trigger_payload: unknown
+  steps: Record<string, { output: unknown; status: string }>
+  /** The person confirmed that a step changing something in the service may send for real. */
+  confirm_send: boolean
+}
+
+export interface StepTestResultRequest {
+  organization_id: string
+  workflow_id: string
+  node_id: string
+}
+
+/** One kept test result as it crosses the binding. */
+export interface StepTestView {
+  node_id: string
+  namespace: string
+  tested_by: string
+  tested_at: string
+  status: 'completed' | 'failed'
+  /** Null for a failure, or an answer over the kept size (output_bytes then says how big it was). */
+  output: unknown
+  output_bytes: number | null
+  error: string | null
+  /** Each request the step made, sanitised before its login was applied. */
+  requests: unknown[]
+  duration_ms: number
+}
+
+/** recorded is false when the result could not be kept: the test still ran, and the picker will not see it. */
+export type TestStepAnswer = { ok: true; result: StepTestView; recorded: boolean } | OpsConnectionsRefused
+/** result is null when the step has no test result under 7 days old. */
+export type StepTestResultAnswer = { ok: true; result: StepTestView | null } | OpsConnectionsRefused
+
+function nodeIdOf(raw: unknown): string {
+  // eslint-disable-next-line no-control-regex
+  if (typeof raw !== 'string' || raw === '' || raw.length > NODE_ID_MAX || /[\u0000-\u001f]/.test(raw)) {
+    throw new OpsConnectionsContractError('the request\'s node\'s id is not 1 to 200 printable characters')
+  }
+  return raw
+}
+
+export function parseTestStepRequest(raw: unknown): TestStepRequest {
+  const r = record(raw)
+  const organization_id = uuidField(r, 'organization_id')
+  const workflow_id = uuidField(r, 'workflow_id')
+  const tested_by = uuidField(r, 'tested_by')
+  if (!isRecord(r.node)) throw new OpsConnectionsContractError('the request\'s node is not an object')
+  const id = nodeIdOf(r.node.id)
+  if (typeof r.node.namespace !== 'string' || !STEP_NAMESPACE.test(r.node.namespace)) {
+    throw new OpsConnectionsContractError('the request\'s node\'s step id is not a step id')
+  }
+  if (!isRecord(r.node.config)) throw new OpsConnectionsContractError('the request\'s node\'s settings are not an object')
+  const steps: TestStepRequest['steps'] = {}
+  if (r.steps !== undefined && r.steps !== null) {
+    if (!isRecord(r.steps)) throw new OpsConnectionsContractError('the request\'s steps are not an object')
+    for (const [namespace, step] of Object.entries(r.steps)) {
+      if (!STEP_NAMESPACE.test(namespace) || !isRecord(step) || typeof step.status !== 'string') {
+        throw new OpsConnectionsContractError('the request\'s steps are not each a step id holding an output and a status')
+      }
+      steps[namespace] = { output: step.output ?? null, status: step.status }
+    }
+  }
+  if (r.confirm_send !== undefined && typeof r.confirm_send !== 'boolean') throw new OpsConnectionsContractError('the request\'s confirm_send is not true or false')
+  const trigger_payload = r.trigger_payload ?? {}
+  if (new TextEncoder().encode(JSON.stringify({ trigger_payload, steps })).length > STEP_TEST_CONTEXT_MAX_BYTES) {
+    throw new OpsConnectionsContractError(`the request's context (its trigger payload and steps) is over ${STEP_TEST_CONTEXT_MAX_BYTES} bytes`)
+  }
+  return {
+    organization_id, workflow_id, tested_by,
+    node: { id, namespace: r.node.namespace, config: r.node.config },
+    trigger_payload, steps, confirm_send: r.confirm_send === true,
+  }
+}
+
+export function parseStepTestResultRequest(raw: unknown): StepTestResultRequest {
+  const r = record(raw)
+  return { organization_id: uuidField(r, 'organization_id'), workflow_id: uuidField(r, 'workflow_id'), node_id: nodeIdOf(r.node_id) }
 }

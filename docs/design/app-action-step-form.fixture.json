@@ -1,0 +1,105 @@
+{
+ "label": "Send welcome email",
+ "namespace": "send_welcome_email",
+ "service": "Gmail",
+ "action": "Send an email",
+ "connection": "Ops mailbox",
+ "actsAs": "ops@trypennie.com",
+ "fromStep": "Trigger",
+ "triggerPayload": {
+  "email": "maria.lopez@example.com",
+  "first_name": "Maria",
+  "last_name": "Lopez",
+  "phone": "(555) 010 2233",
+  "enrolled_debt": 18450
+ },
+ "fields": [
+  {
+   "key": "to",
+   "label": "To",
+   "required": false,
+   "insert": true,
+   "multiline": false
+  },
+  {
+   "key": "cc",
+   "label": "Cc",
+   "required": false,
+   "insert": true,
+   "multiline": false
+  },
+  {
+   "key": "bcc",
+   "label": "Bcc",
+   "required": false,
+   "insert": true,
+   "multiline": false
+  },
+  {
+   "key": "subject",
+   "label": "Subject",
+   "required": false,
+   "insert": true,
+   "multiline": false
+  },
+  {
+   "key": "body",
+   "label": "Body",
+   "required": true,
+   "insert": true,
+   "multiline": true
+  },
+  {
+   "key": "body_type",
+   "label": "Body type",
+   "required": false,
+   "insert": false,
+   "multiline": false
+  },
+  {
+   "key": "from_name",
+   "label": "From name",
+   "required": false,
+   "insert": true,
+   "multiline": false
+  },
+  {
+   "key": "from_email",
+   "label": "From email",
+   "required": false,
+   "insert": true,
+   "multiline": false
+  },
+  {
+   "key": "reply_to",
+   "label": "Reply to",
+   "required": false,
+   "insert": true,
+   "multiline": false
+  },
+  {
+   "key": "in_reply_to_message_id",
+   "label": "In reply to message id",
+   "required": false,
+   "insert": true,
+   "multiline": false
+  },
+  {
+   "key": "attachments",
+   "label": "Attachments",
+   "required": false,
+   "insert": true,
+   "multiline": false
+  }
+ ],
+ "finished": {
+  "to": "{{trigger.payload.email}}",
+  "subject": "Welcome to Pennie",
+  "body": "Hi {{trigger.payload.first_name}}, thanks for signing up."
+ },
+ "unfinished": {
+  "subject": "Welcome to Pennie",
+  "body": "Hi {{trigger.payload.first_name}}, thanks for signing up."
+ },
+ "block": "<div><span class=\"mb-1 block text-xs font-medium text-gray-600\">Display name</span><input class=\"input\" placeholder=\"send_welcome_email\" value=\"Send welcome email\"><p class=\"mt-1 text-xs text-gray-500\">How this step appears on the canvas. Leave blank to use the step ID.</p></div><div><span class=\"mb-1 block text-xs font-medium text-gray-600\">Step ID</span><input class=\"input \" value=\"send_welcome_email\"><p class=\"mt-1 text-xs text-gray-500\">Unique identifier used to reference this step's output in later steps. E.g. steps.credit_check.score</p></div><div><button type=\"button\" class=\"flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-500 hover:text-gray-600\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-chevron-down h-3.5 w-3.5 transition-transform -rotate-90\" aria-hidden=\"true\"><path d=\"m6 9 6 6 6-6\"></path></svg>Notes</button></div><div><button aria-expanded=\"true\" class=\"pointer-events-auto flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-500 hover:text-gray-600\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"lucide lucide-chevron-down h-3.5 w-3.5 transition-transform\" aria-hidden=\"true\"><path d=\"m6 9 6 6 6-6\"></path></svg>Advanced</button><div class=\"mt-3 space-y-3\"><div><span class=\"mb-1 block text-xs font-medium text-gray-600\">Timeout</span><div class=\"flex items-center gap-2\"><input class=\"input\" placeholder=\"30000\" type=\"number\" value=\"\"><span class=\"text-xs text-gray-500 whitespace-nowrap\">ms</span></div><p class=\"mt-1.5 text-xs text-gray-500\">How long to wait before giving up on this step. Default 30000ms.</p><div class=\"mt-3\"></div></div><div><span class=\"mb-1 block text-xs font-medium text-gray-600\">Retries</span><input class=\"input\" min=\"0\" max=\"5\" type=\"number\" value=\"2\"><p class=\"mt-1 text-xs text-gray-500\">How many times to retry on temporary failures (network errors, 429, 502&ndash;504). Max 5.</p></div><div><span class=\"mb-1 block text-xs font-medium text-gray-600\">If this step fails</span><select class=\"input\"><option value=\"fail\">Stop the workflow</option><option value=\"skip\">Skip and continue</option><option value=\"fallback\">Go to fallback step</option></select></div></div></div>"
+}

@@ -636,5 +636,31 @@
     },
     "anon": "denied",
     "note": "Every workflow write the Worker makes (#1947): create, duplicate, save, restore, switch on or off, move, soft delete. A WRITE: anon reaching it could put a definition live. Probed as a save of the all zero organization and workflow, which no row carries, so even a probe that ran it refuses workflow_not_found and writes nothing."
+  },
+  {
+    "name": "create_oauth_state",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_user_id": "00000000-0000-0000-0000-000000000000",
+      "p_service_type": "google",
+      "p_connection_id": "00000000-0000-0000-0000-000000000000",
+      "p_name": "probe",
+      "p_reconnect": false,
+      "p_client_id": "probe",
+      "p_verifier": "pppppppppppppppppppppppppppppppppppppppppppp",
+      "p_redirect_uri": "https://probe.invalid/callback"
+    },
+    "anon": "denied",
+    "note": "Starts one Sign in with Google (#2338, build PR 13, R17): writes a single use state holding the PKCE verifier. A WRITE, service_role only, so anon must be denied. Probed with the all zero organization and user, which no row carries, so even a probe that ran it refuses oauth_state_invalid and writes nothing."
+  },
+  {
+    "name": "claim_oauth_state",
+    "args": {
+      "p_state_id": "00000000-0000-0000-0000-000000000000",
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_user_id": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "Consumes one Sign in with Google state (#2338, build PR 13): answers its PKCE verifier to the one claim that wins. service_role only, so anon must be denied. Probed with the all zero state, which no row carries, so even a probe that ran it answers not_found and consumes nothing."
   }
 ]

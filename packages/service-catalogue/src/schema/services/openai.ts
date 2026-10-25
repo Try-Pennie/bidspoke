@@ -62,6 +62,7 @@ export const OPENAI_CHAT_V1: ActionSchema = {
     // A stable id for the person the text is about, for OpenAI's abuse monitoring.
     text('user'),
   ],
+  realSend: 'sends a real request to OpenAI',
   sideEffect: true,
   idempotent: false,
   idempotentBecause: MODEL_CALL_BILLED,
@@ -94,6 +95,7 @@ export const OPENAI_CREATE_RESPONSE_V1: ActionSchema = {
     json('include'),
     json('reasoning'),
   ],
+  realSend: 'sends a real request to OpenAI',
   sideEffect: true,
   idempotent: false,
   idempotentBecause: `${MODEL_CALL_BILLED} With a conversation, or stored, a repeat also adds the turn to the conversation twice.`,
@@ -109,6 +111,7 @@ export const OPENAI_CREATE_CONVERSATION_V1: ActionSchema = {
     // Up to 20 opening items.
     json('items'),
   ],
+  realSend: 'creates a real OpenAI conversation',
   sideEffect: true,
   idempotent: false,
   idempotentBecause:
@@ -124,6 +127,7 @@ export const OPENAI_ADD_CONVERSATION_ITEMS_V1: ActionSchema = {
     // 1 to 20 items, applied in one request.
     json('items', true),
   ],
+  realSend: 'adds real items to an OpenAI conversation',
   sideEffect: true,
   idempotent: false,
   idempotentBecause:

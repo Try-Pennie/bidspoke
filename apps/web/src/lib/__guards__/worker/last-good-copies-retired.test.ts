@@ -113,6 +113,9 @@ const KINDS: Kind[] = [
       'apps/worker/src/routes/api/connections.ts POST /': 'inserts a new ops_key connection under a fresh id, never the bidding_ring Slack alert row the copy holds',
       'apps/worker/src/routes/api/connections.ts POST /:id/reconnect': 'reconnect_ops_connection writes only an ops_key row, and refuses the bidding_ring Slack alert row the copy holds without writing it; a Reconnect of the Slack alert row (build PR 14) saves through saveSlackAlertConnection, which edits the copy itself and is held to this rule as its own handler',
       'apps/worker/src/routes/api/connections.ts DELETE /:id': 'remove_ops_connection deletes only an ops_key row, and refuses the bidding_ring Slack alert row the copy holds without writing it',
+      // #2338 build PR 13: held true by connections-google-sign-in.test.ts, whose insert is a google ops_key row
+      // and whose acts_as update is filtered to a person bound ops_key row.
+      'apps/worker/src/routes/api/connections.ts POST /google/sign-in/finish': 'inserts a person\'s own Google account as a new ops_key row under the state\'s fresh id, updates acts_as only on a person bound ops_key row, and removes only that new row through remove_ops_connection: never the bidding_ring Slack alert row the copy holds',
       'apps/worker/src/lib/secret-reencrypt.ts reencryptSecrets': 're-locks credential_enc under the next key: the token the copy holds is unchanged, and the next probe rewrites the copy under the ring in force',
       // #2335: held true by supabase/tests/store_rotated_envelope.test.sql case D,
       // in which a bidding_ring Slack row is answered not_found and not written.

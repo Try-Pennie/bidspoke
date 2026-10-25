@@ -76,6 +76,8 @@ export const HTTP_CUSTOM_REQUEST_V1: ActionSchema = {
     INCLUDE_HEADERS,
   ],
   sideEffect: true,
+  // The tick box's words before a test (#2339): whatever method it names, a test sends it.
+  realSend: 'sends a real request to its host',
   idempotent: false,
   idempotentBecause:
     'Its method is the step\'s to choose, and a POST or PATCH to an API Bidspoke does not know may create or change something each time it arrives, so after an uncertain outcome a person decides whether to send it again.',

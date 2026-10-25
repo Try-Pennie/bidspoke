@@ -30,7 +30,7 @@ import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 import { AlertClaimObject } from '../durable-objects/alert-claim'
 import { CRON_JOBS, completedKey, heartbeatKey } from '../lib/cron-heartbeat'
-import { encryptSecret } from '../lib/secret-crypto'
+import { decryptSecret, encryptSecret } from '../lib/secret-crypto'
 import { SLACK_CONNS_LASTGOOD_KEY, SLACK_COPY_SAVED_AT_KEY } from '../lib/slack-copy'
 import { NOBODY_TOLD_LINE } from '../lib/nobody-told-page'
 import { TEST_KEY } from '../lib/__tests__/_scheduled-slack-doubles'
@@ -170,6 +170,45 @@ async function seedCopy(kv: ReturnType<typeof memoryKv>) {
   kv.store.set(SLACK_CONNS_LASTGOOD_KEY, await encryptSecret(JSON.stringify(copy), TEST_KEY))
 }
 
+/**
+ * Crypto that finishes inside the faked clock (#2508). The ticks hash alert
+ * keys (alert-backoff) and decrypt the saved Slack copy, and web crypto settles
+ * on the real event loop, outside the faked time: on a loaded machine one job's
+ * crypto outlasted the clock's step while another's did not, so which alert
+ * posted first, and whether the outage line was on it, depended on the machine
+ * (reproduced by delaying each call 0 to 50 ms on the real clock). Hashing is
+ * Node's synchronous SHA-256, the same bytes; the one saved copy is decrypted
+ * for real once here, and later decrypts of that ciphertext answer from it.
+ */
+// Node's own crypto, reached without the Node types this Worker's tsconfig leaves out.
+type NodeHash = { update(data: Uint8Array): NodeHash; digest(): Uint8Array }
+const nodeCrypto = (process as unknown as { getBuiltinModule(id: 'node:crypto'): { createHash(algorithm: string): NodeHash } }).getBuiltinModule('node:crypto')
+type DecryptArgs = Parameters<SubtleCrypto['decrypt']>
+const bytesOf = (data: ArrayBuffer | ArrayBufferView): Uint8Array =>
+  data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+const base64Of = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
+
+async function cryptoOnTheFakedClock(kv: ReturnType<typeof memoryKv>) {
+  vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (algorithm, data) => {
+    if (algorithm !== 'SHA-256') throw new Error(`the simulation hashes only SHA-256, not ${String(algorithm)}`)
+    const out = nodeCrypto.createHash('sha256').update(bytesOf(data as ArrayBuffer | ArrayBufferView)).digest()
+    return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer
+  })
+  const realDecrypt = crypto.subtle.decrypt.bind(crypto.subtle)
+  const decrypted = new Map<string, ArrayBuffer>()
+  const keyOf = (params: DecryptArgs[0], data: DecryptArgs[2]) =>
+    `${base64Of(bytesOf((params as { iv: ArrayBuffer | ArrayBufferView }).iv))}:${base64Of(bytesOf(data as ArrayBuffer | ArrayBufferView))}`
+  vi.spyOn(crypto.subtle, 'decrypt').mockImplementation(async (params, key, data) => {
+    const hit = decrypted.get(keyOf(params, data))
+    if (hit) return hit
+    const plain = await realDecrypt(params, key, data)
+    decrypted.set(keyOf(params, data), plain)
+    return plain
+  })
+  // Once for real, before any tick, so every tick's decrypt is answered at once.
+  await decryptSecret(kv.store.get(SLACK_CONNS_LASTGOOD_KEY) as string, TEST_KEY)
+}
+
 function env(): Env {
   return {
     IDEMPOTENCY: idempotency,
@@ -235,6 +274,7 @@ beforeEach(async () => {
   supabaseAnswer = null
   idempotency = memoryKv()
   await seedCopy(idempotency)
+  await cryptoOnTheFakedClock(idempotency)
   stubNetwork()
   const keep = (...a: unknown[]) => { if (process.env.SIM_DEBUG) process.stdout.write(`${new Date(Date.now()).toISOString()} ${a.map(String).join(' ')}\n`) }
   vi.spyOn(console, 'error').mockImplementation(keep)

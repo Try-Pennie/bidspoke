@@ -22,7 +22,7 @@
 // Usage:
 //   scan-coverage.mjs trivy    <report.json> <required-target>
 //   scan-coverage.mjs semgrep  <report.json> <required-path-prefix>...
-//   scan-coverage.mjs gitleaks <report.json> <canary-file>
+//   scan-coverage.mjs gitleaks <report.json> <canary-file>...
 //
 // Exits 0 only when the scanner is proven to have covered its subject AND found
 // nothing. Every other outcome, including an unreadable report, exits 1.
@@ -110,11 +110,11 @@ export function checkSemgrep(report, requiredPrefixes) {
 }
 
 /**
- * Gitleaks found the planted canary and nothing else.
+ * Gitleaks found every planted canary and nothing else.
  *
  * Gitleaks emits no coverage signal of any kind: an empty report is what a clean
  * scan produces AND what a scan over nothing produces. So the run plants a secret
- * the ruleset must catch and requires it back. That proves more than a file count
+ * per credential shape the ruleset must catch and requires every one back (#2777). That proves more than a file count
  * could, because a broad allowlist would suppress every finding while the file
  * count still looked healthy.
  *
@@ -124,17 +124,24 @@ export function checkSemgrep(report, requiredPrefixes) {
  *
  * @returns {Verdict}
  */
-export function checkGitleaks(findings, canaryFile) {
+export function checkGitleaks(findings, canaryFiles) {
   const all = Array.isArray(findings) ? findings : []
-  const foundCanary = all.some((f) => String(f?.File ?? '').endsWith(canaryFile))
-  const real = all.filter((f) => !String(f?.File ?? '').endsWith(canaryFile))
+  const canaries = (Array.isArray(canaryFiles) ? canaryFiles : [canaryFiles]).filter(Boolean)
+  // With no canary named, an empty report is a scan over nothing reading as clean.
+  if (canaries.length === 0) return fail('gitleaks was given no canary file, so an empty report would prove nothing.')
+  const isCanary = (f) => canaries.some((c) => String(f?.File ?? '').endsWith(c))
+  const real = all.filter((f) => !isCanary(f))
 
   const problems = []
-  if (!foundCanary) {
-    problems.push(
-      `gitleaks did not report the canary secret planted at ${canaryFile}, so this scan proves nothing. ` +
-        'Either it read no files, or an allowlist is now broad enough to suppress a real leak.',
-    )
+  // One canary per credential shape (#2777): each must come back, because a
+  // scanner whose rules no longer know one shape still finds the others.
+  for (const canary of canaries) {
+    if (!all.some((f) => String(f?.File ?? '').endsWith(canary))) {
+      problems.push(
+        `gitleaks did not report the canary secret planted at ${canary}, so this scan proves nothing for that shape. ` +
+          'Either it read no files, its rules no longer recognise that shape, or an allowlist is now broad enough to suppress a real leak.',
+      )
+    }
   }
   if (real.length > 0) {
     const listed = real.map((f) => `${f?.File}:${f?.StartLine} ${f?.RuleID}`).join('\n  ')
@@ -142,13 +149,13 @@ export function checkGitleaks(findings, canaryFile) {
   }
 
   if (problems.length > 0) return fail(problems.join('\n'))
-  return pass(`gitleaks found the canary at ${canaryFile} and no real leaks.`)
+  return pass(`gitleaks found every canary (${canaries.join(', ')}) and no real leaks.`)
 }
 
 const CHECKS = {
   trivy: (report, args) => checkTrivy(report, args[0]),
   semgrep: (report, args) => checkSemgrep(report, args),
-  gitleaks: (report, args) => checkGitleaks(report, args[0]),
+  gitleaks: (report, args) => checkGitleaks(report, args),
 }
 
 function main(argv) {

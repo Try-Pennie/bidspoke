@@ -65,7 +65,8 @@ export type GoogleEdit =
  */
 export type SaveState =
   | { kind: 'editing' }
-  | { kind: 'saving'; attempt: number; startedAt: number; stalled: string }
+  /** `label`: the working line's own words, when not the service's login check (a Google sign in, #2338). */
+  | { kind: 'saving'; attempt: number; startedAt: number; stalled: string; label?: string }
   | { kind: 'failed'; sentence: string; unconfirmed: boolean }
 
 /** The Add connection form: what it holds, its save, and what was chosen before it opened, for Cancel. */
@@ -150,7 +151,7 @@ export type ConnectionsEvent =
   | { type: 'add_google'; way: GoogleWay }
   | { type: 'add_closed' }
   /** A save, numbered by the caller above every earlier one, with the sentence its line says if it stalls. */
-  | { type: 'save_requested'; attempt: number; at: number; stalled: string }
+  | { type: 'save_requested'; attempt: number; at: number; stalled: string; label?: string }
   | { type: 'save_answered'; attempt: number; connection: ConnectionView }
   | { type: 'save_refused'; attempt: number; sentence: string }
   // ── The dialogs ──
@@ -159,7 +160,7 @@ export type ConnectionsEvent =
   | { type: 'dialog_closed' }
   | { type: 'replace_with'; id: string }
   | { type: 'replace_tick'; workflow: string }
-  | { type: 'reconnect_requested'; attempt: number; at: number; stalled: string }
+  | { type: 'reconnect_requested'; attempt: number; at: number; stalled: string; label?: string }
   | { type: 'reconnect_answered'; attempt: number; id: string; actsAs: string | null; at: number }
   | { type: 'reconnect_refused'; attempt: number; sentence: string }
   | { type: 'connection_remove_requested'; attempt: number; at: number; stalled: string }
@@ -330,7 +331,7 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
     }
     case 'save_requested': {
       if (!s.add || !s.add.draft.service || s.add.save.kind === 'saving' || e.attempt <= s.lastChange.save || s.list.kind !== 'loaded') return s
-      return { ...s, now: e.at, lastChange: { ...s.lastChange, save: e.attempt }, add: { ...s.add, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
+      return { ...s, now: e.at, lastChange: { ...s.lastChange, save: e.attempt }, add: { ...s.add, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled, ...(e.label ? { label: e.label } : {}) } } }
     }
     case 'save_answered': {
       // The connection exists once any save answered, however late or superseded (R18), so it is listed;
@@ -382,7 +383,7 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
     case 'reconnect_requested': {
       const d = s.dialog
       if (d?.kind !== 'reconnect' || d.save.kind === 'saving' || e.attempt <= s.lastChange.reconnect) return s
-      return { ...s, now: e.at, lastChange: { ...s.lastChange, reconnect: e.attempt }, dialog: { ...d, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
+      return { ...s, now: e.at, lastChange: { ...s.lastChange, reconnect: e.attempt }, dialog: { ...d, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled, ...(e.label ? { label: e.label } : {}) } } }
     }
     case 'reconnect_answered': {
       // The new login is saved once any check answers, however late: the connection reads working, checked now.

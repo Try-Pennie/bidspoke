@@ -81,6 +81,7 @@ function opsCopies(clock: () => number) {
     return {
       state: 'usable', connectionId: CONN, service: kept.input.service, generation: kept.input.generation, envelope: kept.input.envelope,
       publicConfig: kept.input.publicConfig, target: kept.input.target, servedAt: kept.servedAt, serveUntil: kept.input.serveUntil, dbNow: new Date(clock()).toISOString(),
+      ownerUserId: kept.input.ownerUserId,
     }
   }
   return { db, readCopy, saves, generation: () => kept?.input.generation ?? null }

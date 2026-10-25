@@ -65,6 +65,7 @@ function opsDb() {
     expireRuns: async () => { throw new Error('not claimed') },
     purgeTombstones: async () => { throw new Error('not claimed') },
     purgeObservations: async () => { throw new Error('not claimed') },
+    purgeStepTests: async () => { throw new Error('not claimed') },
     // Every version held: this test is about the connection copies.
     missingDefinitions: async () => ({ missing: [], reachedLimit: false }),
     saveDefinition: async () => { throw new Error('nothing is missing') },
@@ -116,6 +117,7 @@ function opsDb() {
       servedAt: kept.servedAt,
       serveUntil: kept.input.serveUntil,
       dbNow: new Date(clock.value).toISOString(),
+      ownerUserId: kept.input.ownerUserId,
     }
   }
   return { db, readCopy, copies }

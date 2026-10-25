@@ -76,7 +76,7 @@ describe('versioning is enforced by committed fingerprints (#1689 D1)', () => {
   })
 
   it('treats a change to a trait as a change to the version', async () => {
-    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, sideEffect: true, idempotent: true }))
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, sideEffect: true, idempotent: true, realSend: 'sends a real echo' }))
     expect(await codes(edited)).toEqual(['fingerprint_changed'])
   })
 
@@ -179,6 +179,23 @@ describe('every action decides its own traits (R11)', () => {
   it('refuses an idempotent decision with no recorded reason', async () => {
     const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, idempotentBecause: '  ' }))
     expect(await codes(edited)).toEqual(['idempotent_reason_missing'])
+  })
+
+  it('refuses an action that changes something with no words for what a test of it really sends (#2339)', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, sideEffect: true, idempotent: true }))
+    expect(await codes(edited)).toContain('real_send_missing')
+    const said = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, sideEffect: true, idempotent: true, realSend: 'sends a real echo' }))
+    expect(await codes(said)).not.toContain('real_send_missing')
+  })
+
+  it('treats an argument drawn on several lines as display, not a change to the version (#2338)', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, arguments: a.arguments.map((arg) => ({ ...arg, multiline: true })) }))
+    expect(await codes(edited)).toEqual([])
+  })
+
+  it('refuses real send words on a read, which a test never asks about', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, realSend: 'sends a real echo' }))
+    expect(await codes(edited)).toEqual(['real_send_on_read'])
   })
 
   it('refuses a read that claims it is unsafe to repeat', async () => {

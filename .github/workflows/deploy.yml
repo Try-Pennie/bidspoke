@@ -78,7 +78,7 @@ jobs:
   # typecheck or lint command.
   verify-static:
     name: Verify (typecheck + lint)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # measured 41s + 38s + setup, plus headroom. Bounds a HANG (#1062).
     timeout-minutes: 10
     steps:
@@ -101,7 +101,7 @@ jobs:
 
   verify-worker:
     name: Verify (worker tests)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # 10 before the money gate (#1704) added a second install and two replays.
     timeout-minutes: 15
     steps:
@@ -169,7 +169,7 @@ jobs:
 
   verify-web:
     name: Verify (web tests)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -188,7 +188,7 @@ jobs:
 
   verify-release:
     name: Verify (docs + migrations)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -228,7 +228,7 @@ jobs:
 
   verify:
     name: Verify
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # Pure fan-in: no checkout, no install, nothing to hang on.
     timeout-minutes: 5
     needs: [verify-static, verify-worker, verify-web, verify-release]
@@ -260,7 +260,7 @@ jobs:
 
   changes:
     name: Detect changed paths
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # measured max 9s over 6 runs, plus headroom. Bounds a HANG, not slowness (#1062).
     timeout-minutes: 5
     # Every output comes from the targets step, never straight from the filter
@@ -350,7 +350,7 @@ jobs:
 
   deploy-worker-tail:
     name: Deploy Worker Tail
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # conditional and rarely run; sized like Deploy Worker, plus headroom. Bounds a HANG, not slowness (#1062).
     timeout-minutes: 10
     needs: [verify, changes]
@@ -386,7 +386,7 @@ jobs:
   # on its own path rather than waiting on the engine's artifact gate.
   deploy-compare-outbound:
     name: Deploy Compare Outbound
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # conditional and rarely run; sized like Deploy Worker Tail, plus headroom. Bounds a HANG, not slowness (#1062).
     timeout-minutes: 10
     needs: [verify, changes]
@@ -418,7 +418,7 @@ jobs:
   # event, so merging ops code creates no Cloudflare resource before part 4.
   deploy-ops-outbound:
     name: Deploy Ops Outbound
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # conditional and rarely run; sized like Deploy Compare Outbound, plus headroom. Bounds a HANG, not slowness (#1062).
     timeout-minutes: 10
     needs: [verify, changes]
@@ -454,7 +454,7 @@ jobs:
   # master secret, and fails the run if it is not.
   deploy-ops-worker:
     name: Deploy Ops Worker
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # a wrangler deploy (Deploy Worker's measured max 39s) plus the proof's
     # bounded wait (12 attempts, 10s apart), plus the CLI install and migration
     # check (14s measured in Verify), plus headroom. Bounds a HANG, not slowness (#1062).
@@ -553,7 +553,7 @@ jobs:
   # every edge; the job's timeout bounds a hang.
   ops-connections-probe:
     name: OPS_CONNECTIONS answers through the binding
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 5
     needs: [deploy-worker, deploy-ops-worker]
     if: |
@@ -581,7 +581,7 @@ jobs:
 
   worker_artifact:
     name: Worker artifact changed
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # measured max 43s over 3 runs, and it builds twice, plus headroom. Bounds a HANG, not slowness (#1062).
     timeout-minutes: 10
     needs: [verify, changes]
@@ -660,7 +660,7 @@ jobs:
         run: |
           set -uo pipefail
           if pnpm install --frozen-lockfile && pnpm --filter=worker run build; then
-            echo "hash=$(sha256sum apps/worker/dist/index.js | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+            echo "hash=$(bash .github/scripts/sha256.sh apps/worker/dist/index.js)" >> "$GITHUB_OUTPUT"
             echo "config_hash=$(bash .github/scripts/worker-config-hash.sh)" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::HEAD build failed inside the artifact gate, so the deploy will go ahead unconditionally."
@@ -673,7 +673,8 @@ jobs:
         run: |
           set -uo pipefail
           if pnpm install --frozen-lockfile && pnpm --filter=worker run build; then
-            echo "hash=$(sha256sum apps/worker/dist/index.js | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+            # The HEAD copy of the hash script: the live commit may predate it (#2768).
+            echo "hash=$(bash ../head/.github/scripts/sha256.sh apps/worker/dist/index.js)" >> "$GITHUB_OUTPUT"
             # The HEAD copy of the hashing script deliberately, so both sides are
             # measured the same way even when the script itself changed (L398).
             echo "config_hash=$(bash ../head/.github/scripts/worker-config-hash.sh)" >> "$GITHUB_OUTPUT"
@@ -707,7 +708,7 @@ jobs:
 
   deploy-worker:
     name: Deploy Worker
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # measured max 39s, plus headroom. Bounds a HANG, not slowness (#1062).
     timeout-minutes: 10
     # deploy-compare-outbound first (#1708 part B): the engine binds the compare
@@ -772,7 +773,7 @@ jobs:
 
   deploy-pages:
     name: Deploy Pages
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # measured max 135s over 2 runs to build and upload, plus up to 300s for the
     # propagation sampler below to wait on a route that never flips, plus
     # headroom. Bounds a HANG, not slowness (#1062). A test derives the sum.
@@ -873,7 +874,7 @@ jobs:
   # from it by deploy-pages-follows-worker.test.ts.
   partners-page-follows:
     name: Partners page follows the Worker
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 5
     needs: [deploy-pages]
     if: always() && needs.deploy-pages.result == 'success'
@@ -903,7 +904,7 @@ jobs:
 
   assert-db-objects:
     name: Live database has the objects the app needs
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # measured max 11s over 4 runs, plus headroom. Bounds a HANG, not slowness (#1062).
     timeout-minutes: 10
     # Runs AFTER the deploys, because asserting before them would measure the

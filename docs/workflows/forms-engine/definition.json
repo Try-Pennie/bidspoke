@@ -147,7 +147,7 @@
         "config": {
           "retries": 2,
           "service_label": "Slack",
-          "url": "https://hooks.slack.com/triggers/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",
+          "url": "{{env.SLACK_TRIGGER_FORMS_GEOFF}}",
           "headers": {
             "Content-Type": "application/json"
           },
@@ -188,7 +188,7 @@
         "config": {
           "retries": 2,
           "service_label": "Slack",
-          "url": "https://hooks.slack.com/triggers/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",
+          "url": "{{env.SLACK_TRIGGER_FORMS_AGENT}}",
           "headers": {
             "Content-Type": "application/json"
           },

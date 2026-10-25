@@ -29,6 +29,10 @@ import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
 import { useElapsed } from '@/hooks/useElapsed'
 import JsonTreeView from './JsonTreeView'
+import { TickRow } from '@/components/ui/form'
+import { appActionRealSend, realSendConnectionOf } from '@/lib/app-action-display'
+import { useConnectionName } from './connection-names'
+import { AppActionConfig, type UpstreamStep } from './AppActionConfig'
 import type { ReferenceProblem } from '@/lib/reference-validation'
 
 interface Props {
@@ -38,7 +42,7 @@ interface Props {
   onDuplicate?: (id: string) => void
   onClose: () => void
   nodeNamespaces: string[]
-  nodeOptions?: { id: string; namespace: string; label?: string }[]
+  nodeOptions?: { id: string; namespace: string; label?: string; type?: string }[]
   refs?: string[]
   // True when this node's namespace is referenced by another node's config /
   // variables / fallback. Auto-deriving the Step ID from the Display name stops
@@ -63,7 +67,7 @@ interface Props {
   onRetryFromFailure?: () => Promise<void>
   // Test a single node. "Build from run" seeds upstream context from the last
   // run; "cold start" runs with only the supplied trigger payload.
-  onNodeTest?: (namespace: string, opts: { triggerPayload: unknown; useLastRun: boolean }) => Promise<void>
+  onNodeTest?: (namespace: string, opts: NodeTestOptions) => Promise<void>
   canBuildFromRun?: boolean
   defaultTestPayload?: unknown
   width: number
@@ -76,6 +80,36 @@ interface Props {
   // Reports whether the open node's key/value editor (constants, headers, injected
   // fields) is free of blank/duplicate keys. The canvas blocks save while false (#96).
   onKeyEditorValidityChange?: (valid: boolean) => void
+}
+
+/**
+ * The App Action steps that run before this one (#2338): of every step a path
+ * of edges leads from to it, the App Action ones, whose kept test results the
+ * data picker offers. Nearest first.
+ */
+export function upstreamAppSteps(
+  nodeId: string,
+  edges: readonly { source: string; target: string }[],
+  nodes: readonly { id: string; namespace: string; label?: string; type?: string }[],
+): UpstreamStep[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const seen = new Set<string>([nodeId])
+  const out: UpstreamStep[] = []
+  let frontier = [nodeId]
+  while (frontier.length > 0) {
+    const next: string[] = []
+    for (const id of frontier) {
+      for (const e of edges) {
+        if (e.target !== id || seen.has(e.source)) continue
+        seen.add(e.source)
+        next.push(e.source)
+        const n = byId.get(e.source)
+        if (n && n.type === 'app_action') out.push({ id: n.id, namespace: n.namespace, label: n.label })
+      }
+    }
+    frontier = next
+  }
+  return out
 }
 
 // Retries always resolves to a number (never null/empty): erasing the field
@@ -92,6 +126,11 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
+  // A test of a step that changes something in its service sends for real, so it is agreed to first (#2339),
+  // in the test section rather than the step's form, beside the buttons the agreement is for.
+  const sendConnection = realSendConnectionOf(type, data.config)
+  const sendConnectionName = useConnectionName(sendConnection)
+  const realSend = sendConnection === null ? null : appActionRealSend(data.config, sendConnectionName)
   const isCode = type === 'code'
 
   const [showAdvanced, setShowAdvanced] = useState(true)
@@ -397,6 +436,20 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           )}
         </Field>
 
+        {/* An App Action step's settings sit under its Step ID, above Notes, as settled (#2338,
+            docs/design/app-action-step-form.html): what it runs, its connection, then its fields. */}
+        {type === 'app_action' && (
+          <AppActionConfig
+            key={node.id}
+            config={data.config}
+            onChange={updateConfig}
+            workflowId={workflowId}
+            upstream={upstreamAppSteps(node.id, edges, nodeOptions)}
+            triggerPayload={defaultTestPayload}
+            refs={refs}
+          />
+        )}
+
         {/* Notes — free-form per-step annotation, surfaced as a small icon on the canvas */}
         <div>
           <button
@@ -499,6 +552,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           namespace={data.namespace ?? ''}
           defaultPayload={defaultTestPayload}
           canBuildFromRun={canBuildFromRun}
+          realSend={realSend}
           onTest={onNodeTest}
         />
       )}
@@ -512,18 +566,35 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
 // "Build from run" seeds the context with the last run's upstream step outputs +
 // trigger payload (editable). "Run cold" runs with only the trigger payload
 // below — for nodes that don't read steps.*. Output renders in StepResults below.
+/** How a node is tested: its payload, whether from the last run, and whether a real send was agreed to (#2339). */
+export interface NodeTestOptions {
+  triggerPayload: unknown
+  useLastRun: boolean
+  confirmSend?: boolean
+}
+
 function NodeTestSection({
   namespace,
   defaultPayload,
   canBuildFromRun,
+  realSend,
   onTest,
 }: {
   namespace: string
   defaultPayload: unknown
   canBuildFromRun: boolean
-  onTest: (namespace: string, opts: { triggerPayload: unknown; useLastRun: boolean }) => Promise<void>
+  /** The tick box's words when testing this step sends for real (appActionRealSend); null when it sends nothing. */
+  realSend: string | null
+  onTest: (namespace: string, opts: NodeTestOptions) => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
+  // Agreed to for one test of one step only: cleared after each test, and held
+  // as the step and words it was given for, so opening another step (or this
+  // step's send changing) never carries the tick over to a send nobody agreed to.
+  const sendKey = realSend === null ? null : `${namespace}\u0000${realSend}`
+  const [agreedFor, setAgreedFor] = useState<string | null>(null)
+  const sendAgreed = sendKey !== null && agreedFor === sendKey
+  const setSendAgreed = (agreed: boolean) => setAgreedFor(agreed ? sendKey : null)
   const [payloadText, setPayloadText] = useState(() => JSON.stringify(defaultPayload ?? {}, null, 2))
   const [parseError, setParseError] = useState<string | null>(null)
   const [running, setRunning] = useState<null | 'run' | 'cold'>(null)
@@ -540,7 +611,11 @@ function NodeTestSection({
     }
     setParseError(null)
     setRunning(useLastRun ? 'run' : 'cold')
-    try { await onTest(namespace, { triggerPayload: parsed, useLastRun }) } finally { setRunning(null) }
+    const confirmSend = realSend !== null && sendAgreed
+    try { await onTest(namespace, { triggerPayload: parsed, useLastRun, confirmSend }) } finally {
+      setRunning(null)
+      setSendAgreed(false)
+    }
   }
 
   return (
@@ -564,10 +639,12 @@ function NodeTestSection({
             className="w-full resize-y rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 font-mono text-xs text-gray-800 focus:border-purple-300 focus:outline-none focus:ring-1 focus:ring-purple-200"
           />
           {parseError && <p className="text-xs text-red-600">{parseError}</p>}
+          {/* Balanced so no line ends with one word alone (.impeccable.md's copy rule). */}
+          {realSend !== null && <div className="text-pretty"><TickRow checked={sendAgreed} onChange={setSendAgreed} label={realSend} disabled={running !== null} /></div>}
           <div className="flex items-center gap-2">
             <button
               onClick={() => run(true)}
-              disabled={!canBuildFromRun || running !== null}
+              disabled={!canBuildFromRun || running !== null || (realSend !== null && !sendAgreed)}
               title={canBuildFromRun ? 'Run this node using the upstream outputs from the last run' : 'Run the workflow once to enable'}
               className="inline-flex items-center gap-1.5 rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -576,7 +653,7 @@ function NodeTestSection({
             </button>
             <button
               onClick={() => run(false)}
-              disabled={running !== null}
+              disabled={running !== null || (realSend !== null && !sendAgreed)}
               title="Run this node with only the trigger payload above (no upstream outputs)"
               className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-40"
             >

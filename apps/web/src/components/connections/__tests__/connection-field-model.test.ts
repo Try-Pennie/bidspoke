@@ -10,7 +10,7 @@ import { connectionFieldLines, connectionOptions, connectionsPageHref, connectio
 function view(over: Partial<ConnectionView>): ConnectionView {
   return {
     id: 'c-pennie', name: 'Pennie Salesforce', service: 'salesforce', serviceName: 'Salesforce', actsAs: 'integration@trypennie.com',
-    status: 'ok', org: null, target: null, workflows: [], lastCheckedAt: null, problemSince: null, problemCause: null, alertLogin: false,
+    status: 'ok', org: null, target: null, workflows: [], lastCheckedAt: null, problemSince: null, problemCause: null, alertLogin: false, ownAccount: false,
     ...over,
   }
 }

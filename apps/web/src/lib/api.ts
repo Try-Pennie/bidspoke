@@ -665,6 +665,18 @@ export interface ConnectionList {
   statuses: { as_of: string | null; stale: boolean; unavailable: { cause: string; detail: string } | null }
 }
 
+/** An ops step's kept test result, as GET /api/workflows/:id/test-results/:nodeId answers it (#2339). */
+export interface StepTestResult {
+  node_id: string
+  namespace: string
+  tested_at: string
+  status: 'completed' | 'failed'
+  output: unknown
+  output_bytes: number | null
+  error: string | null
+  duration_ms: number
+}
+
 /** What POST /api/connections/:id/lookup/:key found. */
 export type ConnectionLookupAnswer =
   | { key: 'objects' | 'tables'; entries: { name: string; label: string }[] }
@@ -839,6 +851,19 @@ async function fetchWithTimeout(url: string, init: ReqInit, headers: HeadersInit
   }
 }
 
+/**
+ * The body of PUT /api/workflows/:id. A save of a definition names the version
+ * it was edited from and the press that made it (#1947, #2599): the Worker
+ * refuses one naming neither (428 reload_required) and one made from a version
+ * no longer stored (409 stale_version, read by lib/workflow-save-conflict.ts),
+ * so the type will not let a definition be sent without both. A save with no
+ * definition (a rename) may name neither.
+ */
+export type WorkflowSaveBody = { name?: string; message?: string; slack_channel?: string | null } & (
+  | { definition?: undefined; expected_version?: number; save_id?: string }
+  | { definition: WorkflowDef; expected_version: number; save_id: string }
+)
+
 async function req<T>(path: string, init?: ReqInit): Promise<T> {
   let headers: HeadersInit
   try {
@@ -912,10 +937,11 @@ export const api = {
     get: (id: string) => req<Workflow>(`/api/workflows/${id}`),
     create: (name: string, folder_id?: string | null) =>
       req<Workflow>('/api/workflows', { method: 'POST', body: JSON.stringify({ name, folder_id: folder_id ?? null }) }),
-    save: (id: string, data: { name?: string; definition?: WorkflowDef; message?: string; slack_channel?: string | null }) =>
+    save: (id: string, data: WorkflowSaveBody) =>
       // no_changes (#569): the server short-circuits a save whose definition is
       // identical to what's stored: the row is untouched, so version_id and the
-      // Workflow body are absent. Callers branch on no_changes before reading them.
+      // Workflow body are absent, and version is the stored one. Callers branch
+      // on no_changes before reading the rest.
       req<Workflow & { deploy_errors?: { namespace: string; error: string }[]; stored_copy_warning?: string; version_id?: string; no_changes?: boolean }>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     draftChangelog: (id: string, definition: WorkflowDef) =>
       req<{ draft: string | null; reason?: 'no_previous_version' | 'no_changes' | 'unavailable' | 'error'; cached?: boolean }>(
@@ -947,14 +973,18 @@ export const api = {
         body: JSON.stringify({ payload, execution_id: executionId, definition }),
         timeoutMs: LONG_TIMEOUT_MS,
       }),
-    testNode: (id: string, data: { namespace: string; definition: unknown; execution_id?: string; trigger_payload?: unknown; steps?: Record<string, unknown> }) =>
+    // confirm_send: the person agreed that this test sends for real (#2339); an ops step test can run up to 95 s.
+    testNode: (id: string, data: { namespace: string; definition: unknown; execution_id?: string; trigger_payload?: unknown; steps?: Record<string, unknown>; confirm_send?: boolean }) =>
       req<{
         output: unknown
         status: string
         error_message: string | null
         duration_ms: number
         deploy?: { deployed: boolean; skipped: boolean; error?: string }
-      }>(`/api/workflows/${id}/test-node`, { method: 'POST', body: JSON.stringify(data) }),
+      }>(`/api/workflows/${id}/test-node`, { method: 'POST', body: JSON.stringify(data), timeoutMs: LONG_TIMEOUT_MS }),
+    // An ops step's kept test result (#2339), null once none is under 7 days old.
+    testResult: (id: string, nodeId: string) =>
+      req<{ result: StepTestResult | null }>(`/api/workflows/${id}/test-results/${encodeURIComponent(nodeId)}`),
     saveTestPayloads: (id: string, test_payloads: Array<{ name: string; payload: unknown }>) =>
       req<{ test_payloads: Array<{ name: string; payload: unknown }> }>(`/api/workflows/${id}/test-payloads`, {
         method: 'PATCH',
@@ -1395,6 +1425,16 @@ export const api = {
         method: 'DELETE',
         timeoutMs: CONNECTION_REMOVE_TIMEOUT_MS,
       }),
+    // Sign in with your own Google account (build PR 13, R17): the link to Google for a new connection or a
+    // Reconnect of one, then the finish the Connections page posts once the callback route hands Google's answer back
+    // to it. Each refusal throws carrying the route's sentence.
+    startGoogleSignIn: (body: { name: string } | { connection_id: string }) =>
+      req<{ url: string }>('/api/connections/google/sign-in', { method: 'POST', body: JSON.stringify(body), timeoutMs: CONNECTION_SAVE_TIMEOUT_MS }),
+    finishGoogleSignIn: (body: { state: string; code: string } | { state: string; error: string }) =>
+      req<
+        | { outcome: 'created'; connection: { id: string; name: string; service: string; acts_as: string | null } }
+        | { outcome: 'reconnected'; connection: { id: string; acts_as: string | null }; cleared: boolean }
+      >('/api/connections/google/sign-in/finish', { method: 'POST', body: JSON.stringify(body), timeoutMs: CONNECTION_SAVE_TIMEOUT_MS }),
     // The History tab (build PR 9): newest first, each naming who made it.
     history: (id: string) =>
       req<{ entries: Array<{ id: string; action: string; at: string; by: string | null; credential_changed: boolean; changes: unknown }> }>(`/api/connections/${encodeURIComponent(id)}/history`),
