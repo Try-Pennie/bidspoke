@@ -155,6 +155,8 @@ interface ConnectionRow {
   credential_enc: string | null
   config: unknown
   target: unknown
+  person_bound: boolean
+  user_id: string | null
 }
 
 interface TombstoneRow {
@@ -232,7 +234,9 @@ export async function readOpsWorkflowDefinitions(supabase: SupabaseClient, reque
  * binds the organization, so a copy filed under another one cannot be opened.
  * NEVER A PLAINTEXT LOGIN: only rows sealed to the ops key are read, and of
  * them only the sealed envelope (this Worker holds no key that opens it), the
- * public config and the declared target, and a row whose config or target
+ * public config, the declared target and, for a person bound connection, the
+ * users.id it acts as (#2339: the ops executor runs a person's own account step
+ * only when that person bound it), and a row whose config or target
  * names a login field is refused (servedConnectionProblem). bidding_ring rows,
  * the Slack alert token's, are never read: the filter excludes them and any
  * that came through anyway is dropped.
@@ -248,7 +252,7 @@ export async function readOpsConnections(supabase: SupabaseClient, nowMs: number
   const rows = await fetchAllPaged<ConnectionRow>(
     (from, to) => supabase
       .from('service_connections')
-      .select('id, organization_id, service_type, sealed_for, credential_generation, credential_enc, config, target')
+      .select('id, organization_id, service_type, sealed_for, credential_generation, credential_enc, config, target, person_bound, user_id')
       .eq('sealed_for', 'ops_key')
       .not('credential_enc', 'is', null)
       .order('id', { ascending: true })
@@ -278,6 +282,8 @@ export async function readOpsConnections(supabase: SupabaseClient, nowMs: number
       envelope,
       public_config: row.config ?? {},
       target: row.target ?? null,
+      // Only a person bound connection has an owner; a company connection's user_id says who added it, never whom it acts as.
+      owner_user_id: row.person_bound === true ? row.user_id : null,
       serve_until: serveUntil,
     }
     const problem = servedConnectionProblem(served, servedAt)

@@ -202,6 +202,22 @@ describe('PUT /workflows/:id', () => {
     expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'save', p_org: USER_ORG, p_id: 'wf-1', p_expected_version: 4, p_fields: { name: 'Renamed' }, p_save_id: null, p_actor: 'user-1' })])
   })
 
+  // #2339: a person's own account may be used only by its owner, so a save stamps
+  // who bound each app_action step, from the stored definition, never the client's.
+  it('stamps who bound each app_action step: the stored binder for an unchanged connection, the saver for a new step, never a value the client sent', async () => {
+    const DAN = '00000000-0000-4000-8000-0000000023d1'
+    const conn = '00000000-0000-4000-8000-0000000023c1'
+    const step = (id: string, boundBy?: string) => ({ id, namespace: id, type: 'app_action', config: { service: 'google', action: 'google.gmail-send-email', actionVersion: 1, connection: conn, ...(boundBy ? { boundBy } : {}) } })
+    const stored = { ...existingWorkflow, definition: { trigger: { type: 'schedule', config: {} }, nodes: [step('mail', DAN)], edges: [] } }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: stored } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const definition = { trigger: { type: 'schedule', config: {} }, nodes: [step('mail', 'user-1'), step('notify', DAN)], edges: [{ id: 'e', source: 'mail', target: 'notify' }] }
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
+    expect(res.status).toBe(200)
+    const written = writesOf(sb, 'save')[0].p_fields.definition as { nodes: Array<{ id: string; config: { boundBy: string } }> }
+    expect(written.nodes.map((n) => [n.id, n.config.boundBy])).toEqual([['mail', DAN], ['notify', 'user-1']])
+  })
+
   it('rejects a cyclic definition with 400 before saving (#334)', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
