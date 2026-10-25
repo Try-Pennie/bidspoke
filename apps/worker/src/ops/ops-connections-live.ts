@@ -21,7 +21,7 @@ import { recordSfBudgetReadingFor, SfBudgetMemory } from './connections/sf-budge
 import type { OpsConnectionsDeps } from './connections/ops-connections'
 import { opsServiceRegistry } from './connections/services'
 import type { OpsEnv } from './index'
-import { createOpsSupabaseClient } from './ops-db'
+import { createOpsSupabaseClient, laneProjectRefs } from './ops-db'
 import type { DelegationListDeps } from './connections/delegation-list'
 import { appActionDeps } from './app-action'
 import type { StepTestDeps } from './step-test'
@@ -103,6 +103,8 @@ export function liveOpsConnectionsDeps(env: OpsEnv, options: LiveOpsConnectionsO
         serviceAccountKey: () => env.GOOGLE_DELEGATION_KEY,
         tokens,
       },
+      // Supabase refuses the bidding project and this Worker's own ops project (#2337).
+      supabase: { laneProjectRefs: () => laneProjectRefs(env) },
     }),
     moneyIdentities: async (organizationId) => {
       if (!gateway) throw new Error('the OPS_GATEWAY binding to the bidding Worker is missing from this deploy')

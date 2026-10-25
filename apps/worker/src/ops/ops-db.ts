@@ -136,9 +136,22 @@ export async function sendWithinOpsDeadline<T>(
 /**
  * The bidding database's project ref. The ops Worker must never hold a client of
  * it (plan 0.E: no main service key on ops), so a URL naming it is refused even
- * when the key beside it would work.
+ * when the key beside it would work. An ops Supabase connection is refused for
+ * it too (laneProjectRefs, #2337).
  */
-const BIDDING_PROJECT_REF = 'xvrmivmpfykwwtriqwpg'
+export const BIDDING_PROJECT_REF = 'xvrmivmpfykwwtriqwpg'
+
+/**
+ * The Supabase projects Bidspoke itself runs on, which no ops connection may
+ * name (#2337, the cross lane rule): the bidding project, and the ops project
+ * this Worker's own client reaches, read from OPS_SUPABASE_URL by the same rule
+ * that refuses the bidding project there. Throws OpsDatabaseConfigError when
+ * OPS_SUPABASE_URL is unset or names the bidding project, so a caller cannot
+ * pass a connection it has not compared with the ops project.
+ */
+export function laneProjectRefs(env: OpsDbEnv): readonly string[] {
+  return [BIDDING_PROJECT_REF, new URL(databaseUrlFrom(env)).hostname.split('.')[0].toLowerCase()]
+}
 
 /**
  * The ops database's functions, classified in ops-rpcs.ts. Under the local dev

@@ -174,6 +174,22 @@ describe('the shipped catalogue', () => {
     }
   })
 
+  it("folds each Supabase action's request code and the project rule into its fingerprint, and imports no npm package (#2337)", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const supabaseActions = RUNTIME_ACTIONS.filter((a) => a.key.startsWith('supabase.'))
+    expect(supabaseActions).toHaveLength(3)
+    for (const a of supabaseActions) {
+      const reached = collectModuleImports(path.join(SHIPPED.actionsDir, `${a.key}.v${a.version}.ts`), {
+        root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+        linkOf: (importer, name) => linkedPath(lock, importer, name),
+      })
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'supabase', 'call.ts'))
+      expect(reached.files, a.key).toContain(path.join(SRC, 'schema', 'supabase-project.ts'))
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'failure.ts'))
+      expect(reached.packages, a.key).toEqual([])
+    }
+  })
+
   it('carries no test fixture action', () => {
     expect(catalogueActions(CATALOGUE).filter((a) => a.key.startsWith('fixture.'))).toEqual([])
     expect(RUNTIME_ACTIONS.filter((a) => a.key.startsWith('fixture.'))).toEqual([])

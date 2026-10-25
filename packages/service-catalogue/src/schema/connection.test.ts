@@ -107,6 +107,18 @@ describe("HTTP's connection (#2337)", () => {
   })
 })
 
+describe("Supabase's connection (#2337)", () => {
+  it('is a static service key for one project, named by its Project URL', () => {
+    const c = service('supabase').connection
+    expect(c.auth).toBe('static_key')
+    expect(c.tile).toBe('A project\'s service key')
+    expect(connectionFormLabels(c)).toEqual(['Name', 'Project URL', 'Service key'])
+    expect(loginFieldNames(c)).toEqual(['service_key'])
+    expect(targetFieldNames(c)).toEqual(['project_url'])
+    expect(connectionSecretLabel(c)).toBe('service key')
+  })
+})
+
 describe('every shipped connection', () => {
   it('passes the connection checks', () => {
     expect(CATALOGUE.flatMap((s) => connectionProblems(s))).toEqual([])

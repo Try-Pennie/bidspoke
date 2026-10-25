@@ -36,5 +36,8 @@
   "salesforce.upsert-record@1": "fbdc0a47ba32a4bdb6e69616fe7c9377d8627208b9467b6f39cc5ded4952940d",
   "slack.send-message@1": "05bfd55619f892f7aa64637cb195e34d1ae457a354065ff47a992c4521302218",
   "snowflake.execute-sql-query@1": "23a36b888525d23ca9ef2937c7dfbac322daca335b007aa7b8e14c016e039ff9",
-  "snowflake.insert-multiple-rows@1": "47dba1a4a8b3490cf84906f90ca9b0f6483e7b1b2b2ebae8ac8781ddecc23de6"
+  "snowflake.insert-multiple-rows@1": "47dba1a4a8b3490cf84906f90ca9b0f6483e7b1b2b2ebae8ac8781ddecc23de6",
+  "supabase.insert-row@1": "ee30412d9d2a0314a2acc0c61508d56ae6fe14288942dd0a616bd9097eddf8b7",
+  "supabase.select-row@1": "b2ed6b191d5f2e330bb6fa4b9b9e3c04f3e212a3ef41064d1c4e5f9c2bc337e4",
+  "supabase.update-row@1": "349e1d392de9337309a181726f8abcac334559ce52aec244860bfbadd7e997b1"
 }
