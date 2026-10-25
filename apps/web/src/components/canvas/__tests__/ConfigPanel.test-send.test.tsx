@@ -2,9 +2,10 @@
  * The tick box before a test that sends for real (#2339; settled in
  * docs/design/app-action-test-send.html): an App Action step whose action
  * changes something in its service shows, above the test buttons, a tick box
- * naming what the test sends and the connection it sends from. Run cold waits
- * for the tick, the tick is sent as confirm_send on that one test and cleared
- * after it, and a read shows none.
+ * naming what the test sends and the connection it sends from. Run cold and
+ * Build from run both wait for the tick, the tick is sent as confirm_send on that
+ * one test and cleared after it, it never carries over to another step, and a
+ * read shows none.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
