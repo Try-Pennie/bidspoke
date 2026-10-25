@@ -227,27 +227,29 @@ The guard keys on the hostname, not a hardcoded project ref, so any database it 
 - CI must pass before merging to main
 
 ### Never push straight to main (#266)
-Every change to main goes through a pull request that CI has passed. This is a
-**rule, not an enforced constraint**, and the difference matters: server-side
-branch protection is unavailable on this repo (both `/rulesets` and
-`/branches/main/protection` answer 403, "Upgrade to GitHub Pro or make this
-repository public"), and Dan decided on 2026-08-17 to keep detection rather than
-pay for prevention. So nothing stops a direct push except this line.
+Every change to main goes through a pull request that CI has passed, and since the
+repository went public on 2026-10-25 GitHub enforces it: the `Protect main` ruleset
+(id 25746493) requires a pull request and the nine CI checks (Typecheck, Lint, Test
+(worker), Test (web), Money gate, Accessibility (axe), Auth gate fails closed,
+Security scans, Outage drill), and refuses force pushes and deleting main. Nobody
+bypasses it, and no approving review is required, because an author cannot approve
+their own pull request (Dan, 2026-10-25). A renamed check is still required under its
+old name, so rename one here in the same change (L305).
 
-What exists instead is **detection after the fact**. The `Main has no unreviewed direct push` step of the
-Security scans job in `ci.yml` (#760) runs on every push to main and reports a
-commit that arrived without a reviewed PR. It is deliberately fail-safe towards
-staying quiet, because it makes an accusation rather than withholding an action,
-and it confirms an empty commit-to-PR association against the PR record before
-saying anything: GitHub's association index can be empty for a genuinely reviewed
-merge, and a false accusation is what teaches everyone to ignore a guard.
+The ruleset holds only while the repository is public. On the free plan a private
+repository's rulesets are not enforced (both `/rulesets` and
+`/branches/main/protection` answered 403, "Upgrade to GitHub Pro or make this
+repository public"), so going private again turns this back into a rule nothing
+enforces.
 
-The husky pre-push hooks (test gate, style gate) are also rules rather than
-constraints: `--no-verify`, `SKIP_TEST_CHECK` and `SKIP_STYLE_CHECK` each bypass
-them, which is by design for the rare justified case and useless as a barrier.
+The `Main has no unreviewed direct push` step of the Security scans job in `ci.yml`
+(#760) stays as the detection behind it: it runs on every push to main and reports a
+commit that arrived without a reviewed PR, fail safe towards staying quiet, because
+GitHub's commit to PR association can be empty for a genuinely reviewed merge.
 
-If the plan is ever upgraded, close this gap properly: require a PR, require the
-CI checks, require one approving review, and disallow force-push and deletion.
+The husky pre-push hooks (test gate, style gate) are rules rather than constraints:
+`--no-verify`, `SKIP_TEST_CHECK` and `SKIP_STYLE_CHECK` each bypass them, which is by
+design for the rare justified case and useless as a barrier.
 - Always commit `pnpm-lock.yaml` in the same commit as `package.json` changes. Every CI job installs with `--frozen-lockfile`, so a lockfile that does not match `package.json`, or one with a duplicated entry, fails the build. The repo's pnpm version is declared once, as `packageManager` in the root `package.json` (pnpm 9.15.9, #1677): CI's `pnpm/action-setup` reads it (no workflow names a version of its own), a local pnpm 10 switches to it automatically, and Dependabot uses it. It must stay pnpm 9: pnpm 11 drops the root `pnpm.overrides` from the lockfile, which CI's frozen install then refuses, and next-on-pages finds the pinned Vercel CLI only under pnpm 9. `apps/web/src/lib/__tests__/pnpm-version-declared.test.ts` guards all of that. Regenerate the lockfile with `CI=true npx -y pnpm@9.15.9 install --lockfile-only`, never a plain install through npx, which rebuilds node_modules. `pnpm-lock.yaml` was corrupt on main for 18 days in 2026-07/08 precisely because nothing installed strictly; `apps/web/src/lib/__tests__/lockfile-integrity.test.ts` now guards it.
 
 ## Database migrations

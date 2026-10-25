@@ -11,12 +11,24 @@ runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_reques
 
 The middle clause is there because the repository is public (since 2026-10-25):
 anybody can fork it and open a pull request, and a pull request job runs that
-code. A pull request from a fork, or one whose head repository has been deleted,
-therefore always runs on GitHub's runner, never on Dan's Mac, whatever the
-variable says. GitHub's own advice is never to give a public repository's
-untrusted pull requests a self-hosted runner. The check reads the event's pull
-request payload, not the event name, so a `pull_request_target` or review
-trigger added later is held to it too.
+code. With it, our own workflow files never send a fork's pull request, or one
+whose head repository has been deleted, to Dan's Mac, whatever the variable says.
+The check reads the event's pull request payload, not the event name, so a
+`pull_request_target` or review trigger added later is held to it too.
+
+It does NOT stop a stranger who means to reach the Mac (L805): a fork's pull
+request runs the workflow files on the fork's own branch, so the fork can write
+`runs-on: pennie-mac` itself. What stops that lives outside the repository:
+
+- Actions requires approval for every outside contributor's pull request
+  (`all_external_contributors`, set 2026-10-25), so nothing a stranger writes
+  runs until someone in Try-Pennie approves it. Read the workflow diff before
+  approving one.
+- The org runner group holding the `pennie-mac` runners must not allow public
+  repositories (organization Settings, Actions, Runner groups).
+
+GitHub's own advice is never to give a public repository's untrusted pull
+requests a self-hosted runner.
 
 - **`pennie-mac`**: jobs run on the org runners on Dan's work MacBook. Their setup
   lives in Slate (`scripts/mac-runner/setup.sh`, `docs/workflows.md`), not here.

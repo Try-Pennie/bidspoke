@@ -26,6 +26,10 @@ import { readWorkflow, workflowFiles, workflowIf, workflowJobBody, workflowJobId
  * GitHub's runner whatever the variable says. Keyed on the payload rather than
  * the event name, so a pull_request_target or review trigger added later is
  * held to it too.
+ *
+ * This keeps OUR workflow files from routing a fork to the Mac. It cannot stop a
+ * fork that rewrites its own copy of them (L805); the approval setting and the
+ * runner group, both outside the repository, do that (docs/ci-runners.md).
  */
 
 const ROUTED =
