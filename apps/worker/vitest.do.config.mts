@@ -3,6 +3,19 @@ import { defineConfig } from 'vitest/config'
 import { runnerTimeouts } from '../../vitest.runner-timeouts'
 
 /**
+ * Each workerd project's per test limit. The first request a file makes to an
+ * object starts the whole Worker bundle cold, and the test that makes it pays
+ * for it: traced on 2026-10-25 as 2.5 s of nothing before the first claim
+ * answered on a fast developer Mac, then 3 ms for the test itself. On GitHub's
+ * runners that start passed vitest's 5 s default (5,009 and 5,018 ms) once the
+ * bundle grew, failing CI with nothing wrong. The limit guards against a hang,
+ * so it is set well clear of a cold start.
+ */
+const WORKERD_TEST_TIMEOUT_MS = 30_000
+// The larger of this and a self-hosted runner's limit, so neither can shrink the other.
+const workerdTimeouts = { ...runnerTimeouts, testTimeout: Math.max(WORKERD_TEST_TIMEOUT_MS, runnerTimeouts.testTimeout ?? 0) }
+
+/**
  * The Workers test projects (#1410), run by `pnpm run test:do`.
  *
  * do: the Durable Object suites that need REAL SQLite storage run inside workerd
@@ -16,19 +29,6 @@ import { runnerTimeouts } from '../../vitest.runner-timeouts'
  * one that deploys. A second project rather than a second command, so the CI
  * steps that run test:do run it without being edited.
  */
-/**
- * Each workerd project's per test limit. The first request a file makes to an
- * object starts the whole Worker bundle cold, and the test that makes it pays
- * for it: traced on 2026-10-25 as 2.5 s of nothing before the first claim
- * answered on a fast developer Mac, then 3 ms for the test itself. On GitHub's
- * runners that start passed vitest's 5 s default (5,009 and 5,018 ms) once the
- * bundle grew, failing CI with nothing wrong. The limit guards against a hang,
- * so it is set well clear of a cold start.
- */
-const WORKERD_TEST_TIMEOUT_MS = 30_000
-// The larger of this and a self-hosted runner's limit, so neither can shrink the other.
-const workerdTimeouts = { ...runnerTimeouts, testTimeout: Math.max(WORKERD_TEST_TIMEOUT_MS, runnerTimeouts.testTimeout ?? 0) }
-
 export default defineConfig({
   test: {
     projects: [
