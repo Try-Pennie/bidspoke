@@ -91,7 +91,12 @@ export function AppActionConfig({ config, onChange, workflowId, upstream, trigge
   // ── The picker's sources: the trigger's test payload, then each earlier step's kept test result.
   const [results, setResults] = useState<Record<string, ResultLoad>>({})
   const readResult = useCallback((step: UpstreamStep) => {
-    if (!workflowId) return
+    // A workflow not yet saved keeps no tests, so it has none to read: say so
+    // rather than leave the step reading for ever (lessons review, L10).
+    if (!workflowId) {
+      setResults((r) => ({ ...r, [step.id]: { kind: 'ready', result: null } }))
+      return
+    }
     setResults((r) => ({ ...r, [step.id]: { kind: 'loading' } }))
     api.workflows.testResult(workflowId, step.id).then(
       (answer) => setResults((r) => ({ ...r, [step.id]: { kind: 'ready', result: answer.result } })),

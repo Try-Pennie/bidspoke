@@ -399,7 +399,9 @@ export function unfinishedAppActionSteps(definition: unknown, options: ValidateD
   if (verdict.kind !== 'judged') return verdict
   const nodes = isRecord(definition) && Array.isArray(definition.nodes) ? (definition.nodes as unknown[]) : []
   const appSteps = new Set(nodes.filter((n): n is { id: string; type: string } => isRecord(n) && n.type === 'app_action' && typeof n.id === 'string').map((n) => n.id))
-  const steps = verdict.problems
+  // Through the one predicate a live save refuses by, so a step is unfinished
+  // exactly when its settings would block switching on (lessons review).
+  const steps = blockingProblems(verdict.problems, { live: true })
     .filter((p) => p.rule === 'node_config' && p.nodeId !== undefined && appSteps.has(p.nodeId))
     .map((p) => ({ nodeId: p.nodeId as string, namespace: p.namespace ?? (p.nodeId as string), message: p.message }))
   return { kind: 'judged', steps }

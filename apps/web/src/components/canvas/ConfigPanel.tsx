@@ -126,8 +126,8 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
-  // A test of a step that changes something in its service sends for real, so it is agreed to first (#2339).
-  // Not a section of its own: the step's form is not built yet (node-type-coverage.test.ts).
+  // A test of a step that changes something in its service sends for real, so it is agreed to first (#2339),
+  // in the test section rather than the step's form, beside the buttons the agreement is for.
   const sendConnection = realSendConnectionOf(type, data.config)
   const sendConnectionName = useConnectionName(sendConnection)
   const realSend = sendConnection === null ? null : appActionRealSend(data.config, sendConnectionName)

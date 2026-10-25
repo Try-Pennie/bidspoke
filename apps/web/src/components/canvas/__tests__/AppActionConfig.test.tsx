@@ -30,11 +30,13 @@ const LIST = {
 const GMAIL = { service: 'google', action: 'google.gmail-send-email', actionVersion: 1, connection: CONN, args: { subject: 'Welcome' } }
 const PAYLOAD = { email: 'maria.lopez@example.com', first_name: 'Maria' }
 
-function Harness({ initial, upstream = [], refs = ['trigger.payload'], onConfig }: {
+function Harness({ initial, upstream = [], refs = ['trigger.payload'], onConfig, workflowId = 'wf-1' }: {
   initial: Record<string, unknown>
   upstream?: UpstreamStep[]
   refs?: string[]
   onConfig?: (c: Record<string, unknown>) => void
+  /** null for a workflow not yet saved. */
+  workflowId?: string | null
 }) {
   const [config, setConfig] = useState(initial)
   return (
@@ -42,7 +44,7 @@ function Harness({ initial, upstream = [], refs = ['trigger.payload'], onConfig 
       <AppActionConfig
         config={config}
         onChange={(patch) => setConfig((c) => { const next = { ...c, ...patch }; onConfig?.(next); return next })}
-        workflowId="wf-1"
+        workflowId={workflowId ?? undefined}
         upstream={upstream}
         triggerPayload={PAYLOAD}
         refs={refs}
@@ -121,6 +123,16 @@ describe('the data picker', () => {
     fireEvent.click(within(list).getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(api.workflows.testResult).toHaveBeenCalledTimes(4))
     expect(vi.mocked(api.workflows.testResult).mock.calls.map((c) => c[1])).toEqual(['a', 'b', 'c', 'c'])
+  })
+
+  // A workflow not yet saved has no kept tests to read: say so, never "Reading" for ever (L10).
+  it('says an unsaved workflow\'s earlier steps have no test, rather than reading for ever', () => {
+    render(<Harness initial={GMAIL} upstream={[{ id: 'a', namespace: 'find_lead', label: 'Find lead' }]} workflowId={null} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Insert a value into To' }))
+    const list = screen.getByRole('listbox')
+    expect(within(list).getByText('No test in the last 7 days. Test the step to pick its values.')).toBeInTheDocument()
+    expect(within(list).queryByText(/Reading/)).toBeNull()
+    expect(api.workflows.testResult).not.toHaveBeenCalled()
   })
 
   it('extends the field\'s {{ autocomplete with the picker\'s paths, keeping what it offered before', () => {
