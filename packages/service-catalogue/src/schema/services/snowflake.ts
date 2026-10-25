@@ -24,6 +24,7 @@ export const SNOWFLAKE_EXECUTE_SQL_QUERY_V1: ActionSchema = {
     { key: 'sql', type: 'code', required: true, allowsVariables: false, parseJson: false },
     { key: 'binds', type: 'list', required: false, allowsVariables: true, parseJson: true },
   ],
+  realSend: 'runs a real SQL statement in Snowflake',
   sideEffect: true,
   // #2339: true from the step request id, never from the SQL, which may write.
   idempotent: true,
@@ -42,6 +43,7 @@ export const SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1: ActionSchema = {
     { key: 'columns', type: 'list', required: true, allowsVariables: true, parseJson: true },
     { key: 'values', type: 'code', required: true, allowsVariables: true, parseJson: true },
   ],
+  realSend: 'inserts real rows into Snowflake',
   sideEffect: true,
   // #2339: the step request id is the key Snowflake deduplicates the INSERT on.
   idempotent: true,

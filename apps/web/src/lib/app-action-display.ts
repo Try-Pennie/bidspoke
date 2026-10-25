@@ -49,3 +49,29 @@ export function appActionDisplay(config: Record<string, unknown>): AppActionDisp
   if (action !== null) chip = product ? capitalised(action.name.replace(/^[^:]+:\s*/, '')) : action.name
   return { service: name, action: chip, mark: product?.mark ?? null }
 }
+
+/**
+ * The tick box's words before a test of a step that sends for real (#2339;
+ * settled in docs/design/app-action-test-send.html): what the pinned action
+ * sends, from the catalogue's realSend, and the connection it sends from, by its
+ * name. Null for a read, and for an action version the catalogue does not have,
+ * which a test refuses before sending anything. While the connection's name is
+ * not known it says this step's connection, never a guess.
+ */
+export function appActionRealSend(config: Record<string, unknown>, connectionName: string | null): string | null {
+  const actionKey = typeof config.action === 'string' ? config.action : null
+  const version = config.actionVersion
+  const resolved = actionKey !== null && typeof version === 'number' ? resolveActionVersion(ACTIONS, actionKey, version) : null
+  if (!resolved?.ok || !resolved.action.sideEffect || !resolved.action.realSend) return null
+  return `Send for real. This ${resolved.action.realSend} from ${connectionName ?? 'this step\'s connection'}. It cannot be taken back.`
+}
+
+/**
+ * The connection a test of this step may send through for real, or null: only
+ * an App Action step whose pinned action changes something asks first. The
+ * canvas reads the connection's name only for such a step.
+ */
+export function realSendConnectionOf(nodeType: string, config: Record<string, unknown>): string | null {
+  if (nodeType !== 'app_action' || typeof config.connection !== 'string') return null
+  return appActionRealSend(config, null) === null ? null : config.connection
+}

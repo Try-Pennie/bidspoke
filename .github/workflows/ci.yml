@@ -38,7 +38,7 @@ jobs:
   # and web 77s back to back, and Test was the critical path of every run.
   typecheck:
     name: Typecheck
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Pull requests only (#972). On a push to main, deploy.yml's Verify job runs
     # typecheck, lint and `pnpm -r test` on the same commit at the same time, and
@@ -69,7 +69,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Pull requests only, for the reason spelled out on the typecheck job (#972).
     if: github.event_name == 'pull_request'
@@ -97,7 +97,7 @@ jobs:
   # third test job here does not make it blind.
   test-worker:
     name: Test (worker)
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Pull requests only, for the reason spelled out on the typecheck job (#972).
     if: github.event_name == 'pull_request'
@@ -155,7 +155,7 @@ jobs:
 
   test-web:
     name: Test (web)
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Pull requests only, for the reason spelled out on the typecheck job (#972).
     if: github.event_name == 'pull_request'
@@ -193,7 +193,7 @@ jobs:
   # as a second line that does not depend on this job having run.
   money-gate:
     name: Money gate
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # Measured locally at about 25s for both replays and the verdict; the rest is
     # checkout, two installs and workerd start. Bounds a hang (#885).
     timeout-minutes: 15
@@ -269,7 +269,7 @@ jobs:
   # Guarded by apps/web/src/lib/__tests__/ci-main-push-coverage.test.ts.
   a11y:
     name: Accessibility (axe)
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 20
     # The repo default workflow token grants contents and packages read, NOT
     # pull-requests, so the changed-files lookup below needs this explicitly.
@@ -483,7 +483,7 @@ jobs:
 
   auth-gate:
     name: Auth gate fails closed
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 15
     # The changed-files lookup below needs this explicitly: the repo default
     # workflow token grants contents and packages read, NOT pull-requests.
@@ -618,7 +618,7 @@ jobs:
 
   security:
     name: Security scans
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 15
     # The direct push step reads the pull request record, and the repo default
     # token grants contents and packages read, not pull-requests.
@@ -918,7 +918,8 @@ jobs:
       #
       # Gitleaks emits NO coverage signal of any kind: an empty report is what a
       # clean scan produces and also what a scan over nothing produces. So the run
-      # plants a canary secret its ruleset must catch and requires it back (#779).
+      # plants a canary secret per credential shape its ruleset must catch, and
+      # requires every one back (#779, #2777).
       # That proves more than a file count could, because an allowlist broad enough
       # to suppress every finding would leave a healthy-looking count behind. The
       # canary is generated here and never committed.
@@ -926,7 +927,7 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         run: |
           set -euo pipefail
-          VER=8.21.2
+          VER=8.30.1
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" -o gitleaks.tgz
           tar -xzf gitleaks.tgz gitleaks
 
@@ -934,7 +935,7 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'macOS' }}
         run: |
           set -euo pipefail
-          VER=8.21.2
+          VER=8.30.1
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_darwin_arm64.tar.gz" -o gitleaks.tgz
           tar -xzf gitleaks.tgz gitleaks
 
@@ -942,12 +943,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
+          # One canary per credential shape the repository holds (#2777): 8.21.2
+          # found the GitHub token canary while missing five committed Slack
+          # trigger URLs, so a single canary proved only that the scan ran.
           CANARY=gitleaks-canary.tmp.txt
-          trap 'rm -f "$CANARY"' EXIT
+          SLACK_CANARY=gitleaks-canary-slack.tmp.txt
+          trap 'rm -f "$CANARY" "$SLACK_CANARY"' EXIT
           printf 'ghp_%s\n' "$(openssl rand -hex 18)" > "$CANARY"
+          printf 'https://hooks.slack.com/triggers/T%s/%s/%s\n' \
+            "$(openssl rand -hex 5 | tr a-f A-F)" "$(openssl rand -hex 7)" \
+            "$(openssl rand -hex 16)" > "$SLACK_CANARY"
           ./gitleaks detect --source . --no-git --redact --no-banner --exit-code 0 \
             --report-format json --report-path "$RUNNER_TEMP/gitleaks-report.json"
-          node .github/scripts/scan-coverage.mjs gitleaks "$RUNNER_TEMP/gitleaks-report.json" "$CANARY"
+          node .github/scripts/scan-coverage.mjs gitleaks "$RUNNER_TEMP/gitleaks-report.json" "$CANARY" "$SLACK_CANARY"
 
       # SAST (#264). Security-focused rulesets only (not style), ERROR severity, no
       # account/token needed for public rulesets. Prioritizes injection / secret /

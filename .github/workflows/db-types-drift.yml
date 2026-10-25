@@ -26,7 +26,7 @@ run-name: DB Types Drift (${{ inputs.driver || 'schedule' }})
 jobs:
   drift:
     name: Generated DB types match live schema
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # measured max 23s over 5 runs, plus headroom. Bounds a HANG, not slowness (#1062).
     timeout-minutes: 10
     env:
