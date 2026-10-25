@@ -150,6 +150,9 @@ describe('http.get-request@1', () => {
     const limited = await failure(GET.run(f.ctx, { url: '/v1/me' }))
     expect([limited.code, limited.outcome]).toEqual(['http_429', 'not_applied'])
     expect(limited.message).toContain('20')
+    // The request was sent and refused: the message says so, never that it was not sent.
+    expect(limited.message).not.toMatch(/not sent/)
+    expect(limited.message).toMatch(/refused it, so it did nothing/)
   })
 
   it('a server error on a read changed nothing, so it is not applied', async () => {

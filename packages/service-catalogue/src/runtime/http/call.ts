@@ -141,7 +141,7 @@ export async function httpSend(ctx: ActionContext, request: HttpRequest): Promis
     if (status === 429) {
       const retryAfter = response.headers.get('retry-after')
       const wait = retryAfter === null ? 'no Retry-After' : `Retry-After ${retryAfter} s`
-      throw new ActionFailure(code, `the API rate limited ${what} (${wait}); not sent`, 'not_applied')
+      throw new ActionFailure(code, `the API rate limited ${what} (${wait}): it refused it, so it did nothing`, 'not_applied')
     }
     if (status >= 300 && status < 400) throw new ActionFailure(code, `the API redirected ${what} with HTTP ${status}, which is not followed`, uncertain)
     if (status >= 500) throw new ActionFailure(code, `the API answered ${what} with HTTP ${status}`, uncertain)
