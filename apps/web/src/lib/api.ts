@@ -839,6 +839,19 @@ async function fetchWithTimeout(url: string, init: ReqInit, headers: HeadersInit
   }
 }
 
+/**
+ * The body of PUT /api/workflows/:id. A save of a definition names the version
+ * it was edited from and the press that made it (#1947, #2599): the Worker
+ * refuses one naming neither (428 reload_required) and one made from a version
+ * no longer stored (409 stale_version, read by lib/workflow-save-conflict.ts),
+ * so the type will not let a definition be sent without both. A save with no
+ * definition (a rename) may name neither.
+ */
+export type WorkflowSaveBody = { name?: string; message?: string; slack_channel?: string | null } & (
+  | { definition?: undefined; expected_version?: number; save_id?: string }
+  | { definition: WorkflowDef; expected_version: number; save_id: string }
+)
+
 async function req<T>(path: string, init?: ReqInit): Promise<T> {
   let headers: HeadersInit
   try {
@@ -912,10 +925,11 @@ export const api = {
     get: (id: string) => req<Workflow>(`/api/workflows/${id}`),
     create: (name: string, folder_id?: string | null) =>
       req<Workflow>('/api/workflows', { method: 'POST', body: JSON.stringify({ name, folder_id: folder_id ?? null }) }),
-    save: (id: string, data: { name?: string; definition?: WorkflowDef; message?: string; slack_channel?: string | null }) =>
+    save: (id: string, data: WorkflowSaveBody) =>
       // no_changes (#569): the server short-circuits a save whose definition is
       // identical to what's stored: the row is untouched, so version_id and the
-      // Workflow body are absent. Callers branch on no_changes before reading them.
+      // Workflow body are absent, and version is the stored one. Callers branch
+      // on no_changes before reading the rest.
       req<Workflow & { deploy_errors?: { namespace: string; error: string }[]; stored_copy_warning?: string; version_id?: string; no_changes?: boolean }>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     draftChangelog: (id: string, definition: WorkflowDef) =>
       req<{ draft: string | null; reason?: 'no_previous_version' | 'no_changes' | 'unavailable' | 'error'; cached?: boolean }>(
