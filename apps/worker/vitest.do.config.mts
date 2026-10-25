@@ -16,6 +16,17 @@ import { runnerTimeouts } from '../../vitest.runner-timeouts'
  * one that deploys. A second project rather than a second command, so the CI
  * steps that run test:do run it without being edited.
  */
+/**
+ * Each workerd project's per test limit. The first request a file makes to an
+ * object starts the whole Worker bundle cold, and the test that makes it pays
+ * for it: traced on 2026-10-25 as 2.5 s of nothing before the first claim
+ * answered on a fast developer Mac, then 3 ms for the test itself. On GitHub's
+ * runners that start passed vitest's 5 s default (5,009 and 5,018 ms) once the
+ * bundle grew, failing CI with nothing wrong. The limit guards against a hang,
+ * so it is set well clear of a cold start.
+ */
+const WORKERD_TEST_TIMEOUT_MS = 30_000
+
 export default defineConfig({
   test: {
     projects: [
@@ -29,7 +40,7 @@ export default defineConfig({
           wrangler: { configPath: './wrangler.toml' },
           miniflare: { serviceBindings: { OPS_CONNECTIONS: () => new Response('the ops Worker is not run in this project', { status: 503 }) } },
         })],
-        test: { ...runnerTimeouts, name: 'do', include: ['src/durable-objects/__tests__/*.workers.test.ts'] },
+        test: { testTimeout: WORKERD_TEST_TIMEOUT_MS, ...runnerTimeouts, name: 'do', include: ['src/durable-objects/__tests__/*.workers.test.ts'] },
       },
       {
         // enable_ctx_exports here only: the plugin discovers a Worker's named
@@ -49,7 +60,7 @@ export default defineConfig({
             serviceBindings: { OPS_GATEWAY: () => new Response('the bidding Worker is not run in this project', { status: 503 }) },
           },
         })],
-        test: { ...runnerTimeouts, name: 'ops', include: ['src/ops/__tests__/*.workers.test.ts'] },
+        test: { testTimeout: WORKERD_TEST_TIMEOUT_MS, ...runnerTimeouts, name: 'ops', include: ['src/ops/__tests__/*.workers.test.ts'] },
       },
     ],
   },
