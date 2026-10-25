@@ -1,5 +1,6 @@
 import { ANTHROPIC_SERVICE } from './services/anthropic'
 import { GOOGLE_SERVICE } from './services/google'
+import { HTTP_SERVICE } from './services/http'
 import { OPENAI_SERVICE } from './services/openai'
 import { SALESFORCE_SERVICE } from './services/salesforce'
 import { SLACK_SERVICE } from './services/slack'
@@ -13,9 +14,10 @@ import type { ServiceSchema } from './types'
  * all to the same checks. Snowflake was the first, then Slack, OpenAI and Anthropic;
  * Salesforce's entry came ahead of its actions, with its connection only (#2338),
  * and its actions followed; then Google, one service for Sheets, Gmail, Drive
- * and Calendar, as the settled design draws one Google tile.
+ * and Calendar, as the settled design draws one Google tile; then HTTP, any
+ * web API that takes a key, on one declared host.
  *
  * In the order the Add connection tiles are drawn, by name, as the settled
  * design lists them (schema/connection.test.ts holds that).
  */
-export const CATALOGUE: readonly ServiceSchema[] = [ANTHROPIC_SERVICE, GOOGLE_SERVICE, OPENAI_SERVICE, SALESFORCE_SERVICE, SLACK_SERVICE, SNOWFLAKE_SERVICE]
+export const CATALOGUE: readonly ServiceSchema[] = [ANTHROPIC_SERVICE, GOOGLE_SERVICE, HTTP_SERVICE, OPENAI_SERVICE, SALESFORCE_SERVICE, SLACK_SERVICE, SNOWFLAKE_SERVICE]

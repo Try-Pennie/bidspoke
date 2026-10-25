@@ -20,6 +20,7 @@ const call: WriteWorkflowCall = {
   fields: { name: 'Renamed' },
   saveId: 'save-1',
   actor: { id: 'user-1', email: 'dan@pennie.com', name: 'Dan' },
+  storedDefinition: null,
 }
 
 describe('writeWorkflow', () => {
@@ -31,6 +32,22 @@ describe('writeWorkflow', () => {
       p_save_id: 'save-1', p_actor: 'user-1', p_actor_email: 'dan@pennie.com', p_actor_name: 'Dan',
     })
     expect(result).toEqual({ kind: 'written', workflow: { id: 'wf-1', version: 4 }, versionId: 'ver-9', versionNumber: 9, restoredFrom: null, versionsCopied: null })
+  })
+
+  // #2339: a person's own account may be used only by its owner, so every
+  // definition written carries who bound each app_action step, the server's stamp.
+  it('stamps who bound each app_action step on every definition it writes, from the stored definition, never the client\'s', async () => {
+    const SAM = '00000000-0000-4000-8000-0000000023d2'
+    const DAN = '00000000-0000-4000-8000-0000000023d1'
+    const conn = '00000000-0000-4000-8000-0000000023c1'
+    const app = (boundBy?: string) => ({ id: 'mail', namespace: 'mail', type: 'app_action', config: { service: 'google', connection: conn, ...(boundBy ? { boundBy } : {}) } })
+    const sent = { nodes: [app(SAM)], edges: [] }
+    const { rpc, supabase } = client({ data: { workflow: { id: 'wf-1' } }, error: null })
+    await writeWorkflow(supabase, { ...call, actor: { id: SAM, email: 'sam@pennie.com', name: 'Sam' }, fields: { definition: sent }, storedDefinition: { nodes: [app(DAN)], edges: [] } })
+    expect((rpc.mock.calls[0][1] as { p_fields: { definition: { nodes: Array<{ config: { boundBy: string } }> } } }).p_fields.definition.nodes[0].config.boundBy).toBe(DAN)
+    const fresh = client({ data: { workflow: { id: 'wf-2' } }, error: null })
+    await writeWorkflow(fresh.supabase, { ...call, op: 'create', workflowId: null, actor: { id: SAM, email: 'sam@pennie.com', name: 'Sam' }, fields: { definition: { nodes: [app(DAN)], edges: [] } }, storedDefinition: null })
+    expect((fresh.rpc.mock.calls[0][1] as { p_fields: { definition: { nodes: Array<{ config: { boundBy: string } }> } } }).p_fields.definition.nodes[0].config.boundBy).toBe(SAM)
   })
 
   it('sends no name as an empty one, which the function stores as none', async () => {

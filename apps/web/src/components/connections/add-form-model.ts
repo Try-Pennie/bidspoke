@@ -13,7 +13,7 @@
  * tested against, and answers each refusal in its own sentence, which the page
  * shows as it is (lib/connection-create-refusals.ts in the Worker).
  */
-import { CATALOGUE, type ConnectionDeclaration, type ConnectionInput } from '@bidspoke/service-catalogue/schema'
+import { CATALOGUE, isOwnAccountTarget, type ConnectionDeclaration, type ConnectionInput } from '@bidspoke/service-catalogue/schema'
 import type { ConnectionView } from './connection-model'
 
 /** A service as the form offers it: its catalogue key and name, its tile's line, and its connection. */
@@ -167,6 +167,8 @@ export function createdView(answer: CreatedConnection, service: FormService, now
     problemSince: null,
     problemCause: null,
     alertLogin: false,
+    // A person's own Google account is saved by its sign in (#2338), and says so by its target.
+    ownAccount: isOwnAccountTarget(answer.target),
   }
 }
 

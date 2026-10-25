@@ -23,10 +23,12 @@ import { opsServiceRegistry } from './connections/services'
 import type { OpsEnv } from './index'
 import { createOpsSupabaseClient } from './ops-db'
 import type { DelegationListDeps } from './connections/delegation-list'
+import { appActionDeps } from './app-action'
+import type { StepTestDeps } from './step-test'
 import {
   acquireSfLease, addGoogleDelegationSubject, googleDelegationCheck, readConnectionCopy, readConnectionStatus, readGoogleDelegationSubjects, readMeasuredSfOrg, recordConnectionNeedsReauth,
   recordConnectionReauthCleared, recordConnectionRefresh, recordConnectionTombstone, recordMeasuredIdentity, recordSfBudgetReading, releaseSfLease,
-  removeGoogleDelegationSubject, takeLookupAllowance,
+  readRunStepContext, readStepTestResult, recordStepTest, removeGoogleDelegationSubject, takeLookupAllowance,
 } from './ops-writes'
 import { GATEWAY_DEADLINE_MS } from './tick-live'
 
@@ -131,5 +133,27 @@ export function liveDelegationListDeps(env: OpsEnv, options: { opsFetch?: typeof
     add: (organizationId, entry, actor) => addGoogleDelegationSubject(client, organizationId, entry, actor),
     remove: (organizationId, entry, actor) => removeGoogleDelegationSubject(client, organizationId, entry, actor),
     list: (organizationId, limit) => readGoogleDelegationSubjects(client, organizationId, limit),
+  }
+}
+
+/**
+ * The step test's dependencies (#2339, step-test.ts): the ops database for its
+ * result, and the executor's, built as a run builds them (run-live.ts). The
+ * connection's dependencies, which need the ops private key, are built only
+ * when a test reaches its connection, so reading a kept result never needs it.
+ * Throws OpsDatabaseConfigError naming the missing secret.
+ */
+export function liveStepTestDeps(env: OpsEnv, options: { opsFetch?: typeof fetch; sealRegistry?: SealRegistryOf } = {}): StepTestDeps {
+  const client = createOpsSupabaseClient(env, options.opsFetch ? { fetch: options.opsFetch } : {})
+  return {
+    appAction: appActionDeps(() => {
+      const live = liveOpsConnectionsDeps(env, { opensLogins: true, opsFetch: options.opsFetch, sealRegistry: options.sealRegistry })
+      return { ...live.connection, rulesFor: (service) => live.services(service)?.rules }
+    }),
+    record: (organizationId, workflowId, result) => recordStepTest(client, organizationId, workflowId, result),
+    read: (organizationId, workflowId, nodeId) => readStepTestResult(client, organizationId, workflowId, nodeId),
+    readRun: (organizationId, workflowId, executionId, nodeId) => readRunStepContext(client, organizationId, workflowId, executionId, nodeId),
+    now: () => Date.now(),
+    newRunId: () => crypto.randomUUID(),
   }
 }

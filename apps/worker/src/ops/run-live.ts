@@ -33,7 +33,7 @@ import type { OpsEnv } from './index'
 import { opsInternalIdentity, OpsInternalRefused } from './internal'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, organizationIdFrom, type OpsSupabaseClient } from './ops-db'
 import {
-  completeRunRequest, extendRunLease, readWorkflowDefinition, recordSendIntent, recordSendResult, saveWorkflowDefinition, startRunExecution,
+  completeRunRequest, extendRunLease, readWorkflowDefinition, recordOpsStep, recordSendIntent, recordSendResult, saveWorkflowDefinition, startRunExecution,
   type ClaimedRun,
 } from './ops-writes'
 import { appActionDeps } from './app-action'
@@ -78,6 +78,7 @@ export function liveRunDb(client: OpsSupabaseClient): RunDb {
     extend: (run, leaseSeconds) => extendRunLease(client, run.organizationId, run.runRequestId, run.claimToken, leaseSeconds),
     recordIntent: (run, intent) => recordSendIntent(client, run.organizationId, { ...intent, runRequestId: run.runRequestId, claimToken: run.claimToken }),
     recordResult: (run, ledgerId, result) => recordSendResult(client, run.organizationId, ledgerId, result),
+    recordStep: (run, executionId, record) => recordOpsStep(client, run.organizationId, { runRequestId: run.runRequestId, claimToken: run.claimToken, executionId }, record),
     complete: (run, end) => completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, end),
   }
 }

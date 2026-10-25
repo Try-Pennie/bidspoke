@@ -157,6 +157,23 @@ describe('the shipped catalogue', () => {
     expect(send.files).toContain(path.join(SRC, 'runtime', 'google', 'mime.ts'))
   })
 
+  it("folds each HTTP action's request code and the host rule into its fingerprint, and imports no npm package (#2337)", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const httpActions = RUNTIME_ACTIONS.filter((a) => a.key.startsWith('http.'))
+    expect(httpActions).toHaveLength(2)
+    for (const a of httpActions) {
+      const reached = collectModuleImports(path.join(SHIPPED.actionsDir, `${a.key}.v${a.version}.ts`), {
+        root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+        linkOf: (importer, name) => linkedPath(lock, importer, name),
+      })
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'http', 'call.ts'))
+      // The host rule decides where a step may send, so changing it moves every HTTP action's fingerprint.
+      expect(reached.files, a.key).toContain(path.join(SRC, 'schema', 'http-host.ts'))
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'failure.ts'))
+      expect(reached.packages, a.key).toEqual([])
+    }
+  })
+
   it('carries no test fixture action', () => {
     expect(catalogueActions(CATALOGUE).filter((a) => a.key.startsWith('fixture.'))).toEqual([])
     expect(RUNTIME_ACTIONS.filter((a) => a.key.startsWith('fixture.'))).toEqual([])

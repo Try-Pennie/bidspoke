@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { blockingProblems, validateDefinition, type DefinitionProblem, type DefinitionVerdict } from '../index'
+import { blockingProblems, unfinishedAppActionSteps, validateDefinition, type DefinitionProblem, type DefinitionVerdict } from '../index'
 
 /**
  * An app_action step at save (#2339): one catalogue action, at the version the
@@ -80,5 +80,22 @@ describe('the money lane', () => {
     expect(blockingProblems(p, { live: false })).toMatchObject([{ rule: 'connection_lane', reason: 'connection_on_money_lane', namespace: 'call' }])
     const unbound = { ...money, nodes: [{ ...money.nodes[0], config: { url: 'https://api.example.com' } }] }
     expect(problems(validateDefinition(unbound, { lane: 'money' })).filter((x) => x.rule === 'connection_lane')).toEqual([])
+  })
+})
+
+describe('unfinishedAppActionSteps (#2338, plan 3.3): what keeps a workflow from being switched on', () => {
+  it('names each App Action step that lacks what it runs, its connection or a required field, from the rules at the stamp', () => {
+    const verdict = unfinishedAppActionSteps(def({ ...SLACK, connection: undefined }), { lane: 'ops', schemaVersion: 1 })
+    expect(verdict).toEqual({ kind: 'judged', steps: [{ nodeId: 'post', namespace: 'post', message: expect.stringContaining('No connection chosen') }] })
+    expect(unfinishedAppActionSteps(def({ ...SLACK, args: { channel: 'C0OPS' } }), { lane: 'ops' })).toMatchObject({ steps: [{ message: expect.stringContaining('text is required') }] })
+    expect(unfinishedAppActionSteps(def({}), { lane: 'ops' })).toMatchObject({ steps: [{ message: expect.stringContaining('No service and action chosen') }] })
+  })
+
+  it('a finished step, and every other step type, is not named', () => {
+    expect(unfinishedAppActionSteps(def(SLACK, [{ id: 'f', type: 'filter', namespace: 'f', config: {} }]), { lane: 'ops' })).toEqual({ kind: 'judged', steps: [] })
+  })
+
+  it('a stamp this build cannot judge is answered as such, never as finished', () => {
+    expect(unfinishedAppActionSteps(def({}), { lane: 'ops', schemaVersion: 99 })).toMatchObject({ kind: 'unknown_schema_version' })
   })
 })

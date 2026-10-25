@@ -8,7 +8,7 @@
  * 40 ms. So the first test here is that OpsConnections stays exported from the
  * ops Worker's main module, with exactly the methods bidding calls
  * (OPS_CONNECTIONS_METHODS, the Google list's three among them since #2338
- * build PR 6); a rename or a removal fails here before it can deploy. That a real binding
+ * build PR 6, and signInClient since build PR 13); a rename or a removal fails here before it can deploy. That a real binding
  * reaches it inside workerd is ops-connections.workers.test.ts.
  *
  * The rest: every answer is a value (a rejection across an RPC call reads as a
@@ -19,8 +19,9 @@ import { describe, expect, it } from 'vitest'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import * as opsModule from '../index'
 import type { OpsEnv } from '../index'
-import { OpsConnections, delegationListAnswer, opsConnectionsAnswer } from '../ops-connections-entrypoint'
-import { OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OPS_SIGN_IN_METHODS, parseHealthRequest } from '../../lib/ops-connections-contract'
+import { OpsConnections, delegationListAnswer, opsConnectionsAnswer, stepTestAnswer } from '../ops-connections-entrypoint'
+import { OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OPS_STEP_TEST_CEILINGS_MS, OPS_STEP_TEST_METHODS, parseHealthRequest } from '../../lib/ops-connections-contract'
+import type { StepTestDeps } from '../step-test'
 import { KEYGEN_TIMEOUT_MS, opsKeyPair } from './ops-key-fixture'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
@@ -43,12 +44,12 @@ function opsDatabase(answers: Record<string, unknown>) {
 const configured: Partial<OpsEnv> = { LANE: 'ops', OPS_SUPABASE_URL: 'https://zwihpjxouklvkvngkvmw.supabase.co', OPS_SUPABASE_SECRET_KEY: 'sb_secret_test_not_real' }
 
 describe('OpsConnections stays exported from the ops Worker (Phase 0 spike, #2330)', () => {
-  it('is a named export of the main module, a WorkerEntrypoint, with exactly OPS_CONNECTIONS_METHODS, the methods the bidding Worker calls, and the sign in method that ships first', () => {
+  it('is a named export of the main module, a WorkerEntrypoint, with exactly OPS_CONNECTIONS_METHODS, the methods the bidding Worker calls', () => {
     expect(opsModule.OpsConnections).toBe(OpsConnections)
     expect(Object.getPrototypeOf(OpsConnections)).toBe(WorkerEntrypoint)
-    // signInClient (#2338, build PR 13) ships on ops before bidding calls it, as the Google list's methods did.
+    // The step test's methods (#2339) ship on ops before bidding's list carries them, as signInClient did.
     expect(Object.getOwnPropertyNames(OpsConnections.prototype).filter((n) => n !== 'constructor').sort())
-      .toEqual([...OPS_CONNECTIONS_METHODS, ...OPS_SIGN_IN_METHODS].sort())
+      .toEqual([...OPS_CONNECTIONS_METHODS, ...OPS_STEP_TEST_METHODS].sort())
   })
 
   it('is not the default export, which the public route reaches', () => {
@@ -59,7 +60,7 @@ describe('OpsConnections stays exported from the ops Worker (Phase 0 spike, #233
 describe('every answer is a value, refused by name', () => {
   it.each([[undefined, 'lane_unset'], ['', 'lane_unset'], ['money', 'lane_not_ops']])('outside the ops lane (LANE %j), every method refuses %s', async (lane, code) => {
     const e = entry({ ...configured, LANE: lane })
-    for (const method of [...OPS_CONNECTIONS_METHODS, ...OPS_SIGN_IN_METHODS]) {
+    for (const method of [...OPS_CONNECTIONS_METHODS, ...OPS_STEP_TEST_METHODS]) {
       expect(await (e[method] as (r: unknown) => Promise<unknown>)({ organization_id: ORG })).toMatchObject({ ok: false, refused: code })
     }
   })
@@ -200,4 +201,37 @@ describe('every answer is a value, refused by name', () => {
     expect(answer).toMatchObject({ ok: false, refused: 'ops_connections_not_configured', detail: expect.stringContaining('not the private half of any committed public key') })
     expect(db.calls).toEqual([])
   }, KEYGEN_TIMEOUT_MS)
+})
+
+describe('the step test methods (#2339)', () => {
+  const WF = '0199f0a0-0000-7000-8000-0000000000aa'
+  const DAN = '0199f0a0-0000-7000-8000-0000000000d1'
+
+  it('stepTestResult reads the organization\'s kept result for the step through the ops database, answering null when there is none', async () => {
+    const db = opsDatabase({ step_test_result: [] })
+    const answer = await stepTestAnswer(configured as OpsEnv, 'stepTestResult', { organization_id: ORG, workflow_id: WF, node_id: 'node_1' }, { opsFetch: db.fetch })
+    expect(answer).toEqual({ ok: true, result: null })
+    expect(db.calls).toEqual([{ rpc: 'step_test_result', body: { p_organization_id: ORG, p_workflow_id: WF, p_node_id: 'node_1' } }])
+  })
+
+  it('testStep from a past run reads that run\'s context in the organization through the ops database, and refuses one it has not', async () => {
+    const EXEC = '0199f0a0-0000-7000-8000-0000000000e1'
+    const db = opsDatabase({ run_step_context: [] })
+    const request = { organization_id: ORG, workflow_id: WF, tested_by: DAN, node: { id: 'n1', namespace: 'notify', config: {} }, execution_id: EXEC }
+    const answer = await stepTestAnswer(configured as OpsEnv, 'testStep', request, { opsFetch: db.fetch })
+    expect(answer).toMatchObject({ ok: false, refused: 'step_test_run_not_found' })
+    expect(db.calls).toEqual([{ rpc: 'run_step_context', body: { p_organization_id: ORG, p_workflow_id: WF, p_execution_id: EXEC, p_node_id: 'n1' } }])
+  })
+
+  it('testStep refuses a malformed request by the field, and with the ops database unset names the secret', async () => {
+    expect(await entry({ LANE: 'ops' }).testStep({ organization_id: ORG, workflow_id: WF })).toMatchObject({ ok: false, refused: 'ops_connections_request_invalid' })
+    const request = { organization_id: ORG, workflow_id: WF, tested_by: DAN, node: { id: 'n1', namespace: 'notify', config: {} } }
+    expect(await entry({ LANE: 'ops' }).testStep(request)).toMatchObject({ ok: false, refused: 'ops_connections_not_configured' })
+  })
+
+  it('a step test method past its ceiling answers ops_connections_timeout', async () => {
+    const hanging = { read: () => new Promise<never>(() => {}) } as unknown as StepTestDeps
+    const answer = await stepTestAnswer(configured as OpsEnv, 'stepTestResult', { organization_id: ORG, workflow_id: WF, node_id: 'n1' }, { deps: hanging, delay: async () => {} })
+    expect(answer).toMatchObject({ ok: false, refused: 'ops_connections_timeout', detail: expect.stringContaining(`${OPS_STEP_TEST_CEILINGS_MS.stepTestResult / 1000} s`) })
+  })
 })

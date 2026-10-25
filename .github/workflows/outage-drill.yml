@@ -31,7 +31,7 @@ concurrency:
 jobs:
   outage-drill:
     name: Outage drill
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # Measured locally at 426 s for all 288 fixtures on 2026-10-07, nearly all of
     # it real waits in post-response Slack lookups the down runs make. A runner is
     # slower and adds checkout, install and workerd start, so 25 bounds a hang

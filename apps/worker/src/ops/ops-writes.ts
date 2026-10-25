@@ -48,6 +48,8 @@ import {
   OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES, REFRESH_OUTCOMES, RESOURCE_WAIT_CAUSES, SF_BUDGET_SOURCES, SF_LEASE_OUTCOMES, SF_LEASE_PURPOSES, TRIGGER_KINDS,
   type ConnectionCopyState, type DelegationAddOutcome, type DelegationCheckOutcome, type DelegationKind, type DelegationRemoveOutcome, type HolderFailedReason, type RefreshOutcome, type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule,
   type ResourceWaitCause, type SfBudgetSource, type SfLeaseOutcome, type SfLeasePurpose, type TriggerKind,
+  STEP_TEST_STATUSES, type StepTestStatus,
+  OPS_STEP_RECORD_OUTCOMES, OPS_STEP_RECORD_STATUSES, type OpsStepRecordOutcome, type OpsStepRecordStatus,
 } from './run-vocabulary'
 import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
@@ -599,6 +601,7 @@ const isTime = (v: unknown): v is string => typeof v === 'string' && Number.isFi
 const isTimeOrNull = (v: unknown): v is string | null => v === null || isTime(v)
 const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
 const isIntOrNull = (v: unknown): v is number | null => v === null || isInt(v)
+const isUuidOrNull = (v: unknown): v is string | null => v === null || (typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v))
 
 /** The database's clock: every fire is computed against it, never the Worker's (#1698 D8, L736). */
 export async function opsNow(client: OpsSupabaseClient, options?: OpsRpcOptions): Promise<string> {
@@ -805,6 +808,8 @@ export interface ConnectionCopyInput {
   envelope: unknown
   publicConfig: unknown
   target: unknown
+  /** The users.id a person bound connection acts as, or null (#2339). */
+  ownerUserId: string | null
   /** At most CONNECTION_SERVE_WINDOW_MS after the list's served_at. */
   serveUntil: string
 }
@@ -846,6 +851,7 @@ export async function saveConnectionCopies(
       envelope: c.envelope,
       public_config: c.publicConfig,
       target: c.target ?? null,
+      owner_user_id: c.ownerUserId,
       serve_until: c.serveUntil,
     })),
   }, options))
@@ -872,6 +878,12 @@ export interface ConnectionCopy {
   servedAt: string | null
   serveUntil: string | null
   dbNow: string
+  /**
+   * The users.id a person bound connection acts as, or null: a company
+   * connection, or an ops database or bidding Worker older than #2339, which
+   * the executor reads as an own account owning nobody, so it refuses the step.
+   */
+  ownerUserId: string | null
 }
 
 /**
@@ -898,6 +910,7 @@ export async function readConnectionCopy(
     servedAt: field(name, row, 'served_at', isTimeOrNull, 'a time or null'),
     serveUntil: field(name, row, 'serve_until', isTimeOrNull, 'a time or null'),
     dbNow: field(name, row, 'db_now', isTime, 'a time'),
+    ownerUserId: row.owner_user_id === undefined ? null : field(name, row, 'owner_user_id', isUuidOrNull, 'a uuid or null'),
   }
 }
 
@@ -1472,4 +1485,189 @@ export async function readMissingWorkflowDefinitions(
     }
   })
   return { missing, reachedLimit: missing.length === limit }
+}
+
+// ── a step's test result (#2339, ops migration 20261024010000) ──────────────
+
+export interface StepTestRecord {
+  nodeId: string
+  namespace: string
+  /** The users.id of the person who ran the test. */
+  testedBy: string
+  status: StepTestStatus
+  /** The action's answer, scrubbed of the connection's secrets; null for a failure or an answer over the cap. */
+  output: unknown
+  /** The answer's size: given for one over the cap (output null), so it is named, never read as empty; measured by the database otherwise. */
+  outputBytes: number | null
+  /** Why it failed; null when it completed. */
+  error: string | null
+  /** Each request the step made, sanitised before its login was applied. */
+  requests: unknown[]
+  durationMs: number
+}
+
+export interface StoredStepTest extends StepTestRecord {
+  testedAt: string
+}
+
+/** Keeps a step's latest test result, replacing the one before. Answers when it was recorded, on the database clock. */
+export async function recordStepTest(
+  client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, result: StepTestRecord, options?: OpsRpcOptions,
+): Promise<string> {
+  const name = 'record_step_test'
+  if (!(STEP_TEST_STATUSES as readonly string[]).includes(result.status)) throw new OpsWriteError(`${name}: ${String(result.status)} is not a test status`)
+  if (result.status === 'failed' && (result.error === null || result.error === '')) throw new OpsWriteError(`${name}: a failed test needs its error`)
+  const data = await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_workflow_id: workflowId, p_node_id: result.nodeId, p_namespace: result.namespace, p_tested_by: result.testedBy,
+    p_status: result.status, p_output: result.output ?? null, p_output_bytes: result.outputBytes, p_error: result.error, p_requests: result.requests, p_duration_ms: result.durationMs,
+  }, options)
+  if (!isTime(data)) throw new OpsWriteError(`${name} returned something other than a time`)
+  return data
+}
+
+/** One step's latest test result in the organization, or null: none, or one past 7 days on the database clock. */
+export async function readStepTestResult(
+  client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, nodeId: string, options?: OpsRpcOptions,
+): Promise<StoredStepTest | null> {
+  const name = 'step_test_result'
+  const all = rows(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_workflow_id: workflowId, p_node_id: nodeId }, options))
+  if (all.length > 1) throw new OpsWriteError(`${name} returned ${all.length} rows, expected at most 1`)
+  if (all.length === 0) return null
+  const row = all[0]
+  const requests = row.requests
+  if (!Array.isArray(requests)) throw new OpsWriteError(`${name} returned requests that are not a list`)
+  return {
+    nodeId: field(name, row, 'node_id', isString, 'text'),
+    namespace: field(name, row, 'namespace', isString, 'text'),
+    testedBy: field(name, row, 'tested_by', isString, 'an id'),
+    testedAt: field(name, row, 'tested_at', isTime, 'a time'),
+    status: field(name, row, 'status', oneOf(STEP_TEST_STATUSES), 'a test status'),
+    output: row.output ?? null,
+    outputBytes: field(name, row, 'output_bytes', isIntOrNull, 'a whole number or null'),
+    error: field(name, row, 'error', isStringOrNull, 'text or null'),
+    requests,
+    durationMs: field(name, row, 'duration_ms', isInt, 'a whole number'),
+  }
+}
+
+/** The nightly purge of step test results tested more than 7 days ago, by the database clock. */
+export async function purgeStepTestResults(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_step_test_results'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+// ── each step of an ops run (#2703, ops migration 20261024150000) ───────────
+
+/** The run attempt a step record belongs to, and the claim token that fences it. */
+export interface OpsStepFence {
+  runRequestId: string
+  claimToken: string
+  executionId: string
+}
+
+/** One step a run walked, as record_ops_step keeps it. */
+export interface OpsStepRecord {
+  /** The step's place in its attempt, from 0, with no gap. */
+  seq: number
+  nodeId: string
+  namespace: string
+  stepType: string
+  status: OpsStepRecordStatus
+  startedAt: Date
+  durationMs: number
+  /** What the step answered, scrubbed of the connection's secrets by connectionFetch; null for a failure or an answer over the cap. */
+  output: unknown
+  /** The answer's size when it was over the cap (output null); measured by the database otherwise. */
+  outputBytes: number | null
+  /** Why it failed; null when it completed. */
+  error: string | null
+}
+
+/**
+ * Records one step of the running attempt the fence names. stale means the run
+ * is not this holder's any more and nothing was written; already_recorded is a
+ * repeat of a record that landed. A place that would leave a gap is refused by
+ * the database, by name.
+ */
+export async function recordOpsStep(
+  client: OpsSupabaseClient, organizationId: OrganizationId, fence: OpsStepFence, record: OpsStepRecord, options?: OpsRpcOptions,
+): Promise<OpsStepRecordOutcome> {
+  const name = 'record_ops_step'
+  if (!(OPS_STEP_RECORD_STATUSES as readonly string[]).includes(record.status)) throw new OpsWriteError(`${name}: ${String(record.status)} is not a step record status`)
+  if (record.status === 'failed' && (record.error === null || record.error === '')) throw new OpsWriteError(`${name}: a failed step needs its error`)
+  const data = await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_run_request_id: fence.runRequestId, p_claim_token: fence.claimToken, p_execution_id: fence.executionId,
+    p_seq: record.seq, p_node_id: record.nodeId, p_namespace: record.namespace, p_step_type: record.stepType, p_status: record.status,
+    p_started_at: record.startedAt.toISOString(), p_duration_ms: record.durationMs, p_output: record.output ?? null, p_output_bytes: record.outputBytes,
+    p_error: record.error,
+  }, options)
+  if (!oneOf(OPS_STEP_RECORD_OUTCOMES)(data)) throw new OpsWriteError(`${name} returned ${JSON.stringify(data)?.slice(0, 40) ?? 'nothing'}, not a step record outcome`)
+  return data
+}
+
+/** One step's latest completed output in a past run, as run_step_context answers it. */
+export interface RunContextStep {
+  namespace: string
+  nodeId: string
+  seq: number
+  output: unknown
+  /** False when the output was over the cap and only its size was kept. */
+  outputKept: boolean
+}
+
+/** What a step test from a past run is built from (#2339), read by run_step_context. */
+export interface RunStepContext {
+  executionStatus: string
+  startedAt: string
+  /** False once the attempt is 7 days old by the database clock: payload and steps are then null. */
+  withinRetention: boolean
+  /** The attempt recorded the step: steps is then the context the run had at its last place. */
+  reached: boolean
+  payload: unknown
+  /** The run's payload is held by reference elsewhere, not in the run row. */
+  payloadElsewhere: boolean
+  contextBytes: number | null
+  /** Null past 7 days, or when the outputs together are more than a test takes (contextBytes says how big). */
+  steps: RunContextStep[] | null
+}
+
+const isRecordRow = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
+
+/** One organization's attempt of one workflow, read for a step test; null when there is no such attempt. */
+export async function readRunStepContext(
+  client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, executionId: string, nodeId: string, options?: OpsRpcOptions,
+): Promise<RunStepContext | null> {
+  const name = 'run_step_context'
+  const all = rows(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_workflow_id: workflowId, p_execution_id: executionId, p_node_id: nodeId }, options))
+  if (all.length > 1) throw new OpsWriteError(`${name} returned ${all.length} rows, expected at most 1`)
+  if (all.length === 0) return null
+  const row = all[0]
+  let steps: RunContextStep[] | null = null
+  if (row.steps !== null && row.steps !== undefined) {
+    if (!Array.isArray(row.steps)) throw new OpsWriteError(`${name} returned steps that are not a list`)
+    steps = row.steps.map((s: unknown) => {
+      if (!isRecordRow(s) || !isString(s.namespace) || !isString(s.node_id) || !isInt(s.seq) || !isBool(s.output_kept)) {
+        throw new OpsWriteError(`${name} returned steps whose entries are not each a step id, node, place and kept flag`)
+      }
+      return { namespace: s.namespace, nodeId: s.node_id, seq: s.seq, output: s.output ?? null, outputKept: s.output_kept }
+    })
+  }
+  return {
+    executionStatus: field(name, row, 'execution_status', isString, 'text'),
+    startedAt: field(name, row, 'started_at', isTime, 'a time'),
+    withinRetention: field(name, row, 'within_retention', isBool, 'true or false'),
+    reached: field(name, row, 'reached', isBool, 'true or false'),
+    payload: row.payload ?? null,
+    payloadElsewhere: field(name, row, 'payload_elsewhere', isBool, 'true or false'),
+    contextBytes: field(name, row, 'context_bytes', isIntOrNull, 'a whole number or null'),
+    steps,
+  }
+}
+
+/** The nightly purge of the step records of run attempts started more than 7 days ago, by the database clock. */
+export async function purgeOpsStepRecords(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_ops_step_records'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
 }

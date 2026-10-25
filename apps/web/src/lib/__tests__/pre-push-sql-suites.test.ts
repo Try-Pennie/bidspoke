@@ -180,6 +180,25 @@ describe('scripts/pre-push-sql-suites.sh', () => {
     expect(res.status, res.stderr).toBe(0)
     expect(elapsed).toBeLessThan(10_000)
     expect(res.stderr).toMatch(/did not finish in 1s/)
+    expect(res.stderr).not.toMatch(/could not fetch/)
+    expect(res.stdout.split('\n').filter(Boolean)).toEqual(['main'])
+  })
+
+  // The other cause gets its own sentence: a fetch that fails at once is not a
+  // timeout, whatever the watchdog is doing at that moment (#2768).
+  it('says the fetch failed, not that it timed out, when it fails at once', () => {
+    const { work } = fixture()
+    commitFile(work, 'supabase/migrations/20260301000000_mine.sql', 'select 3;\n')
+    git(work, 'remote', 'set-url', 'origin', path.join(work, 'no-such-remote'))
+    const res = spawnSync('bash', [SCRIPT], {
+      cwd: work,
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, PRE_PUSH_FETCH_TIMEOUT: '5' },
+    })
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stderr).toMatch(/could not fetch origin\/main/)
+    expect(res.stderr).not.toMatch(/did not finish/)
     expect(res.stdout.split('\n').filter(Boolean)).toEqual(['main'])
   })
 

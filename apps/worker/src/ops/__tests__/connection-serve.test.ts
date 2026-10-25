@@ -24,7 +24,7 @@ const envelope = { v: 1, kid: 'ops-2026-10', wrapped_key: 'd3JhcHBlZA==', iv: 'a
 
 const connection = (over: Record<string, unknown> = {}) => ({
   id: CONN, organization_id: ORG, service: 'salesforce', generation: 2, envelope, public_config: { name: 'trypennie' },
-  target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' }, serve_until: UNTIL, ...over,
+  target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' }, owner_user_id: null, serve_until: UNTIL, ...over,
 })
 const served = (connections: unknown[] = [connection()], tombstones: unknown[] = []) => ({ served_at: SERVED_AT, complete: true, connections, tombstones })
 
@@ -61,10 +61,17 @@ describe('saveServedConnections', () => {
       servedAt: SERVED_AT, complete: true,
       copies: [{
         connectionId: CONN, organizationId: ORG, service: 'salesforce', generation: 2, envelope, publicConfig: { name: 'trypennie' },
-        target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' }, serveUntil: UNTIL,
+        target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' }, ownerUserId: null, serveUntil: UNTIL,
       }],
     }])
     expect(r.counts).toMatchObject({ connections_served: 1, connection_copies_saved: 1 })
+  })
+
+  it('saves a person bound connection with its owner, so the executor can hold its own account steps to it (#2339)', async () => {
+    const OWNER = '00000000-0000-4000-8000-0000000023f1'
+    const f = db()
+    await saveServedConnections(f.d, async () => served([connection({ owner_user_id: OWNER })]))
+    expect(f.saves[0].copies[0].ownerUserId).toBe(OWNER)
   })
 
   it('records the removals before it saves the copies', async () => {

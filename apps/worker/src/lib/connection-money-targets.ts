@@ -36,6 +36,9 @@
  * Values are read by name at request time and never printed: an answer names
  * the secret a match came from, never its value.
  */
+import { hostWithin } from '@bidspoke/service-catalogue/schema'
+import { PROD_BASE_URL, STAGING_BASE_URL } from '../engine/nodes/achieve-endpoint'
+import { ACHIEVE_HOSTS } from '../engine/nodes/achieve-identity'
 import { FEATURE_GATED_SECRETS, REQUIRED_PARTNER_SECRETS, REQUIRED_SECRETS } from './secret-lists'
 
 /** Every secret naming a Snowflake user the bidding Worker signs in as, from the secret lists. */
@@ -126,7 +129,7 @@ export function moneyTargetIn(target: unknown, moneys: readonly MoneyTarget[]): 
 }
 
 /** How the money Salesforce credentials of an organization are resolved: resolveSalesforceCredsFor, bound. */
-export type ResolveSalesforceCreds = (organizationId: string) => Promise<{ creds: { clientId: string } | null; missing: string[] }>
+export type ResolveSalesforceCreds = (organizationId: string) => Promise<{ creds: { clientId: string; instanceUrl: string } | null; missing: string[] }>
 
 export type MoneyTargetsRead = { ok: true; targets: MoneyTarget[] } | { ok: false; detail: string }
 
@@ -145,4 +148,135 @@ export async function readMoneyTargets(env: Readonly<Record<string, unknown>>, o
     return { ok: false, detail: 'the organization\'s environment variables could not be read for the money Salesforce client id' }
   }
   return { ok: true, targets: moneyTargetsFrom(env, clientIds) }
+}
+
+// ── The hosts bidding sends to (#2337) ───────────────────────────────────────
+
+/**
+ * WHY. An HTTP connection (the catalogue's `http` service) carries any key to
+ * the one host it declares, so its host is the only thing that can keep an ops
+ * step off the money lane: off a partner the money lane posts leads to, and off
+ * the bidding Worker, whose custom endpoints take leads into money workflows.
+ * The catalogue's host rule (schema/http-host.ts) already refuses every host a
+ * catalogue service owns, Supabase and Salesforce among them, on ops and here;
+ * this adds the hosts only the bidding Worker can know. The save refuses an
+ * HTTP host that is one of them, before verify sends anything to it.
+ *
+ * THE SOURCES, each read at the save, each answered by its name alone:
+ *   SUPABASE_URL             the money project's host, and every host under it
+ *   APP_URL                  the bidding Worker's zone: the parent of its host
+ *                            (bidspoke.trypennie.dev gives trypennie.dev), since
+ *                            every *.trypennie.dev route reaches this Worker
+ *                            (wrangler.toml, partner subdomains), and every host
+ *                            under it; the host alone when it has no zone above
+ *   SALESFORCE_INSTANCE_URL  the money Salesforce instance, from the
+ *                            organization store (resolveSalesforceCredsFor) and
+ *                            the Worker env, and every host under it
+ *   ACHIEVE_HOSTS            the hosts the achieve_offers node calls, which live
+ *                            in code (engine/nodes/achieve-identity.ts,
+ *                            achieve-endpoint.ts), exactly
+ *   partner_configs          each partner's api_endpoint, dedup_endpoint and
+ *                            click_url host, exactly
+ *   money workflows          every http(s) host written anywhere in the
+ *                            organization's money lane workflow definitions,
+ *                            deleted ones left out: webhook URLs, code node
+ *                            fetches, partner URLs, exactly
+ * A partner or workflow host is taken exactly, never its domain, so a partner's
+ * other hosts stay reachable; erring towards a match only ever refuses a save.
+ *
+ * WHAT IT CANNOT SEE. A host that reaches a money workflow only through an
+ * environment variable ({{env.X}}) and is written nowhere else, and a host the
+ * money lane starts sending to after the HTTP connection was saved: the check
+ * runs at the save, and ops cannot read bidding's hosts.
+ */
+export type MoneyHostSource = 'SUPABASE_URL' | 'APP_URL' | 'SALESFORCE_INSTANCE_URL' | 'ACHIEVE_HOSTS' | 'partner_configs' | 'money workflows'
+
+export interface MoneyHost {
+  readonly host: string
+  /** `domain`: the host and every host under it; `exact`: the host alone. */
+  readonly match: 'domain' | 'exact'
+  readonly source: MoneyHostSource
+}
+
+const URL_HOST = /https?:\/\/([A-Za-z0-9.-]+)/g
+
+function hostOfUrl(value: string): string | null {
+  const plain = value.trim()
+  if (!/^https?:\/\//i.test(plain)) return null
+  try {
+    const host = new URL(plain).hostname.toLowerCase().replace(/\.$/, '')
+    return host.includes('.') ? host : null
+  } catch {
+    return null
+  }
+}
+
+export interface MoneyHostInputs {
+  readonly salesforceInstanceUrls: readonly string[]
+  readonly partnerUrls: readonly string[]
+  /** The money workflows' definitions, as text. */
+  readonly moneyDefinitions: readonly string[]
+}
+
+/** Every host bidding sends to, from the Worker env and the organization's stores. A blank or unparsable value adds nothing. */
+export function moneyHostsFrom(env: Readonly<Record<string, unknown>>, inputs: MoneyHostInputs): MoneyHost[] {
+  const out: MoneyHost[] = []
+  const add = (host: string | null, match: MoneyHost['match'], source: MoneyHostSource) => {
+    if (host !== null && !out.some((h) => h.host === host && h.match === match)) out.push({ host, match, source })
+  }
+  add(hostOfUrl(readText(env, 'SUPABASE_URL') ?? ''), 'domain', 'SUPABASE_URL')
+  const app = hostOfUrl(readText(env, 'APP_URL') ?? '')
+  if (app !== null) add(app.split('.').length >= 3 ? app.split('.').slice(1).join('.') : app, 'domain', 'APP_URL')
+  for (const url of [...inputs.salesforceInstanceUrls, readText(env, 'SALESFORCE_INSTANCE_URL') ?? '']) add(hostOfUrl(url), 'domain', 'SALESFORCE_INSTANCE_URL')
+  for (const host of [...ACHIEVE_HOSTS, hostOfUrl(PROD_BASE_URL), hostOfUrl(STAGING_BASE_URL)]) add(host, 'exact', 'ACHIEVE_HOSTS')
+  for (const url of inputs.partnerUrls) add(hostOfUrl(url), 'exact', 'partner_configs')
+  for (const text of inputs.moneyDefinitions) {
+    for (const m of text.matchAll(URL_HOST)) add(hostOfUrl(`https://${m[1]}`), 'exact', 'money workflows')
+  }
+  return out
+}
+
+/** The money host a declared host is, or null. Names the host and the source only. */
+export function moneyHostOf(host: string, hosts: readonly MoneyHost[]): { host: string; source: MoneyHostSource } | null {
+  const h = host.toLowerCase()
+  const found = hosts.find((m) => (m.match === 'domain' ? hostWithin(h, m.host) : h === m.host))
+  return found ? { host: h, source: found.source } : null
+}
+
+/** The organization scoped reads behind the money hosts, bound to the bidding client by the route. */
+export interface MoneyHostReads {
+  readonly salesforce: ResolveSalesforceCreds
+  partnerUrls(organizationId: string): Promise<string[]>
+  moneyDefinitions(organizationId: string): Promise<string[]>
+}
+
+export type MoneyHostsRead = { ok: true; hosts: MoneyHost[] } | { ok: false; detail: string }
+
+/**
+ * The money hosts at request time. A source that cannot be read is an answer
+ * of its own, never an empty set: the route refuses the save rather than
+ * passing it.
+ */
+export async function readMoneyHosts(env: Readonly<Record<string, unknown>>, organizationId: string, reads: MoneyHostReads): Promise<MoneyHostsRead> {
+  // Each error could name a value: only which read failed is said.
+  let salesforceInstanceUrls: string[]
+  try {
+    const { creds } = await reads.salesforce(organizationId)
+    salesforceInstanceUrls = creds ? [creds.instanceUrl] : []
+  } catch {
+    return { ok: false, detail: 'the organization\'s environment variables could not be read for the money Salesforce instance' }
+  }
+  let partnerUrls: string[]
+  try {
+    partnerUrls = await reads.partnerUrls(organizationId)
+  } catch {
+    return { ok: false, detail: 'the partner endpoints could not be read' }
+  }
+  let moneyDefinitions: string[]
+  try {
+    moneyDefinitions = await reads.moneyDefinitions(organizationId)
+  } catch {
+    return { ok: false, detail: 'the money workflows could not be read' }
+  }
+  return { ok: true, hosts: moneyHostsFrom(env, { salesforceInstanceUrls, partnerUrls, moneyDefinitions }) }
 }

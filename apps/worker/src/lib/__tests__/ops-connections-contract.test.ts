@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OPS_SIGN_IN_CEILINGS_MS, OPS_SIGN_IN_METHODS,
+  LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OPS_SIGN_IN_METHODS,
+  OPS_STEP_TEST_CEILINGS_MS, OPS_STEP_TEST_METHODS, STEP_TEST_CONTEXT_MAX_BYTES, parseStepTestResultRequest, parseTestStepRequest,
   OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest, parseExchangeOAuthCodeRequest, parseHealthRequest,
   parseListDelegationSubjectsRequest, parseLookupRequest, parseRemoveDelegationSubjectRequest, parseRevokeRequest, parseSignInClientRequest, parseVerifyRequest,
 } from '../ops-connections-contract'
@@ -31,7 +32,7 @@ function refused(fn: () => unknown): string {
 describe('the OpsConnections contract', () => {
   it('names the methods the entrypoint answers, and a ceiling for each', () => {
     expect([...OPS_CONNECTIONS_METHODS].sort()).toEqual([
-      'addDelegationSubject', 'clearReauth', 'exchangeOAuthCode', 'health', 'listDelegationSubjects', 'lookup', 'removeDelegationSubject', 'revoke', 'verify',
+      'addDelegationSubject', 'clearReauth', 'exchangeOAuthCode', 'health', 'listDelegationSubjects', 'lookup', 'removeDelegationSubject', 'revoke', 'signInClient', 'verify',
     ])
     expect(Object.keys(OPS_CONNECTIONS_CEILINGS_MS).sort()).toEqual([...OPS_CONNECTIONS_METHODS].sort())
     for (const ms of Object.values(OPS_CONNECTIONS_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
@@ -39,12 +40,63 @@ describe('the OpsConnections contract', () => {
     expect(LOOKUP_RATE_PER_MINUTE).toBeLessThanOrEqual(600)
   })
 
-  it('keeps the sign in method apart from the methods bidding calls until the ops deploy carries it (#2338, build PR 13)', () => {
-    // CI requires the LIVE ops Worker to export every method on OPS_CONNECTIONS_METHODS, so a method ships on ops first.
+  it('calls the sign in method, which shipped on ops first (#2338, build PR 13a), among the methods bidding calls', () => {
     expect([...OPS_SIGN_IN_METHODS]).toEqual(['signInClient'])
-    for (const m of OPS_SIGN_IN_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).not.toContain(m)
-    expect(Object.keys(OPS_SIGN_IN_CEILINGS_MS)).toEqual([...OPS_SIGN_IN_METHODS])
-    for (const ms of Object.values(OPS_SIGN_IN_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
+    for (const m of OPS_SIGN_IN_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).toContain(m)
+  })
+
+  it('keeps the step test methods apart from the methods bidding calls until the ops deploy carries them (#2339)', () => {
+    expect([...OPS_STEP_TEST_METHODS]).toEqual(['testStep', 'stepTestResult'])
+    for (const m of OPS_STEP_TEST_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).not.toContain(m)
+    expect(Object.keys(OPS_STEP_TEST_CEILINGS_MS)).toEqual([...OPS_STEP_TEST_METHODS])
+    for (const ms of Object.values(OPS_STEP_TEST_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
+  })
+
+  describe('a step test request (#2339)', () => {
+    const WF = '0199f0a0-0000-7000-8000-0000000000aa'
+    const DAN = '0199f0a0-0000-7000-8000-0000000000d1'
+    const node = { id: 'node_1', namespace: 'find_files', config: { service: 'google', action: 'google.drive-list-files' } }
+    const ok = { organization_id: ORG, workflow_id: WF, tested_by: DAN, node, trigger_payload: { a: 1 }, steps: { earlier: { output: { b: 2 }, status: 'completed' } }, confirm_send: false }
+
+    it('reads the organization, workflow, tester, step, its context and the confirmation', () => {
+      expect(parseTestStepRequest({ ...ok, organization_id: ORG.toUpperCase(), extra: 'ignored' })).toEqual({ ...ok, execution_id: null })
+      // No context is an empty one, and no confirmation is none.
+      const { trigger_payload: _t, steps: _s, confirm_send: _c, ...bare } = ok
+      expect(parseTestStepRequest(bare)).toEqual({ ...bare, execution_id: null, trigger_payload: {}, steps: {}, confirm_send: false })
+    })
+
+    it('reads a past run to build the context from (#2703): its payload is the run\'s own unless one is given', () => {
+      const EXEC = '0199f0a0-0000-7000-8000-0000000000e1'
+      const { trigger_payload: _t, steps: _s, ...bare } = ok
+      expect(parseTestStepRequest({ ...bare, execution_id: EXEC.toUpperCase() })).toEqual({ ...bare, execution_id: EXEC, trigger_payload: undefined, steps: {} })
+      // A payload or steps given beside the run replace the run's, as a test from a money run's data does.
+      expect(parseTestStepRequest({ ...ok, execution_id: EXEC })).toEqual({ ...ok, execution_id: EXEC })
+      expect(parseTestStepRequest({ ...bare, execution_id: null })).toMatchObject({ execution_id: null, trigger_payload: {} })
+      expect(refused(() => parseTestStepRequest({ ...ok, execution_id: 'exec-1' }))).toMatch(/execution_id/)
+      expect(refused(() => parseTestStepRequest({ ...ok, execution_id: 7 }))).toMatch(/execution_id/)
+    })
+
+    it('refuses each malformed field by name, never echoing its value', () => {
+      expect(refused(() => parseTestStepRequest({ ...ok, workflow_id: 'wf' }))).toMatch(/workflow_id/)
+      expect(refused(() => parseTestStepRequest({ ...ok, tested_by: undefined }))).toMatch(/tested_by/)
+      expect(refused(() => parseTestStepRequest({ ...ok, node: { ...node, id: '' } }))).toMatch(/node's id/)
+      expect(refused(() => parseTestStepRequest({ ...ok, node: { ...node, namespace: 'two words' } }))).toMatch(/node's step id/)
+      expect(refused(() => parseTestStepRequest({ ...ok, node: { ...node, config: [] } }))).toMatch(/node's settings/)
+      expect(refused(() => parseTestStepRequest({ ...ok, steps: [] }))).toMatch(/steps/)
+      expect(refused(() => parseTestStepRequest({ ...ok, steps: { earlier: 'x' } }))).toMatch(/steps/)
+      expect(refused(() => parseTestStepRequest({ ...ok, confirm_send: 'yes' }))).toMatch(/confirm_send/)
+      const secret = 'sk-live-never-echoed'
+      expect(refused(() => parseTestStepRequest({ ...ok, workflow_id: secret }))).not.toContain(secret)
+    })
+
+    it(`refuses a context over ${STEP_TEST_CONTEXT_MAX_BYTES} bytes`, () => {
+      expect(refused(() => parseTestStepRequest({ ...ok, trigger_payload: { big: 'x'.repeat(STEP_TEST_CONTEXT_MAX_BYTES) } }))).toMatch(/context/)
+    })
+
+    it('a result read names the organization, workflow and step', () => {
+      expect(parseStepTestResultRequest({ organization_id: ORG, workflow_id: WF.toUpperCase(), node_id: 'node_1' })).toEqual({ organization_id: ORG, workflow_id: WF, node_id: 'node_1' })
+      expect(refused(() => parseStepTestResultRequest({ organization_id: ORG, workflow_id: WF }))).toMatch(/node's id/)
+    })
   })
 
   it('a sign in client request names the organization and a service key, and nothing else is read', () => {
@@ -102,8 +154,15 @@ describe('the OpsConnections contract', () => {
   })
 
   it('an exchange carries the sealed app login as a candidate, the code, a PKCE verifier of 43 to 128 characters and the redirect URI', () => {
-    const ok = { organization_id: ORG, connection_id: CONN, candidate: CANDIDATE, code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback' }
+    const ok = {
+      organization_id: ORG, connection_id: CONN, candidate: CANDIDATE, code: 'auth-code', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/callback',
+      expected_account: 'dan@trypennie.com',
+    }
     expect(parseExchangeOAuthCodeRequest(ok)).toEqual(ok)
+    // The account the person must sign in as (Dan, 2026-10-23): one address, read lower case, and never absent.
+    expect(parseExchangeOAuthCodeRequest({ ...ok, expected_account: ' Dan@TryPennie.com ' }).expected_account).toBe('dan@trypennie.com')
+    expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, expected_account: undefined }))).toMatch(/expected_account/)
+    expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, expected_account: 'not an address' }))).toMatch(/expected_account/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, verifier: 'v'.repeat(42) }))).toMatch(/verifier/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, verifier: 'v'.repeat(129) }))).toMatch(/verifier/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, code: '' }))).toMatch(/code/)

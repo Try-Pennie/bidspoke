@@ -35,15 +35,21 @@ BASE_REF="origin/main"
 # to /dev/null: this script's stdout is captured by the hook, and a watchdog
 # still holding it would keep that capture open until its sleep ended.
 FETCH_TIMEOUT="${PRE_PUSH_FETCH_TIMEOUT:-20}"
+# The watchdog marks that it fired BEFORE it kills, and the message reads the
+# mark: whether the watchdog is still alive cannot say, since it outlives its own
+# kill for a moment, which made a timed out fetch read as a failed one (#2768).
+fired_dir=$(mktemp -d)
+fired="$fired_dir/fired"
 GIT_TERMINAL_PROMPT=0 git fetch --quiet origin main >/dev/null 2>&1 </dev/null &
 fetch_pid=$!
 (
   sleep "$FETCH_TIMEOUT"
+  : > "$fired"
   kill "$fetch_pid" 2>/dev/null
 ) >/dev/null 2>&1 </dev/null &
 watchdog_pid=$!
 if ! wait "$fetch_pid"; then
-  if ! kill -0 "$watchdog_pid" 2>/dev/null; then
+  if [ -e "$fired" ]; then
     echo "pre-push: fetching origin/main did not finish in ${FETCH_TIMEOUT}s, deciding the SQL suites from the local origin/main" >&2
   else
     echo "pre-push: could not fetch origin/main, deciding the SQL suites from the local origin/main" >&2
@@ -51,6 +57,7 @@ if ! wait "$fetch_pid"; then
 fi
 kill "$watchdog_pid" 2>/dev/null
 wait "$watchdog_pid" 2>/dev/null
+rm -rf "$fired_dir"
 
 both() {
   echo "pre-push: $1, so running both SQL suites" >&2

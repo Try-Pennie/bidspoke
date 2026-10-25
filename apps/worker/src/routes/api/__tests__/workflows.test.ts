@@ -51,6 +51,7 @@ import { pushWorkflowToGitHub } from '../../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../../lib/github-backup-alert'
 import { uuidv7 } from '@bidspoke/uuidv7'
 import api from '../index'
+import { RELOAD_REQUIRED_WORKFLOW_MESSAGE } from '../workflows'
 
 /** One call of write_workflow, as the route sent it (#1947). */
 interface WriteArgs {
@@ -199,6 +200,22 @@ describe('PUT /workflows/:id', () => {
     expect(body.version_id).toBe('ver-1')
     expect(body.version).toBe(5)
     expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'save', p_org: USER_ORG, p_id: 'wf-1', p_expected_version: 4, p_fields: { name: 'Renamed' }, p_save_id: null, p_actor: 'user-1' })])
+  })
+
+  // #2339: a person's own account may be used only by its owner, so a save stamps
+  // who bound each app_action step, from the stored definition, never the client's.
+  it('stamps who bound each app_action step: the stored binder for an unchanged connection, the saver for a new step, never a value the client sent', async () => {
+    const DAN = '00000000-0000-4000-8000-0000000023d1'
+    const conn = '00000000-0000-4000-8000-0000000023c1'
+    const step = (id: string, boundBy?: string) => ({ id, namespace: id, type: 'app_action', config: { service: 'google', action: 'google.gmail-send-email', actionVersion: 1, connection: conn, ...(boundBy ? { boundBy } : {}) } })
+    const stored = { ...existingWorkflow, definition: { trigger: { type: 'schedule', config: {} }, nodes: [step('mail', DAN)], edges: [] } }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: stored } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const definition = { trigger: { type: 'schedule', config: {} }, nodes: [step('mail', 'user-1'), step('notify', DAN)], edges: [{ id: 'e', source: 'mail', target: 'notify' }] }
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
+    expect(res.status).toBe(200)
+    const written = writesOf(sb, 'save')[0].p_fields.definition as { nodes: Array<{ id: string; config: { boundBy: string } }> }
+    expect(written.nodes.map((n) => [n.id, n.config.boundBy])).toEqual([['mail', DAN], ['notify', 'user-1']])
   })
 
   it('rejects a cyclic definition with 400 before saving (#334)', async () => {
@@ -391,6 +408,65 @@ describe('PUT /workflows/:id', () => {
       const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
       expect(res.status).toBe(400)
       expect((await res.json() as { error: string }).error).toBe('validate_bidding_and_state: No lead id field set')
+      expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    })
+  })
+
+  // #2338, plan 3.3: an App Action step is incomplete until what it runs, its
+  // connection and its required fields are set, and a workflow holding one
+  // cannot be switched on. The rule is validateDefinition's; these prove each
+  // route that makes a definition live asks it, and refuses writing nothing.
+  describe('unfinished App Action steps (#2338)', () => {
+    const CONN = '33333333-3333-4333-8333-333333333333'
+    const appDefinition = (config: Record<string, unknown>) => ({
+      nodes: [{ id: 'post', namespace: 'post', type: 'app_action', config }],
+      edges: [{ id: 'e0', source: 'trigger', target: 'post' }],
+      trigger: { type: 'schedule', config: { cron: '0 13 * * *', timezone: 'America/New_York' } },
+    })
+    const unfinished = appDefinition({ service: 'slack', action: 'slack.send-message', actionVersion: 1, args: { channel: 'C0OPS', text: 'hi' } })
+    const opsWorkflow = { ...existingWorkflow, lane: 'ops' }
+    const sentence = 'Nothing was saved. Step post is not finished: No connection chosen. A workflow with an unfinished step cannot be switched on.'
+
+    it('refuses the save of a switched on workflow holding one, naming the step and what it lacks', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({ users: { single: testUser }, workflows: { single: { ...opsWorkflow, is_active: true } } }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: unfinished } })
+      expect(res.status).toBe(422)
+      expect(await res.json()).toMatchObject({ error: 'step_unfinished', message: sentence, steps: [{ nodeId: 'post', namespace: 'post' }] })
+      expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    })
+
+    it('refuses to switch on a workflow whose stored step is unfinished, and switches nothing', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({ users: { single: testUser }, workflows: [{ single: { ...opsWorkflow, is_active: false, definition: unfinished, definition_schema_version: 1 } }] }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(422)
+      expect(await res.json()).toMatchObject({ error: 'step_unfinished', message: sentence })
+      expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    })
+
+    it('refuses to switch on a definition stamped with a version this server cannot judge, never reading it as finished', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({ users: { single: testUser }, workflows: [{ single: { ...opsWorkflow, is_active: false, definition: appDefinition({ service: 'slack', action: 'slack.send-message', actionVersion: 1, connection: CONN, args: { channel: 'C0OPS', text: 'hi' } }), definition_schema_version: 99 } }] }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(422)
+      expect(await res.json()).toMatchObject({ error: 'step_unjudged' })
+    })
+
+    it('refuses to restore an unfinished step onto a switched on workflow', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({
+          users: { single: testUser },
+          workflows: [{ single: { ...opsWorkflow, is_active: true } }],
+          workflow_versions: [{ single: { id: 'ver-1', definition: unfinished, version_number: 1 } }],
+        }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+      expect(res.status).toBe(422)
+      expect(await res.json()).toMatchObject({ error: 'step_unfinished', message: sentence })
       expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
     })
   })
@@ -2846,13 +2922,30 @@ describe('a save made from a version no longer stored is refused, never written 
     app = await makeApp()
   })
 
-  // Today's canvas names no version (its change waits on a design round, #1947):
-  // its save is made from the version this request read, so a write landing
-  // while the request runs is still refused rather than written over.
-  it('a save naming no version is made from the version the request read, and names no press', async () => {
+  // The canvas names the version it was loaded from and its press on every save
+  // (#2599). A canvas opened before that sends neither, and its save would be
+  // made from whatever version the request read, writing over a newer save, so
+  // it is refused before anything is read, its edits left on the canvas (L598).
+  it.each([
+    ['no version', { save_id: saveKeys.save_id }],
+    ['no press', { expected_version: 4 }],
+    ['neither', {}],
+  ])('answers a definition save naming %s with 428 reload_required, reading and writing nothing', async (_, keys) => {
     const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, version: 9 } } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...keys, definition } })
+    expect(res.status).toBe(428)
+    expect(await res.json()).toEqual({ code: 'reload_required', error: RELOAD_REQUIRED_WORKFLOW_MESSAGE })
+    expect(sb.calls.workflows ?? []).toEqual([])
+    expect(sb.writes).toEqual([])
+  })
+
+  // A rename from the list sends no definition, so it overwrites nothing anyone
+  // edited on a canvas: it is made from the version the request read.
+  it('a save sending no definition and no version is made from the version the request read', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, version: 9 } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
     expect(res.status).toBe(200)
     expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'save', p_expected_version: 9, p_save_id: null })])
   })

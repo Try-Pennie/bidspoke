@@ -14,10 +14,17 @@ interface Props {
    *  For inline fields like header key/value rows. */
   singleLine?: boolean
   containerClassName?: string
+  /** Draw a one line text input, the design system's input, rather than a one row textarea (#2338's App Action fields). */
+  input?: boolean
+  /** Leave out the "Type {{ to insert a reference" line, where an Insert button on the field says it (#2338). */
+  hideHint?: boolean
+  describedBy?: string
 }
 
-export default function TemplateTextarea({ value, onChange, id, placeholder, className, refs, singleLine, containerClassName }: Props) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+type TemplateControl = HTMLTextAreaElement | HTMLInputElement
+
+export default function TemplateTextarea({ value, onChange, id, placeholder, className, refs, singleLine, containerClassName, input, hideHint, describedBy }: Props) {
+  const textareaRef = useRef<TemplateControl>(null)
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [activeIdx, setActiveIdx] = useState(0)
 
@@ -32,8 +39,8 @@ export default function TemplateTextarea({ value, onChange, id, placeholder, cla
     return refs.filter((r) => r.toLowerCase().startsWith(partial))
   }
 
-  function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    const val = singleLine ? e.target.value.replace(/[\r\n]/g, '') : e.target.value
+  function handleChange(e: React.ChangeEvent<TemplateControl>) {
+    const val = singleLine || input ? e.target.value.replace(/[\r\n]/g, '') : e.target.value
     const cursor = e.target.selectionStart ?? val.length
     onChange(val)
     const sugs = computeSuggestions(val, cursor)
@@ -41,9 +48,9 @@ export default function TemplateTextarea({ value, onChange, id, placeholder, cla
     setActiveIdx(0)
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+  function handleKeyDown(e: React.KeyboardEvent<TemplateControl>) {
     if (suggestions.length === 0) {
-      if (singleLine && e.key === 'Enter') e.preventDefault()
+      if ((singleLine || input) && e.key === 'Enter') e.preventDefault()
       return
     }
     if (e.key === 'ArrowDown') {
@@ -94,20 +101,36 @@ export default function TemplateTextarea({ value, onChange, id, placeholder, cla
 
   return (
     <div ref={containerRef} className={containerClassName ? `relative ${containerClassName}` : 'relative'}>
-      <textarea
-        ref={textareaRef}
-        id={id}
-        rows={singleLine ? 1 : undefined}
-        className={className}
-        placeholder={placeholder}
-        value={value}
-        onChange={handleChange}
-        onKeyDown={handleKeyDown}
-        onBlur={() => {
-          // Small delay so click on suggestion registers first
-          setTimeout(() => setSuggestions([]), 150)
-        }}
-      />
+      {input ? (
+        <input
+          ref={textareaRef as React.RefObject<HTMLInputElement>}
+          id={id}
+          type="text"
+          className={className}
+          placeholder={placeholder}
+          value={value}
+          aria-describedby={describedBy}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onBlur={() => { setTimeout(() => setSuggestions([]), 150) }}
+        />
+      ) : (
+        <textarea
+          ref={textareaRef as React.RefObject<HTMLTextAreaElement>}
+          id={id}
+          rows={singleLine ? 1 : undefined}
+          className={className}
+          placeholder={placeholder}
+          value={value}
+          aria-describedby={describedBy}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onBlur={() => {
+            // Small delay so click on suggestion registers first
+            setTimeout(() => setSuggestions([]), 150)
+          }}
+        />
+      )}
       {suggestions.length > 0 && (
         <ul role="listbox" className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border border-gray-200 bg-white text-xs shadow-lg">
           {suggestions.map((s, i) => (
@@ -124,7 +147,7 @@ export default function TemplateTextarea({ value, onChange, id, placeholder, cla
           ))}
         </ul>
       )}
-      {!singleLine && refs.length > 0 && suggestions.length === 0 && (
+      {!singleLine && !input && !hideHint && refs.length > 0 && suggestions.length === 0 && (
         <p className="mt-1 text-xs text-gray-500">
           Type <code className="rounded bg-gray-100 px-0.5">{'{{'}</code> to insert a reference
         </p>

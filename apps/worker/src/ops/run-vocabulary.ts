@@ -135,7 +135,8 @@ export const ALL_OBSERVATION_REASONS: readonly string[] = Object.values(OBSERVAT
  * tick runs those in TICK_SWEEPS (tick.ts): tombstone_expiry since #2334,
  * sf_limits since #2336 and connection_check since #2340, so now every one.
  * observation_purge (#1950, supabase-ops migration 20261022150000) keeps
- * schedule_fire_observations to 30 days, once a night.
+ * schedule_fire_observations to 30 days, and step_test_results to 7 days
+ * (#2339, supabase-ops migration 20261024010000), once a night.
  */
 export const OPS_SWEEPS = ['lease_expiry', 'run_expiry', 'queue_agreement', 'tombstone_expiry', 'connection_check', 'sf_limits', 'observation_purge'] as const
 export type OpsSweep = (typeof OPS_SWEEPS)[number]
@@ -224,3 +225,26 @@ export type NonStepLeaseOutcome = (typeof NON_STEP_LEASE_OUTCOMES)[number]
 /** Where a budget reading came from: the sf_limits sweep's /limits read, or a response's Sforce-Limit-Info header. */
 export const SF_BUDGET_SOURCES = ['limits', 'sforce_limit_info'] as const
 export type SfBudgetSource = (typeof SF_BUDGET_SOURCES)[number]
+
+// ── a step's test result (#2339, supabase-ops migration 20261024010000) ─────
+
+/** How a step's test ended: its action answered, or it did not (the error says why). */
+export const STEP_TEST_STATUSES = ['completed', 'failed'] as const
+export type StepTestStatus = (typeof STEP_TEST_STATUSES)[number]
+
+// ── each step of an ops run (#2703, supabase-ops migration 20261024150000) ──
+
+/**
+ * How a step a run walked ended: it answered, or it did not (the error says
+ * why, and whether it ended the run as failed, a retry or for a person).
+ */
+export const OPS_STEP_RECORD_STATUSES = ['completed', 'failed'] as const
+export type OpsStepRecordStatus = (typeof OPS_STEP_RECORD_STATUSES)[number]
+
+/**
+ * What record_ops_step answers: recorded, already_recorded (this place already
+ * holds this step, a repeat after a lost answer), or stale (the run is not this
+ * holder's running attempt any more, and nothing was written).
+ */
+export const OPS_STEP_RECORD_OUTCOMES = ['recorded', 'already_recorded', 'stale'] as const
+export type OpsStepRecordOutcome = (typeof OPS_STEP_RECORD_OUTCOMES)[number]

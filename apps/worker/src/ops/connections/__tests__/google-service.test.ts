@@ -226,7 +226,7 @@ describe('a person\'s own Google account (#2338, R17: Sign in with Google)', () 
     const w = world({ target: own, tokens })
     const exchange = (target: Record<string, unknown>) => exchangeConnectionCode(w.deps, {
       organization_id: ORG, connection_id: CONN, candidate: { service: 'google', generation: 1, envelope, target, public_config: {} },
-      code: 'auth-code-2338', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/connections/google',
+      code: 'auth-code-2338', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/connections/google', expected_account: 'dan@trypennie.example',
     })
     expect(await exchange(TARGET)).toMatchObject({ ok: false, refused: 'connection_target_invalid' })
     expect(tokens.exchanges).toEqual([])

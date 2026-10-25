@@ -45,6 +45,10 @@ export const CREATE_ROUTE_REFUSAL_CODES = [
   'connection_money_identity',
   /** The money identities could not be read, so the save is refused rather than passed. */
   'connection_money_targets_unreadable',
+  /** An HTTP host another catalogue service owns (schema/http-host.ts): names[0] the host, names[1] the service (#2337). */
+  'connection_host_owned',
+  /** An HTTP host bidding sends to (connection-money-targets.ts, moneyHostOf): names[0] the host (#2337). */
+  'connection_money_host',
   /** A mailbox or drive not on the organization's Google list. */
   'google_subject_not_listed',
   /** The Google list could not be read. */
@@ -62,7 +66,7 @@ export const CREATE_ROUTE_REFUSAL_CODES = [
 ] as const
 export type CreateRouteRefusalCode = (typeof CREATE_ROUTE_REFUSAL_CODES)[number]
 
-/** OpsConnections refusals only another method answers: the Google list's, the lookups', health's, revoke's, the Reconnect's clearing and signInClient's. */
+/** OpsConnections refusals only another method answers: the Google list's, the lookups', health's, revoke's, the Reconnect's clearing, signInClient's, exchangeOAuthCode's and the step test's. */
 export const NOT_VERIFY_REFUSALS = [
   'reauth_clear_unrecorded',
   'revoke_unrecorded',
@@ -80,6 +84,18 @@ export const NOT_VERIFY_REFUSALS = [
   'sign_in_app_unset',
   'sign_in_app_malformed',
   'sign_in_not_offered',
+  // exchangeOAuthCode's (#2338): the sign in route words it as google_sign_in_wrong_account.
+  'exchange_account_mismatch',
+  // The step test's (#2339): the test node route words them itself.
+  'step_test_send_unconfirmed',
+  'step_test_unavailable',
+  // A step test from a past run's (#2703): the test node route words them itself too.
+  'step_test_run_not_found',
+  'step_test_run_records_gone',
+  'step_test_run_steps_missing',
+  'step_test_run_output_not_kept',
+  'step_test_run_payload_not_held',
+  'step_test_run_unavailable',
 ] as const satisfies readonly OpsConnectionsOwnRefusal[]
 
 export type VerifyRefusalCode =
@@ -149,6 +165,8 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   connection_name_taken: (c) => `Another ${c.service} connection already has that name. Nothing was saved. Choose another name and save again.`,
   connection_money_identity: (c) => `This is ${c.money ? MONEY_WORDS[c.money] : 'a login Bidspoke\'s bidding uses'}, which a workflow connection may never use. Nothing was saved. Use a login made for workflows.`,
   connection_money_targets_unreadable: () => 'Bidspoke could not check whether this is one of its own bidding logins. Nothing was saved. Save again in a minute.',
+  connection_host_owned: (c) => `The host ${c.names[0] ?? 'entered'} belongs to ${c.names[1] ?? 'another service'}, which an HTTP connection may never reach. Nothing was saved. Use another host, or a ${c.names[1] ?? 'service'} connection where Bidspoke offers one.`,
+  connection_money_host: (c) => `The host ${c.names[0] ?? 'entered'} is one Bidspoke's bidding sends to, which a workflow connection may never reach. Nothing was saved. Use another host.`,
   google_subject_not_listed: (c) => `${listed(c.names)} ${isAre(c.names)} not on the company list of mailboxes and drives. Nothing was saved. Add ${itThem(c.names)} to the list on this page, then save again.`,
   google_list_unavailable: () => 'The company list of mailboxes and drives could not be read. Nothing was saved. Save again in a minute.',
   connection_seal_failed: () => 'Bidspoke could not lock the login away for safe keeping. Nothing was saved. Save again, and tell Dan if it keeps happening.',
@@ -177,6 +195,7 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   verify_openai_project_mismatch: () => 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.',
   verify_google_mailbox_mismatch: () => 'Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.',
   verify_anthropic_workspace_mismatch: () => 'Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
+  verify_http_check_refused: () => 'The Check path did not answer with this header value. Nothing was saved. Check the Check path, the Header and the Header value, and save again.',
   identity_changed: (c) => `${c.service} names another user for this login than it did before. Nothing was saved. Tell Dan before it is used.`,
   measured_identity_unrecorded: () => 'The login worked, but the workflows server could not record who it acts as. Nothing was saved. Save again.',
 

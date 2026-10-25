@@ -335,3 +335,5 @@ export function stripComments(source: string): string {
 
   return out.join('')
 }
+
+export { sampleLabel, sampleRows, SAMPLE_ITEMS_MAX, SAMPLE_MAX_ROWS, SAMPLE_TEXT_MAX, type SampleRow } from './sample-rows'

@@ -88,6 +88,10 @@ export type AuditAction =
   // login again and cleared its Needs reconnecting flag. No bidding row changed,
   // so the store's trigger writes nothing; changes names the generation checked.
   | 'connection_rechecked'
+  // A person signed their own Google account connection in again (#2338, build
+  // PR 13): ops holds the new login and writes it back to the row by itself, so
+  // changes names the generation the sign in replaced, never the login.
+  | 'connection_signed_in_again'
 
 /**
  * How long to wait between audit-write attempts (#277).

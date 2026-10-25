@@ -15,5 +15,5 @@ export default async function AppActionPreviewPage({ searchParams }: { searchPar
   if (process.env.NODE_ENV === 'production') notFound()
   const params = await searchParams
   const frame = previewFrameOf(typeof params.frame === 'string' ? params.frame : undefined)
-  return <AppActionPreview key={frame} />
+  return <AppActionPreview key={frame} frame={frame} />
 }

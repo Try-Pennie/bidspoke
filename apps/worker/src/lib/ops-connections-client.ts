@@ -35,8 +35,8 @@ import { raceDeadline } from './alert-claim'
 import type {
   AddDelegationSubjectAnswer, AddDelegationSubjectRequest, ClearReauthAnswer, ClearReauthRequest, ExchangeOAuthCodeAnswer, ExchangeOAuthCodeRequest,
   HealthAnswer, HealthRequest, ListDelegationSubjectsAnswer, ListDelegationSubjectsRequest, LookupAnswer, LookupRequest, OpsConnectionsBinding,
-  OpsConnectionsMethod, RemoveDelegationSubjectAnswer, RemoveDelegationSubjectRequest, RevokeAnswer, RevokeRequest, VerifyAnswer,
-  VerifyRequest,
+  OpsConnectionsMethod, OpsStepTestMethod, RemoveDelegationSubjectAnswer, RemoveDelegationSubjectRequest, RevokeAnswer, RevokeRequest, SignInClientAnswer,
+  SignInClientRequest, StepTestResultAnswer, StepTestResultRequest, TestStepAnswer, TestStepCall, VerifyAnswer, VerifyRequest,
 } from './ops-connections-contract'
 
 /**
@@ -57,9 +57,26 @@ export const OPS_CONNECTIONS_DEADLINES_MS: Readonly<Record<OpsConnectionsMethod,
   addDelegationSubject: 15_000,
   removeDelegationSubject: 15_000,
   listDelegationSubjects: 15_000,
+  signInClient: 10_000,
 }
 
-const deadlineOf = (method: OpsConnectionsMethod): number => OPS_CONNECTIONS_DEADLINES_MS[method]
+/**
+ * The step test's (#2339), on the same rule: each its OPS_STEP_TEST_CEILINGS_MS
+ * ceiling plus 5 s. They are called through the same binding and kept off
+ * OPS_CONNECTIONS_METHODS until the ops deploy carries them (the contract says
+ * why); until then a call throws and is answered ops_connections_unavailable.
+ */
+export const OPS_STEP_TEST_DEADLINES_MS: Readonly<Record<OpsStepTestMethod, number>> = {
+  testStep: 95_000,
+  stepTestResult: 15_000,
+}
+
+type CalledMethod = OpsConnectionsMethod | OpsStepTestMethod
+
+/** Every method's deadline in one table, so a method missing from either fails to compile. */
+const DEADLINES_MS: Readonly<Record<CalledMethod, number>> = { ...OPS_CONNECTIONS_DEADLINES_MS, ...OPS_STEP_TEST_DEADLINES_MS }
+
+const deadlineOf = (method: CalledMethod): number => DEADLINES_MS[method]
 
 interface Requests {
   verify: VerifyRequest
@@ -71,6 +88,7 @@ interface Requests {
   addDelegationSubject: AddDelegationSubjectRequest
   removeDelegationSubject: RemoveDelegationSubjectRequest
   listDelegationSubjects: ListDelegationSubjectsRequest
+  signInClient: SignInClientRequest
 }
 
 interface Answers {
@@ -83,6 +101,7 @@ interface Answers {
   addDelegationSubject: AddDelegationSubjectAnswer
   removeDelegationSubject: RemoveDelegationSubjectAnswer
   listDelegationSubjects: ListDelegationSubjectsAnswer
+  signInClient: SignInClientAnswer
 }
 
 /** Why the call gave no answer this contract reads. */
@@ -121,7 +140,7 @@ function referenceOf(error: unknown): string | null {
   return REFERENCE.exec(message)?.[1] ?? null
 }
 
-function causeSentence(method: OpsConnectionsMethod, cause: OpsConnectionsUnavailableCause, reference: string | null, errorKind: string | null): string {
+function causeSentence(method: CalledMethod, cause: OpsConnectionsUnavailableCause, reference: string | null, errorKind: string | null): string {
   switch (cause) {
     case 'binding_absent':
       return 'this deploy of the bidding Worker has no OPS_CONNECTIONS binding'
@@ -135,7 +154,7 @@ function causeSentence(method: OpsConnectionsMethod, cause: OpsConnectionsUnavai
 }
 
 function unavailable(
-  method: OpsConnectionsMethod, organizationId: string | null, cause: OpsConnectionsUnavailableCause, reference: string | null = null, errorKind: string | null = null,
+  method: CalledMethod, organizationId: string | null, cause: OpsConnectionsUnavailableCause, reference: string | null = null, errorKind: string | null = null,
 ): OpsConnectionsUnavailable {
   // One line of names: never the request, never the error's message.
   console.warn(JSON.stringify({
@@ -157,7 +176,7 @@ function organizationOf(request: unknown): string | null {
   return typeof org === 'string' ? org : null
 }
 
-async function callMethod(env: OpsConnectionsEnv, method: OpsConnectionsMethod, request: unknown, options: OpsConnectionsCallOptions): Promise<unknown> {
+async function callMethod(env: OpsConnectionsEnv, method: CalledMethod, request: unknown, options: OpsConnectionsCallOptions): Promise<unknown> {
   const organizationId = organizationOf(request)
   const bound = env.OPS_CONNECTIONS
   if (!bound) return unavailable(method, organizationId, 'binding_absent')
@@ -167,7 +186,7 @@ async function callMethod(env: OpsConnectionsEnv, method: OpsConnectionsMethod, 
   // through .call or .apply: on a real RPC stub every property read is another
   // remote method, so `.call` names a method ops does not export and every call
   // throws (shipped that way in #2569, caught only by the post deploy probe).
-  const methods = bound as unknown as Record<OpsConnectionsMethod, (request: unknown) => Promise<unknown>>
+  const methods = bound as unknown as Record<CalledMethod, (request: unknown) => Promise<unknown>>
   const raced = await raceDeadline(() => methods[method](request), deadlineOf(method), options.delay)
   if (raced.kind === 'timed_out') return unavailable(method, organizationId, 'deadline')
   if (raced.kind === 'threw') {
@@ -182,6 +201,23 @@ export async function callOpsConnections<M extends OpsConnectionsMethod>(
   env: OpsConnectionsEnv, method: M, request: Requests[M], options: OpsConnectionsCallOptions = {},
 ): Promise<Answers[M] | OpsConnectionsUnavailable> {
   return (await callMethod(env, method, request, options)) as Answers[M] | OpsConnectionsUnavailable
+}
+
+interface StepTestRequests {
+  testStep: TestStepCall
+  stepTestResult: StepTestResultRequest
+}
+
+interface StepTestAnswers {
+  testStep: TestStepAnswer
+  stepTestResult: StepTestResultAnswer
+}
+
+/** One step test call (#2339): ops's answer (a refusal included), or ops_connections_unavailable. Never throws. */
+export async function callOpsStepTest<M extends OpsStepTestMethod>(
+  env: OpsConnectionsEnv, method: M, request: StepTestRequests[M], options: OpsConnectionsCallOptions = {},
+): Promise<StepTestAnswers[M] | OpsConnectionsUnavailable> {
+  return (await callMethod(env, method, request, options)) as StepTestAnswers[M] | OpsConnectionsUnavailable
 }
 
 export function isOpsConnectionsUnavailable(answer: unknown): answer is OpsConnectionsUnavailable {

@@ -11,7 +11,7 @@ import { resolveActionVersion } from '@bidspoke/service-catalogue/schema'
 import { ActionFailure, implement, type ActionRun, type RuntimeAction } from '@bidspoke/service-catalogue/runtime'
 import { appActionHandler, type AppActionDeps } from '../app-action'
 import { ACCESS_TOKEN, CONN, LOGIN_SECRET, ORG, exampleRules, makeDoubles, makeKeys, sealLogin, usableCopy, type Doubles, type TestKeys } from '../connections/__tests__/harness'
-import type { ClaimedRun, CompleteOutcome, SendIntent } from '../ops-writes'
+import type { ClaimedRun, CompleteOutcome, OpsStepRecord, SendIntent } from '../ops-writes'
 import { invokeRun, stepRequestId, type RunBody, type RunDb, type RunInvocationReport } from '../run-invocation'
 import { walkOpsDefinition } from '../run-walk'
 
@@ -82,6 +82,12 @@ class FakeRunDb implements RunDb {
   }
   async recordResult(_run: ClaimedRun, ledgerId: string, result: unknown) {
     this.results.push({ ledgerId, ...(result as object) })
+    return 'recorded' as const
+  }
+  /** Each step record the walk wrote (#2703). */
+  steps: OpsStepRecord[] = []
+  async recordStep(_run: ClaimedRun, _executionId: string, record: OpsStepRecord) {
+    this.steps.push(record)
     return 'recorded' as const
   }
   async complete(_run: ClaimedRun, end: CompleteOutcome) {
@@ -203,16 +209,36 @@ describe('app_action through the ledgered send and connectionFetch', () => {
   })
 
   // Dan's decision on #2338 (2026-10-23): a person's own Google account may be
-  // used only by its owner, so no workflow sends email as someone else. Ops
-  // holds no record yet of who owns such a connection or who bound a step to it,
-  // so the step is refused by name rather than run on a guess (L75).
-  it('refuses a step bound to a person\'s own account connection by name, with nothing sent, while who bound it is unrecorded', async () => {
-    const w = world()
-    w.d.setCopy(usableCopy(envelope, { target: { own_account: true } }))
-    const report = await w.run(definition(step()))
-    expect(report).toMatchObject({ end: { outcome: 'failed', error: expect.stringContaining('own_account_binder_unrecorded') } })
-    expect(w.d.rec.sent).toEqual([])
-    expect(w.db.intents).toEqual([])
+  // used only by its owner, so no workflow sends email as someone else. The step
+  // carries who bound it (boundBy, stamped by the bidding Worker's save) and the
+  // copy carries who owns the connection; anything short of a match is refused
+  // by name with nothing sent, never run on a guess (L75).
+  describe('a person\'s own account connection', () => {
+    const OWNER = '00000000-0000-4000-8000-0000000023f1'
+    const SOMEONE_ELSE = '00000000-0000-4000-8000-0000000023f2'
+    const own = { host: 'api.example.test', own_account: true }
+
+    it('runs a step its owner bound', async () => {
+      const w = world()
+      w.d.setCopy(usableCopy(envelope, { target: own, ownerUserId: OWNER }))
+      w.d.respond(Response.json({ id: 1 }))
+      expect(await w.run(definition(step({ boundBy: OWNER })))).toMatchObject({ end: { outcome: 'done' } })
+      expect(w.d.rec.sent).toHaveLength(1)
+    })
+
+    it.each([
+      ['someone other than its owner bound the step', { boundBy: SOMEONE_ELSE }, OWNER, 'own_account_not_owner'],
+      ['nobody is recorded as having bound the step', {}, OWNER, 'own_account_binder_unrecorded'],
+      ['what binds it is not a user id', { boundBy: 'dan@trypennie.com' }, OWNER, 'own_account_binder_unrecorded'],
+      ['ops holds no owner for the connection', { boundBy: OWNER }, null, 'own_account_owner_unrecorded'],
+    ] as const)('refuses by name, with nothing sent or written, when %s', async (_label, over, owner, reason) => {
+      const w = world()
+      w.d.setCopy(usableCopy(envelope, { target: own, ownerUserId: owner }))
+      const report = await w.run(definition(step(over)))
+      expect(report).toMatchObject({ end: { outcome: 'failed', error: expect.stringContaining(reason) } })
+      expect(w.d.rec.sent).toEqual([])
+      expect(w.db.intents).toEqual([])
+    })
   })
 
   it('a company connection whose target only resembles an own account is not refused for it', async () => {
@@ -271,19 +297,23 @@ describe('how an action\'s failure ends the run', () => {
 
 describe('a login never reaches a stored record or a log (#1689 3.0, from Revert)', () => {
   it('the known token is absent from the step output, the ledger, the run\'s end and every log line, while the service did receive it', async () => {
-    const outcomes: Array<() => Response | Error> = [
-      () => Response.json({ id: 42 }),
-      () => new Response('no', { status: 422 }),
-      () => new Response('reset', { status: 502 }),
-      () => new TypeError('network connection lost'),
+    // Each with the step records it leaves (#2703): a send whose outcome is unknown stops the
+    // run, and a step stopped with its run is not recorded (run-walk.ts); the run's end names it.
+    const outcomes: Array<[() => Response | Error, number]> = [
+      [() => Response.json({ id: 42 }), 1],
+      [() => new Response('no', { status: 422 }), 1],
+      [() => new Response('reset', { status: 502 }), 1],
+      [() => new TypeError('network connection lost'), 0],
     ]
-    for (const answer of outcomes) {
+    for (const [answer, records] of outcomes) {
       const w = world()
       w.d.respond(answer())
       const report = await w.run(definition(step()))
       // The positive control: the login really was applied to the request.
       expect(new Headers(w.d.rec.sent[0].init.headers).get('authorization')).toContain(ACCESS_TOKEN)
-      const stored = JSON.stringify({ report, outputs: w.outputs, intents: w.db.intents, results: w.db.results, completes: w.db.completes, logs: w.logs, reports: w.d.rec.reports })
+      // And the step was recorded where it ran to an end, so its record is among what is searched.
+      expect(w.db.steps).toHaveLength(records)
+      const stored = JSON.stringify({ report, outputs: w.outputs, intents: w.db.intents, results: w.db.results, completes: w.db.completes, logs: w.logs, reports: w.d.rec.reports, steps: w.db.steps })
       expect(stored).not.toContain(ACCESS_TOKEN)
       expect(stored).not.toContain(LOGIN_SECRET)
     }
@@ -301,11 +331,14 @@ describe('a login never reaches a stored record or a log (#1689 3.0, from Revert
       w.d.respond(answer())
       const report = await w.run(definition(step()))
       expect(report, outcome).toMatchObject({ end: { outcome } })
-      const stored = JSON.stringify({ report, outputs: w.outputs, intents: w.db.intents, results: w.db.results, completes: w.db.completes, logs: w.logs })
+      const stored = JSON.stringify({ report, outputs: w.outputs, intents: w.db.intents, results: w.db.results, completes: w.db.completes, logs: w.logs, steps: w.db.steps })
       expect(stored, outcome).not.toContain(ACCESS_TOKEN)
       expect(stored, outcome).not.toContain(LOGIN_SECRET)
       // The rest of what the service said is kept, with the login marked as removed.
       expect(stored, outcome).toContain('[redacted] for [redacted]')
+      // The step's own record (#2703) holds what the service said, the login removed, in its output or its error.
+      expect(w.db.steps, outcome).toHaveLength(1)
+      expect(JSON.stringify(w.db.steps[0]), outcome).toContain('[redacted] for [redacted]')
     }
   })
 })

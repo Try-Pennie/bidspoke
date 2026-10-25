@@ -2,6 +2,7 @@ import { ANTHROPIC_CHAT_V1 } from '../schema/services/anthropic'
 import {
   GOOGLE_CALENDAR_CREATE_EVENT_V1, GOOGLE_CALENDAR_DELETE_EVENT_V1, GOOGLE_CALENDAR_LIST_EVENTS_V1, GOOGLE_DRIVE_DOWNLOAD_FILE_V1, GOOGLE_DRIVE_LIST_FILES_V1, GOOGLE_GMAIL_SEND_EMAIL_V1, GOOGLE_SHEETS_ADD_ROW_V1, GOOGLE_SHEETS_ADD_ROWS_V1, GOOGLE_SHEETS_CLEAR_ROWS_V1, GOOGLE_SHEETS_CREATE_WORKSHEET_V1, GOOGLE_SHEETS_DELETE_ROWS_V1, GOOGLE_SHEETS_FIND_ROW_V1, GOOGLE_SHEETS_GET_CELL_V1, GOOGLE_SHEETS_GET_SPREADSHEET_V1, GOOGLE_SHEETS_GET_VALUES_V1, GOOGLE_SHEETS_UPDATE_CELL_V1,
 } from '../schema/services/google'
+import { HTTP_CUSTOM_REQUEST_V1, HTTP_GET_REQUEST_V1 } from '../schema/services/http'
 import {
   OPENAI_ADD_CONVERSATION_ITEMS_V1, OPENAI_CHAT_V1, OPENAI_CREATE_CONVERSATION_V1, OPENAI_CREATE_RESPONSE_V1, OPENAI_GET_CONVERSATION_V1,
   OPENAI_LIST_CONVERSATION_ITEMS_V1,
@@ -29,6 +30,8 @@ import { run as googleSheetsGetCellV1 } from './actions/google.sheets-get-cell.v
 import { run as googleSheetsGetSpreadsheetV1 } from './actions/google.sheets-get-spreadsheet.v1'
 import { run as googleSheetsGetValuesV1 } from './actions/google.sheets-get-values.v1'
 import { run as googleSheetsUpdateCellV1 } from './actions/google.sheets-update-cell.v1'
+import { run as httpCustomRequestV1 } from './actions/http.custom-request.v1'
+import { run as httpGetRequestV1 } from './actions/http.get-request.v1'
 import { run as openaiAddConversationItemsV1 } from './actions/openai.add-conversation-items.v1'
 import { run as openaiChatV1 } from './actions/openai.chat.v1'
 import { run as openaiCreateConversationV1 } from './actions/openai.create-conversation.v1'
@@ -98,9 +101,15 @@ export const RUNTIME_ACTIONS: readonly RuntimeAction[] = [
   implement(GOOGLE_CALENDAR_CREATE_EVENT_V1, googleCalendarCreateEventV1),
   implement(GOOGLE_CALENDAR_DELETE_EVENT_V1, googleCalendarDeleteEventV1),
   implement(GOOGLE_CALENDAR_LIST_EVENTS_V1, googleCalendarListEventsV1),
+  implement(HTTP_GET_REQUEST_V1, httpGetRequestV1),
+  implement(HTTP_CUSTOM_REQUEST_V1, httpCustomRequestV1),
 ]
 
 /**
+ * HTTP has no entry: a static key needs no consent URL or refresh, and its
+ * verify is the ops Worker's GET of the connection's check path (apps/worker
+ * src/ops/connections/http-service.ts).
+ *
  * Google has no entry: a delegated token needs no consent URL, it is minted
  * again rather than refreshed, and its verify is the ops Worker's Gmail profile
  * probe (apps/worker src/ops/connections/google-service.ts).

@@ -20,6 +20,8 @@ const NOT_READERS: Record<string, string> = {
   'routes/api/buyer-profiles.ts': 'the buyer profile editor, which refuses enabling a buyer with no URL',
   'types/database.ts': 'generated column types',
   'routes/api/partner-workflow-values.ts': 'the workflow values tab, which shows the URL and this list',
+  'routes/api/connections.ts': 'an HTTP connection\'s save, which reads only the URL\'s host, to refuse it as one bidding sends to (#2337)',
+  'lib/connection-money-targets.ts': 'the money hosts that save compares against, which take only the URL\'s host (#2337)',
   'engine/scripts/engine-bidding/build_response_body.js': 'a mirror of a Code node: a workflow, which the scan covers',
   'engine/scripts/engine-bidding/tripoint_ping.js': 'a mirror of a Code node: a workflow, which the scan covers',
   'engine/scripts/engine-bidding/patch_prospect_body.js': 'a mirror of a Code node: a workflow, which the scan covers',

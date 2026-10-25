@@ -26,7 +26,7 @@ import { raceDeadline } from '../lib/alert-claim'
 import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
-  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeScheduleObservations, readConnectionCheckTargets,
+  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeOpsStepRecords, purgeScheduleObservations, purgeStepTestResults, readConnectionCheckTargets,
   readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
   saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
@@ -80,6 +80,8 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     expireRuns: (limit) => expireOverdueRunRequests(client, limit, rpc),
     purgeTombstones: (limit) => purgeExpiredConnectionTombstones(client, limit, rpc),
     purgeObservations: (limit) => purgeScheduleObservations(client, limit, rpc),
+    purgeStepTests: (limit) => purgeStepTestResults(client, limit, rpc),
+    purgeStepRecords: (limit) => purgeOpsStepRecords(client, limit, rpc),
     recordFire: (org, fire) => recordScheduleFire(client, org, fire, rpc),
     claimRuns: (claim) => claimRunRequests(client, claim, rpc),
     completeRun: (run, end) => completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, end, rpc),
