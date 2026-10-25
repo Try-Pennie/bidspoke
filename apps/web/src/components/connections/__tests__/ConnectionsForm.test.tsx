@@ -304,9 +304,9 @@ describe('Reconnect (R19, D19)', () => {
   })
 
   it('opens for a connection of a service the catalogue does not declare, asks nothing, and says why the check is refused', async () => {
-    // Supabase: a service with no catalogue entry yet (Anthropic was this example until it shipped, #2337).
-    const undeclared = Object.assign(new Error('connection_service_undeclared'), { status: 422, body: { error: 'connection_service_undeclared', message: 'Bidspoke cannot connect to Supabase yet. Nothing was saved. Choose one of the services the form offers.' } })
-    const list: ConnectionList = { ...LIST, connections: [row({ id: 'notes', name: 'Lead notes', service: 'supabase', service_name: 'Supabase', org: null, target: null })] }
+    // Airtable: a service with no catalogue entry (Anthropic, then Supabase, were this example until each shipped, #2337).
+    const undeclared = Object.assign(new Error('connection_service_undeclared'), { status: 422, body: { error: 'connection_service_undeclared', message: 'Bidspoke cannot connect to Airtable yet. Nothing was saved. Choose one of the services the form offers.' } })
+    const list: ConnectionList = { ...LIST, connections: [row({ id: 'notes', name: 'Lead notes', service: 'airtable', service_name: 'Airtable', org: null, target: null })] }
     const s = source({ list: vi.fn(async () => list), reconnect: vi.fn(async () => { throw undeclared }) })
     render(<ConnectionsScreen source={s} clock={manualClock().clock} initialChosen={{ kind: 'connection', id: 'notes' }} />)
     await waitFor(() => expect(part('actions')).not.toBeNull())
@@ -315,7 +315,7 @@ describe('Reconnect (R19, D19)', () => {
     expect(within(dialog).queryAllByRole('textbox')).toEqual([])
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
     expect(s.reconnect).toHaveBeenCalledWith('notes', {})
-    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toContain('Bidspoke cannot connect to Supabase yet.'))
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toContain('Bidspoke cannot connect to Airtable yet.'))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('dialog')).toBeNull()
   })

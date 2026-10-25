@@ -24,6 +24,7 @@ import { parseRevokeRequest, parseVerifyRequest, type VerifyRequest } from '../.
 import { makeKeys, type TestKeys } from '../../../ops/connections/__tests__/harness'
 import { makeSigningKey } from '../../../ops/connections/minters/__tests__/minter-harness'
 import { opsServiceEntry } from '../../../ops/connections/services'
+import { supabaseServiceEntry } from '../../../ops/connections/supabase-service'
 import { rpcStub } from '../../../test-setup/rpc-stub'
 import type { AuthorizeInput } from '../../../ops/connections/service-rules'
 
@@ -332,7 +333,8 @@ describe('the sealed login opens through the real ops minters (round trip)', () 
     const plaintext = await open(keys.privateKeys, candidate.envelope, {
       organization_id: request.organization_id, connection_id: request.connection_id, service: candidate.service, generation: candidate.generation, kid: candidate.envelope.kid,
     })
-    const entry = opsServiceEntry(candidate.service)!
+    // Supabase is built per request on ops (it reads the ops project from the env), so here with the lane projects named.
+    const entry = candidate.service === 'supabase' ? supabaseServiceEntry({ laneProjectRefs: () => ['xvrmivmpfykwwtriqwpg', 'zwihpjxouklvkvngkvmw'] }) : opsServiceEntry(candidate.service)!
     return entry.rules.authorize({
       organizationId: request.organization_id as never, connectionId: request.connection_id, service: candidate.service, generation: candidate.generation,
       target: candidate.target, publicConfig: candidate.public_config, envelope: candidate.envelope, login: { plaintext }, candidate: true, renew: null,
@@ -433,6 +435,54 @@ describe('the sealed login opens through the real ops minters (round trip)', () 
       ['http', 'api_key', 'ops_key', { host: 'https://api.lender.example/v2', header: 'X-Partner-Key', check_path: '/v2/me' }],
     ])
     expect(JSON.stringify(db.inserts)).not.toContain('canary-http-key-2337')
+  })
+
+  it('Supabase (#2337): the service key typed is sent as apikey and bearer, and saved acting as its project', async () => {
+    const db = storeDouble()
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    let headers: Record<string, string> = {}
+    const { env } = makeEnv({
+      verify: async (r) => {
+        headers = { ...(await mintFromCandidate(r, async () => { throw new Error('a static key asks no token endpoint') })).headers }
+        return { ok: true, service: 'supabase', generation: 1, identity: { kind: 'supabase', project_ref: 'blicjwldjfjubbukxatn' } }
+      },
+    })
+    const fields = { project_url: 'https://blicjwldjfjubbukxatn.supabase.co', service_key: 'canary-supabase-key-2337' }
+    const res = await post(env, { service: 'supabase', name: 'Forms database', fields })
+    expect(res.status).toBe(201)
+    expect(headers).toEqual({ apikey: 'canary-supabase-key-2337', authorization: 'Bearer canary-supabase-key-2337' })
+    expect(((await res.json()) as { connection: { acts_as: string } }).connection.acts_as).toBe('Project blicjwldjfjubbukxatn')
+    expect(db.inserts.map((r) => [r.service_type, r.auth_type, r.sealed_for, r.target])).toEqual([
+      ['supabase', 'api_key', 'ops_key', { project_url: 'https://blicjwldjfjubbukxatn.supabase.co' }],
+    ])
+    expect(JSON.stringify(db.inserts)).not.toContain('canary-supabase-key-2337')
+  })
+})
+
+describe('an ops Supabase connection never names the bidding project (#2337)', () => {
+  it.each([
+    ['its Project URL', 'https://moneyref0123456789ab.supabase.co'],
+    ['its Project URL with a path', 'https://moneyref0123456789ab.supabase.co/rest/v1/'],
+    ['its bare ref', 'moneyref0123456789ab'],
+  ])('refuses %s at save, by the money check every service shares, before verify', async (_what, project_url) => {
+    const db = storeDouble()
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv()
+    const res = await post(env, { service: 'supabase', name: 'Bidding database', fields: { project_url, service_key: 'canary-supabase-key-2337' } })
+    expect(res.status).toBe(422)
+    expect((await res.json()) as Refusal & { money: string; matched: string }).toMatchObject({ error: 'connection_money_identity', money: 'supabase_project', matched: 'SUPABASE_URL' })
+    expect(binding.verify).not.toHaveBeenCalled()
+    expect(db.inserts).toEqual([])
+  })
+
+  it('says a lane project verify refused in its own sentence', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env } = makeEnv({ verify: async () => ({ ok: false, refused: 'verify_supabase_lane_project', detail: 'named on ops' }) })
+    const body = (await (await post(env, { service: 'supabase', name: 'Ops database', fields: { project_url: 'zwihpjxouklvkvngkvmw', service_key: 'canary-supabase-key-2337' } })).json()) as Refusal
+    expect(body).toMatchObject({
+      error: 'verify_supabase_lane_project',
+      message: 'This is one of the Supabase projects Bidspoke itself runs on, which a workflow connection may never use. Nothing was saved. Use a project made for workflows.',
+    })
   })
 })
 
