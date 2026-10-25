@@ -70,6 +70,10 @@ describe('startAtRiskWatch', () => {
     const w = watch(store, clock)
     w.note(REQ)
     await clock.run(AT_RISK_AFTER_MS)
+    // Settling as unknown waits for the record's write and keeps it. The record is
+    // read after that rather than after the clock alone, because encrypting it is
+    // real work that can outlast the clock's settle on a loaded machine (#2768).
+    await w.settle('unknown')
     const held = store.store.get(atRiskKey('ex-1', 'patch_submission'))
     expect(held?.ttl).toBe(AT_RISK_WRITE_TTL_SECONDS)
     expect(atRiskKey('ex-1', 'patch_submission').startsWith(AT_RISK_WRITE_PREFIX)).toBe(true)
@@ -77,7 +81,6 @@ describe('startAtRiskWatch', () => {
     const entry = JSON.parse(held!.value) as AtRiskEntry
     expect(entry).toMatchObject({ v: 1, org_id: 'org-1', workflow_id: 'wf-1', execution_id: 'ex-1', step_namespace: 'patch_submission', sf_object: 'Submission__c', sf_record_id: 'a04Ui00000NkhG1IAJ', sf_operation: 'update' })
     expect(JSON.parse(await decryptSecret(entry.body_encrypted, KEY))).toEqual(REQ.body)
-    await w.settle('unknown')
   })
 
   it('clears the record when a late write lands', async () => {
@@ -118,9 +121,9 @@ describe('startAtRiskWatch', () => {
     await clock.run(AT_RISK_AFTER_MS + 1000)
     expect(store.store.size).toBe(0)
     w.note(REQ)
-    await clock.run()
-    expect(store.store.size).toBe(1)
+    // Settling records nothing itself; it waits for the write the note started (#2768).
     await w.settle('unknown')
+    expect(store.store.size).toBe(1)
   })
 
   it('rewrites the record when the body changes after it was written', async () => {
