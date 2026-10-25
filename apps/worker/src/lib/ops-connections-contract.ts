@@ -214,6 +214,19 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'step_test_send_unconfirmed',
   /** The step's stored test result could not be read (#2339). */
   'step_test_unavailable',
+  // A step test from a past run (#2339, #2703). Each refuses before anything is sent or kept.
+  /** The organization's workflow has no such run on ops: never one, another workflow's, or deleted with its run. */
+  'step_test_run_not_found',
+  /** The run is more than 7 days old, so its step records are gone. */
+  'step_test_run_records_gone',
+  /** A step the tested step reads has no record in that run before it (the detail names each). */
+  'step_test_run_steps_missing',
+  /** A step the tested step reads was recorded by its size alone, over the cap, or the run's outputs are more than a test takes. */
+  'step_test_run_output_not_kept',
+  /** The run's payload is held by reference elsewhere, which ops cannot read yet. */
+  'step_test_run_payload_not_held',
+  /** The run's records could not be read. */
+  'step_test_run_unavailable',
 ] as const
 export type OpsConnectionsOwnRefusal = (typeof OPS_CONNECTIONS_REFUSAL_CODES)[number]
 export type OpsConnectionsRefusalCode = OpsConnectionsOwnRefusal | ConnectionRefusalCode | SchemaLookupCode
@@ -351,7 +364,7 @@ function record(raw: unknown): Record<string, unknown> {
 }
 
 /** A uuid, read lower case: the database's spelling, and the one the seal's AAD binds. */
-function uuidField(raw: Record<string, unknown>, name: 'organization_id' | 'connection_id' | 'workflow_id' | 'tested_by'): string {
+function uuidField(raw: Record<string, unknown>, name: 'organization_id' | 'connection_id' | 'workflow_id' | 'tested_by' | 'execution_id'): string {
   const value = raw[name]
   if (typeof value !== 'string' || !UUID.test(value)) throw new OpsConnectionsContractError(`the request's ${name} is not a uuid`)
   return value.toLowerCase()
@@ -604,10 +617,29 @@ export interface TestStepRequest {
   /** The users.id of the person testing, from the verified JWT. */
   tested_by: string
   node: StepTestNode
+  /**
+   * A past run attempt of this workflow on ops (its workflow_executions id) to
+   * build the step's context from (#2339, #2703): that run's payload and the
+   * outputs its earlier steps recorded. Null for a test with the context given here.
+   */
+  execution_id: string | null
+  /** With execution_id, undefined means the run's own payload; a payload given here replaces it. */
   trigger_payload: unknown
+  /** With execution_id, each step given here replaces that run's record of it. */
   steps: Record<string, { output: unknown; status: string }>
   /** The person confirmed that a step changing something in the service may send for real. */
   confirm_send: boolean
+}
+
+/**
+ * What the bidding Worker sends for testStep, which parseTestStepRequest reads
+ * into a TestStepRequest: from a past run, a payload or steps left out are the
+ * run's own (#2703).
+ */
+export type TestStepCall = Omit<TestStepRequest, 'execution_id' | 'trigger_payload' | 'steps'> & {
+  execution_id?: string
+  trigger_payload?: unknown
+  steps?: TestStepRequest['steps']
 }
 
 export interface StepTestResultRequest {
@@ -667,14 +699,16 @@ export function parseTestStepRequest(raw: unknown): TestStepRequest {
     }
   }
   if (r.confirm_send !== undefined && typeof r.confirm_send !== 'boolean') throw new OpsConnectionsContractError('the request\'s confirm_send is not true or false')
-  const trigger_payload = r.trigger_payload ?? {}
+  const execution_id = r.execution_id === undefined || r.execution_id === null ? null : uuidField(r, 'execution_id')
+  // From a past run, no payload given is the run's own; otherwise none is an empty one.
+  const trigger_payload = r.trigger_payload ?? (execution_id === null ? {} : undefined)
   if (new TextEncoder().encode(JSON.stringify({ trigger_payload, steps })).length > STEP_TEST_CONTEXT_MAX_BYTES) {
     throw new OpsConnectionsContractError(`the request's context (its trigger payload and steps) is over ${STEP_TEST_CONTEXT_MAX_BYTES} bytes`)
   }
   return {
     organization_id, workflow_id, tested_by,
     node: { id, namespace: r.node.namespace, config: r.node.config },
-    trigger_payload, steps, confirm_send: r.confirm_send === true,
+    execution_id, trigger_payload, steps, confirm_send: r.confirm_send === true,
   }
 }
 

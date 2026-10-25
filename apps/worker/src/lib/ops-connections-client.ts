@@ -36,7 +36,7 @@ import type {
   AddDelegationSubjectAnswer, AddDelegationSubjectRequest, ClearReauthAnswer, ClearReauthRequest, ExchangeOAuthCodeAnswer, ExchangeOAuthCodeRequest,
   HealthAnswer, HealthRequest, ListDelegationSubjectsAnswer, ListDelegationSubjectsRequest, LookupAnswer, LookupRequest, OpsConnectionsBinding,
   OpsConnectionsMethod, OpsStepTestMethod, RemoveDelegationSubjectAnswer, RemoveDelegationSubjectRequest, RevokeAnswer, RevokeRequest, SignInClientAnswer,
-  SignInClientRequest, StepTestResultAnswer, StepTestResultRequest, TestStepAnswer, TestStepRequest, VerifyAnswer, VerifyRequest,
+  SignInClientRequest, StepTestResultAnswer, StepTestResultRequest, TestStepAnswer, TestStepCall, VerifyAnswer, VerifyRequest,
 } from './ops-connections-contract'
 
 /**
@@ -204,7 +204,7 @@ export async function callOpsConnections<M extends OpsConnectionsMethod>(
 }
 
 interface StepTestRequests {
-  testStep: TestStepRequest
+  testStep: TestStepCall
   stepTestResult: StepTestResultRequest
 }
 

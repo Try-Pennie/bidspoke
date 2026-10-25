@@ -214,6 +214,15 @@ describe('the step test methods (#2339)', () => {
     expect(db.calls).toEqual([{ rpc: 'step_test_result', body: { p_organization_id: ORG, p_workflow_id: WF, p_node_id: 'node_1' } }])
   })
 
+  it('testStep from a past run reads that run\'s context in the organization through the ops database, and refuses one it has not', async () => {
+    const EXEC = '0199f0a0-0000-7000-8000-0000000000e1'
+    const db = opsDatabase({ run_step_context: [] })
+    const request = { organization_id: ORG, workflow_id: WF, tested_by: DAN, node: { id: 'n1', namespace: 'notify', config: {} }, execution_id: EXEC }
+    const answer = await stepTestAnswer(configured as OpsEnv, 'testStep', request, { opsFetch: db.fetch })
+    expect(answer).toMatchObject({ ok: false, refused: 'step_test_run_not_found' })
+    expect(db.calls).toEqual([{ rpc: 'run_step_context', body: { p_organization_id: ORG, p_workflow_id: WF, p_execution_id: EXEC, p_node_id: 'n1' } }])
+  })
+
   it('testStep refuses a malformed request by the field, and with the ops database unset names the secret', async () => {
     expect(await entry({ LANE: 'ops' }).testStep({ organization_id: ORG, workflow_id: WF })).toMatchObject({ ok: false, refused: 'ops_connections_request_invalid' })
     const request = { organization_id: ORG, workflow_id: WF, tested_by: DAN, node: { id: 'n1', namespace: 'notify', config: {} } }

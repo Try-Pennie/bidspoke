@@ -12,14 +12,17 @@
  */
 import { describe, expect, it } from 'vitest'
 import { organizationIdFrom } from '../ops-db'
-import { OpsClaimLostError, OpsWriteError, type ClaimedRun, type CompleteOutcome, type SendIntent, type SendIntentResult } from '../ops-writes'
+import { OpsClaimLostError, OpsWriteError, type ClaimedRun, type CompleteOutcome, type OpsStepRecord, type SendIntent, type SendIntentResult } from '../ops-writes'
+import type { OpsStepRecordOutcome } from '../run-vocabulary'
 import {
   HEARTBEAT_EVERY_MS,
   RUN_DB_DEADLINE_MS,
   RUN_LEASE_SECONDS,
+  RunStopped,
   SEND_DEADLINE_MS,
   StepNotSent,
   StepTimedOut,
+  StepUnrecorded,
   invokeRun,
   stepRequestId,
   type ForwardAnswer,
@@ -128,6 +131,18 @@ class FakeRunDb implements RunDb {
     this.calls.push(`result:${ledgerId}:${result.status}`)
     this.results.push({ ledgerId, ...result })
     return 'recorded' as const
+  }
+
+  readonly steps: Array<{ executionId: string; record: OpsStepRecord }> = []
+  stepAnswers: Array<() => Promise<OpsStepRecordOutcome>> = []
+
+  async recordStep(run: ClaimedRun, executionId: string, record: OpsStepRecord): Promise<OpsStepRecordOutcome> {
+    this.calls.push(`step:${record.nodeId}:${record.seq}`)
+    const answer = this.stepAnswers.shift()
+    if (answer) return answer()
+    if (run.claimToken !== this.token || this.status !== 'running') return 'stale'
+    this.steps.push({ executionId, record })
+    return 'recorded'
   }
 
   async complete(run: ClaimedRun, end: CompleteOutcome) {
@@ -544,5 +559,113 @@ describe('invokeRun: how the body ends the run', () => {
     await h.clock.advance(RUN_DB_DEADLINE_MS * 3)
     expect(await running).toMatchObject({ outcome: 'complete_failed', end: { outcome: 'done' } })
     expect(h.db.calls.filter((c) => c === 'complete')).toHaveLength(3)
+  })
+})
+
+// Each step of an ops run, recorded (#2703), through record_ops_step, fenced by the claim token.
+describe('invokeRun: recording a step (#2703)', () => {
+  const EXEC = '0192f4a0-0000-7000-8000-0000000000ee'
+  const rec = (nodeId = 'shape', seq = 0): OpsStepRecord => ({
+    seq, nodeId, namespace: nodeId, stepType: 'transform', status: 'completed', startedAt: new Date('2026-10-24T14:00:00.000Z'), durationMs: 4,
+    output: { amount: 7 }, outputBytes: null, error: null,
+  })
+  const failedWrite = () => Promise.reject(new OpsWriteError('record_ops_step failed (57014): canceling statement due to statement timeout'))
+
+  it('records under the attempt\'s execution id, through the run\'s own claim, before the run completes', async () => {
+    const h = harness()
+    const report = await h.run(async (ctx) => {
+      await ctx.recordStep(rec())
+      return { outcome: 'done' }
+    })
+    expect(report).toEqual({ outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' })
+    expect(h.db.steps).toEqual([{ executionId: EXEC, record: rec() }])
+    expect(h.db.calls.filter((c) => !c.startsWith('extend'))).toEqual([`start:${EXEC}`, 'step:shape:0', 'complete:done'])
+  })
+
+  it('hands the body the run\'s clock', async () => {
+    const h = harness()
+    let read = 0
+    await h.run(async (ctx) => {
+      read = ctx.now()
+      return { outcome: 'done' }
+    })
+    expect(read).toBe(h.clock.now())
+  })
+
+  it('a stale answer is a lost claim: the body is stopped, nothing more is written and nothing is completed', async () => {
+    const h = harness()
+    h.db.stepAnswers.push(async () => 'stale')
+    let thrown: unknown = null
+    const report = await h.run(async (ctx) => {
+      try {
+        await ctx.recordStep(rec())
+      } catch (err) {
+        thrown = err
+        throw err
+      }
+      return { outcome: 'done' }
+    })
+    expect(report).toEqual({ outcome: 'claim_lost', during: 'record' })
+    expect(thrown).toBeInstanceOf(RunStopped)
+    expect(h.db.calls.some((c) => c.startsWith('complete'))).toBe(false)
+  })
+
+  it('a record the database refuses as lost is a lost claim too', async () => {
+    const h = harness()
+    h.db.stepAnswers.push(() => Promise.reject(new OpsClaimLostError('record_ops_step: lost')))
+    const report = await h.run(async (ctx) => {
+      await ctx.recordStep(rec())
+      return { outcome: 'done' }
+    })
+    expect(report).toEqual({ outcome: 'claim_lost', during: 'record' })
+  })
+
+  it('a record that keeps failing is tried three times, then named as not kept, never read as recorded', async () => {
+    const h = harness()
+    h.db.stepAnswers.push(failedWrite, failedWrite, failedWrite)
+    let thrown: unknown = null
+    const report = await h.run(async (ctx) => {
+      try {
+        await ctx.recordStep(rec())
+      } catch (err) {
+        thrown = err
+        return { outcome: 'failed', error: (err as Error).message }
+      }
+      return { outcome: 'done' }
+    })
+    expect(thrown).toBeInstanceOf(StepUnrecorded)
+    expect(thrown).toMatchObject({ nodeId: 'shape', reason: expect.stringContaining('57014') })
+    expect(h.db.calls.filter((c) => c.startsWith('step'))).toEqual(['step:shape:0', 'step:shape:0', 'step:shape:0'])
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'failed' } })
+    expect(h.events).toContainEqual(expect.objectContaining({ step: 'step_unrecorded', node_id: 'shape', seq: 0 }))
+  })
+
+  it('a record past its deadline is tried again, and a repeat that finds it landed is accepted', async () => {
+    const h = harness()
+    h.db.stepAnswers.push(() => never(), async () => 'already_recorded')
+    const running = h.run(async (ctx) => {
+      await ctx.recordStep(rec())
+      return { outcome: 'done' }
+    })
+    await until(() => h.db.calls.includes('step:shape:0'))
+    await h.clock.advance(RUN_DB_DEADLINE_MS)
+    expect(await running).toEqual({ outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' })
+    expect(h.db.calls.filter((c) => c.startsWith('step'))).toEqual(['step:shape:0', 'step:shape:0'])
+  })
+
+  it('once a send has decided how the run ends, a record writes nothing', async () => {
+    const h = harness()
+    let recorded: Promise<unknown> = Promise.resolve()
+    const report = await h.run(async (ctx) => {
+      try {
+        await ctx.send({ nodeId: 'get', seq: 0, method: 'GET', url: 'https://x.example.com/', idempotent: true, forward: h.forwardWith('get', async () => ({ kind: 'requeue', notBefore: new Date('2026-10-22T13:00:00Z'), status: null, cause: 'rate_limited' })) })
+      } catch {
+        recorded = ctx.recordStep(rec('get')).then(() => 'recorded', (err: unknown) => err)
+      }
+      return { outcome: 'done' }
+    })
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'retry' } })
+    expect(await recorded).toBeInstanceOf(RunStopped)
+    expect(h.db.calls.some((c) => c.startsWith('step'))).toBe(false)
   })
 })

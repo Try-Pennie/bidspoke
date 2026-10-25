@@ -157,7 +157,10 @@ export type TickSweep = OpsSweep
  * follow, and only rows past 30 days wait for it. The same sweep deletes the
  * step test results tested more than 7 days ago (#2339, Dan, 2026-10-23;
  * purge_step_test_results holds that window), and their reader serves none
- * older than 7 days whether or not the purge has run.
+ * older than 7 days whether or not the purge has run; and the step records of
+ * run attempts started more than 7 days ago (#2703, Dan, 2026-10-24;
+ * purge_ops_step_records holds that window, and run_step_context serves none
+ * older). A run's own purge takes its step records with it.
  */
 export const OBSERVATION_PURGE_EVERY_SECONDS = 20 * 3600
 export const OBSERVATION_PURGE_EASTERN_HOUR = 3
@@ -239,6 +242,8 @@ export interface OpsTickDb extends ConnectionServeDb {
   purgeObservations(limit: number): Promise<{ purged: number; more: boolean }>
   /** Also the observation_purge sweep: step test results past 7 days (purge_step_test_results, #2339). */
   purgeStepTests(limit: number): Promise<{ purged: number; more: boolean }>
+  /** Also the observation_purge sweep: the step records of run attempts past 7 days (purge_ops_step_records, #2703). */
+  purgeStepRecords(limit: number): Promise<{ purged: number; more: boolean }>
   /** The saved copies whose current version has no frozen definition yet (missing_workflow_definitions, #1950). */
   missingDefinitions(limit: number): Promise<{ missing: Array<{ workflowId: string; organizationId: OrganizationId; versionNumber: number }>; reachedLimit: boolean }>
   /** A slot fired for real in live mode: its fire row and its run in one transaction (record_schedule_fire, #1950). */
@@ -705,25 +710,26 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
               return r.more
             }
             case 'observation_purge': {
-              // Two purges in one sweep, each run whatever the other did, so a
-              // failing one never keeps the other's rows past their time: the
-              // observations (30 days) and the step test results (7 days, #2339,
-              // Dan's decision of 2026-10-23). A failure of either is the sweep's.
+              // Three purges in one sweep, each run whatever the others did, so a
+              // failing one never keeps another's rows past their time: the
+              // observations (30 days), the step test results (7 days, #2339,
+              // Dan's decision of 2026-10-23) and the step records of runs (7
+              // days, #2703, Dan's decision of 2026-10-24). A failure of any is the sweep's.
               let more = false
               let failure: { error: unknown } | null = null
-              try {
-                const r = await db.purgeObservations(s.pageLimit)
-                bump(counts, 'observations_purged', r.purged)
-                more ||= r.more
-              } catch (error) {
-                failure = { error }
-              }
-              try {
-                const t = await db.purgeStepTests(s.pageLimit)
-                bump(counts, 'step_tests_purged', t.purged)
-                more ||= t.more
-              } catch (error) {
-                failure ??= { error }
+              const purges: Array<[() => Promise<{ purged: number; more: boolean }>, string]> = [
+                [() => db.purgeObservations(s.pageLimit), 'observations_purged'],
+                [() => db.purgeStepTests(s.pageLimit), 'step_tests_purged'],
+                [() => db.purgeStepRecords(s.pageLimit), 'step_records_purged'],
+              ]
+              for (const [purge, count] of purges) {
+                try {
+                  const r = await purge()
+                  bump(counts, count, r.purged)
+                  more ||= r.more
+                } catch (error) {
+                  failure ??= { error }
+                }
               }
               if (failure) throw failure.error
               return more

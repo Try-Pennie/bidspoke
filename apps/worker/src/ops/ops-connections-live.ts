@@ -28,7 +28,7 @@ import type { StepTestDeps } from './step-test'
 import {
   acquireSfLease, addGoogleDelegationSubject, googleDelegationCheck, readConnectionCopy, readConnectionStatus, readGoogleDelegationSubjects, readMeasuredSfOrg, recordConnectionNeedsReauth,
   recordConnectionReauthCleared, recordConnectionRefresh, recordConnectionTombstone, recordMeasuredIdentity, recordSfBudgetReading, releaseSfLease,
-  readStepTestResult, recordStepTest, removeGoogleDelegationSubject, takeLookupAllowance,
+  readRunStepContext, readStepTestResult, recordStepTest, removeGoogleDelegationSubject, takeLookupAllowance,
 } from './ops-writes'
 import { GATEWAY_DEADLINE_MS } from './tick-live'
 
@@ -152,6 +152,7 @@ export function liveStepTestDeps(env: OpsEnv, options: { opsFetch?: typeof fetch
     }),
     record: (organizationId, workflowId, result) => recordStepTest(client, organizationId, workflowId, result),
     read: (organizationId, workflowId, nodeId) => readStepTestResult(client, organizationId, workflowId, nodeId),
+    readRun: (organizationId, workflowId, executionId, nodeId) => readRunStepContext(client, organizationId, workflowId, executionId, nodeId),
     now: () => Date.now(),
     newRunId: () => crypto.randomUUID(),
   }
