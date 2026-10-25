@@ -8,6 +8,12 @@ Its script is the kept file
 [`apps/worker/src/engine/scripts/forms-engine/sign_submission_link.js`](../../../apps/worker/src/engine/scripts/forms-engine/sign_submission_link.js),
 and a test fails if the two ever differ.
 
+The two Slack webhook nodes read their URLs from the secret environment variables
+`SLACK_TRIGGER_FORMS_GEOFF` and `SLACK_TRIGGER_FORMS_AGENT` (#2777). The copy here
+held the trigger URLs themselves until the repository went public on 2026-10-25;
+anyone holding one can start that Slack workflow, and history keeps them readable, so
+they are replaced in Slack and never written into a definition again (`no-slack-hook-urls.test.ts`).
+
 The flow posts a form lead to Engine. When Engine refuses it, the flow answers the form
 with Engine's error, looks up the lead's agent in Salesforce, and posts two Slack
 messages: one to Geoff and one to the agent with a link to the person's submission. That

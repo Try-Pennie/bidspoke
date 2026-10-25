@@ -12,6 +12,9 @@ description = "No production secrets: the Supabase publishable key (public by de
 # RLS protects the data). Allow it by value wherever it legitimately appears.
 regexes = [
   '''sb_publishable_[A-Za-z0-9_-]{20,}''',
+  # The SQL suite's planted connection logins (supabase/tests, #2331, #2332):
+  # made up values a test writes and then asserts on, named so by their prefix.
+  '''CONN_(PLANTED|TEST)_[0-9]+(_[A-Z])?''',
 ]
 paths = [
   # Cloudflare/Vercel build output (now gitignored; regenerated at deploy time).

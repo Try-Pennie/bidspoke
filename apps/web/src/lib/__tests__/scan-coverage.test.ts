@@ -20,7 +20,7 @@ import { checkGitleaks, checkSemgrep, checkTrivy } from '../../../../../.github/
  *
  * Each scanner therefore has to PROVE it covered its subject before the job may
  * pass, and each proof is measured against what that scanner really emits
- * (verified 2026-08-14 against trivy 0.72.0, gitleaks 8.21.2, semgrep 1.172.0,
+ * (verified 2026-08-14 against trivy 0.72.0, gitleaks 8.21.2 (8.30.1 from 2026-10-25, #2777), semgrep 1.172.0,
  * including reproducing the corrupt-lockfile case, which really does yield
  * `Results: null` and exit 0):
  *
@@ -176,6 +176,31 @@ describe('gitleaks coverage (#779)', () => {
   it('does not accept a canary finding reported against a different file', () => {
     const elsewhere = { RuleID: 'github-pat', File: 'docs/example.md', StartLine: 1 }
     expect(checkGitleaks([elsewhere], CANARY).ok).toBe(false)
+  })
+
+  // One canary per credential shape the repository holds (#2777, L807): a canary
+  // proves the scanner ran, never that its rules know every shape. gitleaks
+  // 8.21.2 caught the GitHub token canary while missing five committed Slack
+  // trigger URLs, and stayed green.
+  describe('with a canary per credential shape', () => {
+    const SLACK = 'gitleaks-canary-slack.tmp.txt'
+    const slackFinding = { RuleID: 'slack-webhook-url', File: SLACK, StartLine: 1 }
+
+    it('passes when every canary was found', () => {
+      expect(checkGitleaks([canaryFinding, slackFinding], [CANARY, SLACK]).ok).toBe(true)
+    })
+
+    it('fails naming the one canary the rules no longer see', () => {
+      const r = checkGitleaks([canaryFinding], [CANARY, SLACK])
+      expect(r.ok).toBe(false)
+      expect(r.reason).toContain(SLACK)
+      expect(r.reason).not.toContain(`planted at ${CANARY}`)
+    })
+
+    it('never counts a canary as a real leak', () => {
+      const r = checkGitleaks([canaryFinding, slackFinding], [CANARY, SLACK])
+      expect(r.reason ?? '').not.toMatch(/leak\(s\)/)
+    })
   })
 })
 

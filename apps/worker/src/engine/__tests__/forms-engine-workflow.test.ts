@@ -56,8 +56,11 @@ const kept = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'forms-engine')!.scr
 const SECRET = 'example-secret-for-testing-only'
 const SUBMISSION_ID = 'a04Ui00000ABCDEFGH'
 const WORKED_EXAMPLE_T = 'bbfRE5LpCpRlM6AY5qvdHVXEzAqsv1ZGRh8Oy0JTb7A'
-const AGENT_HOOK = 'https://hooks.slack.com/triggers/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'
-const GEOFF_HOOK = 'https://hooks.slack.com/triggers/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'
+// The two Slack trigger URLs are secret environment variables (#2777), never
+// literals in the definition: a trigger URL lets anyone holding it start the workflow.
+const AGENT_HOOK = 'https://slack.test/triggers/forms-agent'
+const GEOFF_HOOK = 'https://slack.test/triggers/forms-geoff'
+const SLACK_ENV = { SLACK_TRIGGER_FORMS_AGENT: AGENT_HOOK, SLACK_TRIGGER_FORMS_GEOFF: GEOFF_HOOK }
 
 /** What Engine answers the send_request_to_engine script, per test. */
 let engine: { status: number; body: unknown }
@@ -89,7 +92,7 @@ beforeEach(() => {
 
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
     const url = String(input)
-    if (!url.startsWith('https://hooks.slack.com/')) throw new Error(`the walk fetched ${url}, which this test does not answer`)
+    if (url !== AGENT_HOOK && url !== GEOFF_HOOK) throw new Error(`the walk fetched ${url}, which this test does not answer`)
     slack.push({ url, body: JSON.parse(String(init?.body)) as Rec })
     return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })
   }))
@@ -100,7 +103,7 @@ const env = { PII_REDACTION_FIELDS: '', APP_URL: 'https://app.test' } as unknown
 const supabase = {} as SupabaseClient
 
 async function submit(opts: { secret?: string | null } = {}) {
-  const envVars: Record<string, string> = opts.secret === null ? {} : { LINK_TOKEN_SECRET: opts.secret ?? SECRET }
+  const envVars: Record<string, string> = { ...SLACK_ENV, ...(opts.secret === null ? {} : { LINK_TOKEN_SECRET: opts.secret ?? SECRET }) }
   const payload = { Submission__c: SUBMISSION_ID, personalInformation: { email: 'person@example.test' }, loanInformation: {} }
   const ctx = buildContext(payload, 'forms', 'ff1a9f52-7346-452a-bab7-af9f95d36dda', 'trace-1', envVars, 'org-1', 'exec-1', 'https://app.test')
   const queue: StepLogEntry[] = []
