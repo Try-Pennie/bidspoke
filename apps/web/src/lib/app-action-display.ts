@@ -1,4 +1,4 @@
-import { CATALOGUE, catalogueActions, markKeyFor, resolveActionVersion } from '@bidspoke/service-catalogue/schema'
+import { CATALOGUE, GOOGLE_PRODUCTS, catalogueActions, googleProductOf, markKeyFor, resolveActionVersion } from '@bidspoke/service-catalogue/schema'
 
 /**
  * What an App Action step's card says (#2339; settled in
@@ -11,9 +11,10 @@ import { CATALOGUE, catalogueActions, markKeyFor, resolveActionVersion } from '@
  * reads List files). The chip is read from the pinned version only: a version
  * the catalogue does not have shows no chip, never a newer version's name.
  *
- * `mark` names the service's own mark where the build has one. Only Google
- * Drive's is here, the one the design round drew; every other service draws the
- * plain box until its mark is added (the catalogue holds no marks).
+ * `mark` names the mark the card draws, from the catalogue's SERVICE_MARKS
+ * through markKeyFor: a Google step's product's, any other step's service's, and
+ * null for a service with no mark (MARKLESS), which keeps the plain box. Google's
+ * products, their names and their marks are the catalogue's one GOOGLE_PRODUCTS.
  */
 
 /** A key of SERVICE_MARKS (@bidspoke/service-catalogue/schema marks.ts): the mark the card draws. */
@@ -27,13 +28,6 @@ export interface AppActionDisplay {
 
 const ACTIONS = catalogueActions(CATALOGUE)
 
-const GOOGLE_PRODUCTS: ReadonlyArray<{ prefix: string; name: string }> = [
-  { prefix: 'google.drive-', name: 'Google Drive' },
-  { prefix: 'google.sheets-', name: 'Google Sheets' },
-  { prefix: 'google.gmail-', name: 'Gmail' },
-  { prefix: 'google.calendar-', name: 'Google Calendar' },
-]
-
 const capitalised = (s: string) => (s.length === 0 ? s : s[0].toUpperCase() + s.slice(1))
 
 export function appActionDisplay(config: Record<string, unknown>): AppActionDisplay {
@@ -43,7 +37,7 @@ export function appActionDisplay(config: Record<string, unknown>): AppActionDisp
   const version = config.actionVersion
   const resolved = actionKey !== null && typeof version === 'number' ? resolveActionVersion(ACTIONS, actionKey, version) : null
   const action = resolved?.ok ? resolved.action : null
-  const product = actionKey !== null ? GOOGLE_PRODUCTS.find((p) => actionKey.startsWith(p.prefix)) : undefined
+  const product = googleProductOf(actionKey)
 
   const name = product?.name ?? service?.name ?? 'App action'
   let chip: string | null = null

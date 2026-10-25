@@ -140,18 +140,25 @@ export const MARKLESS: Readonly<Record<string, string>> = {
   openai: 'OpenAI\'s brand page (https://openai.com/brand/) answered an automated fetch with HTTP 403 on 2026-10-24, so its logo and terms could not be read from it',
 }
 
-/** Google is one catalogue service whose actions run in four products, each with its own mark. */
-export const GOOGLE_PRODUCT_MARKS: Readonly<Record<string, string>> = {
-  'google.drive-': 'google.drive',
-  'google.gmail-': 'google.gmail',
-  'google.sheets-': 'google.sheets',
-  'google.calendar-': 'google.calendar',
-}
+/**
+ * Google is one catalogue service whose actions run in four products: each
+ * product's action key prefix, its name as a person knows it, and its mark.
+ * The one list of them: the card's name, its mark and the Service dropdown all
+ * read it, so a product added or renamed here changes all three.
+ */
+export const GOOGLE_PRODUCTS: ReadonlyArray<{ prefix: string; name: string; mark: string }> = [
+  { prefix: 'google.drive-', name: 'Google Drive', mark: 'google.drive' },
+  { prefix: 'google.sheets-', name: 'Google Sheets', mark: 'google.sheets' },
+  { prefix: 'google.gmail-', name: 'Gmail', mark: 'google.gmail' },
+  { prefix: 'google.calendar-', name: 'Google Calendar', mark: 'google.calendar' },
+]
+
+/** The Google product an action key runs in, or undefined for any other action. */
+export const googleProductOf = (action: string | null) => (action === null ? undefined : GOOGLE_PRODUCTS.find((p) => action.startsWith(p.prefix)))
 
 /** The mark key an action is drawn with: its Google product's, else its service's when one is held; null keeps the plain box. */
 export function markKeyFor(service: string | null, action: string | null): string | null {
-  if (action !== null) {
-    for (const [prefix, key] of Object.entries(GOOGLE_PRODUCT_MARKS)) if (action.startsWith(prefix)) return key
-  }
+  const product = googleProductOf(action)
+  if (product) return product.mark
   return service !== null && service !== 'google' && Object.hasOwn(SERVICE_MARKS, service) ? service : null
 }

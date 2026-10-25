@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import { CATALOGUE } from './catalogue'
 import { catalogueActions } from './lookup'
-import { GOOGLE_PRODUCT_MARKS, MARKLESS, SERVICE_MARKS, SIMPLE_ICONS_VERSION, markKeyFor } from './marks'
+import { GOOGLE_PRODUCTS, MARKLESS, SERVICE_MARKS, SIMPLE_ICONS_VERSION, markKeyFor } from './marks'
 
 describe('service marks', () => {
   it('every catalogue service has a mark, Google one per product, or is markless with its reason', () => {
@@ -59,6 +59,10 @@ describe('service marks', () => {
     expect(markKeyFor('anthropic', 'anthropic.chat')).toBe('anthropic')
     expect(markKeyFor('slack', 'slack.send-message')).toBeNull()
     expect(markKeyFor('google', null)).toBeNull()
-    expect(Object.keys(GOOGLE_PRODUCT_MARKS)).toHaveLength(4)
+    expect(GOOGLE_PRODUCTS).toHaveLength(4)
+  })
+
+  it('draws every Google product with a mark it holds', () => {
+    for (const p of GOOGLE_PRODUCTS) expect(Object.hasOwn(SERVICE_MARKS, p.mark), p.name).toBe(true)
   })
 })
