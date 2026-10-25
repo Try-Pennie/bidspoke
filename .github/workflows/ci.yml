@@ -38,7 +38,7 @@ jobs:
   # and web 77s back to back, and Test was the critical path of every run.
   typecheck:
     name: Typecheck
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Pull requests only (#972). On a push to main, deploy.yml's Verify job runs
     # typecheck, lint and `pnpm -r test` on the same commit at the same time, and
@@ -69,7 +69,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Pull requests only, for the reason spelled out on the typecheck job (#972).
     if: github.event_name == 'pull_request'
@@ -97,7 +97,7 @@ jobs:
   # third test job here does not make it blind.
   test-worker:
     name: Test (worker)
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Pull requests only, for the reason spelled out on the typecheck job (#972).
     if: github.event_name == 'pull_request'
@@ -155,7 +155,7 @@ jobs:
 
   test-web:
     name: Test (web)
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 10
     # Pull requests only, for the reason spelled out on the typecheck job (#972).
     if: github.event_name == 'pull_request'
@@ -193,7 +193,7 @@ jobs:
   # as a second line that does not depend on this job having run.
   money-gate:
     name: Money gate
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     # Measured locally at about 25s for both replays and the verdict; the rest is
     # checkout, two installs and workerd start. Bounds a hang (#885).
     timeout-minutes: 15
@@ -269,7 +269,7 @@ jobs:
   # Guarded by apps/web/src/lib/__tests__/ci-main-push-coverage.test.ts.
   a11y:
     name: Accessibility (axe)
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 20
     # The repo default workflow token grants contents and packages read, NOT
     # pull-requests, so the changed-files lookup below needs this explicitly.
@@ -483,7 +483,7 @@ jobs:
 
   auth-gate:
     name: Auth gate fails closed
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 15
     # The changed-files lookup below needs this explicitly: the repo default
     # workflow token grants contents and packages read, NOT pull-requests.
@@ -618,7 +618,7 @@ jobs:
 
   security:
     name: Security scans
-    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
     timeout-minutes: 15
     # The direct push step reads the pull request record, and the repo default
     # token grants contents and packages read, not pull-requests.

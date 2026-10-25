@@ -6,8 +6,17 @@ billing, while self-hosted runners still got jobs. So every job in
 (Try-Pennie/slate#4208):
 
 ```yaml
-runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
+runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) && 'pennie-mac' || 'ubuntu-latest' }}
 ```
+
+The middle clause is there because the repository is public (since 2026-10-25):
+anybody can fork it and open a pull request, and a pull request job runs that
+code. A pull request from a fork, or one whose head repository has been deleted,
+therefore always runs on GitHub's runner, never on Dan's Mac, whatever the
+variable says. GitHub's own advice is never to give a public repository's
+untrusted pull requests a self-hosted runner. The check reads the event's pull
+request payload, not the event name, so a `pull_request_target` or review
+trigger added later is held to it too.
 
 - **`pennie-mac`**: jobs run on the org runners on Dan's work MacBook. Their setup
   lives in Slate (`scripts/mac-runner/setup.sh`, `docs/workflows.md`), not here.
@@ -38,5 +47,5 @@ What a job must do to run on either machine:
   the limits are vitest's own.
 
 `apps/web/src/lib/__tests__/ci-runner-routing.test.ts` pins the routing: every job
-routed, the Docker set, the twins, and a refusal of `sudo`, `sha256sum`, `timeout`,
+routed, a fork's pull request kept off the Mac, the Docker set, the twins, and a refusal of `sudo`, `sha256sum`, `timeout`,
 `setsid`, `apt-get`, `pipx`, a bare `pip install` and a fixed port in a routed job.
