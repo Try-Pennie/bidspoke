@@ -35,7 +35,7 @@ fi
 # end-of-line comment is deliberately KEPT rather than parsed off: telling a
 # comment from a `#` inside a quoted value needs a TOML parser, and counting one
 # is the harmless direction here.
-HASH=$(sed -e 's/^[[:space:]]*#.*$//' "$CONFIG" | grep -v '^[[:space:]]*$' | sha256sum | cut -d' ' -f1)
+HASH=$(sed -e 's/^[[:space:]]*#.*$//' "$CONFIG" | grep -v '^[[:space:]]*$' | bash "$(dirname "$0")/sha256.sh")
 
 if [ -z "$HASH" ]; then
   printf 'worker-config-hash: hashing %s produced nothing\n' "$CONFIG" >&2
