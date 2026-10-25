@@ -20,6 +20,8 @@
  * - `lib/ops-connection-owner-check.ts`: the daily owner check (#2340), which
  *   names the workflows whose definition names a person bound connection
  *   whose owner left Bidspoke.
+ * - `routes/api/connections.ts`: an HTTP connection's save (#2337), which
+ *   refuses a host the money lane's workflows send to (`lane`).
  *
  * The Worker connects as service_role, which bypasses row level security, so
  * this read is what scopes the answer to one organization: it filters
@@ -58,6 +60,8 @@ export interface OrgWorkflowsOptions {
   activeOnly?: boolean
   /** Leave out one workflow (the rename impact route asks about the OTHER workflows), in the query so it takes no page slot. */
   excludeId?: string
+  /** Only workflows of this lane (the HTTP connection save reads the money lane's, #2337). */
+  lane?: string
 }
 
 /** Pages of 1,000: 20 pages is twenty thousand workflows, far past any organization's count (11 live on 2026-10-15). */
@@ -66,6 +70,7 @@ const MAX_PAGES = 20
 interface Row extends OrgWorkflow {
   organization_id: string
   deleted_at: string | null
+  lane: string
 }
 
 export async function readOrgWorkflows(supabase: SupabaseClient, orgId: string, options: OrgWorkflowsOptions = {}): Promise<OrgWorkflow[]> {
@@ -73,10 +78,11 @@ export async function readOrgWorkflows(supabase: SupabaseClient, orgId: string, 
     (from, to) => {
       let query = supabase
         .from('workflows')
-        .select('id, name, is_active, definition, updated_at, organization_id, deleted_at')
+        .select('id, name, is_active, definition, updated_at, organization_id, deleted_at, lane')
         .eq('organization_id', orgId)
         .is('deleted_at', null)
       if (options.activeOnly) query = query.eq('is_active', true)
+      if (options.lane !== undefined) query = query.eq('lane', options.lane)
       if (options.excludeId !== undefined) query = query.neq('id', options.excludeId)
       return query.order('id', { ascending: true }).range(from, to)
     },
@@ -92,6 +98,7 @@ export async function readOrgWorkflows(supabase: SupabaseClient, orgId: string, 
       continue
     }
     if (options.activeOnly && row.is_active !== true) continue
+    if (options.lane !== undefined && row.lane !== options.lane) continue
     if (row.id === options.excludeId) continue
     out.push({ id: row.id, name: row.name, is_active: row.is_active === true, definition: row.definition, updated_at: row.updated_at })
   }

@@ -213,6 +213,7 @@ async function moneySalesforceIdentity(deps: OpsConnectionsDeps, organizationId:
 
 function identityAnswer(identity: MeasuredIdentity): MeasuredIdentityAnswer {
   if (identity.kind === 'google') return { kind: 'google', mailbox: identity.mailbox }
+  if (identity.kind === 'http') return { kind: 'http', host: identity.host }
   if (identity.kind === 'anthropic') return { kind: 'anthropic', workspace_id: identity.workspaceId, organization_id: identity.organizationId }
   if (identity.kind === 'openai') return { kind: 'openai', project_id: identity.projectId, organization: identity.organization }
   if (identity.kind === 'slack') {

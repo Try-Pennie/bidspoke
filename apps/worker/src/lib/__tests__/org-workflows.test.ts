@@ -66,6 +66,14 @@ describe('readOrgWorkflows', () => {
     expect(got.map((w) => w.id)).toEqual(['other'])
   })
 
+  it('reads one lane when asked, in the query, and never hands back another lane\'s workflow (#2337)', async () => {
+    const sb = makeSupabase({ workflows: { list: [row('bid', { lane: 'money' }), row('ops', { lane: 'ops' })] } })
+    const got = await readOrgWorkflows(asClient(sb), ORG, { lane: 'money' })
+    expect(sb.calls.workflows).toContainEqual(['eq', ['lane', 'money']])
+    expect(sb.calls.workflows.find(([m]) => m === 'select')?.[1][0]).toMatch(/\blane\b/)
+    expect(got.map((w) => w.id)).toEqual(['bid'])
+  })
+
   it('never hands back the excluded workflow even if the query lets it through', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const sb = makeSupabase({ workflows: { list: [row('self'), row('other')] } })

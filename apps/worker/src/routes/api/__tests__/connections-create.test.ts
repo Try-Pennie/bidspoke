@@ -112,21 +112,32 @@ interface StoreOptions {
   insertError?: { code: string; message: string }
   /** The insert committed and its answer was lost on the way back (a dropped connection). */
   insertLandedThenFailed?: boolean
+  /** Every read of this table errors (#2337: the money host sources). */
+  failTable?: string
 }
 
 /** The table as the database holds it: the unique per organization, service and name, and the alert name CHECK. */
 function storeDouble(rows: Row[] = [], opts: StoreOptions = {}) {
   const inserts: Row[] = []
   const from = (table: string) => {
-    const filters: Array<(r: Row) => boolean> = []
+    // A row names its table as _table; one that names none is a service_connections row.
+    const filters: Array<(r: Row) => boolean> = [(r) => (r._table ?? 'service_connections') === table]
     let inserted: Row | null = null
     const b = {
       select() { return b },
+      order() { return b },
+      // readOrgWorkflows pages with range (#2337: the money workflows an HTTP save reads).
+      range(fromRow: number, toRow: number) {
+        if (opts.failTable === table) return Promise.resolve({ data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } })
+        return Promise.resolve({ data: rows.filter((r) => filters.every((f) => f(r))).slice(fromRow, toRow + 1), error: null })
+      },
       eq(col: string, v: unknown) { filters.push((r) => r[col] === v); return b },
+      is(col: string, v: unknown) { filters.push((r) => (r[col] ?? null) === v); return b },
       // onlySlackAlertRow's seal filter: sealed for bidding, or the legacy unsealed row.
       or() { filters.push((r) => r.sealed_for === 'bidding_ring' || r.sealed_for === null || r.sealed_for === undefined); return b },
       limit(n: number) {
         if (opts.readError) return Promise.resolve({ data: null, error: opts.readError })
+        if (opts.failTable === table) return Promise.resolve({ data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } })
         return Promise.resolve({ data: rows.filter((r) => filters.every((f) => f(r))).slice(0, n), error: null })
       },
       insert(row: Row) { inserted = row; return b },
@@ -180,6 +191,7 @@ const listed = (subjects: Array<{ kind: 'mailbox' | 'drive'; subject: string }>)
 
 const WORKER_ENV = {
   SUPABASE_URL: 'https://moneyref0123456789ab.supabase.co',
+  APP_URL: 'https://bidspoke.trypennie.dev',
   SNOWFLAKE_ACCOUNT: 'MONEY12345.us-east-1',
   SNOWFLAKE_USER: 'BIDSPOKE_EXPORT',
   ARCHIVE_WRITER_USER: 'ARCHIVE_WRITER',
@@ -400,6 +412,27 @@ describe('the sealed login opens through the real ops minters (round trip)', () 
     expect(((await res.json()) as { connection: { acts_as: string } }).connection.acts_as).toBe('Workspace wrkspc_0PS2337')
     expect(db.inserts.map((r) => [r.service_type, r.auth_type, r.sealed_for, r.target])).toEqual([['anthropic', 'api_key', 'ops_key', { workspace_id: 'wrkspc_0PS2337' }]])
     expect(JSON.stringify(db.inserts)).not.toContain('canary-ant-key-2337')
+  })
+
+  it('HTTP (#2337): the header value typed is sent in the header declared, and saved acting as its host', async () => {
+    const db = storeDouble()
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    let headers: Record<string, string> = {}
+    const { env } = makeEnv({
+      verify: async (r) => {
+        headers = { ...(await mintFromCandidate(r, async () => { throw new Error('a static key asks no token endpoint') })).headers }
+        return { ok: true, service: 'http', generation: 1, identity: { kind: 'http', host: 'api.lender.example' } }
+      },
+    })
+    const fields = { host: 'https://api.lender.example/v2', header: 'X-Partner-Key', check_path: '/v2/me', api_key: 'canary-http-key-2337' }
+    const res = await post(env, { service: 'http', name: 'Lender API', fields })
+    expect(res.status).toBe(201)
+    expect(headers).toEqual({ 'x-partner-key': 'canary-http-key-2337' })
+    expect(((await res.json()) as { connection: { acts_as: string } }).connection.acts_as).toBe('api.lender.example')
+    expect(db.inserts.map((r) => [r.service_type, r.auth_type, r.sealed_for, r.target])).toEqual([
+      ['http', 'api_key', 'ops_key', { host: 'https://api.lender.example/v2', header: 'X-Partner-Key', check_path: '/v2/me' }],
+    ])
+    expect(JSON.stringify(db.inserts)).not.toContain('canary-http-key-2337')
   })
 })
 
@@ -864,5 +897,94 @@ describe('a verify that passed, then an insert that failed: nothing is left behi
     expect(body.connection.id).toBe(parseVerifyRequest(binding.verify.mock.calls[0][0]).connection_id)
     expect(binding.revoke).not.toHaveBeenCalled()
     expect(db.rows).toHaveLength(1)
+  })
+})
+
+describe('an ops HTTP connection never reaches the money lane (#2337)', () => {
+  const API_KEY = 'canary-http-key-2337'
+  const http = (host: string) => ({ service: 'http', name: 'Lender API', fields: { host, header: 'X-Partner-Key', check_path: '/v2/me', api_key: API_KEY } })
+  const httpVerified: Verify = async () => ({ ok: true, service: 'http', generation: 1, identity: { kind: 'http', host: 'api.lender.example' } })
+  const partner = (api_endpoint: string): Row => ({ _table: 'partner_configs', organization_id: ORG, api_endpoint, dedup_endpoint: null, click_url: null })
+  const moneyWorkflow = (url: string, over: Row = {}): Row => ({
+    _table: 'workflows', id: crypto.randomUUID(), name: 'Main Flow', is_active: true, updated_at: '2026-10-20T00:00:00Z', organization_id: ORG, lane: 'money', deleted_at: null, definition: { nodes: [{ type: 'webhook', data: { config: { url } } }] }, ...over,
+  })
+
+  it('saves a host bidding does not send to, after reading every money host source for the caller\'s organization only', async () => {
+    const db = storeDouble([partner('https://tripoint-proxy.trypennie.dev/bid'), moneyWorkflow('https://api.equifax.example/v1'), moneyWorkflow('https://api.lender.example/v2', { organization_id: OTHER_ORG })])
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv({ verify: httpVerified })
+    const res = await post(env, http('https://api.lender.example/v2'))
+    expect(res.status).toBe(201)
+    expect(binding.verify).toHaveBeenCalledTimes(1)
+    expect(resolveSalesforceCredsFor).toHaveBeenCalledWith(expect.anything(), expect.anything(), ORG)
+  })
+
+  it.each([
+    ['a host the bidding Worker answers on its partner subdomains', 'https://tripoint.trypennie.dev', [], 'APP_URL'],
+    ['a money partner\'s endpoint', 'tripoint-proxy.trypennie.example', [partner('https://tripoint-proxy.trypennie.example/bid')], 'partner_configs'],
+    ['a host a money workflow sends to', 'https://api.equifax.example/v1/report', [moneyWorkflow('https://api.equifax.example/v1')], 'money workflows'],
+    ['the money Salesforce instance on its own domain', 'login.lendco.example', [], 'SALESFORCE_INSTANCE_URL'],
+  ])('refuses %s by name before verify sends anything to it', async (_what, host, rows, source) => {
+    vi.mocked(resolveSalesforceCredsFor).mockResolvedValue({ creds: { instanceUrl: 'https://login.lendco.example', clientId: MONEY_CLIENT_ID, clientSecret: 'never-read' }, missing: [] })
+    const db = storeDouble(rows as Row[])
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv({ verify: httpVerified })
+    const res = await post(env, http(host))
+    expect(res.status).toBe(422)
+    const body = (await res.json()) as Refusal & { matched: string }
+    expect(body.error).toBe('connection_money_host')
+    expect(body.matched).toBe(source)
+    expect(body.message).toMatch(/^The host [a-z0-9.-]+ is one Bidspoke's bidding sends to, which a workflow connection may never reach\. Nothing was saved\. Use another host\.$/)
+    expect(binding.verify).not.toHaveBeenCalled()
+    expect(db.inserts).toEqual([])
+  })
+
+  it('takes a deleted money workflow\'s hosts, and another organization\'s, as no money host', async () => {
+    const db = storeDouble([moneyWorkflow('https://api.equifax.example/v1', { deleted_at: '2026-10-01T00:00:00Z' }), moneyWorkflow('https://api.equifax.example/v1', { organization_id: OTHER_ORG })])
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env } = makeEnv({ verify: httpVerified })
+    expect((await post(env, http('api.equifax.example'))).status).toBe(201)
+  })
+
+  it('refuses a host another catalogue service owns, naming that service, before verify', async () => {
+    const db = storeDouble()
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv({ verify: httpVerified })
+    const body = (await (await post(env, http('https://otherref987.supabase.co/rest/v1'))).json()) as Refusal
+    expect(body).toMatchObject({
+      error: 'connection_host_owned',
+      message: 'The host otherref987.supabase.co belongs to Supabase, which an HTTP connection may never reach. Nothing was saved. Use another host, or a Supabase connection where Bidspoke offers one.',
+    })
+    expect(binding.verify).not.toHaveBeenCalled()
+  })
+
+  it('refuses a host that is not a name on https before verify, as the address entered', async () => {
+    for (const host of ['localhost', '10.0.0.7', 'http://api.lender.example', 'api.lender.example:8443']) {
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+      const { env, binding } = makeEnv({ verify: httpVerified })
+      const body = (await (await post(env, http(host))).json()) as Refusal
+      expect(body.error, host).toBe('connection_target_invalid')
+      expect(binding.verify).not.toHaveBeenCalled()
+    }
+  })
+
+  it.each(['partner_configs', 'workflows'])('is refused, never passed, when the %s read fails', async (table) => {
+    const db = storeDouble([], { failTable: table })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv({ verify: httpVerified })
+    const res = await post(env, http('api.lender.example'))
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as Refusal).error).toBe('connection_money_targets_unreadable')
+    expect(binding.verify).not.toHaveBeenCalled()
+  })
+
+  it('says a check path the API refused in its own sentence', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env } = makeEnv({ verify: async () => ({ ok: false, refused: 'verify_http_check_refused', detail: 'named on ops' }) })
+    const body = (await (await post(env, http('api.lender.example'))).json()) as Refusal
+    expect(body).toMatchObject({
+      error: 'verify_http_check_refused',
+      message: 'The Check path did not answer with this header value. Nothing was saved. Check the Check path, the Header and the Header value, and save again.',
+    })
   })
 })

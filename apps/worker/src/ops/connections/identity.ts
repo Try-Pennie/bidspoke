@@ -13,7 +13,8 @@
  * OpenAI's (openai-service.ts: the free models list, in the declared project,
  * #2337), and Anthropic's (anthropic-service.ts: the free models list, in the
  * declared workspace, #2337), and Google's (google-service.ts: the Gmail
- * profile, acted as the declared mailbox, #2337). The
+ * profile, acted as the declared mailbox, #2337), and HTTP's (http-service.ts:
+ * a GET of the declared check path on the declared host, #2337). The
  * other the plan names (a Supabase key's project ref) arrives with its
  * service's rules (Phase 7), as another kind here; until a service has one, verify refuses it by name
  * (verify_identity_unmeasurable), never passes it unmeasured.
@@ -62,6 +63,11 @@ export type MeasuredIdentity =
       /** The `anthropic-organization-id` header: the organization the key belongs to, null where Anthropic named none. */
       readonly organizationId: string | null
     }
+  | {
+      readonly kind: 'http'
+      /** The host the key was proven on: the declared one, whose check path answered 2xx with it (http-service.ts). */
+      readonly host: string
+    }
 
 /** connectionFetch bound to one verify call: a response, or a ConnectionRefusal thrown by name. */
 export type BoundFetch = (url: string, init?: RequestInit) => Promise<Response>
@@ -103,7 +109,8 @@ export class IdentityMismatch extends Error {
       | 'verify_slack_workspace_mismatch'
       | 'verify_openai_project_mismatch'
       | 'verify_anthropic_workspace_mismatch'
-      | 'verify_google_mailbox_mismatch' = 'verify_identity_mismatch',
+      | 'verify_google_mailbox_mismatch'
+      | 'verify_http_check_refused' = 'verify_identity_mismatch',
   ) {
     super(message)
     this.name = 'IdentityMismatch'

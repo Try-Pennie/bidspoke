@@ -10,7 +10,8 @@
  * target. Snowflake was the first (snowflake-service.ts), then the ops Slack
  * bot (slack-service.ts, Dan's decision 6: never the alerts bot), then OpenAI
  * (openai-service.ts, a project's API key) and Anthropic (anthropic-service.ts,
- * a workspace's API key). Salesforce
+ * a workspace's API key) and HTTP (http-service.ts, a key in a declared header
+ * to one declared host). Salesforce
  * (salesforce-service.ts) was registered ahead of its actions, which followed in
  * #2337's Salesforce pull request; verify, lookups and steps reach the ops pool, which grants them only within the caps Dan
  * approved for the org (Decision 11, ops migration 20261020010000: the
@@ -29,6 +30,7 @@
  */
 import { anthropicServiceEntry } from './anthropic-service'
 import { googleServiceEntry, type GoogleServiceDeps } from './google-service'
+import { httpServiceEntry } from './http-service'
 import { googleTokenMemo } from './minters/google'
 import { oauthUserCache } from './minters/oauth-user'
 import { openaiServiceEntry } from './openai-service'
@@ -47,6 +49,8 @@ const REGISTERED: Readonly<Record<string, OpsServiceEntry>> = {
   openai: openaiServiceEntry(),
   // A static API key, sent with the declared workspace: nothing is minted, so there is no memo.
   anthropic: anthropicServiceEntry(),
+  // A static key in a declared header, to one declared host: nothing is minted, so there is no memo.
+  http: httpServiceEntry(),
 }
 
 /** The services built per request, with what each needs from the request's Worker. */
