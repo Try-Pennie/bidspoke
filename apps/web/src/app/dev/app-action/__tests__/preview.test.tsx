@@ -32,7 +32,7 @@ describe('the App Action card preview', () => {
   })
 
   it("the step's catalogue action reads as the fixture's service and action, so the card draws the design's words", () => {
-    expect(appActionDisplay(PREVIEW_STEP_CONFIG)).toMatchObject({ service: fixture.service, action: fixture.action, mark: 'google-drive' })
+    expect(appActionDisplay(PREVIEW_STEP_CONFIG)).toMatchObject({ service: fixture.service, action: fixture.action, mark: 'google.drive' })
     const step = PREVIEW_WORKFLOW.definition.nodes.find((n) => n.type === 'app_action')
     expect(step).toMatchObject({ label: fixture.label, namespace: fixture.namespace, config: PREVIEW_STEP_CONFIG })
   })
