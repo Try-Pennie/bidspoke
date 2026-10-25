@@ -35,6 +35,7 @@ export const SUPABASE_INSERT_ROW_V1: ActionSchema = {
   // data: one row as an object, or a list of rows, inserted in one statement.
   arguments: [name('table'), json('data', true)],
   sideEffect: true,
+  realSend: 'adds a real row to the table',
   idempotent: false,
   idempotentBecause:
     'A repeat inserts a second row unless the table has a unique key the row repeats, which Bidspoke cannot know, so after an uncertain outcome a person decides.',
@@ -69,6 +70,7 @@ export const SUPABASE_UPDATE_ROW_V1: ActionSchema = {
   // The rows whose column equals the value get the data's columns.
   arguments: [name('table'), name('column'), value('value', true), json('data', true)],
   sideEffect: true,
+  realSend: 'changes a real row in the table',
   idempotent: false,
   idempotentBecause:
     'A Postgres UPDATE fires the table\'s triggers every time it runs, and a database Bidspoke does not know may keep a count, an audit row or a timestamp there, so after an uncertain outcome a person decides, even when the values are the same.',
