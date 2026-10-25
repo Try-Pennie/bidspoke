@@ -50,6 +50,13 @@ export interface ActionSchema {
   /** Why `idempotent` has the value it has: the decision, written down. */
   readonly idempotentBecause: string
   /**
+   * What testing it sends for real, as the words after "This" in the canvas's
+   * tick box before a test (#2339, docs/design/app-action-test-send.html):
+   * "sends a real email". Every action with a side effect says it; a read has
+   * none, since its test asks nothing.
+   */
+  readonly realSend?: string
+  /**
    * For a Google action: the delegation scopes it needs, each one of the grant
    * (google-delegation.ts). The ops minter asks Google for the union of these
    * across the catalogue, so a scope no action declares is never in a token
@@ -86,6 +93,7 @@ export const ACTION_FIELD_ROLES: Readonly<Record<keyof ActionSchema, FieldRole>>
   sideEffect: 'behaviour',
   idempotent: 'behaviour',
   idempotentBecause: 'display',
+  realSend: 'display',
   googleScopes: 'behaviour',
 }
 

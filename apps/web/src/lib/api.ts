@@ -961,14 +961,15 @@ export const api = {
         body: JSON.stringify({ payload, execution_id: executionId, definition }),
         timeoutMs: LONG_TIMEOUT_MS,
       }),
-    testNode: (id: string, data: { namespace: string; definition: unknown; execution_id?: string; trigger_payload?: unknown; steps?: Record<string, unknown> }) =>
+    // confirm_send: the person agreed that this test sends for real (#2339); an ops step test can run up to 95 s.
+    testNode: (id: string, data: { namespace: string; definition: unknown; execution_id?: string; trigger_payload?: unknown; steps?: Record<string, unknown>; confirm_send?: boolean }) =>
       req<{
         output: unknown
         status: string
         error_message: string | null
         duration_ms: number
         deploy?: { deployed: boolean; skipped: boolean; error?: string }
-      }>(`/api/workflows/${id}/test-node`, { method: 'POST', body: JSON.stringify(data) }),
+      }>(`/api/workflows/${id}/test-node`, { method: 'POST', body: JSON.stringify(data), timeoutMs: LONG_TIMEOUT_MS }),
     saveTestPayloads: (id: string, test_payloads: Array<{ name: string; payload: unknown }>) =>
       req<{ test_payloads: Array<{ name: string; payload: unknown }> }>(`/api/workflows/${id}/test-payloads`, {
         method: 'PATCH',
