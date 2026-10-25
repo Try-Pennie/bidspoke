@@ -55,7 +55,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'pull_request' &&
       startsWith(github.event.workflow_run.head_branch, 'dependabot/')
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.PENNIE_CI_RUNNER == 'pennie-mac' && 'pennie-mac' || 'ubuntu-latest' }}
     # measured max 6s, plus headroom; the Deploy dispatch adds about a second.
     # Bounds a HANG, not slowness (#1062).
     timeout-minutes: 5

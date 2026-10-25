@@ -80,6 +80,10 @@ const EXECUTORS: Record<NodeType, NodeExecutor> = {
   latency_gate: ({ node, ctx, env, supabase }) => executeLatencyGateNode(node, ctx, env, supabase),
   achieve_offers: ({ node, ctx, env, signal }) => executeAchieveOffersNode(node, ctx, env, signal),
   lead_validation: ({ node, ctx }) => executeLeadValidationNode(node, ctx),
+  // Ops only (#2339): no lane's registry here reaches it, since the money lane
+  // refuses it by name and an ops run walks it in src/ops/run-walk.ts through
+  // its ledgered send. Reaching this entry is a defect, so it fails loud.
+  app_action: walkGraphOnly('An app_action step runs only in an ops run (src/ops/app-action.ts), never through executeNode'),
 }
 
 /** The registry for one lane: a filter on EXECUTORS by each type's lane trait. */

@@ -32,3 +32,16 @@ export function googleDelegationScopes(catalogue: readonly ServiceSchema[]): str
   }
   return [...scopes].sort()
 }
+
+/**
+ * The target of a Google connection signed in with a person's own account
+ * (#2338, build PR 13; R17), rather than a company mailbox's `{ subject }`:
+ * the bidding Worker's sign in route writes it, and the ops Google entry
+ * chooses the person's own login by it (google-service.ts). One home for both.
+ */
+export const GOOGLE_OWN_ACCOUNT_TARGET: Readonly<{ own_account: true }> = Object.freeze({ own_account: true })
+
+/** Whether a Google target is a person's own account: own_account exactly the boolean true. */
+export function isOwnAccountTarget(target: unknown): boolean {
+  return target !== null && typeof target === 'object' && !Array.isArray(target) && (target as Record<string, unknown>).own_account === true
+}

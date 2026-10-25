@@ -13,7 +13,7 @@ const DEADLINE = 45_000
 
 const conn = (over: Partial<ConnectionView>): ConnectionView => ({
   id: 'c1', name: 'Pennie Salesforce', service: 'salesforce', serviceName: 'Salesforce', actsAs: 'integration@trypennie.com', status: 'ok', org: null, target: null,
-  workflows: [], lastCheckedAt: null, problemSince: null, problemCause: null, alertLogin: false, ...over,
+  workflows: [], lastCheckedAt: null, problemSince: null, problemCause: null, alertLogin: false, ownAccount: false, ...over,
 })
 
 const LIST: LoadedList = {

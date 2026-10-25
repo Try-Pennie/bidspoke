@@ -1,0 +1,38 @@
+{
+ "title": "App Action step: its card on the canvas (#2339)",
+ "intro": "The card an ops workflow's App Action step shows on the canvas: one catalogue action, such as Google Drive's List files, run through a saved connection. For whoever reads or builds an ops workflow. Settled by Dan on 2026-10-23 in two rounds, drawn on the real canvas in place of a Salesforce step's card.",
+ "requirements": [
+  {"number": "2339", "text": "An ops workflow's App Action step has a card of its own on the canvas that names the service and the action it runs."}
+ ],
+ "chrome": {
+  "captured": "chrome.html",
+  "from": "http://localhost:3979/dev/connection-field?frame=step-healthy at 1440 wide, zoomed to about full size, the real WorkflowCanvas on its preview workflow (main at 3a3ecb9c), no sign in needed, 2026-10-23",
+  "slot": "#dr-card",
+  "width": 1440
+ },
+ "builder": "builder.js",
+ "styles": "screen.css",
+ "fixture": "../app-action-node-card.fixture.json",
+ "frames": [
+  {"id": "app-action-card", "title": "The card of a step running Google Drive's List files, on the canvas", "width": 1440, "height": 900, "variant": {"look": "logo"}}
+ ],
+ "decisions": [
+  {"id": "A1", "decision": "The card's header names the service, Google Drive, and the action the step runs, List files, sits in a chip on the header's right.",
+   "why": "Round 1: Dan chose \"In the header\" over showing nothing and over a line under the step's name, as the Salesforce card shows its operation.",
+   "requirement": "2339", "frames": ["app-action-card"],
+   "check": "The card's header reads the fixture's service, then a chip reading the fixture's action, the chip to the right of the service's name."},
+  {"id": "A2", "decision": "The header carries the service's own mark, Google Drive's for Drive, on the plain beige header the uncommon steps use; the service's name is in ordinary case, not capitals, so it fits beside the chip, and the chip is gray 100 with gray 600 text.",
+   "why": "Round 2: Dan chose \"Service's own icon\" over the plain box and over a tinted header, so the service is recognised at a glance while the card stays quiet.",
+   "requirement": "2339", "frames": ["app-action-card"],
+   "check": "The header's background is the beige of the canvas's uncommon steps, it holds Google Drive's mark (its blue part filled #0066da), the service's name is written as given with no capitals added, gray 600, and the chip is gray 100 with gray 600 text."},
+  {"id": "A3", "decision": "Under the header the card reads the step's name, then its step id in monospace, as the other cards do.",
+   "why": "Held identical in both rounds.",
+   "requirement": "2339", "frames": ["app-action-card"],
+   "check": "Below its header the card reads exactly two lines, the fixture's label then its namespace, the namespace in a monospace font."}
+ ],
+ "exceptions": [],
+ "idioms": [
+  "The card is drawn in place of the Salesforce step's card in a captured copy of the canvas at 1440 wide; the canvas, its header and the cards around it are the product as it is today, not decisions.",
+  "Google Drive's mark is drawn inline as an SVG; the build draws the same SVG."
+ ]
+}

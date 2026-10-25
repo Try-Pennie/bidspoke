@@ -61,7 +61,7 @@ describe('each per method deadline is longer than the ceiling ops answers by nam
   it('holds the stated values', () => {
     expect(OPS_CONNECTIONS_DEADLINES_MS).toEqual({
       verify: 50_000, clearReauth: 50_000, exchangeOAuthCode: 35_000, lookup: 30_000, revoke: 15_000, health: 15_000,
-      addDelegationSubject: 15_000, removeDelegationSubject: 15_000, listDelegationSubjects: 15_000,
+      addDelegationSubject: 15_000, removeDelegationSubject: 15_000, listDelegationSubjects: 15_000, signInClient: 10_000,
     })
   })
 })
@@ -137,7 +137,7 @@ describe('callOpsConnections', () => {
     const lines = captureLogs()
     const { binding: b } = binding(never)
     await callOpsConnections({ OPS_CONNECTIONS: b }, 'exchangeOAuthCode', {
-      organization_id: ORG, connection_id: ORG, code: 'plain-oauth-code-canary', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/cb',
+      organization_id: ORG, connection_id: ORG, code: 'plain-oauth-code-canary', verifier: 'v'.repeat(43), redirect_uri: 'https://bidspoke.trypennie.dev/cb', expected_account: 'dan@trypennie.com',
       candidate: { service: 'gmail', generation: 1, envelope: { v: 1, kid: 'ops-2026-10', wrapped_key: 'd3JhcA==', iv: 'aXY=', ct: 'Y3Q=' }, target: null, public_config: {} },
     }, { delay: async () => {} })
     const logged = lines.join('\n')

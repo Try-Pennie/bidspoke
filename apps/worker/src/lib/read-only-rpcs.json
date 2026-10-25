@@ -51,6 +51,8 @@
     "replace_connection_envelope",
     "remove_ops_connection",
     "reconnect_ops_connection",
-    "write_workflow"
+    "write_workflow",
+    "create_oauth_state",
+    "claim_oauth_state"
   ]
 }

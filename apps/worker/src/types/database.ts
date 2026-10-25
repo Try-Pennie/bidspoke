@@ -1887,6 +1887,69 @@ export type Database = {
           },
         ]
       }
+      oauth_states: {
+        Row: {
+          client_id: string
+          connection_id: string
+          consumed_at: string | null
+          created_at: string
+          expires_at: string
+          name: string | null
+          organization_id: string
+          reconnect: boolean
+          redirect_uri: string
+          service_type: string
+          state_id: string
+          user_id: string
+          verifier: string
+        }
+        Insert: {
+          client_id: string
+          connection_id: string
+          consumed_at?: string | null
+          created_at?: string
+          expires_at: string
+          name?: string | null
+          organization_id: string
+          reconnect: boolean
+          redirect_uri: string
+          service_type: string
+          state_id?: string
+          user_id: string
+          verifier: string
+        }
+        Update: {
+          client_id?: string
+          connection_id?: string
+          consumed_at?: string | null
+          created_at?: string
+          expires_at?: string
+          name?: string | null
+          organization_id?: string
+          reconnect?: boolean
+          redirect_uri?: string
+          service_type?: string
+          state_id?: string
+          user_id?: string
+          verifier?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "oauth_states_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "oauth_states_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       organizations: {
         Row: {
           created_at: string
@@ -3181,6 +3244,23 @@ export type Database = {
         }
         Returns: Json
       }
+      claim_oauth_state: {
+        Args: {
+          p_organization_id: string
+          p_state_id: string
+          p_user_id: string
+        }
+        Returns: {
+          client_id: string
+          connection_id: string
+          name: string
+          outcome: string
+          reconnect: boolean
+          redirect_uri: string
+          service_type: string
+          verifier: string
+        }[]
+      }
       click_delivery_problem: { Args: { p_delivery: Json }; Returns: string }
       connection_history: {
         Args: {
@@ -3209,6 +3289,23 @@ export type Database = {
       }
       create_monthly_analytics_partitions: { Args: never; Returns: undefined }
       create_next_month_partitions: { Args: never; Returns: undefined }
+      create_oauth_state: {
+        Args: {
+          p_client_id: string
+          p_connection_id: string
+          p_name: string
+          p_organization_id: string
+          p_reconnect: boolean
+          p_redirect_uri: string
+          p_service_type: string
+          p_user_id: string
+          p_verifier: string
+        }
+        Returns: {
+          expires_at: string
+          state_id: string
+        }[]
+      }
       create_upcoming_daily_partitions: {
         Args: { p_days_ahead?: number }
         Returns: number
