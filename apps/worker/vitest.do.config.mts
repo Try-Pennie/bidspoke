@@ -26,6 +26,8 @@ import { runnerTimeouts } from '../../vitest.runner-timeouts'
  * so it is set well clear of a cold start.
  */
 const WORKERD_TEST_TIMEOUT_MS = 30_000
+// The larger of this and a self-hosted runner's limit, so neither can shrink the other.
+const workerdTimeouts = { ...runnerTimeouts, testTimeout: Math.max(WORKERD_TEST_TIMEOUT_MS, runnerTimeouts.testTimeout ?? 0) }
 
 export default defineConfig({
   test: {
@@ -40,7 +42,7 @@ export default defineConfig({
           wrangler: { configPath: './wrangler.toml' },
           miniflare: { serviceBindings: { OPS_CONNECTIONS: () => new Response('the ops Worker is not run in this project', { status: 503 }) } },
         })],
-        test: { testTimeout: WORKERD_TEST_TIMEOUT_MS, ...runnerTimeouts, name: 'do', include: ['src/durable-objects/__tests__/*.workers.test.ts'] },
+        test: { ...workerdTimeouts, name: 'do', include: ['src/durable-objects/__tests__/*.workers.test.ts'] },
       },
       {
         // enable_ctx_exports here only: the plugin discovers a Worker's named
@@ -60,7 +62,7 @@ export default defineConfig({
             serviceBindings: { OPS_GATEWAY: () => new Response('the bidding Worker is not run in this project', { status: 503 }) },
           },
         })],
-        test: { testTimeout: WORKERD_TEST_TIMEOUT_MS, ...runnerTimeouts, name: 'ops', include: ['src/ops/__tests__/*.workers.test.ts'] },
+        test: { ...workerdTimeouts, name: 'ops', include: ['src/ops/__tests__/*.workers.test.ts'] },
       },
     ],
   },

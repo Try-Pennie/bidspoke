@@ -46,7 +46,11 @@ describe('every vitest config', () => {
     const blocks = src.split(/\btest: \{/).slice(1)
     // A project with `extends: true` inherits the root block, which is the first.
     const extendsRoot = /extends: true/.test(src)
-    const sets = (b: string) => /\.\.\.runnerTimeouts\b|\btestTimeout:/.test(b.split(/\btest: \{/)[0])
+    // A constant the file builds from runnerTimeouts (the workerd projects take the
+    // larger of theirs and the runner's) counts as the shared limits too.
+    const derived = [...src.matchAll(/const (\w+) = \{ \.\.\.runnerTimeouts\b/g)].map((m) => m[1])
+    const spread = new RegExp(`\\.\\.\\.(?:${['runnerTimeouts', ...derived].join('|')})\\b|\\btestTimeout:`)
+    const sets = (b: string) => spread.test(b)
     if (extendsRoot) {
       expect(sets(blocks[0]), 'the root test block, which every project extends').toBe(true)
       return
