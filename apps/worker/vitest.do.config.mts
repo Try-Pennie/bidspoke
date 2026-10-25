@@ -1,5 +1,6 @@
 import { cloudflareTest } from '@cloudflare/vitest-plugin'
 import { defineConfig } from 'vitest/config'
+import { runnerTimeouts } from '../../vitest.runner-timeouts'
 
 /**
  * The Workers test projects (#1410), run by `pnpm run test:do`.
@@ -28,7 +29,7 @@ export default defineConfig({
           wrangler: { configPath: './wrangler.toml' },
           miniflare: { serviceBindings: { OPS_CONNECTIONS: () => new Response('the ops Worker is not run in this project', { status: 503 }) } },
         })],
-        test: { name: 'do', include: ['src/durable-objects/__tests__/*.workers.test.ts'] },
+        test: { ...runnerTimeouts, name: 'do', include: ['src/durable-objects/__tests__/*.workers.test.ts'] },
       },
       {
         // enable_ctx_exports here only: the plugin discovers a Worker's named
@@ -48,7 +49,7 @@ export default defineConfig({
             serviceBindings: { OPS_GATEWAY: () => new Response('the bidding Worker is not run in this project', { status: 503 }) },
           },
         })],
-        test: { name: 'ops', include: ['src/ops/__tests__/*.workers.test.ts'] },
+        test: { ...runnerTimeouts, name: 'ops', include: ['src/ops/__tests__/*.workers.test.ts'] },
       },
     ],
   },

@@ -90,7 +90,10 @@ describe('CI auth-gate probe', () => {
     // built worker, so a dev-server probe could pass while production failed open.
     const job = withoutComments(gateJob(readCi()))
     expect(job).toMatch(/pages:build/)
-    expect(job).toMatch(/wrangler" pages dev/)
+    // Served through the shared script, which serves the built output on a free port (#2768).
+    expect(job).toMatch(/serve-pages-artifact\.sh/)
+    const serve = fs.readFileSync(path.resolve(__dirname, '../../../.github/scripts/serve-pages-artifact.sh'), 'utf8')
+    expect(serve).toMatch(/"\$WRANGLER" pages dev \.vercel\/output\/static/)
   })
 })
 
