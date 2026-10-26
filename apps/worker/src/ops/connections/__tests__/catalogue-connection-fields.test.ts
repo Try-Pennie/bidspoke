@@ -33,14 +33,14 @@ beforeAll(async () => {
   pem = (await makeSigningKey()).pem
 }, 120_000)
 
-/**
- * The registered entries as the live wiring builds them. Google's key is the ops
- * Worker's own secret and its list check the ops database's (#2337), so here a
- * real key and a list that allows the sample mailbox.
- */
 /** What the Google minter asked the list check about, in order (#2572). */
 const delegationChecks: Array<{ mailbox: string; drives: readonly string[] }> = []
 
+/**
+ * The registered entries as the live wiring builds them. Google's key is the ops
+ * Worker's own secret and its list check the ops database's (#2337), so here a
+ * real key and a list that allows the sample mailbox and drives, recording what it was asked.
+ */
 const opsServiceEntry = (service: string) => opsServiceRegistry({
   google: {
     checkDelegation: async (_org, mailbox, drives) => {
