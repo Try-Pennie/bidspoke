@@ -355,7 +355,7 @@
       var fields = pa(form, "field");
       if (!fields.length || fields[0].getAttribute("data-field") !== "Name") return bad("the first field is not Name");
       var cards = pa(form, "choice-card");
-      if (!same(cards.map(said), ["A company mailbox or drive From the company list", "My own Google account Signed in as you"])) return bad("the cards read " + JSON.stringify(cards.map(said)));
+      if (!same(cards.map(said), ["A company mailbox From the company list", "My own Google account Signed in as you"])) return bad("the cards read " + JSON.stringify(cards.map(said)));
       if (box(cards[0]).top < box(fields[0]).bottom) return bad("the cards are not after Name");
       var company = ctx.frame === "add-google-company";
       if (cards[company ? 0 : 1].getAttribute("data-chosen") !== "true" || cards[company ? 1 : 0].getAttribute("data-chosen") === "true") return bad("the wrong card is chosen");

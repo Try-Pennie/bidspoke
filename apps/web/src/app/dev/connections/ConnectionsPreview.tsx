@@ -20,7 +20,7 @@ import { PREVIEW_NOW, PREVIEW_ORG_NAMES, previewFrame, previewScript, previewSer
  */
 export function ConnectionsPreview({ frame, moreGoogle }: { frame: string | undefined; moreGoogle: number }) {
   const source = useMemo(() => previewSource(frame, moreGoogle), [frame, moreGoogle])
-  const script = useMemo(() => previewScript(frame), [frame])
+  const script = useMemo(() => previewScript(frame, moreGoogle), [frame, moreGoogle])
   const clock = useMemo<ConnectionsClock>(() => {
     if (script) return { now: () => PREVIEW_NOW, every: () => () => {} }
     const started = Date.now()

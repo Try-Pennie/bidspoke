@@ -271,3 +271,33 @@ describe('Replace, drawn and inert until build PR 12 (R20)', () => {
     expect(run([{ type: 'replace_with', id: 'c2' }], s).dialog).toMatchObject({ with: 'c2' })
   })
 })
+
+describe("a Google connection's shared drives on the add form (#2572)", () => {
+  const drive = (subject: string, display_name: string | null = null) => ({ kind: 'drive' as const, subject, display_name, added_by: 'Dan Wright', added_at: '2026-10-18T16:00:00Z' })
+  const google = (): ConnectionsState => run([
+    { type: 'google_answered', subjects: [drive('0AFinanceDrive', 'Finance'), drive('0AReportsDrive')], reachedLimit: false },
+    { type: 'add_opened' }, { type: 'add_service', service: 'google' },
+  ], loaded())
+
+  it('ticks and unticks each drive by its id, in the order ticked, under the chosen service', () => {
+    const s = run([{ type: 'add_pick', field: 'drives', value: '0AReportsDrive', picked: true }, { type: 'add_pick', field: 'drives', value: '0AFinanceDrive', picked: true }], google())
+    expect(s.add!.draft.lists).toEqual({ google: { drives: ['0AReportsDrive', '0AFinanceDrive'] } })
+    expect(run([{ type: 'add_pick', field: 'drives', value: '0AReportsDrive', picked: false }], s).add!.draft.lists).toEqual({ google: { drives: ['0AFinanceDrive'] } })
+    // Ticking one already ticked keeps it once.
+    expect(run([{ type: 'add_pick', field: 'drives', value: '0AFinanceDrive', picked: true }], s).add!.draft.lists.google.drives).toEqual(['0AReportsDrive', '0AFinanceDrive'])
+  })
+
+  it('counts a ticked drive as unsaved work', () => {
+    expect(unsavedWork(google())).toBeNull()
+    expect(unsavedWork(run([{ type: 'add_pick', field: 'drives', value: '0AFinanceDrive', picked: true }], google()))).toBe('form')
+  })
+
+  it('drops a drive taken off the company list from the form, so nothing unseen is sent', () => {
+    const ticked = run([{ type: 'add_pick', field: 'drives', value: '0AFinanceDrive', picked: true }, { type: 'add_pick', field: 'drives', value: '0AReportsDrive', picked: true }], google())
+    const removed = run([
+      { type: 'remove_requested', entry: { kind: 'drive', subject: '0AFinanceDrive' }, shown: 'Finance', at: T0 },
+      { type: 'remove_answered', entry: { kind: 'drive', subject: '0AFinanceDrive' } },
+    ], ticked)
+    expect(removed.add!.draft.lists).toEqual({ google: { drives: ['0AReportsDrive'] } })
+  })
+})

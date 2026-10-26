@@ -819,7 +819,7 @@ html {
   .cx-dialog .select-trigger { border-color: #D9D4CC; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: #1D212F; }
   .cx-dialog .input { font-size: 14px; }
   .rp-sentence { margin: 0; }
-  .cx-dialog .tick-row { line-height: 1.5; }
+  :is(.cx-dialog, .ad-form) .tick-row { line-height: 1.5; }
 }
 
 /* Radix hides the Select list's scrollbar with an unlayered style of its own,

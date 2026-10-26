@@ -7,7 +7,7 @@
  * The login and target are never built here: the catalogue's connectionParts
  * is the one builder (L613), the same the ops minter contract test holds.
  */
-import { connectionSecretLabel, type ConnectionAuthKind, type ServiceSchema } from '@bidspoke/service-catalogue/schema'
+import { connectionSecretLabel, type ConnectionAuthKind, type ConnectionValue, type ServiceSchema } from '@bidspoke/service-catalogue/schema'
 import type { DelegationSubjectRow, MeasuredIdentityAnswer } from './ops-connections-contract'
 import { CONNECTION_NAME_MAX } from './connection-create-refusals'
 import { slackActsAs } from './slack-token-check'
@@ -18,7 +18,7 @@ const BODY_KEYS = ['service', 'name', 'fields'] as const
 /** The largest body read: a Snowflake PEM is about 1.7 KB, a Google service account key about 2.4 KB. */
 export const CREATE_BODY_MAX_BYTES = 32_768
 
-export type CreateBody = { ok: true; service: string; name: string; fields: Record<string, string> } | { ok: false; problem: string }
+export type CreateBody = { ok: true; service: string; name: string; fields: Record<string, ConnectionValue> } | { ok: false; problem: string }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
 
@@ -52,9 +52,11 @@ export function readCreateBody(text: string): CreateBody {
   if (typeof name !== 'string') return { ok: false, problem: 'name is not text' }
   const fields = raw.fields ?? {}
   if (!isRecord(fields)) return { ok: false, problem: 'fields is not an object' }
-  const notText = Object.entries(fields).filter(([, v]) => typeof v !== 'string').map(([k]) => (/^[\w.-]{1,64}$/.test(k) ? k : 'a field'))
+  // Text, or a list of text for a list field (Google's shared drives, #2572); which a field takes is connectionParts' to judge.
+  const isText = (v: unknown) => typeof v === 'string' || (Array.isArray(v) && v.every((x) => typeof x === 'string'))
+  const notText = Object.entries(fields).filter(([, v]) => !isText(v)).map(([k]) => (/^[\w.-]{1,64}$/.test(k) ? k : 'a field'))
   if (notText.length > 0) return { ok: false, problem: `${notText.join(', ')} ${notText.length === 1 ? 'is' : 'are'} not text` }
-  return { ok: true, service: raw.service, name, fields: fields as Record<string, string> }
+  return { ok: true, service: raw.service, name, fields: fields as Record<string, ConnectionValue> }
 }
 
 /** The service the catalogue declares under a key, or undefined. */
@@ -131,6 +133,22 @@ export function unlistedGoogleSubjects(target: Readonly<Record<string, unknown>>
     ...(mailboxes.has(mailbox) ? [] : [mailbox === '' ? 'The mailbox' : mailbox]),
     ...drives.filter((d) => !listedDrives.has(d)),
   ]
+}
+
+/**
+ * A listed shared drive named as the mailbox a Google connection acts as
+ * (#2572), by the name the list shows it under (its name, else its id as the
+ * list holds it), or null. A connection acts as a mailbox and names its drives
+ * apart, so this is answered in its own words rather than as a mailbox off the
+ * list, whose name would be the drive id lower cased. The drive id is compared
+ * as typed, trimmed: drive ids are case sensitive.
+ */
+export function listedDriveNamedAsMailbox(target: Readonly<Record<string, unknown>>, list: readonly DelegationSubjectRow[]): string | null {
+  const subject = Object.hasOwn(target, 'subject') ? target.subject : undefined
+  if (typeof subject !== 'string') return null
+  const typed = subject.trim()
+  const drive = list.find((e) => e.kind === 'drive' && e.subject === typed)
+  return drive ? (drive.display_name ?? drive.subject) : null
 }
 
 /**

@@ -39,7 +39,7 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'add-saving': ['Checking the login with Salesforce, 6 s'],
   'add-failed': ['Salesforce refused the client secret. Nothing was saved. Check the secret and save again.'],
   'add-salesforce-new-org': ['Client id'],
-  'add-google-company': ['A company mailbox or drive', 'From the company list'],
+  'add-google-company': ['A company mailbox', 'From the company list'],
   'add-google-own': ['Sign in with Google'],
   'saved': ['Achieve Salesforce 2', 'just now'],
   'reconnect': ['Reconnect Achieve Salesforce', 'New client secret'],
@@ -121,6 +121,13 @@ describe('the preview frames for states the design never drew', () => {
     const lines = [...container.querySelectorAll('.ga-add-line')]
     expect(lines.map((l) => [...l.querySelectorAll('input')].map((i) => i.placeholder))).toEqual([['Shared drive address, from Google Drive'], ['Drive name, shown on this list']])
     expect(lines[1].querySelector('button')?.textContent).toBe('Add')
+  })
+
+  it("draws the Google add form at production length with ?google=<n>: every mailbox under Acts as, every drive to tick (#2572)", () => {
+    const script = previewScript('add-google-company', 12)!
+    const { container } = render(<ConnectionsScreen source={quiet()} clock={{ now: () => PREVIEW_NOW, every: () => () => {} }} orgNames={script.orgNames} initialEvents={script.events} noInitialLoad />)
+    // The design's 2 mailboxes and 1 drive, then 12 more, every fourth a drive: 11 mailboxes and 4 drives.
+    expect(container.querySelectorAll('[data-field="Shared drives"] [role="checkbox"]')).toHaveLength(4)
   })
 
   it('answers no script for a settled frame, which loads through the page itself', () => {
