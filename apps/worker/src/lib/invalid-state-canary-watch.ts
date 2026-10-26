@@ -118,7 +118,8 @@
  * ONE MESSAGE A DAY to Main Flow's organization's alerts channel. A day with any
  * run that did not land, or could not be checked, or a check that could not run,
  * or a day Main Flow spent off the direct write (#2312), or an overwrite storm
- * (#2485), is titled as an alert with a Fix line; otherwise it is a report. It arms no
+ * (#2485), or a pile of writes that could not be ordered against another run's
+ * (#2806), is titled as an alert with a Fix line; otherwise it is a report. It arms no
  * all-clear marker, because the next day's message is the stand down, so it has
  * no INCIDENT_SIGNALS entry.
  *
@@ -428,7 +429,7 @@ export interface CanaryWatchMessage {
   title: string
   lines: string[]
   fixHint?: string
-  /** A run did not land, could not be checked, the check could not run, Main Flow was off the direct write, or an overwrite storm. */
+  /** A run did not land, could not be checked, the check could not run, Main Flow was off the direct write, an overwrite storm, or a pile of writes that could not be ordered. */
   alert: boolean
 }
 
