@@ -52,6 +52,7 @@ import { PAGE_SIZE } from './paginate'
 import { inScheduledTick } from './outage-notice'
 import { raceDeadline } from './alert-claim'
 import { formatErr } from './format-error'
+import { postBetterStackEvent } from './better-stack-line'
 import rpcLists from './read-only-rpcs.json'
 
 /**
@@ -274,15 +275,8 @@ async function sendToBetterStack(event: RowCapEvent, options: RowCapOptions, now
     const sendFetch = options.sendFetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init))
     const stop = new AbortController()
     const raced = await raceDeadline(
-      async () => {
-        const res = await sendFetch(url, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(event),
-          signal: stop.signal,
-        })
-        return res.status
-      },
+      // The one shared request every Better Stack line goes through (#2364).
+      async () => (await postBetterStackEvent(sendFetch, { token, url }, event, stop.signal)).status,
       ROW_CAP_SEND_DEADLINE_MS,
       options.delay ?? realDelay,
     )

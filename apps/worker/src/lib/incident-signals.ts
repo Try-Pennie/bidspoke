@@ -256,6 +256,22 @@ export const INCIDENT_SIGNALS = [
     startMeans: FIRST_PAGE,
     windowMinutes: null,
   },
+  // #2364. Slack refusing an organization's alert posts on its default channel:
+  // `destination` (a refusal that pages on the first, the bot cannot post where
+  // it is pointed) or `transient` (5 temporary refusals with no delivered post
+  // between, spanning 5 minutes). One organization's connection, keyed on its
+  // id. It judges a run since the last delivered post, not a window, and the
+  // incident starts at the run's first refusal, before any page. Paged by
+  // slack-refusal-watch.ts through Better Stack, never Slack.
+  {
+    signal: 'slack-post-refused',
+    label: 'Slack refusing alerts',
+    scope: 'org',
+    subject: 'organization',
+    startMeans: FIRST_SEEN,
+    windowMinutes: null,
+    kinds: ['destination', 'transient'],
+  },
 ] as const satisfies readonly IncidentSignalEntry[]
 
 export type IncidentSignal = (typeof INCIDENT_SIGNALS)[number]['signal']

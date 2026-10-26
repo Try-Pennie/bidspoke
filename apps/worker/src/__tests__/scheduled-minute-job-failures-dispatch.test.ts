@@ -48,6 +48,11 @@ vi.mock('../lib/partner-error-rate', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/partner-error-rate')>()),
   runPartnerErrorRateCheck: vi.fn().mockResolvedValue({ judged: [], paged: [], allClear: [] }),
 }))
+// #2364: the Slack refusal watch, quiet and measured.
+vi.mock('../lib/slack-refusal-watch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/slack-refusal-watch')>()),
+  runSlackRefusalWatchForEnv: vi.fn().mockResolvedValue({ measured: true, unmeasured: null, paged: [], pageFailed: [], standing: [], allClear: [], errors: [] }),
+}))
 vi.mock('../lib/cache-prewarm', () => ({ prewarmKvCaches: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/cron-heartbeat')>()),

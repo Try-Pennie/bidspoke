@@ -17,7 +17,9 @@
  * (fail-opens.ts, #2166), the second record of a fail-open, which the bidding
  * Worker's own KV record loses in the outages that cause them, and each cron
  * delivery with the guard's decision into cron_tick_deliveries (deliveries.ts,
- * #2284), so the hourly check can see a tick that ran twice.
+ * #2284), so the hourly check can see a tick that ran twice, and each Slack
+ * post's outcome into slack_post_outcomes (slack-posts.ts, #2364), so the
+ * minute refusal check can page when Slack refuses alert posts.
  *
  * The ops Worker (bidspoke-worker-ops) sends its traces here too, and they are
  * skipped (#1709): its executions live in the ops database, so their ids name
@@ -29,6 +31,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { OPS_WORKER_SCRIPT } from './scripts'
 import { failOpensIn, isolateFailOpenCopier } from './fail-opens'
 import { deliveriesIn, isolateDeliveryCopier } from './deliveries'
+import { isolateSlackPostCopier, slackPostsIn } from './slack-posts'
 
 export { OPS_WORKER_SCRIPT }
 
@@ -144,6 +147,9 @@ export default {
     // One row per cron delivery and what the guard decided for it (#2284), the
     // record the hourly check reads to see a tick two deliveries both ran.
     await isolateDeliveryCopier.copy(supabase, events.flatMap(deliveriesIn))
+    // One row per Slack post and how it went (#2364), the record the minute
+    // refusal check reads to page through Better Stack when Slack refuses alerts.
+    await isolateSlackPostCopier.copy(supabase, events.flatMap(slackPostsIn))
 
     for (const trace of events) {
       if (trace.scriptName === OPS_WORKER_SCRIPT) continue

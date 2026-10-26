@@ -51,6 +51,7 @@ import { recordAuditLog, writeAuditLog } from '../../lib/audit'
 import { SCHEDULED_DRILL_DEADLINE_MS, buyerObjectsHealth, runBuyerObjectsDrill } from '../../lib/buyer-objects-health'
 import { withDeadline } from '@bidspoke/buyer-profile'
 import { BETTER_STACK_ALERT_NAME, drillNobodyToldPage, type NobodyToldDrillOutcome } from '../../lib/nobody-told-page'
+import { drillSlackRefusalPage, SLACK_REFUSING_ALERT_NAME } from '../../lib/slack-refusal-watch'
 import { readOrgWorkflows } from '../../lib/org-workflows'
 
 const admin = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
@@ -693,6 +694,14 @@ admin.post('/buyer-objects/drill', async (c) => {
  * cannot hold back a real outage's page. Every outcome is its own answer, never
  * a blanket ok, and every attempt is audited, one that sent nothing included;
  * `audited` in the answer says whether that row actually landed.
+ *
+ * Since #2364 it also sends ONE drill of the Slack refusal page
+ * (drillSlackRefusalPage in lib/slack-refusal-watch.ts), the second Better
+ * Stack alert on the same source, carrying its line with `kind` and `reason`
+ * `drill`, so one drill proves both alerts and their routing. Its outcome is
+ * `slack_refusing`, and `ok` is true only when both were taken; the status is
+ * the first one's failure, else the second's. The two are sent together so
+ * neither waits out the other's deadline.
  */
 const DRILL_STATUS: Record<NobodyToldDrillOutcome['outcome'], 200 | 502 | 503 | 504> = {
   sent: 200,
@@ -704,11 +713,19 @@ const DRILL_STATUS: Record<NobodyToldDrillOutcome['outcome'], 200 | 502 | 503 | 
 
 admin.post('/nobody-told-page/drill', async (c) => {
   const { orgId, email } = c.get('user')
-  const result = await drillNobodyToldPage({ token: c.env.BETTERSTACK_OUTAGE_TOKEN, url: c.env.BETTERSTACK_OUTAGE_URL })
+  const secrets = { token: c.env.BETTERSTACK_OUTAGE_TOKEN, url: c.env.BETTERSTACK_OUTAGE_URL }
+  const [result, refusing] = await Promise.all([drillNobodyToldPage(secrets), drillSlackRefusalPage(secrets)])
   // recordAuditLog, not writeAuditLog: the answer says whether the row landed
   // rather than claiming every attempt is audited when the write failed (L11).
-  const audited = await recordAuditLog(createSupabaseClient(c.env), orgId, 'outage_page', BETTER_STACK_ALERT_NAME, 'outage_page_drilled', email ?? 'unknown', { ...result })
-  return c.json({ ok: result.outcome === 'sent', ...result, alert: BETTER_STACK_ALERT_NAME, audited }, DRILL_STATUS[result.outcome])
+  const audited = await recordAuditLog(createSupabaseClient(c.env), orgId, 'outage_page', BETTER_STACK_ALERT_NAME, 'outage_page_drilled', email ?? 'unknown', { ...result, slack_refusing: { ...refusing } })
+  const status = result.outcome !== 'sent' ? DRILL_STATUS[result.outcome] : DRILL_STATUS[refusing.outcome]
+  return c.json({
+    ok: result.outcome === 'sent' && refusing.outcome === 'sent',
+    ...result,
+    alert: BETTER_STACK_ALERT_NAME,
+    slack_refusing: { ...refusing, alert: SLACK_REFUSING_ALERT_NAME },
+    audited,
+  }, status)
 })
 
 admin.post('/archive-settings-check', async (c) => {
