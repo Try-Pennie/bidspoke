@@ -140,7 +140,8 @@ describe('the shipped catalogue', () => {
   it("folds each Google action's shared request code into its fingerprint, and imports no npm package (#2337)", () => {
     const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
     const googleActions = RUNTIME_ACTIONS.filter((a) => a.key.startsWith('google.'))
-    expect(googleActions).toHaveLength(16)
+    // Sixteen actions, the two Drive ones in a second version too (#2805).
+    expect(googleActions).toHaveLength(18)
     for (const a of googleActions) {
       const reached = collectModuleImports(path.join(SHIPPED.actionsDir, `${a.key}.v${a.version}.ts`), {
         root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
@@ -155,6 +156,14 @@ describe('the shipped catalogue', () => {
       linkOf: (importer, name) => linkedPath(lock, importer, name),
     })
     expect(send.files).toContain(path.join(SRC, 'runtime', 'google', 'mime.ts'))
+    // The drive list rule the version 2 Drive actions share is folded into each one's fingerprint (#2805).
+    for (const key of ['google.drive-list-files', 'google.drive-download-file']) {
+      const v2 = collectModuleImports(path.join(SHIPPED.actionsDir, `${key}.v2.ts`), {
+        root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+        linkOf: (importer, name) => linkedPath(lock, importer, name),
+      })
+      expect(v2.files, key).toContain(path.join(SRC, 'runtime', 'google', 'drive.ts'))
+    }
   })
 
   it("folds each HTTP action's request code and the host rule into its fingerprint, and imports no npm package (#2337)", () => {
