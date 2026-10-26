@@ -43,7 +43,7 @@
     "geist": "^1.7.2",
     "lucide-react": "^1.57.0",
     "monaco-editor": "0.55.1",
-    "next": "15.5.28",
+    "next": "16.4.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
