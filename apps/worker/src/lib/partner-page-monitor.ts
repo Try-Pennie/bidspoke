@@ -33,8 +33,9 @@
  * can start with no partition (ADR 0012): a join refused as MissingPartition is
  * retried, and a send made while today's partition was absent is recorded as
  * `partition_missing_at_send`, never as a failure. The live misses pages post
- * are in partner_page_live_misses. No miss threshold ships: the issue that sets
- * one from a measured week is filed with #2135 (L65).
+ * are in partner_page_live_misses, and each one is posted to its organization
+ * as one notice by partner-live-miss-notice.ts (#2220): organic partner edits
+ * are too rare for a miss rate to be measured, so there is no threshold.
  *
  * Realtime shuts this project's connection down ten minutes after nobody stays
  * connected, so with no page open a run lands on the shutdown now and then

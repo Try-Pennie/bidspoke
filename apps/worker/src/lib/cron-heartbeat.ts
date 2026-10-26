@@ -307,6 +307,18 @@ export const CRON_JOBS: CronJob[] = [
       'partners page live updates stopping goes unreported: a person editing a partner stops seeing another person\'s save appear, and nothing says so (#2135)',
   },
   {
+    id: 'partner-live-miss-notice',
+    label: 'Partners page live miss notice',
+    triggerCron: '*/5 * * * *',
+    // 5 minute cadence, 10 minutes slack, matching the other checks on this cron.
+    staleMs: 15 * MIN,
+    // Three bounded reads, then for each of at most 20 misses a claim, a few KV
+    // reads and writes and one Slack post.
+    maxRunMs: 2 * MIN,
+    dependents:
+      'a partners page that missed a live update is no longer reported in Slack: a person editing a partner may be working from a version that changed underneath them, and nobody hears of it (#2220)',
+  },
+  {
     id: 'buyer-sale-drain',
     label: 'Buyer ledger outbox drain',
     triggerCron: '* * * * *',

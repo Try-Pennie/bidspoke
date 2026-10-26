@@ -139,6 +139,8 @@ describe('a counted job stamped through completeAfter hands its failures to it (
       'partner-page-monitor',
       'incident-drain',
       'writeback-backlog',
+      // #2220: the partners page live miss notice.
+      'partner-live-miss-notice',
       'buyer-sales-checks',
       'tripoint-ping-outcome-rate',
       'click-path-checks',
