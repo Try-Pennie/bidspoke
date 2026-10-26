@@ -88,8 +88,9 @@
  * are unchanged (that needs a snapshot taken before the write, which only the
  * run could take), and Regal's Lead fields. Those are read by hand.
  *
- * THE RELAY COMPARISON (#2313) is what Salesforce SAVED for the eight other
- * outcome posts' relay posts in the same window, read back the same way: a
+ * THE RELAY COMPARISON (#2313) is what Salesforce SAVED for the relay posts of
+ * the outcome posts no subject watches (seven since #2174) in the same window,
+ * read back the same way: a
  * sample of RELAY_SAMPLE_SIZE posts spread evenly over the day (the relay makes
  * about 3,400 a day, so all of them would be thousands of reads), each judged by
  * the relay's own PATCH, the body with `executionId` and `submissionId` dropped

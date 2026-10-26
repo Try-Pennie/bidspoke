@@ -76,11 +76,13 @@ describe('the send_salesforce canary stage over the live Main Flow', () => {
     expect(nodeByNamespace(after, 'send_salesforce_inquiry').type).toBe('webhook')
   })
 
-  it('keeps the text body exactly, reads the record id from its submissionId, and still goes on to exit_1', () => {
+  it('keeps the text body exactly, takes the record id from the template its submissionId key holds, and still goes on to exit_1', () => {
     const before = nodeByNamespace(live(), 'send_salesforce')
     const after = nodeByNamespace(canary(), 'send_salesforce')
     expect(typeof after.config.body).toBe('string')
     expect(after.config.body).toBe(before.config.body)
+    // Where the relay read the record id: the body's own submissionId.
+    expect(after.config.body).toMatch(/"submissionId":\s*"\{\{trigger\.payload\.Submission__c\}\}"/)
     expect({ id: after.id, label: after.label, position: after.position }).toEqual({ id: before.id, label: before.label, position: before.position })
     expect(after.config).toMatchObject({
       operation: 'update',
