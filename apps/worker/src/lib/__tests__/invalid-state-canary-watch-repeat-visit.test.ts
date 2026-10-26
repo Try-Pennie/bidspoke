@@ -47,11 +47,24 @@ const link = (run: string) => `${APP}/workflows/60e2e0bc-5aa2-47db-b333-3a8fe1c6
 const stamp = (run: string, step = 'invalid_state_sf_post', attempt = 0) => `${run}:${step}:${attempt}`
 const bodyOf = (s: WatchedStep) => (s.input as { resolved: { body: Record<string, unknown> } }).resolved.body
 
-/** A step of `run` sending the same body as the second visit but with its own link, stamp and Engine ids. */
+/**
+ * A step of `run` sending the same body as the second visit but with its own
+ * link, stamp and Engine ids, sent as far into its own run as the second
+ * visit's was into its run (7.253 s), so the send order follows the run ids (#2806).
+ */
 function visit(run: string, ids: { uuid: string; lead: string }, sub = SUB): WatchedStep {
   const body = { ...bodyOf(STEP_2), PDFlow_1__c: link(run), PDFlow_4__c: link(run), Bidspoke_Write__c: stamp(run), Engine_UUID_SO__c: ids.uuid, Engine_Lead_UUID_SO__c: ids.lead }
-  return { ...STEP_2, execution_id: run, input: { resolved: { ...(STEP_2.input as { resolved: Record<string, unknown> }).resolved, record_id: sub, body } } }
+  const into = Date.parse(STEP_2.started_at) - mintedMs(RUN_2)
+  return {
+    ...STEP_2,
+    execution_id: run,
+    started_at: new Date(mintedMs(run) + into).toISOString(),
+    input: { resolved: { ...(STEP_2.input as { resolved: Record<string, unknown> }).resolved, record_id: sub, body } },
+  }
 }
+
+/** When `run` started: the millisecond its UUIDv7 carries. */
+const mintedMs = (run: string) => parseInt(run.replace(/-/g, '').slice(0, 12), 16)
 
 /** What the Submission holds once `step`'s write is the last to land. */
 function holding(step: WatchedStep, over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -85,6 +98,8 @@ function deps(opts: { steps: WatchedStep[]; records: Record<string, unknown>; pr
       return opts.prior ?? []
     },
     readRelay: async () => ({ total: 0, sample: [] }),
+    // No other run's step rows: a run outside the day is ordered by its own start (#2806).
+    readSendSteps: async () => [],
     salesforce: async () => async (p: string) => {
       const id = /^\/sobjects\/(?:Submission__c|Lead)\/([A-Za-z0-9]+)\?fields=/.exec(p)?.[1]
       const r = id ? opts.records[id] : undefined
@@ -185,14 +200,19 @@ describe('a repeat visit to the same Submission (#2485)', () => {
     }
   })
 
-  it("a stamp naming a run minted in the same millisecond or earlier is not a later run, even when the Submission holds that run's link", async () => {
-    // Sorts after the first run's id as text, but was minted in the same millisecond.
+  it("a stamp naming a run that started long enough before this write is an earlier run, even when the Submission holds that run's link: this write did not land", async () => {
+    // RUN_0 started 49 minutes before the first visit's write; its rows are not read, and it sent nothing past SEND_BOUND_MS.
+    const { d } = deps({ steps: [STEP_1], records: { [SUB]: holding(visit(RUN_0, { uuid: 'x', lead: 'y' })), [LEAD]: LEAD_RECORD } })
+    const report = await runInvalidStateWatch(d)
+    expect(report.native.map((v) => v.kind)).toEqual(['not_landed'])
+  })
+
+  it("a stamp naming a run minted in the same millisecond, whose send time is not recorded, cannot be ordered: order unknown, never lost (#2806)", async () => {
+    // Before #2806 this read as not landed: a tie is not evidence that this write was lost.
     const sameMs = `${RUN_1.slice(0, 19)}bfff-ffffffffffff`
-    for (const other of [sameMs, RUN_0]) {
-      const { d } = deps({ steps: [STEP_1], records: { [SUB]: holding(visit(other, { uuid: 'x', lead: 'y' })), [LEAD]: LEAD_RECORD } })
-      const report = await runInvalidStateWatch(d)
-      expect(report.native.map((v) => v.kind)).toEqual(['not_landed'])
-    }
+    const { d } = deps({ steps: [STEP_1], records: { [SUB]: holding(visit(sameMs, { uuid: 'x', lead: 'y' })), [LEAD]: LEAD_RECORD } })
+    const report = await runInvalidStateWatch(d)
+    expect(report.native).toEqual([{ kind: 'order_unknown', executionId: RUN_1, otherExecutionId: sameMs, reason: "that run's send time is not recorded" }])
   })
 
   it("a Lead matching no run's Engine ids is still a mismatch", async () => {
