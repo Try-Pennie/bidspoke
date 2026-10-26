@@ -33,6 +33,7 @@ import {
   type CanaryWatchDeps,
   type CanaryWatchReport,
   type RelayStep,
+  type SendStep,
   type WatchedStep,
 } from '../invalid-state-canary-watch'
 import { CRON_JOBS, evaluateHeartbeat } from '../cron-heartbeat'
@@ -82,11 +83,15 @@ function nativeStep(run: string, sub: string, over: Partial<WatchedStep> = {}): 
     step_type: 'salesforce',
     status: 'completed',
     started_at: '2026-10-17T15:04:04.000Z',
+    completed_at: '2026-10-17T15:04:04.412Z',
     input: { resolved: { operation: 'update', object: 'Submission__c', record_id: sub, body: sentBody(run) } },
     output: { status: 204, body: null },
     ...over,
   }
 }
+
+/** A step of `run` sent at the same moment as nativeStep's, so the two cannot be ordered (#2806). */
+const sentWithRunA = (run: string, step_namespace: string): SendStep => ({ execution_id: run, step_namespace, started_at: '2026-10-17T15:04:04.000Z', completed_at: '2026-10-17T15:04:04.412Z' })
 
 /** What Salesforce holds when the write landed: every field sent, as Salesforce spells it back. */
 function landedSubmission(run: string, lead: string): Record<string, unknown> {
@@ -134,6 +139,8 @@ function deps(over: Partial<CanaryWatchDeps> & { steps?: WatchedStep[]; records?
       return over.steps ?? []
     },
     readRelay: async () => ({ total: 0, sample: [] }),
+    // No other run's step rows: a run outside the day is ordered by its own start (#2806).
+    readSendSteps: async () => [],
     salesforce: async () => sf.read,
     post: async (m) => {
       posted.push(m)
@@ -258,6 +265,7 @@ describe('the invalid state canary watch', () => {
   it("a later write's stamp is said, so a difference it caused is not read as this run's write failing silently", async () => {
     const { d } = deps({
       steps: [nativeStep(RUN_A, SUB_A)],
+      readSendSteps: async (run) => (run === RUN_B ? [sentWithRunA(RUN_B, 'send_salesforce')] : []),
       records: {
         [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), Bidspoke_Write__c: `${RUN_B}:send_salesforce:0`, VantageScore__c: 701 }),
         [LEAD_A]: ok(landedLead(RUN_A)),
@@ -267,7 +275,7 @@ describe('the invalid state canary watch', () => {
     expect(report.native[0]).toEqual({
       kind: 'not_landed',
       executionId: RUN_A,
-      // RUN_B was minted in the same millisecond, so it cannot be shown to be later or earlier.
+      // RUN_B's write was sent at the same moment as this one, so it cannot be shown to be later or earlier (#2806).
       problems: ['another run wrote the same Submission', '1 of its fields holds a different value from the one this run sent'],
       fields: ['VantageScore__c'],
       stampedBy: RUN_B,
@@ -417,7 +425,7 @@ describe('the invalid state canary watch', () => {
   // each carrying `submissionId`, `executionId` and the run link in PDFlow_1__c.
   const RELAY_1 = '01a14500-0000-7000-8000-000000000001'
   const RELAY_2 = '01a14500-0000-7000-8000-000000000002'
-  // Minted a millisecond after the others: a later run is one that STARTED later (#2485).
+  // A run whose post was sent after the others' were answered (#2806), so a later run.
   const RELAY_3 = '01a14500-0001-7000-8000-000000000003'
   const RSUB_1 = 'a04Ui00000RRRR1IAA'
   const RSUB_2 = 'a04Ui00000RRRR2IAA'
@@ -444,6 +452,7 @@ describe('the invalid state canary watch', () => {
       step_type: 'webhook',
       status: 'completed',
       started_at: '2026-10-17T13:31:13.000Z',
+      completed_at: '2026-10-17T13:31:13.061Z',
       input: { resolved: { method: 'POST', url: 'https://relay.example/update-submission', headers: {}, body } },
       output: { status: 200, body: { success: true } },
       ...over,
@@ -532,6 +541,9 @@ describe('the invalid state canary watch', () => {
   it('a relay post a LATER run overwrote is left out of the rate, while an EARLIER run\'s link means this one did not land', async () => {
     const { d, posted } = deps({
       readRelay: async () => ({ total: 2, sample: [relayPost(RELAY_2, relayBody(RELAY_2, RSUB_1)), relayPost(RELAY_1, relayBody(RELAY_1, RSUB_2))] }),
+      // RELAY_3 sent its post 3 s after RELAY_2's was answered; the earlier run's rows are gone, and it started a day before.
+      readSendSteps: async (run) =>
+        run === RELAY_3 ? [{ execution_id: RELAY_3, step_namespace: 'under_10000_sf_post', started_at: '2026-10-17T13:31:16.000Z', completed_at: '2026-10-17T13:31:16.050Z' }] : [],
       records: {
         // RELAY_2's Submission holds RELAY_3's link: a later run wrote it since.
         [RSUB_1]: ok({ ...relaySaved(RELAY_3, RLEAD_1) }),
@@ -1040,6 +1052,8 @@ describe('the words of the daily message (#2652)', () => {
     const RSUB = 'a04Ui00000RRRR9IAA'
     const { d, posted } = deps({
       steps: [nativeStep(RUN_A, SUB_A), nativeStep(RUN_B, SUB_B)],
+      // RUN_B's send_salesforce write went at the same moment as RUN_A's, so neither is later.
+      readSendSteps: async (run) => (run === RUN_B ? [sentWithRunA(RUN_B, 'send_salesforce')] : []),
       readRelay: async () => ({
         total: 40,
         sample: [

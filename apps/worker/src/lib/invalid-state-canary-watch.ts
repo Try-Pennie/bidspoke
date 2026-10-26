@@ -48,15 +48,29 @@
  * A REPEAT VISIT (#2485). The 2026-10-19 report said 2 of 17 direct writes did
  * not land, and both were one customer's two runs 15 minutes apart writing the
  * same Submission. So: a direct write whose Submission holds the stamp of the
- * same step in a run that STARTED LATER (read off the UUIDv7 execution ids, to
- * the millisecond), and that run's link, was overwritten by it and is set aside
- * as superseded: said and counted, and OVERWRITE_STORM_MIN or more in a day
- * pages (L77). An earlier run's stamp, or one that cannot be read, is still a
- * write that did not land. And SubmissionService copies the Engine ids to the
- * Lead only when the Submission first completes, so a Lead naming THIS
- * Submission and holding the ids an earlier run wrote to it (that day or the
- * day before) holds that first completion's copy; a Lead matching no run's ids
- * is still a mismatch.
+ * same step in a run whose write was SENT LATER (see SEND ORDER), and that
+ * run's link, was overwritten by it and is set aside as superseded: said and
+ * counted, and OVERWRITE_STORM_MIN or more in a day pages (L77). An earlier
+ * sent run's stamp, or one that cannot be read, is still a write that did not
+ * land. And SubmissionService copies the Engine ids to the Lead only when the
+ * Submission first completes, so a Lead naming THIS Submission and holding the
+ * ids an earlier sent run wrote to it (that day or the day before) holds that
+ * first completion's copy; a Lead matching no run's ids is still a mismatch.
+ * SEND ORDER (#2806, its second half). Salesforce keeps whichever write ARRIVED
+ * last, which is not always the run that started last: on 2026-10-23 run
+ * 01a1689d-3f57 started 1.6 s before 01a1689d-45b2 and sent its post 3.4 s
+ * after it, and the relay sample counted 45b2 as not landed. So two runs on one
+ * Submission are ordered by their posting steps' own times: a write reached
+ * Salesforce between its step's start (the send) and its step's end (the
+ * answer), and one write is later than another only when it was sent after the
+ * other was answered. Writes whose spans overlap, a tie among them, cannot be
+ * ordered. A run whose step rows are gone (purged) is bounded by its own start
+ * instead: it sent nothing before it started, and nothing more than
+ * SEND_BOUND_MS after. Any pair that leaves unordered is ORDER UNKNOWN: never
+ * landed and never lost, counted and said apart with its reason (L540), and
+ * OVERWRITE_STORM_MIN or more in a day pages, so missing send times cannot go
+ * quiet. A relay post's span ends at Pipedream's answer; the relay's own PATCH
+ * comes after it, and how long after is not measured here.
  * A read that gets no answer, a refused login or an answer it cannot parse is
  * "could not check", never landed, and the first unanswered read stops the
  * Salesforce reads for the day, as the read-back's circuit does. A write the
@@ -95,10 +109,11 @@
  * about 3,400 a day, so all of them would be thousands of reads), each judged by
  * the relay's own PATCH, the body with `executionId` and `submissionId` dropped
  * and `UUID` and `leadUUID` renamed, as the port reproduces it. A relay post
- * carries no write stamp, so a Submission holding a LATER Main Flow run's link
- * was overwritten since and is left out, while one holding an earlier run's link
- * means this post never landed. What Pipedream answered is not read: a 2xx said
- * only that Pipedream took the post.
+ * carries no write stamp, so a Submission holding the link of a Main Flow run
+ * whose write was sent later was overwritten since and is left out, one holding
+ * an earlier sent run's link means this post never landed, and one whose order
+ * cannot be told is order unknown (SEND ORDER). What Pipedream answered is not
+ * read: a 2xx said only that Pipedream took the post.
  *
  * ONE MESSAGE A DAY to Main Flow's organization's alerts channel. A day with any
  * run that did not land, or could not be checked, or a check that could not run,
@@ -129,9 +144,7 @@
  * WINDOWS TILE (#2806, its first half). The window ends at 12:50 UTC, ten
  * minutes before the daily batch, whenever the run starts: on 2026-10-22 the run
  * started 31 minutes late and the window measured back from its start left
- * 8:52 to 9:23 AM ET unread. The second half of #2806, ordering two runs on one
- * Submission by when each write ARRIVED rather than when its run started, is
- * not done here: it needs each run's send time, which the stamp does not carry.
+ * 8:52 to 9:23 AM ET unread. Its second half is SEND ORDER above.
  *
  * REMOVING IT. Both subjects end with the canaries: the phase 6 pull request
  * (#2175, which moves the other seven posts and so leaves no relay to compare
@@ -259,6 +272,21 @@ export const SF_READ_DEADLINE_MS = 12_000
 export const OVERWRITE_STORM_MIN = 3
 export const OVERWRITE_STORM_SHARE = 0.1
 
+/**
+ * How long after its run starts an outcome post is sent and answered, at most
+ * (#2806): the bound on a write whose step rows are gone, and on a step that
+ * recorded no answer time. Measured on 2026-10-26 over the 20,008 outcome post
+ * steps of the 7 days before: the latest answer came 53.5 s after its run
+ * started, and the longest step took 10.2 s.
+ */
+export const SEND_BOUND_MS = 10 * 60_000
+
+/** How far before its run's start a step's own clock may put it: the margin the send time read allows below the start. */
+const SEND_READ_MARGIN_MS = 60_000
+
+/** Rows the send time read takes for one run, at most: one per outcome post with room for retries. */
+const SEND_READ_LIMIT = 50
+
 /** Runs named one by one in the message; the rest are counted. */
 export const MAX_LISTED_RUNS = 15
 
@@ -302,14 +330,24 @@ export interface WatchedStep {
   execution_id: string
   step_type: string
   status: string
-  /** When the step began: a Submission last written after it was written since the post began (#2396). */
+  /** When the step began: a Submission last written after it was written since the post began (#2396), and when the write was sent (#2806). */
   started_at: string
+  /** When the step ended, so when its write had been answered (#2806). Absent or null: SEND_BOUND_MS after the send. */
+  completed_at?: string | null
   input: unknown
   output: unknown
 }
 
-/** The step columns both reads select, so neither can drop the start time a later write is judged by. */
-export const STEP_COLUMNS = 'execution_id, step_type, status, started_at, input, output'
+/** The step columns both reads select, so neither can drop the times a write is judged and ordered by. */
+export const STEP_COLUMNS = 'execution_id, step_type, status, started_at, completed_at, input, output'
+
+/** One outcome post step of a run, as the send order reads it (#2806). */
+export interface SendStep {
+  execution_id: string
+  step_namespace: string
+  started_at: string | null
+  completed_at?: string | null
+}
 
 /** One relay post of the eight other outcome steps, as its step recorded it. */
 export interface RelayStep extends WatchedStep {
@@ -351,6 +389,13 @@ export type RunVerdict =
    * counted, never dropped.
    */
   | { kind: 'superseded'; executionId: string; byExecutionId: string }
+  /**
+   * Another Main Flow run wrote the same Submission, and which of the two writes
+   * arrived last cannot be told (#2806): their sends overlap, or a send time is
+   * not recorded and the runs' starts do not settle it. Not judged, never lost:
+   * said and counted with `reason`, a clause naming what was missing.
+   */
+  | { kind: 'order_unknown'; executionId: string; otherExecutionId: string; reason: string }
 
 export interface CanaryWatchReport {
   from: string
@@ -402,6 +447,13 @@ export interface CanaryWatchDeps {
    * first. Throws on a failed read.
    */
   readRelay: (fromIso: string, toIso: string) => Promise<{ total: number; sample: RelayStep[] }>
+  /**
+   * The outcome post steps of one Main Flow run, with their send and answer
+   * times (#2806), asked only for a run the day's own steps do not hold, when a
+   * Submission holds that run's write. An empty answer means its rows are gone.
+   * Throws on a failed read.
+   */
+  readSendSteps: (executionId: string) => Promise<SendStep[]>
   /**
    * Whether the live Main Flow holds this subject's port (portStatus), read
    * before anything else. Absent, or a read that throws, counts as holding it, so
@@ -500,7 +552,62 @@ interface SubmissionWrite {
   sent: Record<string, unknown>
   /** When the step that posted began, as it recorded it. */
   startedAt: string
+  /** When the write may have reached Salesforce (#2806): its step's span, or its run's when the step recorded no start. */
+  sentWithin: SentWithin
 }
+
+/** The span of time a write reached Salesforce within, and whether it is the step's own (`recorded`) or only its run's bound. */
+interface SentWithin {
+  spans: Array<{ from: number; to: number }>
+  recorded: boolean
+}
+
+/** A step's span: from its start, the send, to its end, the answer, or SEND_BOUND_MS on when it recorded none. Null with no start. */
+function stepSpan(startedAt: unknown, completedAt: unknown): { from: number; to: number } | null {
+  const from = typeof startedAt === 'string' && startedAt !== '' ? Date.parse(startedAt) : Number.NaN
+  if (!Number.isFinite(from)) return null
+  const to = typeof completedAt === 'string' && completedAt !== '' ? Date.parse(completedAt) : Number.NaN
+  return { from, to: Number.isFinite(to) && to >= from ? to : from + SEND_BOUND_MS }
+}
+
+/** A run's writes, from the steps recorded, or else from its own start: none before it, none more than SEND_BOUND_MS after. */
+function sentWithin(executionId: string, steps: ReadonlyArray<{ started_at: unknown; completed_at?: unknown }>): SentWithin {
+  const spans = steps.map((s) => stepSpan(s.started_at, s.completed_at)).filter((s): s is { from: number; to: number } => s !== null)
+  if (spans.length > 0) return { spans, recorded: true }
+  const minted = mintedMsFromUuidV7(executionId)
+  return { spans: minted === null ? [] : [{ from: minted, to: minted + SEND_BOUND_MS }], recorded: false }
+}
+
+/** How another run's write falls against this one's: sent after this one was answered, answered before this one was sent, or neither. */
+type SendOrder = { order: 'later' | 'earlier' } | { order: 'unknown'; reason: string }
+
+/** The reasons an order cannot be told, as clauses for the message (#2806). */
+export const ORDER_UNKNOWN_REASONS = {
+  overlap: 'the two were sent at nearly the same time',
+  otherUnrecorded: "that run's send time is not recorded",
+  ownUnrecorded: "this run's send time is not recorded",
+} as const
+
+/**
+ * Where `other`'s writes fall against `mine` (#2806). Later when any of them was
+ * sent after mine was answered, so Salesforce had mine first; earlier when all
+ * of them were answered before mine was sent; otherwise unknown, with the
+ * reason. Never decided on a guess: overlapping spans, a tie among them, are
+ * unknown.
+ */
+function sendOrder(other: SentWithin, mine: SentWithin): SendOrder {
+  const [m] = mine.spans
+  if (m && other.spans.some((s) => s.from > m.to)) return { order: 'later' }
+  if (m && other.spans.length > 0 && other.spans.every((s) => s.to < m.from)) return { order: 'earlier' }
+  const reason = !mine.recorded ? ORDER_UNKNOWN_REASONS.ownUnrecorded : !other.recorded ? ORDER_UNKNOWN_REASONS.otherUnrecorded : ORDER_UNKNOWN_REASONS.overlap
+  return { order: 'unknown', reason }
+}
+
+/**
+ * Where run `other`'s writes of `stepNamespace` (any outcome post when null)
+ * fall against write `w` (#2806). Throws when its send times could not be read.
+ */
+type SendOrderLookup = (other: string, stepNamespace: string | null, w: SubmissionWrite) => Promise<SendOrder>
 
 /** A native step's write, from what the step recorded (the body after the port's omit, rename and inject). */
 function nativeWrite(step: WatchedStep, stepNamespace: string): SubmissionWrite | { unchecked: string } {
@@ -510,7 +617,7 @@ function nativeWrite(step: WatchedStep, stepNamespace: string): SubmissionWrite 
   if (!sent || typeof recordId !== 'string' || !isSalesforceRecordId(recordId)) {
     return { unchecked: 'The run did not record the Submission it wrote or what it sent.' }
   }
-  return { via: 'direct', executionId: step.execution_id, stepNamespace, recordId, sent, startedAt: step.started_at }
+  return { via: 'direct', executionId: step.execution_id, stepNamespace, recordId, sent, startedAt: step.started_at, sentWithin: sentWithin(step.execution_id, [step]) }
 }
 
 /**
@@ -539,52 +646,55 @@ function relayWrite(step: RelayStep): SubmissionWrite | { unchecked: string } | 
   const renames: Readonly<Record<string, string>> = RELAY_RENAMES
   const sent: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(posted)) if (!omitted.has(k)) sent[Object.hasOwn(renames, k) ? renames[k] : k] = v
-  return { via: 'relay', executionId: step.execution_id, stepNamespace: step.step_namespace, recordId, sent, startedAt: step.started_at }
+  return { via: 'relay', executionId: step.execution_id, stepNamespace: step.step_namespace, recordId, sent, startedAt: step.started_at, sentWithin: sentWithin(step.execution_id, [step]) }
 }
 
 /**
- * Whether run `other` started after run `executionId` (#2485). An execution id
- * is a UUIDv7 minted when its run starts, so the millisecond it carries orders
- * the two. Minted in the same millisecond, or an id that is not a UUIDv7, cannot
- * be shown to be later, and says false: never set aside on a guess.
+ * The other Main Flow run whose link a Submission holds: a run id (a UUIDv7)
+ * other than this run's under the same workflow link. Null for this run's own
+ * link, or anything else.
  */
-function startedAfter(other: string, executionId: string): boolean {
-  const a = mintedMsFromUuidV7(other)
-  const b = mintedMsFromUuidV7(executionId)
-  return a !== null && b !== null && a > b
-}
-
-/**
- * The run whose link a Submission holds, when it is a Main Flow run that
- * started after this one, so its write came after this one's; null otherwise.
- */
-function laterRunInLink(link: unknown, expectedLink: string, executionId: string): string | null {
+function otherRunInLink(link: unknown, expectedLink: string, executionId: string): string | null {
   const prefix = expectedLink.slice(0, expectedLink.length - executionId.length)
   if (typeof link !== 'string' || !link.startsWith(prefix)) return null
   const other = link.slice(prefix.length)
-  return startedAfter(other, executionId) ? other : null
+  return other !== executionId && mintedMsFromUuidV7(other) !== null ? other : null
 }
 
 /**
- * The earlier run whose Engine ids a Lead holds (#2485): a run of the watched
- * post that started before `w`'s and wrote the same Submission with exactly
- * those ids. Null when none did. Throws when the runs it must look through could
- * not be read.
+ * The other run whose Engine ids a Lead holds (#2485): a run of the watched
+ * post that wrote the same Submission with exactly those ids, and whose write
+ * was sent before `w`'s (`earlier`) or cannot be ordered against it
+ * (`unknown`, #2806). An earlier one wins over an unknown one. Null when none
+ * did. Throws when the runs it must look through could not be read.
  */
-type EarlierRunLookup = (w: SubmissionWrite, leadIds: Record<string, unknown>) => Promise<string | null>
+type EarlierRunLookup = (w: SubmissionWrite, leadIds: Record<string, unknown>) => Promise<EarlierRun | null>
+type EarlierRun = { run: string; order: 'earlier' } | { run: string; order: 'unknown'; reason: string }
 
-/** Whether `earlier` is a write before `w` to the same Submission that sent the Engine ids `leadIds` holds, neither blank. */
-function sentTheLeadsIds(earlier: SubmissionWrite, w: SubmissionWrite, leadIds: Record<string, unknown>): boolean {
+/** Whether `other` is another write to the same Submission that sent the Engine ids `leadIds` holds, neither blank. */
+function sentTheLeadsIds(other: SubmissionWrite, w: SubmissionWrite, leadIds: Record<string, unknown>): boolean {
   const blank = (v: unknown) => v === null || v === undefined || v === ''
   const [uuid, lead] = [leadIds[LEAD_UUID], leadIds[LEAD_LEAD_UUID]]
   return (
-    leadNamesSubmission(earlier.recordId, w.recordId) &&
-    startedAfter(w.executionId, earlier.executionId) &&
+    other.executionId !== w.executionId &&
+    leadNamesSubmission(other.recordId, w.recordId) &&
     !blank(uuid) &&
     !blank(lead) &&
-    sameSalesforceValue(uuid, earlier.sent[SUB_UUID]) &&
-    sameSalesforceValue(lead, earlier.sent[SUB_LEAD_UUID])
+    sameSalesforceValue(uuid, other.sent[SUB_UUID]) &&
+    sameSalesforceValue(lead, other.sent[SUB_LEAD_UUID])
   )
+}
+
+/** Of `writes`, the one whose Engine ids the Lead holds and that was sent before `w`, else one that cannot be ordered against it. */
+function earlierRunAmong(writes: readonly SubmissionWrite[], w: SubmissionWrite, leadIds: Record<string, unknown>): EarlierRun | null {
+  let unknown: EarlierRun | null = null
+  for (const e of writes) {
+    if (!sentTheLeadsIds(e, w, leadIds)) continue
+    const o = sendOrder(e.sentWithin, w.sentWithin)
+    if (o.order === 'earlier') return { run: e.executionId, order: 'earlier' }
+    if (o.order === 'unknown') unknown ??= { run: e.executionId, order: 'unknown', reason: o.reason }
+  }
+  return unknown
 }
 
 /**
@@ -642,9 +752,11 @@ function submissionClauses(stamp: StampFinding | null, link: 'none' | 'other' | 
 const asClause = (sentence: string) => sentence.replace(/\.$/, '')
 
 /** One write's read-back. `stop` says Salesforce stopped answering. */
-async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlierRun: EarlierRunLookup): Promise<{ verdict: RunVerdict; stop: boolean }> {
+async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlierRun: EarlierRunLookup, orderOf: SendOrderLookup): Promise<{ verdict: RunVerdict; stop: boolean }> {
   const { executionId, sent, recordId } = w
   const unchecked = (reason: string, stop = false) => ({ verdict: { kind: 'unchecked' as const, executionId, reason }, stop })
+  const orderUnknown = (otherExecutionId: string, reason: string) => ({ verdict: { kind: 'order_unknown' as const, executionId, otherExecutionId, reason }, stop: false })
+  const superseded = (byExecutionId: string) => ({ verdict: { kind: 'superseded' as const, executionId, byExecutionId }, stop: false })
   const expectedLink = bidspokeRunLink(appUrl, MAIN_FLOW_WORKFLOW_ID, executionId)
   if (!expectedLink) return unchecked('The app address is not set, so the run link cannot be compared.')
   const sentFields = Object.keys(sent).filter((k) => k !== WRITE_MARKER_FIELD && k !== RUN_LINK_FIELD)
@@ -659,13 +771,25 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
   const current = sub.body
   const link = current[RUN_LINK_FIELD]
 
-  // A relay post has no stamp to say whose write the record holds, so a later
-  // run's link means it was overwritten since, and what the record holds is that
-  // run's. A direct write is set aside only on a later run's stamp of the same
-  // step, below (#2485); one without its stamp is judged on what it sent.
+  // A relay post has no stamp to say whose write the record holds, so another
+  // run's link whose write was sent later means it was overwritten since, and
+  // what the record holds is that run's; one that cannot be ordered against this
+  // post is order unknown (#2806). An earlier sent run's link is judged below,
+  // as a link that is not this run's. A direct write is set aside only on another
+  // run's stamp of the same step, below (#2485); one without its stamp is judged
+  // on what it sent.
   if (w.via === 'relay' && !stamped) {
-    const later = laterRunInLink(link, expectedLink, executionId)
-    if (later) return { verdict: { kind: 'superseded', executionId, byExecutionId: later }, stop: false }
+    const other = otherRunInLink(link, expectedLink, executionId)
+    if (other) {
+      let o: SendOrder
+      try {
+        o = await orderOf(other, null, w)
+      } catch (e) {
+        return unchecked(`The send time of the run whose link the Submission holds could not be read (${formatErr(e)}).`)
+      }
+      if (o.order === 'later') return superseded(other)
+      if (o.order === 'unknown') return orderUnknown(other, o.reason)
+    }
   }
 
   let stampFinding: StampFinding | null = null
@@ -675,16 +799,28 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
     else if (stamp.executionId !== executionId || stamp.stepNamespace !== w.stepNamespace) {
       // A customer's later visit writes the same Submission again (#2485). The
       // stamp names that write's run and step, and the run link names its
-      // workflow: the same step of a Main Flow run that started after this one,
-      // whose link the Submission holds, overwrote this write, so what the record
-      // holds is that run's and this one is set aside. An earlier run's stamp, or
-      // one that cannot be read, still means this write is not what Salesforce holds.
-      if (stamp.stepNamespace === w.stepNamespace && laterRunInLink(link, expectedLink, executionId) === stamp.executionId) {
-        return { verdict: { kind: 'superseded', executionId, byExecutionId: stamp.executionId }, stop: false }
+      // workflow: the same step of a Main Flow run whose write was sent after
+      // this one was answered (#2806), whose link the Submission holds,
+      // overwrote this write, so what the record holds is that run's and this
+      // one is set aside; one that cannot be ordered against it is order
+      // unknown. An earlier sent run's stamp, or one that cannot be read, still
+      // means this write is not what Salesforce holds. Any other run's stamp is
+      // ordered too, only for the words.
+      if (stamp.executionId === executionId) {
+        stampFinding = { kind: 'other_run', run: stamp.executionId, order: 'same_run' }
+      } else {
+        const decides = stamp.stepNamespace === w.stepNamespace && otherRunInLink(link, expectedLink, executionId) === stamp.executionId
+        let o: SendOrder | null
+        try {
+          o = await orderOf(stamp.executionId, stamp.stepNamespace, w)
+        } catch (e) {
+          if (decides) return unchecked(`The send time of the run whose write the Submission holds could not be read (${formatErr(e)}).`)
+          o = null
+        }
+        if (decides && o?.order === 'later') return superseded(stamp.executionId)
+        if (decides && o?.order === 'unknown') return orderUnknown(stamp.executionId, o.reason)
+        stampFinding = { kind: 'other_run', run: stamp.executionId, order: o && o.order !== 'unknown' ? o.order : 'unknown' }
       }
-      const order =
-        stamp.executionId === executionId ? 'same_run' : startedAfter(stamp.executionId, executionId) ? 'later' : startedAfter(executionId, stamp.executionId) ? 'earlier' : 'unknown'
-      stampFinding = { kind: 'other_run', run: stamp.executionId, order }
     }
   }
   const linkFinding = link === null || link === undefined || link === '' ? 'none' : link !== expectedLink ? 'other' : null
@@ -741,9 +877,11 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
   // Lead as it does. A customer's later visit to a Submission an earlier run
   // already completed leaves the Lead alone (#2485). So a Lead naming THIS
   // Submission and holding the ids an earlier run wrote to it holds that first
-  // completion's copy. A Lead matching no earlier run's write is a mismatch.
+  // completion's copy. A Lead matching no earlier run's write is a mismatch, and
+  // one matching only a run whose write cannot be ordered against this one is
+  // order unknown (#2806).
   if (leadNamesSubmission(other, recordId)) {
-    let earlier: string | null
+    let earlier: EarlierRun | null
     try {
       earlier = await earlierRun(w, leadIds)
     } catch (e) {
@@ -752,8 +890,9 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
       leadProblems.push(mismatch, asClause(reason))
       return { verdict: verdict(false), stop: false }
     }
-    if (!earlier) leadProblems.push(mismatch)
-    return { verdict: verdict(false, earlier), stop: false }
+    if (earlier?.order === 'unknown' && problems().length === 0) return orderUnknown(earlier.run, earlier.reason)
+    if (earlier?.order !== 'earlier') leadProblems.push(mismatch)
+    return { verdict: verdict(false, earlier?.order === 'earlier' ? earlier.run : null), stop: false }
   }
 
   // A Lead follows its customer's newest Submission (returning-customer.ts), so a
@@ -848,15 +987,37 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
   const today = writesOf(sampled)
   let dayBefore: Promise<SubmissionWrite[]> | null = null
   const earlierRun: EarlierRunLookup = async (w, leadIds) => {
-    const hit = today.find((e) => sentTheLeadsIds(e, w, leadIds))
-    if (hit) return hit.executionId
+    const hit = earlierRunAmong(today, w, leadIds)
+    if (hit?.order === 'earlier') return hit
     dayBefore ??= deps.readSteps(new Date(Date.parse(from) - DAY_MS).toISOString(), from).then(writesOf)
-    return (await dayBefore).find((e) => sentTheLeadsIds(e, w, leadIds))?.executionId ?? null
+    const before = earlierRunAmong(await dayBefore, w, leadIds)
+    return before?.order === 'earlier' ? before : (hit ?? before)
+  }
+  // The send times of the day's own posts, every one of the watched step and
+  // the relay sample; any other run's are read once, when a Submission holds
+  // its write (#2806).
+  const known = new Map<string, SendStep[]>()
+  const know = (s: SendStep) => known.set(s.execution_id, [...(known.get(s.execution_id) ?? []), s])
+  for (const s of steps) know({ execution_id: s.execution_id, step_namespace: subject.step, started_at: s.started_at, completed_at: s.completed_at })
+  if (!('error' in relay)) for (const s of relay.sample) know({ execution_id: s.execution_id, step_namespace: s.step_namespace, started_at: s.started_at, completed_at: s.completed_at })
+  const fetched = new Map<string, Promise<SendStep[]>>()
+  const orderOf: SendOrderLookup = async (other, stepNamespace, w) => {
+    const ofStep = (rows: readonly SendStep[]) => rows.filter((r) => stepNamespace === null || r.step_namespace === stepNamespace)
+    let rows = ofStep(known.get(other) ?? [])
+    if (rows.length === 0) {
+      let reading = fetched.get(other)
+      if (!reading) {
+        reading = deps.readSendSteps(other)
+        fetched.set(other, reading)
+      }
+      rows = ofStep(await reading)
+    }
+    return sendOrder(sentWithin(other, rows), w.sentWithin)
   }
   const judge = async (w: SubmissionWrite): Promise<RunVerdict> => {
     if (!read || stopReason) return { kind: 'unchecked', executionId: w.executionId, reason: stopReason ?? 'Salesforce stopped answering earlier in this check.' }
     try {
-      const { verdict, stop } = await checkWrite(w, read, deps.appUrl, earlierRun)
+      const { verdict, stop } = await checkWrite(w, read, deps.appUrl, earlierRun, orderOf)
       if (stop) stopReason = 'Salesforce stopped answering earlier in this check.'
       return verdict
     } catch (e) {
@@ -917,11 +1078,21 @@ const leadFromFirstCompletion = (vs: RunVerdict[]) => vs.filter((v) => v.kind ==
 /** Set aside because a later run wrote the same Submission (#2485). */
 const overwritten = (vs: RunVerdict[]) => vs.filter((v): v is Extract<RunVerdict, { kind: 'superseded' }> => v.kind === 'superseded')
 
+/** Not judged because another run wrote the same Submission and which arrived last cannot be told (#2806). */
+const unordered = (vs: RunVerdict[]) => vs.filter((v): v is Extract<RunVerdict, { kind: 'order_unknown' }> => v.kind === 'order_unknown')
+
+/** At least OVERWRITE_STORM_MIN of the day's direct writes, and OVERWRITE_STORM_SHARE of them. */
+const pileOf = (k: number, native: RunVerdict[]) => k >= OVERWRITE_STORM_MIN && k >= OVERWRITE_STORM_SHARE * native.length
+
 /** More direct writes set aside as overwritten than a customer coming back explains (L77). */
-const overwriteStorm = (native: RunVerdict[]) => {
-  const k = overwritten(native).length
-  return k >= OVERWRITE_STORM_MIN && k >= OVERWRITE_STORM_SHARE * native.length
-}
+const overwriteStorm = (native: RunVerdict[]) => pileOf(overwritten(native).length, native)
+
+/** More direct writes left unordered than near simultaneous visits explain: send times going missing must not go quiet (#2806). */
+const unorderedPile = (native: RunVerdict[]) => pileOf(unordered(native).length, native)
+
+/** One write left unordered, in words, with its reason. */
+const unorderedLine = (appUrl: string, v: Extract<RunVerdict, { kind: 'order_unknown' }>) =>
+  `${runLabel(appUrl, v.executionId)} was not compared: ${runLabel(appUrl, v.otherExecutionId)} also wrote the same Submission, and ${v.reason}, so which arrived last cannot be told.`
 
 /** A run's problem clauses as one sentence: "a, b, and c". */
 const sayProblems = (clauses: string[]) =>
@@ -965,11 +1136,12 @@ function relayLine(r: RelayReadBack): string {
   const notLanded = count('not_landed')
   const unchecked = count('unchecked')
   const superseded = count('superseded')
+  const orderUnknown = count('order_unknown')
   const judged = landed + notLanded + unchecked
   let line: string
   if (judged === 0) {
     line = `In the same hours Pipedream sent ${fmt(r.total)} other outcome${r.total === 1 ? '' : 's'}.`
-    if (superseded + r.noSubmission === 0) line += ' None of them were checked in Salesforce.'
+    if (superseded + orderUnknown + r.noSubmission === 0) line += ' None of them were checked in Salesforce.'
   } else {
     const checked = judged === r.total ? (judged === 1 ? 'the one outcome' : `all ${fmt(judged)} outcomes`) : `${fmt(judged)} of the ${fmt(r.total)} outcomes`
     const result =
@@ -980,6 +1152,9 @@ function relayLine(r: RelayReadBack): string {
   }
   const more = judged > 0 ? 'more' : 'of them'
   if (superseded > 0) line += ` ${fmt(superseded)} ${more} ${superseded === 1 ? 'was' : 'were'} left out because a later run of Main Flow wrote the same Submission.`
+  if (orderUnknown > 0) {
+    line += ` ${fmt(orderUnknown)} ${more} ${orderUnknown === 1 ? 'was' : 'were'} left out because another run of Main Flow wrote the same Submission and which arrived last cannot be told.`
+  }
   if (r.noSubmission > 0) line += ` ${fmt(r.noSubmission)} ${more} had no Submission, so Pipedream wrote nothing.`
   return line
 }
@@ -997,6 +1172,9 @@ function directLine(native: RunVerdict[], span: string, subject: CanaryWatchSubj
   const notLanded = native.filter((v) => v.kind === 'not_landed').length
   const unchecked = native.filter((v) => v.kind === 'unchecked').length
   const k = overwritten(native).length
+  const u = unordered(native).length
+  const unorderedSentence = (more: boolean) =>
+    ` ${fmt(u)}${more ? ' more' : ''} ${u === 1 ? 'was' : 'were'} not compared: another run also wrote the same Submission, and which of the two arrived last cannot be told.`
   let line =
     written > n
       ? `From ${span}, ${fmt(written)} leads were written directly. We checked ${fmt(n)} of them, spread over those hours`
@@ -1005,6 +1183,10 @@ function directLine(native: RunVerdict[], span: string, subject: CanaryWatchSubj
   else if (k === n) {
     line += `, and ${n === 1 ? 'it was' : `all ${fmt(n)} were`} replaced by a later run that wrote the same Submission, so ${n === 1 ? 'it was' : 'they were'} not compared.`
     return line
+  } else if (k + u === n) {
+    line += '.'
+    if (k > 0) line += ` ${fmt(k)} ${k === 1 ? 'was' : 'were'} replaced by a later run that wrote the same Submission, so ${k === 1 ? 'it was' : 'they were'} not compared.`
+    return line + unorderedSentence(k > 0)
   } else {
     line += `. ${joinAnd([`${fmt(landed)} arrived complete`, ...(notLanded > 0 ? [`${fmt(notLanded)} did not`] : []), ...(unchecked > 0 ? [`${fmt(unchecked)} could not be checked`] : [])])}.`
   }
@@ -1014,10 +1196,15 @@ function directLine(native: RunVerdict[], span: string, subject: CanaryWatchSubj
     const lead = subject.checksLead ? (landed === 1 ? `, and the Lead${compared} has matching Engine ids` : `, and each Lead${compared} has matching Engine ids`) : ''
     line += landed === 1 ? ` The Submission has every field the run sent${lead}.` : ` Each Submission has every field the run sent${lead}.`
   }
-  line += movedOnSentences(native, notLanded + unchecked + k === 0 ? 'of those' : 'of those that arrived complete')
+  line += movedOnSentences(native, notLanded + unchecked + k + u === 0 ? 'of those' : 'of those that arrived complete')
   if (k > 0) line += ` ${fmt(k)} more ${k === 1 ? 'was' : 'were'} replaced by a later run that wrote the same Submission, so ${k === 1 ? 'it was' : 'they were'} not compared.`
+  if (u > 0) line += unorderedSentence(true)
   return line
 }
+
+/** The Fix line for a pile of writes left unordered (#2806): no write was shown lost, so it never says move back to Pipedream. */
+const UNORDERED_FIX =
+  "More writes than usual could not be ordered against another run that wrote the same Submission. Open the runs above: a send time that is not recorded means Main Flow's step records are missing; writes sent at nearly the same time are usually one visit sent twice."
 
 /** The Fix line for an overwrite storm (#2485): no write was shown lost, so it never says move back to Pipedream. */
 const OVERWRITE_FIX =
@@ -1050,6 +1237,8 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string, su
   const unchecked = report.native.filter((v) => v.kind === 'unchecked').length
   const setAside = overwritten(report.native)
   const storm = overwriteStorm(report.native)
+  const notOrdered = unordered(report.native)
+  const pile = unorderedPile(report.native)
   const written = report.nativeWrites ?? n
   // A sampled day's counts are of the writes checked, and its title says so.
   const ofN = written > n ? `${fmt(n)} checked` : fmt(n)
@@ -1099,6 +1288,9 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string, su
     }
     if (setAside.length > MAX_LISTED_RUNS) lines.push(`${fmt(setAside.length - MAX_LISTED_RUNS)} more runs were replaced; the job run record lists them all.`)
   }
+  // Each write left unordered is named with its reason, every day (#2806, L540).
+  for (const v of notOrdered.slice(0, MAX_LISTED_RUNS)) lines.push(unorderedLine(appUrl, v))
+  if (notOrdered.length > MAX_LISTED_RUNS) lines.push(`${fmt(notOrdered.length - MAX_LISTED_RUNS)} more runs were not compared; the job run record lists them all.`)
 
   if ('error' in report.relay) {
     lines.push(`Pipedream's outcomes could not be read from the database (${report.relay.error}).`)
@@ -1108,7 +1300,7 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string, su
     lines.push(relayLine(report.relay))
   }
 
-  const alert = bad.length > 0 || offDirect || storm
+  const alert = bad.length > 0 || offDirect || storm || pile
   let title: string
   if (notLanded > 0 && unchecked > 0) title = `${TITLE}: ${fmt(notLanded)} of ${ofN} did not arrive complete, and ${fmt(unchecked)} could not be checked`
   else if (notLanded > 0) title = `${TITLE}: ${fmt(notLanded)} of ${ofN} did not arrive complete`
@@ -1118,10 +1310,15 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string, su
   else if (report.lastWasRelay) title = `${TITLE}: Main Flow is back on Pipedream`
   else if (offDirect) title = `${TITLE}: Main Flow went back to Pipedream for a while`
   else if (storm) title = `${TITLE}: ${fmt(setAside.length)} of ${ofN} were replaced by a later run`
+  else if (pile) title = `${TITLE}: ${fmt(notOrdered.length)} of ${ofN} were not compared`
   else if (n === 0) title = `${TITLE}: none to check yesterday`
-  else if (setAside.length > 0) {
-    const k = setAside.length
-    title = n === 1 ? `${TITLE}: the one write was replaced by a later run` : `${TITLE}: ${fmt(landed)} of ${ofN} arrived complete and ${fmt(k)} ${k === 1 ? 'was' : 'were'} replaced by a later run`
+  else if (setAside.length + notOrdered.length > 0) {
+    const [k, u] = [setAside.length, notOrdered.length]
+    const what = [k > 0 ? `${fmt(k)} ${k === 1 ? 'was' : 'were'} replaced by a later run` : null, u > 0 ? `${fmt(u)} ${u === 1 ? 'was' : 'were'} not compared` : null].filter((t): t is string => t !== null)
+    title =
+      n === 1
+        ? `${TITLE}: the one write ${k === 1 ? 'was replaced by a later run' : 'was not compared'}`
+        : `${TITLE}: ${fmt(landed)} of ${ofN} arrived complete and ${joinAnd(what)}`
   } else title = n === 1 ? `${TITLE}: the one write arrived complete` : `${TITLE}: all ${ofN} arrived complete`
 
   return {
@@ -1137,6 +1334,7 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string, su
                 : null,
             offDirect ? ROLLBACK_FIX : null,
             storm ? OVERWRITE_FIX : null,
+            pile ? UNORDERED_FIX : null,
           ]
             .filter((t): t is string => t !== null)
             .join(' '),
@@ -1179,7 +1377,9 @@ function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWat
             ? 'off_direct_write'
             : overwriteStorm(report.native)
               ? 'overwrite_storm'
-              : report.native.length === 0
+              : unorderedPile(report.native)
+                ? 'order_unknown_pile'
+                : report.native.length === 0
                 ? 'no_runs'
                 : 'all_landed',
     detail: report.readError ?? `${report.native.length} runs read back`,
@@ -1199,6 +1399,9 @@ function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWat
       // Overwritten by a later RUN's write to the same Submission (#2485), not judged; and the runs, by id.
       superseded: overwritten(report.native).length,
       superseded_runs: overwritten(report.native),
+      // Another run wrote the same Submission and which arrived last cannot be told (#2806), not judged; the runs, by id, with why.
+      order_unknown: unordered(report.native).length,
+      order_unknown_runs: unordered(report.native),
       // Landed, with a Lead holding an earlier run's Engine ids from the Submission's first completion (#2485).
       lead_from_first_completion: leadFromFirstCompletion(report.native),
       skipped: report.skipped.length,
@@ -1218,6 +1421,9 @@ function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWat
               unchecked: report.relay.sample.filter((v) => v.kind === 'unchecked').length,
               // Overwritten by a later RUN, so left out of the rate; not the two below.
               superseded: report.relay.sample.filter((v) => v.kind === 'superseded').length,
+              // Not ordered against another run's write (#2806), so left out of the rate too; the runs, with why.
+              order_unknown: unordered(report.relay.sample).length,
+              order_unknown_runs: unordered(report.relay.sample),
               superseded_by_later_write: supersededByLater(report.relay.sample),
               followed_newer_submission: followedNewerSubmission(report.relay.sample),
               // Run ids and what was wrong, never a value.
@@ -1279,7 +1485,7 @@ export async function runCanaryWatch(subject: CanaryWatchSubject, deps: CanaryWa
     const landed = report.native.filter(landedFully).length
     const movedOn = report.native.filter((v) => v.kind === 'moved_on').length
     console.log(
-      `[${subject.job}] from=${from} to=${to} native_writes=${report.nativeWrites ?? report.native.length} native=${report.native.length} landed=${landed} moved_on=${movedOn} skipped=${report.skipped.length} ` +
+      `[${subject.job}] from=${from} to=${to} native_writes=${report.nativeWrites ?? report.native.length} native=${report.native.length} landed=${landed} moved_on=${movedOn} order_unknown=${unordered(report.native).length} skipped=${report.skipped.length} ` +
         `relay_watched_step=${report.relayInvalidState} relay_after_switch=${report.relayAfterSwitch} last_was_relay=${report.lastWasRelay} posted=${posted}${report.readError ? ` read_error=${report.readError}` : ''}`,
     )
   }
@@ -1370,6 +1576,30 @@ export async function readWatchedSteps(supabase: SupabaseClient, step: string, f
   )
 }
 
+/**
+ * One Main Flow run's outcome post steps with their send and answer times
+ * (#2806). execution_steps is partitioned by the step's start, so the read is
+ * bounded by the run's own start (its UUIDv7): from SEND_READ_MARGIN_MS before
+ * it to SEND_BOUND_MS after, the span its posts are sent in. An id that is not a
+ * UUIDv7 has no start, so nothing is read for it. Throws on a failed read.
+ */
+export async function readSendSteps(supabase: SupabaseClient, executionId: string): Promise<SendStep[]> {
+  const minted = mintedMsFromUuidV7(executionId)
+  if (minted === null) return []
+  const { data, error } = await supabase
+    .from('execution_steps')
+    .select('execution_id, step_namespace, started_at, completed_at')
+    .eq('workflow_id', MAIN_FLOW_WORKFLOW_ID)
+    .eq('execution_id', executionId)
+    .in('step_namespace', [...OUTCOME_POSTS])
+    .gte('started_at', new Date(minted - SEND_READ_MARGIN_MS).toISOString())
+    .lt('started_at', new Date(minted + SEND_BOUND_MS).toISOString())
+    .limit(SEND_READ_LIMIT)
+  if (error) throw new Error(`send time read failed: ${error.message}`)
+  const rows: SendStep[] = data ?? []
+  return rows
+}
+
 /** The production wiring for one subject: Main Flow's steps and definition, its organization's Salesforce and Slack. Never throws. */
 export async function runCanaryWatchForEnv(subject: CanaryWatchSubject, supabase: SupabaseClient, env: Env): Promise<CanaryWatchReport> {
   const keys = secretKeys(env)
@@ -1415,6 +1645,7 @@ export async function runCanaryWatchForEnv(subject: CanaryWatchSubject, supabase
     },
     readSteps: (from, to) => readWatchedSteps(supabase, subject.step, from, to, subject.maxSteps),
     readRelay: (from, to) => readRelayPosts(supabase, from, to),
+    readSendSteps: (executionId) => readSendSteps(supabase, executionId),
     salesforce: async () => {
       const port = await salesforcePortFor(env, supabase, keys, await orgId(), MAIN_FLOW_WORKFLOW_ID)
       return async (path: string): Promise<SalesforceRead> => {

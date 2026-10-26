@@ -221,9 +221,23 @@ write), and Regal's Lead fields.
 
 **The window ends at 12:50 UTC whatever time the run starts** (#2806, its first
 half): on 2026-10-22 the run started 31 minutes late and a window measured back
-from its start left 8:52 to 9:23 AM ET unread. The second half of #2806,
-ordering two runs that wrote one Submission by when each write arrived rather
-than when its run started, is still open: the stamp does not carry a send time.
+from its start left 8:52 to 9:23 AM ET unread.
+
+**Two runs on one Submission are ordered by when each write was sent** (#2806,
+its second half), not by when each run started: Salesforce keeps whichever write
+arrived last, and on 2026-10-23 run 01a1689d-3f57 started 1.6 s before
+01a1689d-45b2 but sent its post 3.4 s after it. A write reached Salesforce
+between its posting step's start and end (`started_at`, `completed_at`), and one
+write is later than another only when it was sent after the other was answered.
+A run whose step rows are gone is bounded by its own start instead (it sends
+nothing before it starts, and nothing more than ten minutes after; the longest
+measured was 53.5 s). A pair those cannot order (overlapping sends, or a missing
+send time the runs' starts do not settle) is "order unknown": never landed and
+never lost, named in the message with its reason and counted in the `job_runs`
+summary (`order_unknown`, `order_unknown_runs`, on both the direct writes and the
+relay sample), and three or more in a day (and a tenth of the day's writes) page.
+A relay post's span ends at Pipedream's answer; how long the relay then takes to
+PATCH is not measured.
 
 ## The second canary: send_salesforce (#2174, phase 5)
 
