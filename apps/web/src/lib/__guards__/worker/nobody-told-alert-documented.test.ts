@@ -48,11 +48,20 @@ describe('the nobody can be told alert is documented as the code sends it', () =
 
 /**
  * The drill exists to prove the real page's request reaches Better Stack, so it
- * must make THAT request, not a copy of it that could drift (#1303). The module
- * therefore holds one POST, which the page and the drill both go through.
+ * must make THAT request, not a copy of it that could drift (#1303). Since
+ * #2364 that one request is the shared sender in lib/better-stack-line.ts,
+ * which every Better Stack line goes through (better-stack-one-sender.test.ts),
+ * so this module holds no POST of its own and the page and the drill both send
+ * through it.
  */
 describe('the drill and the real page share one send', () => {
-  it('nobody-told-page.ts makes exactly one POST', () => {
-    expect(SOURCE.match(/method: 'POST'/g) ?? []).toHaveLength(1)
+  it('nobody-told-page.ts makes no POST of its own', () => {
+    expect(SOURCE.match(/method: 'POST'/g) ?? []).toHaveLength(0)
+  })
+
+  it('the page and the drill both send through the shared sender', () => {
+    expect(SOURCE).toMatch(/from '\.\/better-stack-line'/)
+    expect(SOURCE).toMatch(/\bpostBetterStackEvent\(/)
+    expect(SOURCE).toMatch(/\bsendBetterStackLine\(/)
   })
 })
