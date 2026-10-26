@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "exported_at": "2026-10-21T21:02:33.061Z",
+  "exported_at": "2026-10-26T21:28:46.302Z",
   "workflows": [
     {
       "workflow_id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
@@ -87,15 +87,15 @@
           }
         },
         "educationInformation": {
-          "present": 289,
+          "present": 292,
           "classes": {
-            "object": 289
+            "object": 292
           }
         },
         "educationInformation.educationLevel": {
-          "present": 289,
+          "present": 292,
           "classes": {
-            "string": 289
+            "string": 292
           },
           "string": {
             "format": "alpha",
@@ -216,7 +216,7 @@
             "string": 300
           },
           "string": {
-            "format": "alpha",
+            "format": "free",
             "min_len": 4,
             "max_len": 17
           },
@@ -240,19 +240,19 @@
           "string": {
             "format": "free",
             "min_len": 9,
-            "max_len": 41
+            "max_len": 38
           }
         },
         "personalInformation.address2": {
           "present": 300,
           "classes": {
-            "string": 295,
-            "null": 5
+            "string": 296,
+            "null": 4
           },
           "string": {
             "format": "empty",
             "min_len": 0,
-            "max_len": 24
+            "max_len": 22
           }
         },
         "personalInformation.city": {
@@ -263,7 +263,7 @@
           "string": {
             "format": "alpha",
             "min_len": 4,
-            "max_len": 19
+            "max_len": 20
           }
         },
         "personalInformation.dateOfBirth": {
@@ -285,7 +285,7 @@
           "string": {
             "format": "email",
             "min_len": 14,
-            "max_len": 35
+            "max_len": 34
           }
         },
         "personalInformation.firstName": {
@@ -296,7 +296,7 @@
           "string": {
             "format": "alpha",
             "min_len": 3,
-            "max_len": 12
+            "max_len": 17
           }
         },
         "personalInformation.lastName": {
@@ -307,7 +307,7 @@
           "string": {
             "format": "alpha",
             "min_len": 3,
-            "max_len": 14
+            "max_len": 16
           }
         },
         "personalInformation.primaryPhone": {
@@ -388,7 +388,7 @@
           },
           "string": {
             "format": "free",
-            "min_len": 10,
+            "min_len": 0,
             "max_len": 15
           }
         },
@@ -399,8 +399,8 @@
           },
           "string": {
             "format": "free",
-            "min_len": 68,
-            "max_len": 281
+            "min_len": 80,
+            "max_len": 282
           }
         }
       },
@@ -437,9 +437,9 @@
           }
         },
         "educationInformation.educationLevel": {
-          "present": 174,
+          "present": 200,
           "classes": {
-            "string": 174
+            "string": 200
           },
           "string": {
             "format": "alpha",
@@ -513,9 +513,9 @@
           }
         },
         "legalInformation.TCPA_Consent__c": {
-          "present": 267,
+          "present": 260,
           "classes": {
-            "string": 267
+            "string": 260
           },
           "string": {
             "format": "free",
@@ -597,8 +597,8 @@
           },
           "string": {
             "format": "free",
-            "min_len": 8,
-            "max_len": 49
+            "min_len": 7,
+            "max_len": 32
           }
         },
         "personalInformation.address2": {
@@ -609,7 +609,7 @@
           "string": {
             "format": "empty",
             "min_len": 0,
-            "max_len": 16
+            "max_len": 9
           }
         },
         "personalInformation.city": {
@@ -619,8 +619,8 @@
           },
           "string": {
             "format": "alpha",
-            "min_len": 3,
-            "max_len": 15
+            "min_len": 4,
+            "max_len": 17
           }
         },
         "personalInformation.dateOfBirth": {
@@ -641,7 +641,7 @@
           },
           "string": {
             "format": "email",
-            "min_len": 14,
+            "min_len": 12,
             "max_len": 36
           }
         },
@@ -653,7 +653,7 @@
           "string": {
             "format": "alpha",
             "min_len": 3,
-            "max_len": 13
+            "max_len": 11
           }
         },
         "personalInformation.lastName": {
@@ -663,8 +663,8 @@
           },
           "string": {
             "format": "alpha",
-            "min_len": 2,
-            "max_len": 16
+            "min_len": 4,
+            "max_len": 17
           }
         },
         "personalInformation.primaryPhone": {
@@ -724,19 +724,19 @@
           },
           "string": {
             "format": "free",
-            "min_len": 7,
+            "min_len": 11,
             "max_len": 39
           }
         },
         "sessionInformation.userAgent": {
-          "present": 188,
+          "present": 171,
           "classes": {
-            "string": 188
+            "string": 171
           },
           "string": {
             "format": "free",
-            "min_len": 11,
-            "max_len": 280
+            "min_len": 13,
+            "max_len": 281
           }
         },
         "subAccountUuid": {
@@ -889,7 +889,11 @@
             "format": "alpha",
             "min_len": 5,
             "max_len": 18
-          }
+          },
+          "domain": [
+            "debt_consolidation",
+            "other"
+          ]
         },
         "mortgageInformation": {
           "present": 300,
@@ -926,7 +930,7 @@
           "string": {
             "format": "free",
             "min_len": 7,
-            "max_len": 41
+            "max_len": 40
           }
         },
         "personalInformation.city": {
@@ -958,8 +962,8 @@
           },
           "string": {
             "format": "email",
-            "min_len": 13,
-            "max_len": 35
+            "min_len": 14,
+            "max_len": 30
           }
         },
         "personalInformation.firstName": {
@@ -970,7 +974,7 @@
           "string": {
             "format": "alpha",
             "min_len": 3,
-            "max_len": 13
+            "max_len": 12
           }
         },
         "personalInformation.lastName": {
@@ -980,8 +984,8 @@
           },
           "string": {
             "format": "alpha",
-            "min_len": 2,
-            "max_len": 15
+            "min_len": 3,
+            "max_len": 14
           }
         },
         "personalInformation.primaryPhone": {
@@ -1053,7 +1057,7 @@
           "string": {
             "format": "free",
             "min_len": 80,
-            "max_len": 177
+            "max_len": 280
           }
         }
       },
@@ -1064,12 +1068,12 @@
     {
       "workflow_id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
       "workflow_name": "Liberty1 Click Handler",
-      "sample_count": 24,
+      "sample_count": 11,
       "fields": {
         "Prospect__c": {
-          "present": 24,
+          "present": 11,
           "classes": {
-            "string": 24
+            "string": 11
           },
           "string": {
             "format": "alnum",
@@ -1078,9 +1082,9 @@
           }
         },
         "Submission__c": {
-          "present": 24,
+          "present": 11,
           "classes": {
-            "string": 24
+            "string": 11
           },
           "string": {
             "format": "alnum",
@@ -1122,14 +1126,14 @@
           }
         },
         "educationInformation.educationLevel": {
-          "present": 176,
+          "present": 175,
           "classes": {
-            "string": 176
+            "string": 175
           },
           "string": {
             "format": "alpha",
             "min_len": 5,
-            "max_len": 17
+            "max_len": 14
           }
         },
         "financialInformation": {
@@ -1149,21 +1153,15 @@
           }
         },
         "financialInformation.employmentPayFrequency": {
-          "present": 299,
+          "present": 297,
           "classes": {
-            "string": 299
+            "string": 297
           },
           "string": {
             "format": "alpha",
             "min_len": 6,
             "max_len": 13
-          },
-          "domain": [
-            "biweekly",
-            "monthly",
-            "twice_monthly",
-            "weekly"
-          ]
+          }
         },
         "financialInformation.employmentStatus": {
           "present": 300,
@@ -1174,17 +1172,7 @@
             "format": "alpha",
             "min_len": 5,
             "max_len": 18
-          },
-          "domain": [
-            "employed",
-            "employed_full_time",
-            "employed_part_time",
-            "military",
-            "not_employed",
-            "other",
-            "retired",
-            "self_employed"
-          ]
+          }
         },
         "leadUuid": {
           "present": 300,
@@ -1204,9 +1192,9 @@
           }
         },
         "legalInformation.TCPA_Consent__c": {
-          "present": 259,
+          "present": 256,
           "classes": {
-            "string": 259
+            "string": 256
           },
           "string": {
             "format": "free",
@@ -1248,10 +1236,17 @@
             "string": 300
           },
           "string": {
-            "format": "free",
+            "format": "alpha",
             "min_len": 5,
             "max_len": 18
-          }
+          },
+          "domain": [
+            "credit_card_refi",
+            "debt_consolidation",
+            "large_purchases",
+            "moving_relocation",
+            "other"
+          ]
         },
         "mortgageInformation": {
           "present": 300,
@@ -1288,8 +1283,8 @@
           },
           "string": {
             "format": "free",
-            "min_len": 9,
-            "max_len": 46
+            "min_len": 4,
+            "max_len": 34
           }
         },
         "personalInformation.address2": {
@@ -1300,7 +1295,7 @@
           "string": {
             "format": "empty",
             "min_len": 0,
-            "max_len": 10
+            "max_len": 21
           }
         },
         "personalInformation.city": {
@@ -1311,7 +1306,7 @@
           "string": {
             "format": "alpha",
             "min_len": 4,
-            "max_len": 18
+            "max_len": 22
           }
         },
         "personalInformation.dateOfBirth": {
@@ -1332,8 +1327,8 @@
           },
           "string": {
             "format": "email",
-            "min_len": 14,
-            "max_len": 40
+            "min_len": 16,
+            "max_len": 36
           }
         },
         "personalInformation.firstName": {
@@ -1343,8 +1338,8 @@
           },
           "string": {
             "format": "alpha",
-            "min_len": 3,
-            "max_len": 13
+            "min_len": 2,
+            "max_len": 11
           }
         },
         "personalInformation.lastName": {
@@ -1355,7 +1350,7 @@
           "string": {
             "format": "alpha",
             "min_len": 3,
-            "max_len": 22
+            "max_len": 18
           }
         },
         "personalInformation.primaryPhone": {
@@ -1409,20 +1404,20 @@
           }
         },
         "sessionInformation.ipAddress": {
-          "present": 282,
+          "present": 281,
           "classes": {
-            "string": 282
+            "string": 281
           },
           "string": {
             "format": "free",
-            "min_len": 10,
+            "min_len": 9,
             "max_len": 39
           }
         },
         "sessionInformation.userAgent": {
-          "present": 217,
+          "present": 219,
           "classes": {
-            "string": 217
+            "string": 219
           },
           "string": {
             "format": "free",
@@ -1475,9 +1470,9 @@
           }
         },
         "educationInformation.educationLevel": {
-          "present": 188,
+          "present": 198,
           "classes": {
-            "string": 188
+            "string": 198
           },
           "string": {
             "format": "alpha",
@@ -1502,21 +1497,15 @@
           }
         },
         "financialInformation.employmentPayFrequency": {
-          "present": 297,
+          "present": 299,
           "classes": {
-            "string": 297
+            "string": 299
           },
           "string": {
             "format": "alpha",
             "min_len": 6,
             "max_len": 13
-          },
-          "domain": [
-            "biweekly",
-            "monthly",
-            "twice_monthly",
-            "weekly"
-          ]
+          }
         },
         "financialInformation.employmentStatus": {
           "present": 300,
@@ -1527,7 +1516,16 @@
             "format": "alpha",
             "min_len": 5,
             "max_len": 18
-          }
+          },
+          "domain": [
+            "employed",
+            "employed_full_time",
+            "employed_part_time",
+            "military",
+            "not_employed",
+            "other",
+            "retired"
+          ]
         },
         "leadUuid": {
           "present": 300,
@@ -1547,13 +1545,13 @@
           }
         },
         "legalInformation.TCPA_Consent__c": {
-          "present": 258,
+          "present": 263,
           "classes": {
-            "string": 258
+            "string": 263
           },
           "string": {
             "format": "free",
-            "min_len": 71,
+            "min_len": 67,
             "max_len": 3443
           }
         },
@@ -1631,8 +1629,8 @@
           },
           "string": {
             "format": "free",
-            "min_len": 7,
-            "max_len": 46
+            "min_len": 8,
+            "max_len": 42
           }
         },
         "personalInformation.address2": {
@@ -1643,7 +1641,7 @@
           "string": {
             "format": "empty",
             "min_len": 0,
-            "max_len": 12
+            "max_len": 16
           }
         },
         "personalInformation.city": {
@@ -1653,8 +1651,8 @@
           },
           "string": {
             "format": "alpha",
-            "min_len": 3,
-            "max_len": 18
+            "min_len": 4,
+            "max_len": 16
           }
         },
         "personalInformation.dateOfBirth": {
@@ -1676,7 +1674,7 @@
           "string": {
             "format": "email",
             "min_len": 15,
-            "max_len": 40
+            "max_len": 37
           }
         },
         "personalInformation.firstName": {
@@ -1686,8 +1684,8 @@
           },
           "string": {
             "format": "alpha",
-            "min_len": 3,
-            "max_len": 15
+            "min_len": 2,
+            "max_len": 11
           }
         },
         "personalInformation.lastName": {
@@ -1697,7 +1695,7 @@
           },
           "string": {
             "format": "alpha",
-            "min_len": 1,
+            "min_len": 3,
             "max_len": 16
           }
         },
@@ -1769,19 +1767,19 @@
           },
           "string": {
             "format": "free",
-            "min_len": 10,
+            "min_len": 9,
             "max_len": 39
           }
         },
         "sessionInformation.userAgent": {
-          "present": 188,
+          "present": 176,
           "classes": {
-            "string": 188
+            "string": 176
           },
           "string": {
             "format": "free",
             "min_len": 13,
-            "max_len": 280
+            "max_len": 228
           }
         },
         "subAccountUuid": {
@@ -1827,6 +1825,10 @@
             "max_len": 24
           }
         }
+      },
+      "carried_over": {
+        "sampled_at": "2026-10-21T21:02:33.061Z",
+        "reason": "no live runs in the 2 days before this export; shape kept from the export that last sampled it"
       }
     }
   ]

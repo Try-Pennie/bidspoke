@@ -4,11 +4,14 @@
  *
  * transform.test.ts proves the transform on version 169, the definition the
  * port started from. The stage Dan applies runs on whatever the canvas holds at
- * the apply, so these run it on the money gate's Main Flow, which the runbook's
- * step 5 refreshes from production after every save (version 174 on
- * 2026-10-26, read back from workflow_versions that day: the live version). A
- * canvas edit that would make the apply refuse, or port more than the one post,
- * fails here on the next fixture refresh rather than in Dan's tab.
+ * the apply, so these ran it on the money gate's Main Flow, which the runbook's
+ * step 5 refreshes from production after every save, until Dan applied it on
+ * 2026-10-26 (version 174 to version 175). The gate's Main Flow is now version
+ * 175, which holds the port: the stage over it is the stage as applied, and
+ * gate-fixture.test.ts fails on a canvas save that undoes it. That the stage
+ * ports this one post and nothing else is held on the definition just before
+ * it, the frozen version 169 with the first canary applied, since no copy of
+ * version 174 is kept.
  *
  * Then the ported post is walked by the real engine over its branch as built
  * (the answer, calculate_internal_debt, the write, exit_1), and every way the
@@ -48,21 +51,28 @@ import { CONTINUATION_WINDOW_MS } from '../../post-response-budget'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import GATE_MAIN_FLOW_RAW from '../../../../money-gate/fixtures/definitions/60e2e0bc-5aa2-47db-b333-3a8fe1c62e09.json?raw'
 import { MAIN_FLOW_WORKFLOW_ID, OUTCOME_POSTS, OUTCOME_WRITE_TIMEOUT_MS, PORT_STAGES, portMainFlow, portStatus, sameJson, type Definition } from '../transform'
-import { nextOf, nodeByNamespace } from './production-fixture'
+import { nextOf, nodeByNamespace, productionMainFlow } from './production-fixture'
 
 const gate = JSON.parse(GATE_MAIN_FLOW_RAW as string) as { id: string; definition: Definition }
 const live = (): Definition => structuredClone(gate.definition)
 const canary = (): Definition => portMainFlow(live(), PORT_STAGES.canary_send_salesforce)
+/** Main Flow as it stood before this stage: the frozen version 169 with the first canary applied. */
+const beforeCanary = (): Definition => portMainFlow(productionMainFlow(), PORT_STAGES.canary_invalid_state)
 
 describe('the send_salesforce canary stage over the live Main Flow', () => {
-  it('starts from the live state: invalid_state_sf_post native, the other eight on the relay', () => {
+  it('is live: send_salesforce and invalid_state_sf_post native, the other seven on the relay, the inquiry where it was', () => {
     expect(gate.id).toBe(MAIN_FLOW_WORKFLOW_ID)
-    expect(portStatus(live())).toEqual({ ported: ['invalid_state_sf_post'], relay: OUTCOME_POSTS.filter((p) => p !== 'invalid_state_sf_post'), inquiryMoved: false })
+    expect(portStatus(live())).toEqual({
+      ported: ['send_salesforce', 'invalid_state_sf_post'],
+      relay: OUTCOME_POSTS.filter((p) => p !== 'invalid_state_sf_post' && p !== 'send_salesforce'),
+      inquiryMoved: false,
+    })
   })
 
-  it('ports send_salesforce and nothing else: no node added or removed, the inquiry relay left where it is', () => {
-    const before = live()
-    const after = canary()
+  it('ports send_salesforce and nothing else over the definition before it: no node added or removed, the inquiry relay left where it is', () => {
+    const before = beforeCanary()
+    const after = portMainFlow(beforeCanary(), PORT_STAGES.canary_send_salesforce)
+    expect(portStatus(before)).toEqual({ ported: ['invalid_state_sf_post'], relay: OUTCOME_POSTS.filter((p) => p !== 'invalid_state_sf_post'), inquiryMoved: false })
     expect(portStatus(after)).toEqual({
       ported: ['send_salesforce', 'invalid_state_sf_post'],
       relay: OUTCOME_POSTS.filter((p) => p !== 'invalid_state_sf_post' && p !== 'send_salesforce'),
@@ -77,8 +87,10 @@ describe('the send_salesforce canary stage over the live Main Flow', () => {
   })
 
   it('keeps the text body exactly, takes the record id from the template its submissionId key holds, and still goes on to exit_1', () => {
-    const before = nodeByNamespace(live(), 'send_salesforce')
+    // The relay post it was ported from, against the live one: version 175 holds the port.
+    const before = nodeByNamespace(beforeCanary(), 'send_salesforce')
     const after = nodeByNamespace(canary(), 'send_salesforce')
+    expect(before.type).toBe('webhook')
     expect(typeof after.config.body).toBe('string')
     expect(after.config.body).toBe(before.config.body)
     // Where the relay read the record id: the body's own submissionId.
@@ -114,8 +126,12 @@ describe('the send_salesforce canary stage over the live Main Flow', () => {
   // The definition rules alone. The save itself, body and version check included,
   // is sent through the real route by save-route-contract.test.ts (#2174).
   it('passes the save route\'s definition rules and adds no canvas validation problem', () => {
-    const before = live()
-    const after = canary()
+    const live175 = canary()
+    expect(findWorkflowCycle(live175.nodes, live175.edges)).toBeNull()
+    expect(findSalesforceConfigProblems(live175.nodes)).toEqual([])
+    // What the stage adds is compared over the definition before it, since live already holds it.
+    const before = beforeCanary()
+    const after = portMainFlow(beforeCanary(), PORT_STAGES.canary_send_salesforce)
     expect(findWorkflowCycle(after.nodes, after.edges)).toBeNull()
     expect(findSalesforceConfigProblems(after.nodes)).toEqual([])
     const key = (p: { namespace?: string; message: string }) => `${p.namespace}: ${p.message}`

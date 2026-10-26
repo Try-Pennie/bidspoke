@@ -112,8 +112,9 @@ request if the edit should stand.
 Only a member of the production organization can save Main Flow, so this runs in
 Dan's logged in Bidspoke tab, as the Liberty1 workflow was created. Each stage is
 applied by its own phase issue. The stage live now is the one `LIVE_STAGE` names
-in `gate-fixture.test.ts`: `canary_invalid_state`, applied on 2026-10-16 as
-version 172 (#2173), after an earlier apply (version 170) and its rollback
+in `gate-fixture.test.ts`: `canary_send_salesforce`, applied on 2026-10-26 as
+version 175 (#2174), over `canary_invalid_state`, applied on 2026-10-16 as
+version 172 (#2173) after an earlier apply (version 170) and its rollback
 (version 171).
 
 1. Before any apply, the engine pull request that the stage needs is merged and
@@ -167,8 +168,9 @@ then would discard that save too. Rehearse one rollback before the first canary.
 
 ## The canary's daily read-back (#2173)
 
-From version 172 (2026-10-16), `invalid_state_sf_post` is the one native outcome
-write. Every morning at 9 AM ET (the `0 13 * * *` daily batch, so 8 AM ET once
+From version 172 (2026-10-16), `invalid_state_sf_post` was the one native outcome
+write, until version 175 (2026-10-26) made `send_salesforce` native as well
+(below). Every morning at 9 AM ET (the `0 13 * * *` daily batch, so 8 AM ET once
 clocks go back) the worker reads back from Salesforce every Main Flow run of the
 24 hours ending at 12:50 UTC, ten minutes before the batch, whose invalid state step ran as a Salesforce step, and
 posts one message to Main Flow's organization's alerts channel
@@ -253,12 +255,17 @@ PATCH is not measured.
 `send_salesforce` is the busiest outcome post (about 1,271 a day) and a JSON
 text body, the path the first canary could not exercise. The port, the stage
 (`canary_send_salesforce`) and the engine options it needs were built in phases
-1 and 2; `send-salesforce-canary.test.ts` runs the stage over the money gate's
-Main Flow (the live version, 174 on 2026-10-26), so a canvas edit that would
-make the apply refuse, or port more than this one post, fails there on the next
-fixture refresh. It also walks the ported write through the real engine for
-every Salesforce answer and requires each failure to end the same way as the
-invalid state write the first canary passed on.
+1 and 2. Until the apply, `send-salesforce-canary.test.ts` ran the stage over
+the money gate's Main Flow (the live version, 174 on 2026-10-26), so a canvas
+edit that would make the apply refuse, or port more than this one post, failed
+there first. Since the apply (version 175, 2026-10-26) it requires the gate's
+Main Flow to hold the port, and holds "this one post and nothing else" on the
+frozen version 169 with the first canary applied. It also walks the ported write
+through the real engine for every Salesforce answer and requires each failure to
+end the same way as the invalid state write the first canary passed on.
+`save-route-contract.test.ts` now holds the save route contract on the next
+stage still to apply, `outcome_posts`, and requires both canaries to answer
+`nothing_to_do` over the live definition.
 
 **Switching it on** (after the pull request that adds the watch is merged,
 deployed, and the live commit confirmed): the runbook above, steps 2 to 5, with
