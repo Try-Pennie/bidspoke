@@ -29,7 +29,7 @@ export function catalogueServices(): FormService[] {
   return CATALOGUE.map((s) => ({ key: s.key, name: s.name, tile: s.connection.tile, connection: s.connection }))
 }
 
-/** Which way a Google connection acts: as a mailbox or drive on the company list, or as your own account (R16). */
+/** Which way a Google connection acts: as a mailbox on the company list (its drives ticked apart, #2572), or as your own account (R16). */
 export type GoogleWay = 'company' | 'own'
 
 /** What the form holds: the service chosen, the name, and each service's own values, kept apart so switching service loses nothing. */

@@ -31,9 +31,9 @@ export type ConnectionAuthKind = (typeof CONNECTION_AUTH_KINDS)[number]
  *   - `salesforce_org`, the dropdown of the orgs Bidspoke knows, with Another
  *     org last (R15);
  *   - `google_subject`, the dropdown of the mailboxes on the organization's
- *     company list (R16, D16), under the choice between a company mailbox or
- *     drive and your own Google account. A connection acts as a mailbox,
- *     never a drive (#2572);
+ *     company list (R16, D16), under the choice between a company mailbox and
+ *     your own Google account. A connection acts as a mailbox, never a drive
+ *     (#2572);
  *   - `google_drives`, the shared drives on that company list, each ticked or
  *     not: a LIST, so its value is an array of drive ids (#2572), the shape
  *     the Google minter reads its target's drives in.
