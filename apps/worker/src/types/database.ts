@@ -2662,6 +2662,42 @@ export type Database = {
         }
         Relationships: []
       }
+      slack_post_outcomes: {
+        Row: {
+          channel: string
+          kind: string | null
+          occurred_at: string
+          outcome: string
+          post_id: string
+          reason: string | null
+          recorded_at: string
+          status: number | null
+          title: string | null
+        }
+        Insert: {
+          channel: string
+          kind?: string | null
+          occurred_at: string
+          outcome: string
+          post_id: string
+          reason?: string | null
+          recorded_at?: string
+          status?: number | null
+          title?: string | null
+        }
+        Update: {
+          channel?: string
+          kind?: string | null
+          occurred_at?: string
+          outcome?: string
+          post_id?: string
+          reason?: string | null
+          recorded_at?: string
+          status?: number | null
+          title?: string | null
+        }
+        Relationships: []
+      }
       source_workflow_assignments: {
         Row: {
           created_at: string
@@ -3478,6 +3514,7 @@ export type Database = {
       purge_cron_guard_fail_opens: { Args: never; Returns: number }
       purge_cron_tick_deliveries: { Args: never; Returns: number }
       purge_outcome_writeback_deadletters: { Args: never; Returns: number }
+      purge_slack_post_outcomes: { Args: never; Returns: number }
       query_timeout_watch: {
         Args: { p_min_calls?: number }
         Returns: {
@@ -3706,6 +3743,29 @@ export type Database = {
           p_workflow: string
         }
         Returns: Json
+      }
+      slack_refusal_runs: {
+        Args: { p_since: string }
+        Returns: {
+          channel: string
+          destination: number
+          first_refused_at: string
+          last_delivered_at: string
+          last_refused_at: string
+          reasons: Json
+          refused: number
+          titles: Json
+        }[]
+      }
+      slack_refusal_summary: {
+        Args: { p_channels: string[]; p_from: string; p_to: string }
+        Returns: {
+          first_refused_at: string
+          last_refused_at: string
+          reasons: Json
+          refused: number
+          titles: Json
+        }[]
       }
       step_duration_percentiles: {
         Args: { p_namespace: string; p_since: string; p_workflow_id: string }

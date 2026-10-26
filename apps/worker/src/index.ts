@@ -60,6 +60,7 @@ import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { PARTNER_ERROR_RATE_JOB, runPartnerErrorRateCheck } from './lib/partner-error-rate'
+import { runSlackRefusalWatchForEnv, slackRefusalWatchRunFailure, SLACK_REFUSAL_WATCH_JOB } from './lib/slack-refusal-watch'
 import { LEAD_VALIDATION_REJECTION_JOB, runLeadValidationRejectionWatchForEnv } from './lib/lead-validation-rejection-watch'
 import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
 import { runDeadLetterBuildTriggerCheck } from './lib/deadletter-volume'
@@ -1404,6 +1405,25 @@ const scheduledJobs = {
             .then(() => runPartnerErrorRateCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)),
           PARTNER_ERROR_RATE_JOB,
           `[${PARTNER_ERROR_RATE_JOB}] check failed:`,
+        ),
+      )
+      // Slack refusing alert posts (#2364): reads the post outcomes the tail
+      // Worker copies and pages through Better Stack, never Slack. Its own
+      // heartbeat; a minute that could not measure, or whose page Better Stack
+      // did not take, is a failed run (lib/slack-refusal-watch.ts).
+      minuteJob(SLACK_REFUSAL_WATCH_JOB,
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, SLACK_REFUSAL_WATCH_JOB)
+            .catch((e) => console.error(`[${SLACK_REFUSAL_WATCH_JOB}] heartbeat write failed:`, e))
+            .then(() => runSlackRefusalWatchForEnv(supabase, env, reachability.claims))
+            .then((s) => {
+              if (s.paged.length > 0 || s.pageFailed.length > 0 || s.allClear.length > 0 || s.standing.length > 0 || s.errors.length > 0) {
+                console.log(`[${SLACK_REFUSAL_WATCH_JOB}] paged=${s.paged.length} page_failed=${s.pageFailed.length} standing=${s.standing.length} all_clear=${s.allClear.length} errors=${s.errors.length}`)
+              }
+              return slackRefusalWatchRunFailure(s)
+            }),
+          SLACK_REFUSAL_WATCH_JOB,
+          `[${SLACK_REFUSAL_WATCH_JOB}] check failed:`,
         ),
       )
       // The ops minute cron's report (#1949): the tick runs in the ops Worker and

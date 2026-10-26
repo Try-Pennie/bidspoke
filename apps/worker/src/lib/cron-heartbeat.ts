@@ -456,6 +456,24 @@ export const CRON_JOBS: CronJob[] = [
       'a LendSwift outage on RML - Bidding Workflow (LendSwift) is never paged, because each failed ping ends as a completed no bid that no other alert counts, and an open one never gets its all clear (#2582)',
   },
   {
+    // #2364: the minute check that pages through Better Stack when Slack
+    // refuses alert posts (lib/slack-refusal-watch.ts). Its own entry, so a
+    // dark one names itself; its page and all clear are its own, and a run
+    // that cannot measure or cannot page fails, which the failing job count
+    // pages as well.
+    id: 'slack-refusal-watch',
+    label: 'Slack refusal watch',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack, matching the other minute jobs.
+    staleMs: 10 * MIN,
+    // Two small reads, the Slack connections, then at most one Better Stack
+    // send (5 s) or one all clear per organization: seconds.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'nobody is paged when Slack refuses Bidspoke\'s alert posts, so a bot token that cannot post loses every alert unnoticed, as it did for three days from 2026-10-22 (#2364)',
+  },
+  {
     id: 'buyer-sales-checks',
     label: 'Buyer sales checks',
     triggerCron: '*/15 * * * *',

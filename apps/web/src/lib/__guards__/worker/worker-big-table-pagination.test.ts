@@ -93,6 +93,12 @@ const BIG_TABLES = [
   // 2026-10-18 (#2390). Its one reader, the hourly cron guard check, pages it
   // 1,000 rows at a time with a full order.
   'cron_tick_deliveries',
+  // One row per Slack post, kept 7 days by its purge job (#2364): the
+  // 2026-10-23 outage refused about 1,130 posts a day, and delivered posts add
+  // to that, so thousands to tens of thousands of rows. The Worker reads it
+  // only through two aggregating rpcs (slack_refusal_runs, slack_refusal_summary),
+  // never as a list; the tail Worker writes it.
+  'slack_post_outcomes',
   // One row per day or partition each purge run decides on, never pruned: 233
   // rows on 2026-10-18, 35 in the week before, so about 5 a day and past 1,000
   // early in 2027. Declared here by #962 rather than left for the growth alert.

@@ -37,6 +37,7 @@
 import type { CopyUnreachableReason } from './scheduled-slack'
 import { raceDeadline } from './alert-claim'
 import { formatErr } from './format-error'
+import { betterStackTarget, postBetterStackEvent, sendBetterStackLine, type BetterStackSendOutcome } from './better-stack-line'
 
 /**
  * The Better Stack alert that matches on NOBODY_TOLD_LINE. Created in Better
@@ -87,35 +88,9 @@ export function nobodyToldEvent(orgId: string | null, reason: NobodyToldReason, 
   return { message: NOBODY_TOLD_LINE, organization_id: orgId, reason, dt: new Date(nowMs).toISOString() }
 }
 
-/** The two worker secrets, trimmed, and the names of any that are unset. */
-function outageTarget(token: string | undefined, url: string | undefined) {
-  const t = token?.trim() ?? ''
-  const u = url?.trim() ?? ''
-  const missing: ('BETTERSTACK_OUTAGE_TOKEN' | 'BETTERSTACK_OUTAGE_URL')[] = []
-  if (!t) missing.push('BETTERSTACK_OUTAGE_TOKEN')
-  if (!u) missing.push('BETTERSTACK_OUTAGE_URL')
-  return { token: t, url: u, missing }
-}
-
-/**
- * The one request the page and the drill both make (a guard counts the POSTs in
- * this file), so a drill proves exactly what an outage would send. Answers
- * Better Stack's status; whether that status is a failure is the caller's call.
- */
-async function postEvent(
-  fetchFn: typeof fetch,
-  target: { token: string; url: string },
-  event: NobodyToldEvent,
-  signal: AbortSignal,
-): Promise<{ ok: boolean; status: number }> {
-  const res = await fetchFn(target.url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${target.token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(event),
-    signal,
-  })
-  return { ok: res.ok, status: res.status }
-}
+// The page and the drill both make the one shared request (better-stack-line.ts,
+// #2364; a guard holds every Worker POST to the source there), so a drill proves
+// exactly what an outage would send.
 
 export interface NobodyToldKv {
   get(key: string): Promise<string | null>
@@ -146,7 +121,7 @@ export function createNobodyToldPager(options: NobodyToldPagerOptions): NobodyTo
   const fetchFn = options.fetch ?? fetch
   const now = options.now ?? Date.now
   const delay = options.delay ?? realDelay
-  const target = outageTarget(options.token, options.url)
+  const target = betterStackTarget(options.token, options.url)
   const handled = new Set<string>()
   let saidInert = false
 
@@ -158,7 +133,7 @@ export function createNobodyToldPager(options: NobodyToldPagerOptions): NobodyTo
     if (prior.kind !== 'ok') {
       console.warn(`[nobody-told-page] could not read whether ${key} was already paged (${prior.kind === 'threw' ? formatErr(prior.error) : `no answer in ${NOBODY_TOLD_KV_READ_DEADLINE_MS} ms`}), so it is paged anyway`)
     }
-    const res = await postEvent(fetchFn, target, nobodyToldEvent(orgId, reason, now()), signal)
+    const res = await postBetterStackEvent(fetchFn, target, nobodyToldEvent(orgId, reason, now()), signal)
     if (!res.ok) throw new Error(`Better Stack answered ${res.status}`)
     return 'sent'
   }
@@ -214,12 +189,7 @@ export function createNobodyToldPager(options: NobodyToldPagerOptions): NobodyTo
 }
 
 /** What a drill came to, as POST /api/admin/nobody-told-page/drill answers it. */
-export type NobodyToldDrillOutcome =
-  | { outcome: 'sent'; status: number }
-  | { outcome: 'not_configured'; missing: ('BETTERSTACK_OUTAGE_TOKEN' | 'BETTERSTACK_OUTAGE_URL')[] }
-  | { outcome: 'refused'; status: number }
-  | { outcome: 'no_answer'; deadline_ms: number }
-  | { outcome: 'threw'; error: string }
+export type NobodyToldDrillOutcome = BetterStackSendOutcome
 
 /** The pager's options without KV: a drill has no record to read or write. */
 export type NobodyToldDrillOptions = Omit<NobodyToldPagerOptions, 'kv'>
@@ -233,17 +203,6 @@ export type NobodyToldDrillOptions = Omit<NobodyToldPagerOptions, 'kv'>
  * a real page nor be suppressed by one.
  */
 export async function drillNobodyToldPage(options: NobodyToldDrillOptions): Promise<NobodyToldDrillOutcome> {
-  const fetchFn = options.fetch ?? fetch
   const now = options.now ?? Date.now
-  const delay = options.delay ?? realDelay
-  const target = outageTarget(options.token, options.url)
-  if (target.missing.length > 0) return { outcome: 'not_configured', missing: target.missing }
-  const stop = new AbortController()
-  const raced = await raceDeadline(() => postEvent(fetchFn, target, nobodyToldEvent(null, 'drill', now()), stop.signal), NOBODY_TOLD_PAGE_DEADLINE_MS, delay)
-  if (raced.kind === 'timed_out') {
-    stop.abort()
-    return { outcome: 'no_answer', deadline_ms: NOBODY_TOLD_PAGE_DEADLINE_MS }
-  }
-  if (raced.kind === 'threw') return { outcome: 'threw', error: formatErr(raced.error) }
-  return raced.value.ok ? { outcome: 'sent', status: raced.value.status } : { outcome: 'refused', status: raced.value.status }
+  return sendBetterStackLine(options, nobodyToldEvent(null, 'drill', now()), NOBODY_TOLD_PAGE_DEADLINE_MS)
 }

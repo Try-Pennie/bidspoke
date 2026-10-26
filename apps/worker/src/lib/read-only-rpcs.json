@@ -27,7 +27,9 @@
     "db_stall_snapshot",
     "connection_references",
     "connection_history",
-    "definition_connection_problems"
+    "definition_connection_problems",
+    "slack_refusal_runs",
+    "slack_refusal_summary"
   ],
   "mutating": [
     "record_archive_day_measurement",

@@ -27,3 +27,11 @@ export const DELIVERY_HELD_CAP = 8_000
  * for a whole day is 1,887 (the measured rate is about 4 a day).
  */
 export const FAIL_OPEN_HELD_CAP = 2_000
+
+/**
+ * The Slack post record gets a row per alert post (#2364). The 2026-10-23 to 26
+ * outage refused about 3,400 posts in three days, about 1,130 a day, and posts
+ * that are delivered add to that. 5,000 holds a day long database outage at
+ * four times that refusal rate.
+ */
+export const SLACK_POST_HELD_CAP = 5_000
