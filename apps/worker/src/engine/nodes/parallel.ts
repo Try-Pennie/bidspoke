@@ -6,7 +6,9 @@
  *                          on_timeout: 'partial' → continue with settled results;
  *                          on_timeout: 'fail'    → throw if any child unsettled.
  *                          A slot marked on_failure: 'continue' (#2832) never
- *                          fails the block; the engine raises its failure itself.
+ *                          fails the block by failing (or, with on_timeout
+ *                          'partial', by being late); the engine raises its
+ *                          failure itself. on_timeout 'fail' still throws.
  *   wait_for: 'first'    — Race; first successful child wins. All children run to
  *                          completion in the background (results discarded except winner).
  *                          Fails if all children reject OR timeout fires first.
@@ -81,10 +83,12 @@ interface ParallelConfig {
   // workflow stops. Set to 'continue' when the downstream step (e.g. a Bid
   // Evaluation node) handles rejections in the result array itself.
   on_child_error?: 'fail' | 'continue'
-  // The slot list. A slot marked `on_failure: 'continue'` (#2832) never fails the
-  // block under wait_for 'all': its failure or timeout stays in the output, and
-  // the engine records it and raises it through the post-answer failure alert
-  // once the walk is done. Every other slot follows on_child_error as before.
+  // The slot list. A slot marked `on_failure: 'continue'` (#2832) is exempt from
+  // on_child_error under wait_for 'all': its failure, or its timeout under
+  // on_timeout 'partial', stays in the output, and the engine records it and
+  // raises it through the post-answer failure alert once the walk is done. Under
+  // on_timeout 'fail' a timeout still throws, whichever slot is late. Every other
+  // slot follows on_child_error as before.
   children?: Array<{ id?: unknown; on_failure?: unknown }>
 }
 
