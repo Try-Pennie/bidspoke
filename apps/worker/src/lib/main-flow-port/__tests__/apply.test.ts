@@ -1,12 +1,16 @@
 /**
  * The apply and rollback the tab script runs (#2171, #1680 plan point 11).
  *
- * The PUT route overwrites the whole definition with no version check, so the
- * apply reads the live version, transforms THAT, re-reads immediately before the
- * PUT and refuses when anything moved, then reads back what was stored. Rollback
- * re-PUTs the version read before the change under the same check, and refuses
- * to discard a canvas save made since the port. A fake of the workflow API keeps
- * a real version history, and can save "from the canvas" between any two calls.
+ * The PUT route overwrites the whole definition, and requires a save to name the
+ * row version it was made from and its press (#1947, #2599). So the apply reads
+ * the live version, transforms THAT, re-reads immediately before the PUT and
+ * refuses when anything moved, PUTs naming that re-read's row version and a fresh
+ * save id (a stale answer is refused_live_changed), then reads back what was
+ * stored. Rollback re-PUTs the version read before the change under the same
+ * check, and refuses to discard a canvas save made since the port. A fake of the
+ * workflow API keeps a real version history, refuses a stale save as the route
+ * does, and can save "from the canvas" between any two calls; the real route is
+ * driven by save-route-contract.test.ts.
  */
 import { describe, expect, it } from 'vitest'
 import { accessTokenFromCookies, applyPort, httpWorkflowApi, previewPort, rollbackPort, type SaveAnswer, type SaveRequest, type WorkflowApi } from '../apply'

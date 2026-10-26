@@ -330,7 +330,9 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
   after the answer on the `trades_present` route is followed by the Apex call;
   the worst case from each answer to its Apex call fits 12 s by the engine's own
   retry rules; every `success_node_namespaces` entry exists; neither relay is
-  named; the save route's checks pass.
+  named; the save route's definition rules pass (no loop, no malformed
+  Salesforce write option). The route itself is driven by
+  `save-route-contract.test.ts`.
 - `relay-parity.test.ts`: for each post, the native PATCH equals what the relay
   wrote from what the webhook posted, through the engine's real executors, over
   inputs whose key sets and value types were measured from production.
