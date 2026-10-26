@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "exported_at": "2026-10-22T23:34:40.307Z",
+  "exported_at": "2026-10-26T21:28:46.302Z",
   "tables": {
     "workflows": [
       {
@@ -91,14 +91,14 @@
         "version_number": 17
       },
       {
-        "id": "898b4da1-4e09-4e68-a8ad-475f986e46b9",
-        "workflow_id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
-        "version_number": 174
-      },
-      {
         "id": "a6bf9495-4b40-4d6f-816e-ec274f2862f6",
         "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
         "version_number": 113
+      },
+      {
+        "id": "dd4cedf8-e519-4585-9498-e5aa95390598",
+        "workflow_id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "version_number": 175
       },
       {
         "id": "e97d8aa3-ae3d-4c1d-8f57-5f66f98e3ed4",
@@ -337,6 +337,47 @@
         "slug": "brainsome",
         "partner_type": "source",
         "is_active": true,
+        "bid_resolver_type": "api",
+        "bid_resolver_config": {},
+        "bid_comparison_source": "auto",
+        "bid_formula": null,
+        "api_endpoint": null,
+        "cf_secret_key": null,
+        "daily_cap": null,
+        "min_bid": null,
+        "dedup_endpoint": null,
+        "response_classification": null,
+        "alert_config": {
+          "permanent_errors": {
+            "alert": true
+          },
+          "transient_errors": {
+            "alert": true
+          }
+        },
+        "circuit_enabled": true,
+        "circuit_error_threshold": 1,
+        "circuit_window_seconds": 10,
+        "circuit_cooldown_seconds": 100,
+        "priority": 0,
+        "sell_off_offer_title": null,
+        "sell_off_offer_details": null,
+        "click_url": null,
+        "outbound_field_mapping": null,
+        "extra_extraction": null,
+        "confirmation_window_ms": null,
+        "sub_account_min_bids": null,
+        "accept_signals": [],
+        "duplicate_signals": [],
+        "external_routing_code": null
+      },
+      {
+        "id": "c21765df-776a-41a9-a291-9547afce4186",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "name": "Live miss test xx",
+        "slug": "live-miss-test",
+        "partner_type": "buyer",
+        "is_active": false,
         "bid_resolver_type": "api",
         "bid_resolver_config": {},
         "bid_comparison_source": "auto",
@@ -888,7 +929,7 @@
       },
       {
         "key": "ACHIEVE_MIN_VANTAGE_SCORE",
-        "value": "100",
+        "value": "1000000000",
         "is_secret": false,
         "scope": "global",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",

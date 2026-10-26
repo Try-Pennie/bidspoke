@@ -22,8 +22,8 @@ import GATE_MAIN_FLOW_RAW from '../../../../money-gate/fixtures/definitions/60e2
 import { MAIN_FLOW_WORKFLOW_ID, OUTCOME_POSTS, PORT_STAGES, portMainFlow, portStatus, sameJson, type Definition, type PortOptions, type PortStage } from '../transform'
 import { productionMainFlow } from './production-fixture'
 
-/** The stage live on Main Flow: applied 2026-10-16 as version 172 (#2173). */
-const LIVE_STAGE: PortStage = 'canary_invalid_state'
+/** The stage live on Main Flow: applied 2026-10-26 as version 175 (#2174). */
+const LIVE_STAGE: PortStage = 'canary_send_salesforce'
 
 const gate = JSON.parse(GATE_MAIN_FLOW_RAW as string) as { id: string; definition: Definition }
 

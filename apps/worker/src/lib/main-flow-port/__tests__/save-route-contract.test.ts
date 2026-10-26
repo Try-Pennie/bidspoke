@@ -29,8 +29,13 @@ import { PORT_STAGES, portMainFlow, type Definition } from '../transform'
 import { prepare, saveRouteBackend, WORKER_URL } from './save-route-backend'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const stage = 'canary_send_salesforce' as const
-/** Main Flow as the money gate holds it: the live version 174 the apply was run over. */
+/**
+ * The next stage still to apply. canary_send_salesforce went live on 2026-10-26
+ * (version 175, #2174), so the route contract is held on the stage after it,
+ * over the same live definition; every stage sends the same save.
+ */
+const stage = 'outcome_posts' as const
+/** Main Flow as the money gate holds it: the live version 175, the canary applied. */
 const live = (): Definition => structuredClone((JSON.parse(GATE_MAIN_FLOW_RAW as string) as { definition: Definition }).definition)
 
 let backend: ReturnType<typeof saveRouteBackend>
@@ -39,7 +44,7 @@ const puts = () => backend.requests.filter((r) => r.method === 'PUT')
 
 beforeEach(() => {
   prepare()
-  backend = saveRouteBackend(live())
+  backend = saveRouteBackend(live(), { versionNumber: 175 })
 })
 
 afterEach(async () => {
@@ -49,7 +54,7 @@ afterEach(async () => {
 describe('the apply, through PUT /api/workflows/:id', () => {
   it('is accepted, naming the version it re-read just before the PUT and a fresh press, and stores the transform', async () => {
     const result = await applyPort(client(), stage)
-    expect(result).toMatchObject({ outcome: 'applied', before: { version_id: 'ver-174', version_number: 174 }, after: { version_id: 'ver-175', version_number: 175 } })
+    expect(result).toMatchObject({ outcome: 'applied', before: { version_id: 'ver-175', version_number: 175 }, after: { version_id: 'ver-176', version_number: 176 } })
     const [put] = puts()
     expect(Object.keys(put.body ?? {}).sort()).toEqual(['definition', 'expected_version', 'message', 'save_id'])
     // The workflows.version column the route compares, never the snapshot number.
@@ -64,7 +69,7 @@ describe('the apply, through PUT /api/workflows/:id', () => {
     other.nodes[0].label = 'saved on the canvas meanwhile'
     backend.saveElsewhereBeforeNextPut(other)
     const result = await applyPort(client(), stage)
-    expect(result).toMatchObject({ outcome: 'refused_live_changed', read: { version_number: 174 } })
+    expect(result).toMatchObject({ outcome: 'refused_live_changed', read: { version_number: 175 } })
     expect((result as { reason: string }).reason).toMatch(/stale: the workflow's row version is 2311, not 2310, saved by Someone.*nothing was written/)
     // The route asked write_workflow, which refused; the canvas save stands.
     expect(backend.writes).toEqual([expect.objectContaining({ p_expected_version: 2310 })])
@@ -75,10 +80,18 @@ describe('the apply, through PUT /api/workflows/:id', () => {
 describe('every stage still to apply, over live Main Flow, through PUT /api/workflows/:id', () => {
   // The route's checks of a LIVE workflow's definition (lead validation, unfinished
   // steps, connections) run on each, so a stage the route would refuse fails here.
-  it.each(['canary_send_salesforce', 'outcome_posts', 'inquiry'] as const)('%s is accepted and stored as built', async (s) => {
+  it.each(['outcome_posts', 'inquiry'] as const)('%s is accepted and stored as built', async (s) => {
     const result = await applyPort(client(), s)
     expect(result).toMatchObject({ outcome: 'applied' })
     expect(backend.row.definition).toEqual(portMainFlow(live(), PORT_STAGES[s]))
+  })
+
+  it.each(['canary_invalid_state', 'canary_send_salesforce'] as const)('%s, already live, answers nothing_to_do and sends no save', async (s) => {
+    const result = await applyPort(client(), s)
+    expect(result).toMatchObject({ outcome: 'nothing_to_do', live_version: { version_number: 175 } })
+    expect(puts()).toEqual([])
+    expect(backend.writes).toEqual([])
+    expect(backend.row.definition).toEqual(live())
   })
 })
 
@@ -87,7 +100,7 @@ describe('the rollback, through PUT /api/workflows/:id', () => {
     const applied = await applyPort(client(), stage)
     if (applied.outcome !== 'applied') throw new Error(applied.outcome)
     const result = await rollbackPort(client(), { before: applied.before, after: applied.after })
-    expect(result).toMatchObject({ outcome: 'rolled_back', restored_from: { version_number: 174 }, after: { version_number: 176 } })
+    expect(result).toMatchObject({ outcome: 'rolled_back', restored_from: { version_number: 175 }, after: { version_number: 177 } })
     const [applyPut, rollbackPut] = puts()
     expect(rollbackPut.body?.expected_version).toBe(2311)
     expect(rollbackPut.body?.save_id).toMatch(UUID)
