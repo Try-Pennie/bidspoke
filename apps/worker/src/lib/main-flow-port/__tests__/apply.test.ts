@@ -9,7 +9,7 @@
  * a real version history, and can save "from the canvas" between any two calls.
  */
 import { describe, expect, it } from 'vitest'
-import { accessTokenFromCookies, applyPort, httpWorkflowApi, previewPort, rollbackPort, type WorkflowApi } from '../apply'
+import { accessTokenFromCookies, applyPort, httpWorkflowApi, previewPort, rollbackPort, type SaveAnswer, type SaveRequest, type WorkflowApi } from '../apply'
 import { MainFlowPortRefusal, MAIN_FLOW_WORKFLOW_ID, portMainFlow, PORT_STAGES } from '../transform'
 import { productionMainFlow } from './production-fixture'
 
@@ -18,7 +18,9 @@ interface Version { id: string; version_number: number; definition: unknown }
 class FakeApi implements WorkflowApi {
   versions: Version[] = []
   updatedAt = '2026-10-15T00:00:00Z'
-  puts: Array<{ definition: unknown; message: string }> = []
+  /** The workflows.version column, which moves on every save and is not a snapshot's number. */
+  rowVersion = 40
+  puts: SaveRequest[] = []
   deployErrors: Array<{ namespace: string; error: string }> | undefined
 
   constructor(definition: unknown) {
@@ -29,11 +31,12 @@ class FakeApi implements WorkflowApi {
     const n = this.versions.length + 1
     this.versions.push({ id: `v-${n}`, version_number: n, definition: structuredClone(definition) })
     this.updatedAt = `2026-10-15T00:00:${String(n).padStart(2, '0')}Z`
+    this.rowVersion += 1
   }
 
   async getWorkflow(id: string) {
     expect(id).toBe(MAIN_FLOW_WORKFLOW_ID)
-    return { definition: structuredClone(this.versions.at(-1)!.definition), updated_at: this.updatedAt }
+    return { definition: structuredClone(this.versions.at(-1)!.definition), updated_at: this.updatedAt, version: this.rowVersion }
   }
   async listVersions() {
     return [...this.versions].reverse().map(({ id, version_number }) => ({ id, version_number }))
@@ -43,10 +46,12 @@ class FakeApi implements WorkflowApi {
     if (!v) throw new Error(`no version ${versionId}`)
     return { definition: structuredClone(v.definition), version_number: v.version_number }
   }
-  async putDefinition(_id: string, definition: unknown, message: string): ReturnType<WorkflowApi['putDefinition']> {
-    this.puts.push({ definition, message })
-    this.save(definition)
-    return { version_id: this.versions.at(-1)!.id, deploy_errors: this.deployErrors }
+  /** As the route answers since #1947: a save made from a row version no longer stored writes nothing. */
+  async putDefinition(_id: string, save: SaveRequest): Promise<SaveAnswer> {
+    this.puts.push(save)
+    if (save.expected_version !== this.rowVersion) return { kind: 'stale', current_version: this.rowVersion, changed_by_name: 'Bob', changed_at: this.updatedAt }
+    this.save(save.definition)
+    return { kind: 'saved', version_id: this.versions.at(-1)!.id, deploy_errors: this.deployErrors }
   }
 }
 
@@ -116,6 +121,30 @@ describe('applyPort', () => {
     expect(result).toMatchObject({ outcome: 'applied_with_deploy_errors', deploy_errors: api.deployErrors, before: { version_id: 'v-1' } })
   })
 
+  it('names the version it re-read just before the PUT and a fresh save id on every PUT', async () => {
+    const api = new FakeApi(productionMainFlow())
+    const applied = await applyPort(api, stage)
+    if (applied.outcome !== 'applied') throw new Error(applied.outcome)
+    await rollbackPort(api, { before: applied.before, after: applied.after })
+    expect(api.puts.map((p) => p.expected_version)).toEqual([41, 42])
+    const ids = api.puts.map((p) => p.save_id)
+    for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(new Set(ids).size).toBe(2)
+  })
+
+  it('answers refused_live_changed, never a throw, when the route refuses the save as stale', async () => {
+    const api = new FakeApi(productionMainFlow())
+    const put = api.putDefinition.bind(api)
+    api.putDefinition = async (...args) => {
+      // A canvas save lands after the re-read, as the PUT reaches the route.
+      api.save(productionMainFlow())
+      return put(...args)
+    }
+    const result = await applyPort(api, stage)
+    expect(result).toMatchObject({ outcome: 'refused_live_changed', read: { version_number: 1 } })
+    expect((result as { reason: string }).reason).toMatch(/refused it as stale: the workflow's row version is 42, not 41, saved by Bob.*nothing was written/)
+  })
+
   it('reports a save that landed between its PUT and the read back instead of claiming success', async () => {
     const api = new FakeApi(productionMainFlow())
     const put = api.putDefinition.bind(api)
@@ -138,7 +167,7 @@ describe('a save the apply cannot pin to its own version', () => {
       await put(...args)
       // A canvas save lands straight after, and the PUT's answer names no version.
       api.save(productionMainFlow())
-      return {}
+      return { kind: 'saved' }
     }
     const result = await applyPort(api, stage)
     expect(result).toMatchObject({ outcome: 'stored_differs', after: null })
@@ -150,7 +179,7 @@ describe('a save the apply cannot pin to its own version', () => {
     const applied = await applyPort(api, stage)
     if (applied.outcome !== 'applied') throw new Error(applied.outcome)
     const put = api.putDefinition.bind(api)
-    api.putDefinition = async (...args) => { await put(...args); return { version_id: 'v-unlisted' } }
+    api.putDefinition = async (...args) => { await put(...args); return { kind: 'saved', version_id: 'v-unlisted' } }
     const result = await rollbackPort(api, { before: applied.before, after: applied.after })
     expect(result).toMatchObject({ outcome: 'stored_differs', after: null })
   })
@@ -217,13 +246,26 @@ describe('httpWorkflowApi', () => {
     const api = httpWorkflowApi('https://worker.example.test/', 'jwt-token', fetchFn)
     await api.getWorkflow('wf-1')
     expect(await api.listVersions('wf-1')).toEqual([{ id: 'v-9', version_number: 9 }])
-    const err = await api.putDefinition('wf-1', { nodes: [] }, 'm').then(() => null, (e: Error) => e)
+    const err = await api.putDefinition('wf-1', { definition: { nodes: [] }, message: 'm', expected_version: 3, save_id: '0b6f2a3e-8c1d-4e5f-9a7b-1c2d3e4f5a6b' }).then(() => null, (e: Error) => e)
     expect(err?.message).toMatch(/PUT .*wf-1 answered 400.*Workflow has a loop/)
     expect(seen).toEqual([
       ['GET', 'https://worker.example.test/api/workflows/wf-1', 'Bearer jwt-token'],
       ['GET', 'https://worker.example.test/api/workflows/wf-1/versions', 'Bearer jwt-token'],
       ['PUT', 'https://worker.example.test/api/workflows/wf-1', 'Bearer jwt-token'],
     ])
+  })
+
+  const save = { definition: { nodes: [] }, message: 'm', expected_version: 3, save_id: '0b6f2a3e-8c1d-4e5f-9a7b-1c2d3e4f5a6b' }
+  const answering = (status: number, body: unknown) => httpWorkflowApi('https://worker.example.test', 'jwt-token', async () => new Response(JSON.stringify(body), { status }))
+
+  it('answers the route\'s 409 stale_version as a stale save, naming the version stored and who saved it', async () => {
+    const api = answering(409, { code: 'stale_version', error: 'Not saved.', current: { version: 4 }, changed_by_name: 'Bob', changed_at: '2026-10-26T15:00:00Z' })
+    expect(await api.putDefinition('wf-1', save)).toEqual({ kind: 'stale', current_version: 4, changed_by_name: 'Bob', changed_at: '2026-10-26T15:00:00Z' })
+  })
+
+  it('still throws on any other 409, and on the 428 a save naming no version gets', async () => {
+    expect((await answering(409, { error: 'conflict' }).putDefinition('wf-1', save).then(() => null, (e: Error) => e))?.message).toMatch(/answered 409/)
+    expect((await answering(428, { code: 'reload_required' }).putDefinition('wf-1', save).then(() => null, (e: Error) => e))?.message).toMatch(/answered 428/)
   })
 })
 

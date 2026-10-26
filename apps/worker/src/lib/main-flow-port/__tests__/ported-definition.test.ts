@@ -202,7 +202,8 @@ describe('the ported definition is one the save route and the engine accept', ()
     expect(naming.map((n) => n.namespace)).toEqual([])
   })
 
-  it('passes the save route: no loop, no malformed Salesforce write option', () => {
+  // The definition rules alone; save-route-contract.test.ts sends each stage through the real route (#2174).
+  it('passes the save route\'s definition rules: no loop, no malformed Salesforce write option', () => {
     expect(findWorkflowCycle(ported.nodes, ported.edges)).toBeNull()
     expect(findSalesforceConfigProblems(ported.nodes)).toEqual([])
   })
