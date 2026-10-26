@@ -128,21 +128,22 @@ export interface ExecutionContext {
    */
   afterAnswer?: boolean
   /**
-   * Set by the walk around a post-answer Salesforce update (#2022): the node
+   * Set around a post-answer Salesforce update (#2022) on that step's own view of
+   * the context (engine/step-watch.ts, #2832), never on the run's: the node
    * reports the request it is about to send, and again if it changes the body,
    * so a write still out after 2 s can be recorded for the read-back.
    */
   noteSalesforceRequest?: (req: import('./engine/at-risk-writes').SalesforceRequestNote) => void
   /**
-   * Set by the walk beside it, around a credit inquiry post (#2172): records the
-   * post at once, and the node waits for it before sending, so an isolate
-   * cancelled mid call still leaves the record.
+   * Set beside it, around a credit inquiry post (#2172), on the step's own view of
+   * the context (#2832): records the post at once, and the node waits for it
+   * before sending, so an isolate cancelled mid call still leaves the record.
    */
   recordSalesforceRequest?: (req: import('./engine/at-risk-writes').SalesforceRequestNote) => Promise<void>
   /**
-   * This write's marker (#2023), set by the walk around a post-answer Salesforce
-   * update for that step only, and stamped by the node on the objects that have
-   * the field (engine/write-marker.ts). Absent before the answer.
+   * This write's marker (#2023), set around a post-answer Salesforce update on
+   * that step's own view of the context (#2832), and stamped by the node on the
+   * objects that have the field (engine/write-marker.ts). Absent before the answer.
    */
   writeMarker?: string
   /**

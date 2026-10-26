@@ -1803,7 +1803,7 @@ export async function walkGraph(
       let errorType: ErrorType = null
       let parallelSuppressAlert = false
 
-      // Slot handle ids parallel to resolvedChildren — needed when wait_for='specific',
+      // Slot handle ids parallel to resolvedChildren: needed when wait_for='specific',
       // and to find the slots marked on_failure: 'continue' (#2832).
       const slotHandleIds = slotChildren.length > 0
         ? slotEdges.map((e) => e.source_handle ?? '')
