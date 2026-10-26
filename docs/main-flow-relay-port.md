@@ -127,7 +127,13 @@ version 172 (#2173), after an earlier apply (version 170) and its rollback
    add and remove, and the live version it read, and changes nothing.
 4. Print and run `apply` the same way. It reads the live definition, runs the
    transform on it, re-reads immediately before the PUT and refuses if anything
-   moved, then PUTs and reads back. It answers `applied` with `before` and
+   moved, then PUTs and reads back. The PUT names what the save route requires
+   of every definition save since #2599: `expected_version`, the workflow row's
+   `version` from that re-read (not the snapshot's version number), and a fresh
+   `save_id` UUID. A save landing after the re-read makes the route answer 409
+   `stale_version`, which the apply reports as `refused_live_changed` with nothing
+   written. A PUT naming neither is refused 428 `reload_required`, which is what
+   the script sent before #2174. It answers `applied` with `before` and
    `after`, the versions either side. **Save that answer**: it is the rollback
    record. Any other outcome says what it found instead
    (`refused_live_changed`, `applied_with_deploy_errors`, `stored_differs`).
@@ -155,6 +161,7 @@ version 172 (#2173), after an earlier apply (version 170) and its rollback
 To roll back, save the apply's answer as a file and print
 `npx tsx scripts/main-flow-port-tab.ts rollback <file> <worker url>`, then run it
 in the tab. It re-PUTs the version read before the change under the same check,
+naming the row version of its own re-read and a fresh `save_id`,
 and refuses when the canvas has been saved since the port, because re-PUTting
 then would discard that save too. Rehearse one rollback before the first canary.
 
@@ -323,7 +330,9 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
   after the answer on the `trades_present` route is followed by the Apex call;
   the worst case from each answer to its Apex call fits 12 s by the engine's own
   retry rules; every `success_node_namespaces` entry exists; neither relay is
-  named; the save route's checks pass.
+  named; the save route's definition rules pass (no loop, no malformed
+  Salesforce write option). The route itself is driven by
+  `save-route-contract.test.ts`.
 - `relay-parity.test.ts`: for each post, the native PATCH equals what the relay
   wrote from what the webhook posted, through the engine's real executors, over
   inputs whose key sets and value types were measured from production.
@@ -333,7 +342,13 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
   and the ported `send_salesforce` walked by the real engine through every
   Salesforce answer, each failure ending as the invalid state write's does.
 - `apply.test.ts` and `tab-bundle.test.ts`: the version checks, the read back,
-  the rollback, and the built tab script run against a stand in tab.
+  the rollback, and the built tab script run in a stand in tab whose fetch
+  reaches the worker's real workflow routes.
+- `save-route-contract.test.ts`: the apply and the rollback sent through the real
+  `PUT /api/workflows/:id` (jwt auth and every check it makes of a live
+  workflow), over a stand in database whose `write_workflow` refuses a stale
+  version as the function does; each stage still to apply is accepted, and a
+  save landing between the re-read and the PUT is `refused_live_changed`.
 
 The money gate answers the native Submission PATCH (`salesforce_submission_update`)
 and the Apex call (`salesforce_credit_inquiries`), each with a failing answer,

@@ -2,16 +2,21 @@
  * Applies a Main Flow port stage to the live workflow, and rolls one back
  * (#2171, #1680 plan points 11 and 12).
  *
- * `PUT /api/workflows/:id` overwrites the whole definition and checks no
- * version, so a definition built from an older read would silently undo any
- * canvas save made since. So the apply:
+ * `PUT /api/workflows/:id` overwrites the whole definition. Since #1947 and
+ * #2599 it requires a save of a definition to name the version it was made from
+ * (`expected_version`, the workflows.version column) and its press (`save_id`, a
+ * UUID), answering 428 `reload_required` to a save naming neither and 409
+ * `stale_version` to one whose version is no longer stored. So the apply:
  *
- *  1. reads the live definition and its newest version;
+ *  1. reads the live definition, the row's version and its newest snapshot;
  *  2. runs the transform on THAT (a canvas edit to a part it rewrites makes the
  *     transform refuse, by name, and nothing is sent);
- *  3. re-reads both immediately before the PUT and refuses when either moved;
- *  4. PUTs, then reads back: the stored definition must be the one sent and the
- *     newest version the one the PUT made, or it says what it found instead.
+ *  3. re-reads all three immediately before the PUT and refuses when any moved;
+ *  4. PUTs naming the row version of that re-read and a fresh save id, so a
+ *     save landing after the re-read is refused by the route itself, which it
+ *     answers as `refused_live_changed` like step 3;
+ *  5. reads back: the stored definition must be the one sent and the newest
+ *     version the one the PUT made, or it says what it found instead.
  *
  * It returns the versions before and after, which is the rollback record.
  * Rollback re-PUTs the version read before the change under the same check, and
@@ -26,34 +31,82 @@ import { MAIN_FLOW_WORKFLOW_ID, PORT_STAGES, portMainFlow, portStatus, sameJson,
 
 export interface VersionRef { version_id: string; version_number: number }
 
+/**
+ * The body of one save, keyed exactly as `PUT /api/workflows/:id` reads it.
+ * `expected_version` is the workflows.version column the save was made from
+ * (never a snapshot's version_number); `save_id` is a UUID naming this one press.
+ */
+export interface SaveRequest { definition: unknown; message: string; expected_version: number; save_id: string }
+
+export type SaveAnswer =
+  | { kind: 'saved'; version_id?: string; deploy_errors?: Array<{ namespace: string; error: string }>; no_changes?: boolean }
+  /** The route's 409 stale_version: the row moved past `expected_version`, and nothing was written. */
+  | { kind: 'stale'; current_version: number | null; changed_by_name: string | null; changed_at: string | null }
+
 export interface WorkflowApi {
-  getWorkflow(id: string): Promise<{ definition: unknown; updated_at: string }>
+  /** `version` is the workflows.version column a save names as its expected_version. */
+  getWorkflow(id: string): Promise<{ definition: unknown; updated_at: string; version: number }>
   /** Newest first, as the route lists them. */
   listVersions(id: string): Promise<Array<{ id: string; version_number: number }>>
   getVersion(id: string, versionId: string): Promise<{ definition: unknown; version_number: number }>
-  putDefinition(id: string, definition: unknown, message: string): Promise<{ version_id?: string; deploy_errors?: Array<{ namespace: string; error: string }>; no_changes?: boolean }>
+  putDefinition(id: string, save: SaveRequest): Promise<SaveAnswer>
 }
 
 type FetchLike = (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<Response>
 
-/** The workflow routes over HTTP, as the signed in user. Any non 2xx throws with the route, the status and the answer. */
+interface ConflictBody { code?: unknown; current?: { version?: unknown } | null; changed_by_name?: unknown; changed_at?: unknown }
+
+/** A 409's body, or null when it is not a JSON object, which is then thrown as any other non 2xx. */
+function staleAnswerOf(text: string): ConflictBody | null {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The workflow routes over HTTP, as the signed in user. Any non 2xx throws with
+ * the route, the status and the answer, except the save route's 409
+ * stale_version, which is an answer the apply reports by name.
+ */
 export function httpWorkflowApi(workerUrl: string, accessToken: string, fetchFn: FetchLike): WorkflowApi {
   const base = workerUrl.replace(/\/+$/, '')
-  const call = async (method: string, path: string, body?: unknown): Promise<unknown> => {
+  const send = async (method: string, path: string, body?: unknown): Promise<{ url: string; status: number; ok: boolean; text: string }> => {
     const url = `${base}${path}`
     const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}` }
     if (body !== undefined) headers['Content-Type'] = 'application/json'
     const res = await fetchFn(url, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) })
-    const text = await res.text()
-    if (!res.ok) throw new Error(`${method} ${url} answered ${res.status}: ${text.slice(0, 300)}`)
+    return { url, status: res.status, ok: res.ok, text: await res.text() }
+  }
+  const call = async (method: string, path: string, body?: unknown): Promise<unknown> => {
+    const { url, status, ok, text } = await send(method, path, body)
+    if (!ok) throw new Error(`${method} ${url} answered ${status}: ${text.slice(0, 300)}`)
     return JSON.parse(text) as unknown
   }
   return {
-    getWorkflow: async (id) => (await call('GET', `/api/workflows/${id}`)) as { definition: unknown; updated_at: string },
+    getWorkflow: async (id) => (await call('GET', `/api/workflows/${id}`)) as { definition: unknown; updated_at: string; version: number },
     listVersions: async (id) => (await call('GET', `/api/workflows/${id}/versions`)) as Array<{ id: string; version_number: number }>,
     getVersion: async (id, versionId) => (await call('GET', `/api/workflows/${id}/versions/${versionId}`)) as { definition: unknown; version_number: number },
-    putDefinition: async (id, definition, message) =>
-      (await call('PUT', `/api/workflows/${id}`, { definition, message })) as { version_id?: string; deploy_errors?: Array<{ namespace: string; error: string }>; no_changes?: boolean },
+    putDefinition: async (id, save) => {
+      const { url, status, ok, text } = await send('PUT', `/api/workflows/${id}`, save)
+      if (status === 409) {
+        const answer = staleAnswerOf(text)
+        if (answer?.code === 'stale_version') {
+          const current = answer.current?.version
+          return {
+            kind: 'stale',
+            current_version: typeof current === 'number' ? current : null,
+            changed_by_name: typeof answer.changed_by_name === 'string' ? answer.changed_by_name : null,
+            changed_at: typeof answer.changed_at === 'string' ? answer.changed_at : null,
+          }
+        }
+      }
+      if (!ok) throw new Error(`PUT ${url} answered ${status}: ${text.slice(0, 300)}`)
+      const saved = JSON.parse(text) as { version_id?: string; deploy_errors?: Array<{ namespace: string; error: string }>; no_changes?: boolean }
+      return { kind: 'saved', version_id: saved.version_id, deploy_errors: saved.deploy_errors, no_changes: saved.no_changes }
+    },
   }
 }
 
@@ -97,18 +150,27 @@ export function accessTokenFromCookies(cookie: string): string | null {
   }
 }
 
-interface LiveRead { definition: unknown; updated_at: string; version: VersionRef }
+/**
+ * `row_version` is the workflows.version column, which a save names as its
+ * expected_version; `version` is the newest snapshot, which the rollback
+ * record names.
+ */
+interface LiveRead { definition: unknown; updated_at: string; row_version: number; version: VersionRef }
 
 async function readLive(api: WorkflowApi): Promise<LiveRead> {
   const wf = await api.getWorkflow(MAIN_FLOW_WORKFLOW_ID)
+  if (typeof wf.version !== 'number' || !Number.isInteger(wf.version) || wf.version < 0) {
+    throw new Error(`the workflow read carries no version (it answered ${JSON.stringify(wf.version)}), so a save cannot name the version it was made from; nothing was sent`)
+  }
   const [newest] = await api.listVersions(MAIN_FLOW_WORKFLOW_ID)
   if (!newest) throw new Error('Main Flow has no saved version to build on')
-  return { definition: wf.definition, updated_at: wf.updated_at, version: { version_id: newest.id, version_number: newest.version_number } }
+  return { definition: wf.definition, updated_at: wf.updated_at, row_version: wf.version, version: { version_id: newest.id, version_number: newest.version_number } }
 }
 
 /** Why `now` is not the state `read` saw, or null when nothing moved. */
 function movedSince(read: LiveRead, now: LiveRead): string | null {
   if (now.version.version_id !== read.version.version_id) return `the newest version is now ${now.version.version_number}, not ${read.version.version_number}`
+  if (now.row_version !== read.row_version) return `the workflow's row version is now ${now.row_version}, not ${read.row_version}`
   if (now.updated_at !== read.updated_at) return `the workflow was saved at ${now.updated_at}, after the read at ${read.updated_at}`
   if (!sameJson(now.definition, read.definition)) return 'the live definition differs from the one read'
   return null
@@ -152,6 +214,21 @@ const versionAfterPut = async (api: WorkflowApi, versionId: string | undefined):
 const unpinned = (versionId: string | undefined) =>
   versionId ? `the save answered version id ${versionId}, which the version list does not hold` : 'the save answered no version id'
 
+/**
+ * The save of `definition` made from `from`, the read made immediately before
+ * the PUT: its row version, and a fresh press, so the route refuses it as stale
+ * if anything was saved after that read.
+ */
+const saveFrom = (from: LiveRead, definition: unknown, message: string): SaveRequest => ({
+  definition,
+  message,
+  expected_version: from.row_version,
+  save_id: crypto.randomUUID(),
+})
+
+const staleReason = (answer: Extract<SaveAnswer, { kind: 'stale' }>, expected: number) =>
+  `the save route refused it as stale: the workflow's row version is ${answer.current_version ?? 'unknown'}, not ${expected}, saved by ${answer.changed_by_name ?? 'someone'} at ${answer.changed_at ?? 'an unknown time'}; nothing was written`
+
 export async function applyPort(api: WorkflowApi, stage: PortStage): Promise<ApplyResult> {
   const read = await readLive(api)
   const ported = portMainFlow(read.definition, PORT_STAGES[stage])
@@ -161,7 +238,9 @@ export async function applyPort(api: WorkflowApi, stage: PortStage): Promise<App
   const moved = movedSince(read, now)
   if (moved) return { outcome: 'refused_live_changed', stage, read: read.version, reason: `${moved}; nothing was sent, run the apply again` }
 
-  const put = await api.putDefinition(MAIN_FLOW_WORKFLOW_ID, ported, `#1680 relay port, stage ${stage}, built from version ${read.version.version_number}`)
+  const save = saveFrom(now, ported, `#1680 relay port, stage ${stage}, built from version ${read.version.version_number}`)
+  const put = await api.putDefinition(MAIN_FLOW_WORKFLOW_ID, save)
+  if (put.kind === 'stale') return { outcome: 'refused_live_changed', stage, read: read.version, reason: `${staleReason(put, save.expected_version)}, run the apply again` }
   if (put.no_changes) throw new Error('the save route answered no_changes for a definition that differs from the live one')
   const after = await versionAfterPut(api, put.version_id)
   const stored = await readLive(api)
@@ -197,7 +276,9 @@ export async function rollbackPort(api: WorkflowApi, record: { before: VersionRe
   const moved = movedSince(read, now)
   if (moved) return { outcome: 'refused_live_changed', reason: `${moved}; nothing was sent` }
 
-  const put = await api.putDefinition(MAIN_FLOW_WORKFLOW_ID, restore.definition, `#1680 relay port rollback to version ${record.before.version_number}`)
+  const save = saveFrom(now, restore.definition, `#1680 relay port rollback to version ${record.before.version_number}`)
+  const put = await api.putDefinition(MAIN_FLOW_WORKFLOW_ID, save)
+  if (put.kind === 'stale') return { outcome: 'refused_live_changed', reason: staleReason(put, save.expected_version) }
   const after = await versionAfterPut(api, put.version_id)
   const stored = await readLive(api)
   if (after === null) {
