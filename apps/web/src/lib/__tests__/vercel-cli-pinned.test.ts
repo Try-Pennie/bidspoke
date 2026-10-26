@@ -109,9 +109,14 @@ function adapterRange(): { range: string; low: string; high: string } {
 
 const DEPENDABOT = path.join(REPO_ROOT, '.github/dependabot.yml')
 
-/** The single version range a Dependabot config ignores for vercel, if any. */
+/**
+ * The version range a Dependabot config's npm entry ignores for vercel, if any.
+ * Only the npm entry offers vercel updates, so an ignore under another entry
+ * does not count.
+ */
 function dependabotVercelIgnore(config: string): string | undefined {
-  return /-\s*dependency-name:\s*vercel\s*\n\s*versions:\s*\[\s*["']([^"']+)["']\s*\]/.exec(config)?.[1]
+  const npm = config.split(/^\s*-\s*package-ecosystem:/m).find((entry) => /^\s*npm\s*$/m.test(entry.split('\n')[0]))
+  return npm && /-\s*dependency-name:\s*vercel\s*\n\s*versions:\s*\[\s*["']([^"']+)["']\s*\]/.exec(npm)?.[1]
 }
 
 describe('the Vercel CLI used by pages:build is pinned (#1064)', () => {
@@ -150,9 +155,12 @@ describe('the Vercel CLI used by pages:build is pinned (#1064)', () => {
   })
 
   it('reads the vercel ignore from a Dependabot config', () => {
-    const config = ['    ignore:', '      - dependency-name: vercel', '        versions: [">47.0.4"]'].join('\n')
-    expect(dependabotVercelIgnore(config)).toBe('>47.0.4')
-    expect(dependabotVercelIgnore('    ignore:\n      - dependency-name: next\n        versions: [">15"]')).toBeUndefined()
+    const entry = (ecosystem: string, dependency: string) =>
+      [`  - package-ecosystem: ${ecosystem}`, '    ignore:', `      - dependency-name: ${dependency}`, '        versions: [">47.0.4"]'].join('\n')
+    expect(dependabotVercelIgnore(['updates:', entry('npm', 'vercel'), entry('github-actions', 'x')].join('\n'))).toBe('>47.0.4')
+    expect(dependabotVercelIgnore(['updates:', entry('npm', 'next')].join('\n'))).toBeUndefined()
+    // An ignore under another ecosystem's entry does not stop the npm one.
+    expect(dependabotVercelIgnore(['updates:', entry('npm', 'next'), entry('github-actions', 'vercel')].join('\n'))).toBeUndefined()
   })
 
   it('runs on a pnpm whose `pnpm list` output next-on-pages can read', () => {
