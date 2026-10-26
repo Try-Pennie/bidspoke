@@ -131,11 +131,11 @@
  * Submission by when each write ARRIVED rather than when its run started, is
  * not done here: it needs each run's send time, which the stamp does not carry.
  *
- * REMOVING IT. It ends with the canary: the phase 6 pull request (#2175, which
- * moves the other seven posts and so leaves no relay to compare against) deletes
- * this file, its test, its CRON_JOBS entry and its block in index.ts. The steps
- * are in docs/main-flow-relay-port.md. Until then, a day on which no other post
- * went through the relay says so.
+ * REMOVING IT. Both subjects end with the canaries: the phase 6 pull request
+ * (#2175, which moves the other seven posts and so leaves no relay to compare
+ * against) deletes this file, its three tests, both CRON_JOBS entries and both
+ * blocks in index.ts. The steps are in docs/main-flow-relay-port.md. Until then,
+ * a day on which no other post went through the relay says so.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
@@ -412,6 +412,13 @@ export interface CanaryWatchDeps {
    * throws, counts as yes.
    */
   anyDirect?: (fromIso: string, toIso: string) => Promise<boolean>
+  /**
+   * Whether this subject's check has ever posted a day (a job run other than
+   * not_switched_on), asked only when neither of the two above says yes. Once it
+   * has, it never goes quiet again: a canary rolled back keeps saying so every
+   * day, as the first one always did. Absent, or a read that throws, counts as yes.
+   */
+  reportedBefore?: () => Promise<boolean>
   /** Main Flow's Salesforce, as one read: `path` below `/services/data/v60.0`. Throws when its settings cannot be loaded. */
   salesforce: () => Promise<(path: string) => Promise<SalesforceRead>>
   /** Posts the message. True when Slack took it. */
@@ -1227,25 +1234,27 @@ function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWat
 /**
  * Whether the day is to be read at all (#2174): yes when the live Main Flow
  * holds the subject's port, or when any of its posts went direct in the window
- * (the port undone since is a rollback the message must say, #2312). A read
- * that fails counts as yes, so a day is reported rather than silenced. Never
- * throws.
+ * (the port undone since is a rollback the message must say, #2312), or when
+ * this check has ever posted a day (so a canary rolled back is said every day,
+ * never silenced). Only a subject never switched on stays quiet. A read that
+ * fails counts as yes, so a day is reported rather than silenced. Never throws.
  */
 async function switchedOn(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from: string, to: string): Promise<boolean> {
-  if (!deps.livePorted) return true
-  try {
-    if (await deps.livePorted()) return true
-  } catch (e) {
-    console.error(`[${subject.job}] could not read whether Main Flow holds the port, so the day is read:`, formatErr(e))
-    return true
+  const asks: Array<[string, (() => Promise<boolean>) | undefined]> = [
+    ['whether Main Flow holds the port', deps.livePorted],
+    ['whether any post went direct', deps.anyDirect && (() => deps.anyDirect!(from, to))],
+    ['whether this check has posted a day before', deps.reportedBefore],
+  ]
+  for (const [what, ask] of asks) {
+    if (!ask) return true
+    try {
+      if (await ask()) return true
+    } catch (e) {
+      console.error(`[${subject.job}] could not read ${what}, so the day is read:`, formatErr(e))
+      return true
+    }
   }
-  if (!deps.anyDirect) return true
-  try {
-    return await deps.anyDirect(from, to)
-  } catch (e) {
-    console.error(`[${subject.job}] could not read whether any post went direct, so the day is read:`, formatErr(e))
-    return true
-  }
+  return false
 }
 
 /** One subject's day, end to end. NEVER THROWS: its caller is a waitUntil, where a rejection reaches nobody (L71). */
@@ -1394,6 +1403,12 @@ export async function runCanaryWatchForEnv(subject: CanaryWatchSubject, supabase
         .not('is_test', 'is', true)
         .limit(1)
       if (error) throw new Error(`execution_steps read failed: ${error.message}`)
+      return (data ?? []).length > 0
+    },
+    reportedBefore: async () => {
+      // job_runs is this job's own daily record, one row a day; one row answers it.
+      const { data, error } = await supabase.from('job_runs').select('id').eq('job', subject.job).neq('outcome', 'not_switched_on').limit(1)
+      if (error) throw new Error(`job_runs read failed: ${error.message}`)
       return (data ?? []).length > 0
     },
     readSteps: (from, to) => readWatchedSteps(supabase, subject.step, from, to, subject.maxSteps),

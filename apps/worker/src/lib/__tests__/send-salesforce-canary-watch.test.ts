@@ -172,12 +172,34 @@ describe('the two subjects', () => {
 
 describe('before the stage is applied', () => {
   it('posts nothing and records the day as not switched on, when Main Flow does not hold the port and nothing went direct', async () => {
-    const { d, posted, recorded, windows } = deps({ livePorted: async () => false, anyDirect: async () => false, steps: [relayStep(1)] })
+    const { d, posted, recorded, windows } = deps({ livePorted: async () => false, anyDirect: async () => false, reportedBefore: async () => false, steps: [relayStep(1)] })
     const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
     expect(report.notSwitchedOn).toBe(true)
     expect(posted).toEqual([])
     expect(windows).toEqual([])
     expect(recorded.map((r) => r.outcome)).toEqual(['not_switched_on'])
+  })
+
+  it('once the check has reported a day, a later day with neither the port nor a direct write still reports, so a rollback is never silenced', async () => {
+    const { d, posted, recorded } = deps({ livePorted: async () => false, anyDirect: async () => false, reportedBefore: async () => true, steps: [relayStep(1), relayStep(2)] })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.notSwitchedOn).toBeUndefined()
+    expect(posted).toHaveLength(1)
+    expect(posted[0].alert).toBe(true)
+    expect(posted[0].title).toBe('Direct Send Salesforce writes: Main Flow is not writing directly')
+    expect(recorded[0].outcome).toBe('off_direct_write')
+  })
+
+  it('the live invalid state canary, which has reported every day since Oct 17, keeps alerting after a rollback as before', async () => {
+    const { d, posted } = deps({ livePorted: async () => false, anyDirect: async () => false, reportedBefore: async () => true, steps: [relayStep(1)] })
+    await runCanaryWatch(INVALID_STATE_SUBJECT, d)
+    expect(posted[0].title).toBe('Direct Salesforce writes: Main Flow is not writing directly')
+  })
+
+  it('whether it reported before, when that cannot be read, counts as yes', async () => {
+    const { d, posted } = deps({ livePorted: async () => false, anyDirect: async () => false, reportedBefore: async () => { throw new Error('timeout') }, steps: [] })
+    await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(posted).toHaveLength(1)
   })
 
   it('a direct write in the window reports even when Main Flow no longer holds the port: a canvas save may have undone it (#2312)', async () => {
@@ -304,7 +326,7 @@ describe('reading back a sample of the direct writes', () => {
 })
 
 describe('the invalid state subject is unchanged by the second', () => {
-  it('reads every write, however many, and still checks the Lead', async () => {
+  it('is configured to read every write and check the Lead, where send_salesforce samples and reads no Lead', () => {
     expect(INVALID_STATE_SUBJECT.sampleSize).toBeNull()
     expect(INVALID_STATE_SUBJECT.checksLead).toBe(true)
     expect(SEND_SALESFORCE_SUBJECT.checksLead).toBe(false)

@@ -263,10 +263,13 @@ landed then moved on said apart (#2396). Three things differ:
   The direct reads stop after five minutes and the rest are said as not checked.
   The message says how many were written and how many were checked.
 - Its body sends no Engine ids, so no Lead is read and none is claimed.
-- Until Main Flow holds its port and a direct write has run in the window, it
-  records the day as `not_switched_on` and posts nothing. A direct write in the
-  window reports even when the live definition no longer holds the port,
-  because a canvas save that undid it is a rollback (#2312).
+- Until it is first switched on it records the day as `not_switched_on` and
+  posts nothing: that is a day on which Main Flow does not hold its port, none
+  of its posts went direct, and this check has never posted a day. Any one of
+  the three makes it report. So a direct write in the window reports even when
+  the live definition no longer holds the port, because a canvas save that undid
+  it is a rollback (#2312), and once it has posted a day it never goes quiet
+  again: a rollback is said every morning, as the first canary's always was.
 
 The relay comparison is the same 100 relay posts of the seven unwatched outcome
 posts, so the two messages compare against one figure.
