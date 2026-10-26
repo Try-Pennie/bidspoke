@@ -114,7 +114,8 @@ export interface ExecutionContext {
   lastCompletedNamespace?: string
   /**
    * The step or steps the walk is on right now, by namespace (#1882, #2024). Set
-   * by the walk as it reaches each node, so a run whose work after the answer is
+   * by the walk as it reaches each node, and by a parallel block to the steps its
+   * slots are on while they run (#2832), so a run whose work after the answer is
    * still out at the cut-off can name what it was waiting on, and ask the
    * Salesforce read-back whether it holds each of them.
    */
