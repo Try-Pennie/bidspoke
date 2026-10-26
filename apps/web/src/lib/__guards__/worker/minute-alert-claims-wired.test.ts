@@ -41,6 +41,9 @@ const MINUTE_CLAIMANTS: Record<string, string[]> = {
   // #2523: the failing minute job page, judged as each minute job's run settles
   // inside completeAfter, so two overlapping ticks could both post it.
   'minute-job-failures.ts': ['minuteJobFailingDepsForEnv'],
+  // #2364: the Slack refusal page, judged every minute from slack_post_outcomes,
+  // keyed by organization and minute so a doubled tick pages once.
+  'slack-refusal-watch.ts': ['runSlackRefusalWatchForEnv'],
 }
 
 /**

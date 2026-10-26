@@ -63,6 +63,8 @@ DRILL_STRUCTURE_ONLY_TABLES=(
   oauth_states
   # Every cron delivery and what the guard decided (#2284): seven days of monitor history
   cron_tick_deliveries
+  # Every Slack post and how it went (#2364): seven days of monitor history
+  slack_post_outcomes
   # The field presence rollup watermark (#1150): one timestamp. After a restore
   # the table is empty, the 15 minute incremental pass refuses loudly, and the
   # next reconcile (the hourly recent job, within the hour) upserts the row and

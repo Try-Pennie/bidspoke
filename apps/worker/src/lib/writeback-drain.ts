@@ -53,7 +53,9 @@
  * the row's organization has no Slack connection. When the database is down and
  * no saved Slack copy stands in, the Better Stack line (nobody-told-page.ts)
  * already speaks; when Slack refuses every post of every organization, nothing in
- * Slack can be heard, and the alerts wait in the outbox until it takes them.
+ * Slack can be heard, the Slack refusal page (slack-refusal-watch.ts, #2364)
+ * speaks through Better Stack instead, and the alerts wait in the outbox until
+ * Slack takes them.
  *
  * The table has never held a row in production (0 inserts at 2026-10-16), so
  * every behaviour here is proven by tests on built rows.

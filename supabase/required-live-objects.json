@@ -519,6 +519,30 @@
     "note": "The cron delivery record's retention (#2284): run daily by the purge-cron-tick-deliveries pg_cron job, deleting cron_tick_deliveries rows over 7 days old. A DELETE, revoked from anon and authenticated, so anon must be denied. It takes no arguments, so an empty body names it."
   },
   {
+    "name": "purge_slack_post_outcomes",
+    "args": {},
+    "anon": "denied",
+    "note": "The Slack post record's retention (#2364): run daily by the purge-slack-post-outcomes pg_cron job, deleting slack_post_outcomes rows over 7 days old. A DELETE, revoked from anon and authenticated, so anon must be denied. It takes no arguments, so an empty body names it."
+  },
+  {
+    "name": "slack_refusal_runs",
+    "args": {
+      "p_since": "2026-01-01T00:00:00Z"
+    },
+    "anon": "denied",
+    "note": "Read every minute by the bidding Worker's Slack refusal check (#2364, lib/slack-refusal-watch.ts) as service_role. If it is missing the check reports itself unmeasured every minute and nobody is paged when Slack refuses alert posts. It names channels and alert titles, so anon must be denied. Probed with p_since because an empty body returns PGRST202, which is indistinguishable from the function being absent."
+  },
+  {
+    "name": "slack_refusal_summary",
+    "args": {
+      "p_channels": [],
+      "p_from": "2026-01-01T00:00:00Z",
+      "p_to": "2026-01-02T00:00:00Z"
+    },
+    "anon": "denied",
+    "note": "Read by the Slack refusal check for its all clear (#2364): every refusal of an incident's channels by reason and title. If it is missing the all clear is held and the incident never ends. Service role only, so anon must be denied. Probed with every arg because an empty body returns PGRST202, which is indistinguishable from the function being absent."
+  },
+  {
     "name": "db_stall_snapshot",
     "args": {},
     "anon": "denied",

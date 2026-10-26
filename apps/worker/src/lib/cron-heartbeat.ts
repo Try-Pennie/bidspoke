@@ -196,6 +196,22 @@ export const CRON_JOBS: CronJob[] = [
       "nobody is told each morning whether Main Flow's direct invalid state writes to Salesforce landed, so a lost write shows only when somebody opens the record (#2173)",
   },
   {
+    // The second canary's daily read-back (#2174), the same check on
+    // send_salesforce. It runs every day, and until the canary is switched on it
+    // records the day and posts nothing. Removed with the first by the phase 6
+    // change (#2175): see docs/main-flow-relay-port.md.
+    id: 'send-salesforce-canary-watch',
+    label: 'Main Flow Send Salesforce write report',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // A sample of 200 direct writes and 100 relay posts, one Salesforce read
+    // each, one at a time, each half of the reads bounded at 5 minutes.
+    maxRunMs: 30 * MIN,
+    dependents:
+      "nobody is told each morning whether Main Flow's direct Send Salesforce writes landed, so a lost write shows only when somebody opens the record (#2174)",
+  },
+  {
     // Money's Salesforce run as identity, measured for ops verify (#2335).
     id: 'money-identity',
     label: 'Money Salesforce identity measurement',
@@ -305,6 +321,18 @@ export const CRON_JOBS: CronJob[] = [
     maxRunMs: 2 * MIN,
     dependents:
       'partners page live updates stopping goes unreported: a person editing a partner stops seeing another person\'s save appear, and nothing says so (#2135)',
+  },
+  {
+    id: 'partner-live-miss-notice',
+    label: 'Partners page live miss notice',
+    triggerCron: '*/5 * * * *',
+    // 5 minute cadence, 10 minutes slack, matching the other checks on this cron.
+    staleMs: 15 * MIN,
+    // Three bounded reads, then for each of at most 20 misses a claim, a few KV
+    // reads and writes and one Slack post.
+    maxRunMs: 2 * MIN,
+    dependents:
+      'a partners page that missed a live update is no longer reported in Slack: a person editing a partner may be working from a version that changed underneath them, and nobody hears of it (#2220)',
   },
   {
     id: 'buyer-sale-drain',
@@ -454,6 +482,24 @@ export const CRON_JOBS: CronJob[] = [
     completionDroughtMs: 10 * MIN,
     dependents:
       'a LendSwift outage on RML - Bidding Workflow (LendSwift) is never paged, because each failed ping ends as a completed no bid that no other alert counts, and an open one never gets its all clear (#2582)',
+  },
+  {
+    // #2364: the minute check that pages through Better Stack when Slack
+    // refuses alert posts (lib/slack-refusal-watch.ts). Its own entry, so a
+    // dark one names itself; its page and all clear are its own, and a run
+    // that cannot measure or cannot page fails, which the failing job count
+    // pages as well.
+    id: 'slack-refusal-watch',
+    label: 'Slack refusal watch',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack, matching the other minute jobs.
+    staleMs: 10 * MIN,
+    // Two small reads, the Slack connections, then at most one Better Stack
+    // send (5 s) or one all clear per organization: seconds.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'nobody is paged when Slack refuses Bidspoke\'s alert posts, so a bot token that cannot post loses every alert unnoticed, as it did for three days from 2026-10-22 (#2364)',
   },
   {
     id: 'buyer-sales-checks',

@@ -24,6 +24,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { recordAuditLog } from '../../../lib/audit'
 import { BETTER_STACK_ALERT_NAME, NOBODY_TOLD_LINE, NOBODY_TOLD_PAGE_DEADLINE_MS, createNobodyToldPager } from '../../../lib/nobody-told-page'
+import { SLACK_REFUSED_LINE, SLACK_REFUSING_ALERT_NAME } from '../../../lib/slack-refusal-watch'
 import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
@@ -114,17 +115,31 @@ describe('POST /admin/nobody-told-page/drill', () => {
     expect(sent).toEqual([])
   })
 
-  it('sends one drill page with the worker\'s own secrets, carrying the line the alert matches on', async () => {
+  it('sends one drill page for each Better Stack alert with the worker\'s own secrets, each carrying the line its alert matches on', async () => {
     const sent = stubFetch(202)
     const res = await post(env())
     expect(res.status).toBe(200)
-    expect(await res.json()).toStrictEqual({ ok: true, outcome: 'sent', status: 202, alert: BETTER_STACK_ALERT_NAME, audited: true })
-    expect(sent).toHaveLength(1)
-    expect(sent[0].url).toBe(URL_)
-    expect(sent[0].auth).toBe(`Bearer ${TOKEN}`)
-    expect(sent[0].body.message).toBe(NOBODY_TOLD_LINE)
-    expect(sent[0].body.reason).toBe('drill')
-    expect(sent[0].body.organization_id).toBeNull()
+    expect(await res.json()).toStrictEqual({ ok: true, outcome: 'sent', status: 202, alert: BETTER_STACK_ALERT_NAME, slack_refusing: { outcome: 'sent', status: 202, alert: SLACK_REFUSING_ALERT_NAME }, audited: true })
+    expect(sent).toHaveLength(2)
+    expect(sent.every((s) => s.url === URL_ && s.auth === `Bearer ${TOKEN}`)).toBe(true)
+    const nobodyTold = sent.find((s) => s.body.message === NOBODY_TOLD_LINE)!
+    expect(nobodyTold.body.reason).toBe('drill')
+    expect(nobodyTold.body.organization_id).toBeNull()
+    // #2364: the Slack refusal line, so its alert and routing are proven by the same drill.
+    const refusing = sent.find((s) => s.body.message === SLACK_REFUSED_LINE)!
+    expect(refusing.body).toStrictEqual({ message: SLACK_REFUSED_LINE, organization_id: null, kind: 'drill', reason: 'drill', refused: 0, since: refusing.body.dt, dt: refusing.body.dt })
+  })
+
+  it('answers not ok when only the Slack refusal line is refused, so a half working drill never reads as proven', async () => {
+    const sent: Sent[] = []
+    vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>
+      sent.push({ url, body, auth: null })
+      return Promise.resolve(new Response(null, { status: body.message === SLACK_REFUSED_LINE ? 403 : 202 }))
+    })
+    const res = await post(env())
+    expect(res.status).toBe(502)
+    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'sent', status: 202, alert: BETTER_STACK_ALERT_NAME, slack_refusing: { outcome: 'refused', status: 403, alert: SLACK_REFUSING_ALERT_NAME }, audited: true })
   })
 
   it('never reads or writes the IDEMPOTENCY record, so a real outage in the next hour still pages', async () => {
@@ -149,14 +164,14 @@ describe('POST /admin/nobody-told-page/drill', () => {
     stubFetch(401)
     const res = await post(env())
     expect(res.status).toBe(502)
-    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'refused', status: 401, alert: BETTER_STACK_ALERT_NAME, audited: true })
+    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'refused', status: 401, alert: BETTER_STACK_ALERT_NAME, slack_refusing: { outcome: 'refused', status: 401, alert: SLACK_REFUSING_ALERT_NAME }, audited: true })
   })
 
   it('answers threw with the failure when the send throws', async () => {
     stubFetch('throw')
     const res = await post(env())
     expect(res.status).toBe(502)
-    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'threw', error: 'fetch failed', alert: BETTER_STACK_ALERT_NAME, audited: true })
+    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'threw', error: 'fetch failed', alert: BETTER_STACK_ALERT_NAME, slack_refusing: { outcome: 'threw', error: 'fetch failed', alert: SLACK_REFUSING_ALERT_NAME }, audited: true })
   })
 
   it('answers no answer when Better Stack does not answer within the deadline', async () => {
@@ -166,14 +181,14 @@ describe('POST /admin/nobody-told-page/drill', () => {
     await vi.advanceTimersByTimeAsync(NOBODY_TOLD_PAGE_DEADLINE_MS)
     const res = await pending
     expect(res.status).toBe(504)
-    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'no_answer', deadline_ms: NOBODY_TOLD_PAGE_DEADLINE_MS, alert: BETTER_STACK_ALERT_NAME, audited: true })
+    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'no_answer', deadline_ms: NOBODY_TOLD_PAGE_DEADLINE_MS, alert: BETTER_STACK_ALERT_NAME, slack_refusing: { outcome: 'no_answer', deadline_ms: NOBODY_TOLD_PAGE_DEADLINE_MS, alert: SLACK_REFUSING_ALERT_NAME }, audited: true })
   })
 
   it('answers not configured, naming the unset secret and sending nothing', async () => {
     const sent = stubFetch(202)
     const res = await post(env({ BETTERSTACK_OUTAGE_URL: undefined }))
     expect(res.status).toBe(503)
-    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'not_configured', missing: ['BETTERSTACK_OUTAGE_URL'], alert: BETTER_STACK_ALERT_NAME, audited: true })
+    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'not_configured', missing: ['BETTERSTACK_OUTAGE_URL'], alert: BETTER_STACK_ALERT_NAME, slack_refusing: { outcome: 'not_configured', missing: ['BETTERSTACK_OUTAGE_URL'], alert: SLACK_REFUSING_ALERT_NAME }, audited: true })
     expect(sent).toEqual([])
   })
 
@@ -188,7 +203,7 @@ describe('POST /admin/nobody-told-page/drill', () => {
       BETTER_STACK_ALERT_NAME,
       'outage_page_drilled',
       'dan@pennie.com',
-      { outcome: 'refused', status: 401 },
+      { outcome: 'refused', status: 401, slack_refusing: { outcome: 'refused', status: 401 } },
     )
   })
 
@@ -197,12 +212,12 @@ describe('POST /admin/nobody-told-page/drill', () => {
     stubFetch(202)
     const res = await post(env())
     expect(res.status).toBe(200)
-    expect(await res.json()).toStrictEqual({ ok: true, outcome: 'sent', status: 202, alert: BETTER_STACK_ALERT_NAME, audited: false })
+    expect(await res.json()).toStrictEqual({ ok: true, outcome: 'sent', status: 202, alert: BETTER_STACK_ALERT_NAME, slack_refusing: { outcome: 'sent', status: 202, alert: SLACK_REFUSING_ALERT_NAME }, audited: false })
   })
 
   it('audits a drill that sent nothing because a secret is unset', async () => {
     stubFetch(202)
     await post(env({ BETTERSTACK_OUTAGE_TOKEN: undefined, BETTERSTACK_OUTAGE_URL: undefined }))
-    expect(vi.mocked(recordAuditLog).mock.calls[0][6]).toStrictEqual({ outcome: 'not_configured', missing: ['BETTERSTACK_OUTAGE_TOKEN', 'BETTERSTACK_OUTAGE_URL'] })
+    expect(vi.mocked(recordAuditLog).mock.calls[0][6]).toStrictEqual({ outcome: 'not_configured', missing: ['BETTERSTACK_OUTAGE_TOKEN', 'BETTERSTACK_OUTAGE_URL'], slack_refusing: { outcome: 'not_configured', missing: ['BETTERSTACK_OUTAGE_TOKEN', 'BETTERSTACK_OUTAGE_URL'] } })
   })
 })

@@ -32,7 +32,9 @@
  *    `name` when the key is itself readable (a host, a job name, a GitHub
  *    workflow file, a fixed id), and `connection` when it is an ops
  *    connection id (service_connections.id), whose delivering check always
- *    passes the connection's name and service as the incident's label (#2340).
+ *    passes the connection's name and service as the incident's label (#2340),
+ *    and `partner` when it starts with a partner id (partner_configs.id), whose
+ *    delivering check passes the partner's name as the incident's label (#2220).
  *    Required, so a new signal must say.
  *  - `kinds`: for a signal whose one prefix covers several problems or subjects,
  *    what they are.
@@ -57,7 +59,7 @@
  */
 
 export type IncidentScopeKind = 'org' | 'platform'
-export type IncidentSubjectKind = 'workflow' | 'organization' | 'name' | 'connection'
+export type IncidentSubjectKind = 'workflow' | 'organization' | 'name' | 'connection' | 'partner'
 
 /**
  * A marker kept in a check's own state: the key is `${keyPrefix}${subject}${keySuffix}`
@@ -134,6 +136,12 @@ export const INCIDENT_SIGNALS = [
     windowMinutes: null,
     kinds: ['channel', 'monitor'],
   },
+  // #2220. A partners page that missed a live update (partner_page_live_misses,
+  // partner-live-miss-notice.ts). Each miss is a single event, so each is one
+  // incident of its own, keyed `${partnerId}:${missId}` and labelled with the
+  // partner's name: opened when the page saw it, paged once Slack took its
+  // notice, and stood down by design at once. It judges no window.
+  { signal: 'partner-page-live-miss', label: 'Partners page live miss', scope: 'org', subject: 'partner', startMeans: 'When the page saw the miss.', windowMinutes: null },
   { signal: 'pg-cron-watch', label: 'Database job', scope: 'platform', subject: 'name', startMeans: FIRST_PAGE, windowMinutes: null },
   { signal: 'stored-copy-serving', label: 'Stored copy', scope: 'platform', subject: 'name', startMeans: FIRST_SEEN, windowMinutes: 5 },
   { signal: 'workflow-schedule', label: 'Scheduled workflow', scope: 'platform', subject: 'name', startMeans: FIRST_PAGE, windowMinutes: null },
@@ -255,6 +263,22 @@ export const INCIDENT_SIGNALS = [
     subject: 'name',
     startMeans: FIRST_PAGE,
     windowMinutes: null,
+  },
+  // #2364. Slack refusing an organization's alert posts on its default channel:
+  // `destination` (a refusal that pages on the first, the bot cannot post where
+  // it is pointed) or `transient` (5 temporary refusals with no delivered post
+  // between, spanning 5 minutes). One organization's connection, keyed on its
+  // id. It judges a run since the last delivered post, not a window, and the
+  // incident starts at the run's first refusal, before any page. Paged by
+  // slack-refusal-watch.ts through Better Stack, never Slack.
+  {
+    signal: 'slack-post-refused',
+    label: 'Slack refusing alerts',
+    scope: 'org',
+    subject: 'organization',
+    startMeans: FIRST_SEEN,
+    windowMinutes: null,
+    kinds: ['destination', 'transient'],
   },
 ] as const satisfies readonly IncidentSignalEntry[]
 

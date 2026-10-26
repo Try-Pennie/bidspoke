@@ -11,8 +11,8 @@
  * slot every daily report shares; 8 AM ET once clocks go back).
  *
  * WHAT IT READS. Every Main Flow step named `invalid_state_sf_post` in the 24
- * hours ending ten minutes before the run (canaryWatchWindow), so consecutive
- * days tile and a run still writing its steps at 9 AM is read the next day.
+ * hours ending at 12:50 UTC, ten minutes before the batch (canaryWatchWindow),
+ * so consecutive days tile and a run still writing its steps is read the next day.
  * "Ran natively" means the step ran as a Salesforce step, which only version 172
  * and later do. A relay post of that step is counted apart, and what it means
  * depends on WHERE it falls (#2312): before the first direct post it is Main
@@ -88,8 +88,9 @@
  * are unchanged (that needs a snapshot taken before the write, which only the
  * run could take), and Regal's Lead fields. Those are read by hand.
  *
- * THE RELAY COMPARISON (#2313) is what Salesforce SAVED for the eight other
- * outcome posts' relay posts in the same window, read back the same way: a
+ * THE RELAY COMPARISON (#2313) is what Salesforce SAVED for the relay posts of
+ * the outcome posts no subject watches (seven since #2174) in the same window,
+ * read back the same way: a
  * sample of RELAY_SAMPLE_SIZE posts spread evenly over the day (the relay makes
  * about 3,400 a day, so all of them would be thousands of reads), each judged by
  * the relay's own PATCH, the body with `executionId` and `submissionId` dropped
@@ -106,18 +107,44 @@
  * all-clear marker, because the next day's message is the stand down, so it has
  * no INCIDENT_SIGNALS entry.
  *
- * REMOVING IT. It ends with the canary: the phase 6 pull request (#2175, which
- * moves the other seven posts and so leaves no relay to compare against) deletes
- * this file, its test, its CRON_JOBS entry and its block in index.ts. The steps
- * are in docs/main-flow-relay-port.md. Until then, a day on which no other post
- * went through the relay says so.
+ * A SECOND SUBJECT (#2174, the phase 5 canary). The same check runs as its own
+ * job on `send_salesforce`, the busiest outcome post and a JSON text body
+ * (CanaryWatchSubject; one message and one job run each). Three things differ,
+ * each a field of its subject rather than a second copy of the check:
+ *  - it runs about 1,271 times a day, and one Salesforce read took about half a
+ *    second in the first canary's runs (230 reads in 57 to 229 s), so reading
+ *    every write would outrun the morning run. A sample of DIRECT_SAMPLE_SIZE
+ *    spread evenly over the day is read, within DIRECT_READ_BUDGET_MS, and the
+ *    message says how many were written and how many were checked;
+ *  - its body sends no Engine ids, so it reads no Lead and claims none;
+ *  - it is switched on by applying the port's `canary_send_salesforce` stage,
+ *    a separate step, so it posts nothing and records the day as not switched
+ *    on while all three hold: Main Flow does not hold that port, none of its
+ *    posts went direct in the window, and this job has never posted a day. Any
+ *    one of them makes it report: a direct write in the window whatever the live
+ *    definition says, because a canvas save that undid the port is a rollback
+ *    (#2312), and a job that has posted before, so a rollback is said every day.
+ * The relay comparison leaves out every subject's post.
+ *
+ * WINDOWS TILE (#2806, its first half). The window ends at 12:50 UTC, ten
+ * minutes before the daily batch, whenever the run starts: on 2026-10-22 the run
+ * started 31 minutes late and the window measured back from its start left
+ * 8:52 to 9:23 AM ET unread. The second half of #2806, ordering two runs on one
+ * Submission by when each write ARRIVED rather than when its run started, is
+ * not done here: it needs each run's send time, which the stamp does not carry.
+ *
+ * REMOVING IT. Both subjects end with the canaries: the phase 6 pull request
+ * (#2175, which moves the other seven posts and so leaves no relay to compare
+ * against) deletes this file, its three tests, both CRON_JOBS entries and both
+ * blocks in index.ts. The steps are in docs/main-flow-relay-port.md. Until then,
+ * a day on which no other post went through the relay says so.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
 import { bidspokeRunLink } from '../engine/context'
 import type { SalesforceRead } from '../engine/inquiry-post'
 import { parseWriteMarker, WRITE_MARKER_FIELD } from '../engine/write-marker'
-import { MAIN_FLOW_WORKFLOW_ID, OUTCOME_POSTS, RELAY_OMITTED_KEYS, RELAY_RENAMES } from './main-flow-port/transform'
+import { MAIN_FLOW_WORKFLOW_ID, OUTCOME_POSTS, RELAY_OMITTED_KEYS, RELAY_RENAMES, portStatus, type Definition, type OutcomePost } from './main-flow-port/transform'
 import { isSalesforceApiName, isSalesforceRecordId, salesforcePortFor } from './writeback-replay'
 import { LAST_MODIFIED_MARGIN_MS, salesforceTimeMs, sameSalesforceValue } from './salesforce-field-conflict'
 import { leadNamesAnotherSubmission, leadNamesSubmission } from './returning-customer'
@@ -130,15 +157,92 @@ import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { getSlackConnection, postMessage } from './slack'
 
 export const INVALID_STATE_WATCH_JOB = 'invalid-state-canary-watch'
+export const SEND_SALESFORCE_WATCH_JOB = 'send-salesforce-canary-watch'
 
-/** The post this watch reads back. */
+/** The first subject's post, the phase 4 canary. */
 export const WATCHED_STEP = 'invalid_state_sf_post'
 
-/** The eight posts still on the relay, the comparison. */
-export const RELAY_COMPARISON_POSTS: readonly string[] = OUTCOME_POSTS.filter((p) => p !== WATCHED_STEP)
+/**
+ * One canary post this check reads back, and the words its message uses. Every
+ * difference between the two canaries is a field here, so there is one check.
+ */
+export interface CanaryWatchSubject {
+  /** Its job_runs and heartbeat name. */
+  job: string
+  step: OutcomePost
+  /** Every title starts with this, so the day's message is recognisable at a glance. */
+  title: string
+  /** The first paragraph: what is being tried, and why Pipedream is compared (#2652). */
+  intro: string
+  /** One of its posts and several, as the message counts them. */
+  outcome: { one: string; many: string }
+  /** Direct writes read back per day, spread evenly over it; null reads every one. */
+  sampleSize: number | null
+  /** How long the direct reads may take in all, or null for no bound; the rest are said as not checked. */
+  readBudgetMs: number | null
+  /** Its body sends the Engine ids, so the Lead's copy of them is checked too. */
+  checksLead: boolean
+  /** Steps of its post read per day, at most. */
+  maxSteps: number
+}
 
-/** The window ends this long before the run, so a run still recording its steps is read the next day. */
-export const WINDOW_END_LAG_MS = 10 * 60_000
+/** Direct send_salesforce writes read back per day (#2174): about 1,271 ran a day, too many to read every one. */
+export const DIRECT_SAMPLE_SIZE = 200
+
+/** How long a sampled subject's direct reads may take in all, the relay reads' own bound. */
+export const DIRECT_READ_BUDGET_MS = 5 * 60_000
+
+/**
+ * When Main Flow version 172 went live, 2026-10-16 23:20 UTC (7:20 PM ET on Oct
+ * 16): from then on its invalid_state_sf_post writes straight to Salesforce. The
+ * message's first paragraph names the day from this (#2652).
+ */
+export const DIRECT_WRITE_SINCE = '2026-10-16T23:20:00.000Z'
+
+const ET_ZONE = 'America/New_York'
+/** A day in ET, as "Oct 16". */
+const etDay = (at: string) => new Intl.DateTimeFormat('en-US', { timeZone: ET_ZONE, month: 'short', day: 'numeric' }).format(new Date(at))
+
+export const INVALID_STATE_SUBJECT: CanaryWatchSubject = {
+  job: INVALID_STATE_WATCH_JOB,
+  step: WATCHED_STEP,
+  title: 'Direct Salesforce writes',
+  intro: `Since ${etDay(DIRECT_WRITE_SINCE)}, Main Flow writes the outcome for leads from states we don't serve straight to Salesforce, while most other outcomes still go through Pipedream.`,
+  outcome: { one: "outcome for a lead from a state we don't serve", many: "outcomes for leads from states we don't serve" },
+  sampleSize: null,
+  readBudgetMs: null,
+  checksLead: true,
+  // About 19 a day ran in the week before the canary.
+  maxSteps: 1000,
+}
+
+/**
+ * The phase 5 canary (#2174). Its body is a JSON text template with no `UUID` or
+ * `leadUUID` key (Main Flow version 174, read 2026-10-26), so no Engine ids.
+ */
+export const SEND_SALESFORCE_SUBJECT: CanaryWatchSubject = {
+  job: SEND_SALESFORCE_WATCH_JOB,
+  step: 'send_salesforce',
+  title: 'Direct Send Salesforce writes',
+  intro: 'Main Flow writes the outcome of its Send Salesforce step straight to Salesforce, while most other outcomes still go through Pipedream.',
+  outcome: { one: 'Send Salesforce outcome', many: 'Send Salesforce outcomes' },
+  sampleSize: DIRECT_SAMPLE_SIZE,
+  readBudgetMs: DIRECT_READ_BUDGET_MS,
+  checksLead: false,
+  // 1,034 in the 24 hours to 2026-10-26 17:30 UTC; about 1,271 a day by #2174.
+  maxSteps: 5000,
+}
+
+export const CANARY_WATCH_SUBJECTS: readonly CanaryWatchSubject[] = [INVALID_STATE_SUBJECT, SEND_SALESFORCE_SUBJECT]
+
+/** The posts still on the relay, the comparison: every outcome post no subject watches. */
+export const RELAY_COMPARISON_POSTS: readonly string[] = OUTCOME_POSTS.filter((p) => !CANARY_WATCH_SUBJECTS.some((s) => s.step === p))
+
+/**
+ * The window ends at this time of the UTC day, ten minutes before the daily
+ * batch (`0 13 * * *`), so a run still recording its steps is read the next day.
+ */
+export const WINDOW_END_UTC_MINUTES = 12 * 60 + 50
 
 const DAY_MS = 24 * 60 * 60_000
 
@@ -157,9 +261,6 @@ export const OVERWRITE_STORM_SHARE = 0.1
 
 /** Runs named one by one in the message; the rest are counted. */
 export const MAX_LISTED_RUNS = 15
-
-/** The step rows read per day, at most. About 19 a day ran in the week before the canary. */
-export const MAX_STEPS = 1000
 
 /** Relay posts read back from Salesforce per day, spread evenly over it. */
 export const RELAY_SAMPLE_SIZE = 100
@@ -256,6 +357,11 @@ export interface CanaryWatchReport {
   to: string
   /** The runs whose step ran natively and sent a write, in the order read, those a later run overwrote among them. */
   native: RunVerdict[]
+  /**
+   * How many native runs sent a write, all of them, when `native` holds only the
+   * sample read back (a sampled subject, #2174). Absent means `native` is all.
+   */
+  nativeWrites?: number
   /** Native steps that skipped the write, with the reason the step recorded. */
   skipped: Array<{ executionId: string; reason: string }>
   /** Steps of the watched post that went through the relay, in all. */
@@ -269,6 +375,8 @@ export interface CanaryWatchReport {
   relay: RelayReadBack | { error: string }
   /** The step read failed, so nothing was checked. */
   readError?: string
+  /** Main Flow does not hold this subject's port and none of its posts went direct, so nothing was read or posted (#2174). */
+  notSwitchedOn?: true
 }
 
 export interface CanaryWatchMessage {
@@ -294,6 +402,25 @@ export interface CanaryWatchDeps {
    * first. Throws on a failed read.
    */
   readRelay: (fromIso: string, toIso: string) => Promise<{ total: number; sample: RelayStep[] }>
+  /**
+   * Whether the live Main Flow holds this subject's port (portStatus), read
+   * before anything else. Absent, or a read that throws, counts as holding it, so
+   * a day is reported rather than silenced.
+   */
+  livePorted?: () => Promise<boolean>
+  /**
+   * Whether any step of the watched post in [from, to) ran natively, asked only
+   * when the live Main Flow does not hold the port. Absent, or a read that
+   * throws, counts as yes.
+   */
+  anyDirect?: (fromIso: string, toIso: string) => Promise<boolean>
+  /**
+   * Whether this subject's check has ever posted a day (a job run other than
+   * not_switched_on), asked only when neither of the two above says yes. Once it
+   * has, it never goes quiet again: a canary rolled back keeps saying so every
+   * day, as the first one always did. Absent, or a read that throws, counts as yes.
+   */
+  reportedBefore?: () => Promise<boolean>
   /** Main Flow's Salesforce, as one read: `path` below `/services/data/v60.0`. Throws when its settings cannot be loaded. */
   salesforce: () => Promise<(path: string) => Promise<SalesforceRead>>
   /** Posts the message. True when Slack took it. */
@@ -301,9 +428,15 @@ export interface CanaryWatchDeps {
   recordRun?: (startedAtMs: number, ending: JobRunEnding) => Promise<void>
 }
 
-/** The 24 hours the run at `nowMs` reads. */
+/**
+ * The 24 hours the run at `nowMs` reads: those ending at the last 12:50 UTC at
+ * or before it (#2806). A late run reads the same day as one on time, so
+ * consecutive days meet exactly, whatever time each run starts.
+ */
 export function canaryWatchWindow(nowMs: number): { from: string; to: string } {
-  const to = nowMs - WINDOW_END_LAG_MS
+  const day = new Date(nowMs)
+  let to = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate()) + WINDOW_END_UTC_MINUTES * 60_000
+  if (to > nowMs) to -= DAY_MS
   return { from: new Date(to - DAY_MS).toISOString(), to: new Date(to).toISOString() }
 }
 
@@ -370,14 +503,14 @@ interface SubmissionWrite {
 }
 
 /** A native step's write, from what the step recorded (the body after the port's omit, rename and inject). */
-function nativeWrite(step: WatchedStep): SubmissionWrite | { unchecked: string } {
+function nativeWrite(step: WatchedStep, stepNamespace: string): SubmissionWrite | { unchecked: string } {
   const resolved = asObject(asObject(step.input)?.resolved)
   const sent = asObject(resolved?.body)
   const recordId = resolved?.record_id
   if (!sent || typeof recordId !== 'string' || !isSalesforceRecordId(recordId)) {
     return { unchecked: 'The run did not record the Submission it wrote or what it sent.' }
   }
-  return { via: 'direct', executionId: step.execution_id, stepNamespace: WATCHED_STEP, recordId, sent, startedAt: step.started_at }
+  return { via: 'direct', executionId: step.execution_id, stepNamespace, recordId, sent, startedAt: step.started_at }
 }
 
 /**
@@ -644,7 +777,7 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
 }
 
 /** Reads the window and every native run in it back from Salesforce. Never throws. */
-async function measure(deps: CanaryWatchDeps, from: string, to: string): Promise<CanaryWatchReport> {
+async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from: string, to: string): Promise<CanaryWatchReport> {
   const report: CanaryWatchReport = { from, to, native: [], skipped: [], relayInvalidState: 0, relayAfterSwitch: 0, lastWasRelay: false, nativeCompleted: 0, relay: { total: 0, sample: [], noSubmission: 0 } }
   const relayPromise = deps.readRelay(from, to).then(
     (r): { total: number; sample: RelayStep[] } | { error: string } => r,
@@ -679,6 +812,10 @@ async function measure(deps: CanaryWatchDeps, from: string, to: string): Promise
     if (s.status === 'completed') report.nativeCompleted++
     toRead.push(s)
   }
+  // A sampled subject reads a share spread evenly over the day, as the relay is
+  // read (#2174), and the report keeps how many there were in all.
+  const sampled = subject.sampleSize === null ? toRead : pickEvenly(toRead, subject.sampleSize)
+  if (sampled.length < toRead.length) report.nativeWrites = toRead.length
 
   const relay = await relayPromise
   const relayWrites: Array<SubmissionWrite | { executionId: string; unchecked: string }> = []
@@ -694,7 +831,7 @@ async function measure(deps: CanaryWatchDeps, from: string, to: string): Promise
   // One Salesforce, one circuit: the native runs first, then the relay sample.
   let read: Read | null = null
   let stopReason: string | null = null
-  if (toRead.length > 0 || relayWrites.length > 0) {
+  if (sampled.length > 0 || relayWrites.length > 0) {
     try {
       read = await deps.salesforce()
     } catch (e) {
@@ -705,10 +842,10 @@ async function measure(deps: CanaryWatchDeps, from: string, to: string): Promise
   // Lead names a Submission no write of the day explains (#2485).
   const writesOf = (steps: WatchedStep[]) =>
     steps.flatMap((s) => {
-      const w = s.step_type === 'salesforce' ? nativeWrite(s) : null
+      const w = s.step_type === 'salesforce' ? nativeWrite(s, subject.step) : null
       return w && !('unchecked' in w) ? [w] : []
     })
-  const today = writesOf(toRead)
+  const today = writesOf(sampled)
   let dayBefore: Promise<SubmissionWrite[]> | null = null
   const earlierRun: EarlierRunLookup = async (w, leadIds) => {
     const hit = today.find((e) => sentTheLeadsIds(e, w, leadIds))
@@ -726,9 +863,16 @@ async function measure(deps: CanaryWatchDeps, from: string, to: string): Promise
       return { kind: 'unchecked', executionId: w.executionId, reason: `The check failed on this run (${formatErr(e)}).` }
     }
   }
-  for (const s of toRead) {
-    const w = nativeWrite(s)
-    report.native.push('unchecked' in w ? { kind: 'unchecked', executionId: s.execution_id, reason: w.unchecked } : await judge(w))
+  const directDeadline = subject.readBudgetMs === null ? Number.POSITIVE_INFINITY : deps.now() + subject.readBudgetMs
+  for (const s of sampled) {
+    const w = nativeWrite(s, subject.step)
+    report.native.push(
+      'unchecked' in w
+        ? { kind: 'unchecked', executionId: s.execution_id, reason: w.unchecked }
+        : deps.now() >= directDeadline
+          ? { kind: 'unchecked', executionId: s.execution_id, reason: 'The direct reads ran out of time before this write.' }
+          : await judge(w),
+    )
   }
 
   if ('error' in relay) {
@@ -752,26 +896,9 @@ const runLabel = (appUrl: string, id: string) => {
   return url ? `<${url}|Run ${id}>` : `Run ${id}`
 }
 
-/**
- * When Main Flow version 172 went live, 2026-10-16 23:20 UTC (7:20 PM ET on Oct
- * 16): from then on its invalid_state_sf_post writes straight to Salesforce. The
- * message's first paragraph names the day from this (#2652).
- */
-export const DIRECT_WRITE_SINCE = '2026-10-16T23:20:00.000Z'
-
-const ET_ZONE = 'America/New_York'
-/** A day in ET, as "Oct 16". */
-const etDay = (at: string) => new Intl.DateTimeFormat('en-US', { timeZone: ET_ZONE, month: 'short', day: 'numeric' }).format(new Date(at))
 /** A time in ET without its zone, as "Oct 21, 9:23 AM": the sentence says ET once, after the second. */
 const etClock = (at: string) =>
   new Intl.DateTimeFormat('en-US', { timeZone: ET_ZONE, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(at))
-
-/** The first paragraph of every message that reports runs: what is being tried, and why Pipedream is compared (#2652). */
-const introLine = () =>
-  `Since ${etDay(DIRECT_WRITE_SINCE)}, Main Flow writes the outcome for leads from states we don't serve straight to Salesforce. Every other outcome still goes through Pipedream.`
-
-/** Every title starts with this, so the day's message is recognisable at a glance. */
-const TITLE = 'Direct Salesforce writes'
 
 const SKIP_WORDS: Record<string, string> = {
   nothing_to_write: 'the Engine sent nothing to write',
@@ -860,15 +987,20 @@ function relayLine(r: RelayReadBack): string {
 /**
  * The direct writes' own paragraph: how many leads were written directly over
  * the hours read, and how many arrived complete. "Arrived complete" is said once,
- * with what it means, and only on a day nothing went wrong.
+ * with what it means, and only on a day nothing went wrong. A sampled day says
+ * how many were written and how many of them were checked (#2174). The Lead is
+ * claimed only for a subject whose body sends the Engine ids.
  */
-function directLine(native: RunVerdict[], span: string): string {
+function directLine(native: RunVerdict[], span: string, subject: CanaryWatchSubject, written: number): string {
   const n = native.length
   const landed = native.filter(landedFully).length
   const notLanded = native.filter((v) => v.kind === 'not_landed').length
   const unchecked = native.filter((v) => v.kind === 'unchecked').length
   const k = overwritten(native).length
-  let line = `From ${span}, ${fmt(n)} ${n === 1 ? 'lead was' : 'leads were'} written directly`
+  let line =
+    written > n
+      ? `From ${span}, ${fmt(written)} leads were written directly. We checked ${fmt(n)} of them, spread over those hours`
+      : `From ${span}, ${fmt(n)} ${n === 1 ? 'lead was' : 'leads were'} written directly`
   if (landed === n) line += n === 1 ? ', and it arrived complete.' : `, and all ${fmt(n)} arrived complete.`
   else if (k === n) {
     line += `, and ${n === 1 ? 'it was' : `all ${fmt(n)} were`} replaced by a later run that wrote the same Submission, so ${n === 1 ? 'it was' : 'they were'} not compared.`
@@ -879,10 +1011,8 @@ function directLine(native: RunVerdict[], span: string): string {
   if (landed > 0 && notLanded + unchecked === 0) {
     // A Lead that followed a newer Submission, or holds the first completion's copy, was not compared with this run's ids.
     const compared = followedNewerSubmission(native) + leadFromFirstCompletion(native) > 0 ? ' we compared' : ''
-    line +=
-      landed === 1
-        ? ` The Submission has every field the run sent, and the Lead${compared} has matching Engine ids.`
-        : ` Each Submission has every field the run sent, and each Lead${compared} has matching Engine ids.`
+    const lead = subject.checksLead ? (landed === 1 ? `, and the Lead${compared} has matching Engine ids` : `, and each Lead${compared} has matching Engine ids`) : ''
+    line += landed === 1 ? ` The Submission has every field the run sent${lead}.` : ` Each Submission has every field the run sent${lead}.`
   }
   line += movedOnSentences(native, notLanded + unchecked + k === 0 ? 'of those' : 'of those that arrived complete')
   if (k > 0) line += ` ${fmt(k)} more ${k === 1 ? 'was' : 'were'} replaced by a later run that wrote the same Submission, so ${k === 1 ? 'it was' : 'they were'} not compared.`
@@ -903,7 +1033,8 @@ const ROLLBACK_FIX =
  * "Pipedream" for the relay, "arrived complete" for landed fully, no field API
  * names, times in ET.
  */
-export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): CanaryWatchMessage {
+export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string, subject: CanaryWatchSubject = INVALID_STATE_SUBJECT): CanaryWatchMessage {
+  const TITLE = subject.title
   if (report.readError) {
     return {
       title: `${TITLE}: the check could not run`,
@@ -919,23 +1050,26 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
   const unchecked = report.native.filter((v) => v.kind === 'unchecked').length
   const setAside = overwritten(report.native)
   const storm = overwriteStorm(report.native)
-  const lines: string[] = [introLine()]
+  const written = report.nativeWrites ?? n
+  // A sampled day's counts are of the writes checked, and its title says so.
+  const ofN = written > n ? `${fmt(n)} checked` : fmt(n)
+  const lines: string[] = [subject.intro]
 
-  lines.push(n === 0 ? `No leads were written directly from ${span}.` : directLine(report.native, span))
+  lines.push(n === 0 ? `No leads were written directly from ${span}.` : directLine(report.native, span, subject, written))
   if (report.skipped.length > 0) {
     const k = report.skipped.length
     const reasons = joinAnd([...new Set(report.skipped.map((s) => SKIP_WORDS[s.reason] ?? `the step said ${s.reason}`))])
     lines.push(`${fmt(k)} more ${k === 1 ? 'lead was' : 'leads were'} not written because ${reasons}.`)
   }
   const r = report.relayInvalidState
-  const outcomes = (k: number) => `${fmt(k)} ${k === 1 ? "outcome for a lead from a state we don't serve" : "outcomes for leads from states we don't serve"}`
+  const outcomes = (k: number) => `${fmt(k)} ${k === 1 ? subject.outcome.one : subject.outcome.many}`
   const offDirect = report.lastWasRelay || report.relayAfterSwitch > 0
   // Every direct post is either read back (native) or skipped, so neither means none went direct.
   const neverDirect = r > 0 && report.native.length === 0 && report.skipped.length === 0
   if (neverDirect) {
     lines.push(
       r === 1
-        ? "The one outcome for a lead from a state we don't serve went through Pipedream, so Main Flow is not writing these directly."
+        ? `The one ${subject.outcome.one} went through Pipedream, so Main Flow is not writing these directly.`
         : `All ${outcomes(r)} went through Pipedream, so Main Flow is not writing them directly.`,
     )
   } else if (report.lastWasRelay) {
@@ -976,19 +1110,19 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
 
   const alert = bad.length > 0 || offDirect || storm
   let title: string
-  if (notLanded > 0 && unchecked > 0) title = `${TITLE}: ${fmt(notLanded)} of ${fmt(n)} did not arrive complete, and ${fmt(unchecked)} could not be checked`
-  else if (notLanded > 0) title = `${TITLE}: ${fmt(notLanded)} of ${fmt(n)} did not arrive complete`
-  else if (unchecked > 0) title = `${TITLE}: ${fmt(unchecked)} of ${fmt(n)} could not be checked`
+  if (notLanded > 0 && unchecked > 0) title = `${TITLE}: ${fmt(notLanded)} of ${ofN} did not arrive complete, and ${fmt(unchecked)} could not be checked`
+  else if (notLanded > 0) title = `${TITLE}: ${fmt(notLanded)} of ${ofN} did not arrive complete`
+  else if (unchecked > 0) title = `${TITLE}: ${fmt(unchecked)} of ${ofN} could not be checked`
   // Not "back on": when nothing in the window went direct, the window cannot show it ever left.
   else if (neverDirect) title = `${TITLE}: Main Flow is not writing directly`
   else if (report.lastWasRelay) title = `${TITLE}: Main Flow is back on Pipedream`
   else if (offDirect) title = `${TITLE}: Main Flow went back to Pipedream for a while`
-  else if (storm) title = `${TITLE}: ${fmt(setAside.length)} of ${fmt(n)} were replaced by a later run`
+  else if (storm) title = `${TITLE}: ${fmt(setAside.length)} of ${ofN} were replaced by a later run`
   else if (n === 0) title = `${TITLE}: none to check yesterday`
   else if (setAside.length > 0) {
     const k = setAside.length
-    title = n === 1 ? `${TITLE}: the one write was replaced by a later run` : `${TITLE}: ${fmt(landed)} of ${fmt(n)} arrived complete and ${fmt(k)} ${k === 1 ? 'was' : 'were'} replaced by a later run`
-  } else title = n === 1 ? `${TITLE}: the one write arrived complete` : `${TITLE}: all ${fmt(n)} arrived complete`
+    title = n === 1 ? `${TITLE}: the one write was replaced by a later run` : `${TITLE}: ${fmt(landed)} of ${ofN} arrived complete and ${fmt(k)} ${k === 1 ? 'was' : 'were'} replaced by a later run`
+  } else title = n === 1 ? `${TITLE}: the one write arrived complete` : `${TITLE}: all ${ofN} arrived complete`
 
   return {
     title,
@@ -1025,8 +1159,15 @@ export function canaryWatchBlocks(message: CanaryWatchMessage): unknown[] {
   ]
 }
 
-function endingOf(report: CanaryWatchReport, posted: boolean): JobRunEnding {
+function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWatchSubject): JobRunEnding {
   const count = (k: RunVerdict['kind']) => report.native.filter((v) => v.kind === k).length
+  if (report.notSwitchedOn) {
+    return {
+      outcome: 'not_switched_on',
+      detail: `Main Flow does not hold the ${subject.step} port and none of its posts went direct, so nothing was read or posted`,
+      summary: { step: subject.step, from: report.from, to: report.to },
+    }
+  }
   return {
     outcome: !posted
       ? 'not_posted'
@@ -1043,8 +1184,11 @@ function endingOf(report: CanaryWatchReport, posted: boolean): JobRunEnding {
                 : 'all_landed',
     detail: report.readError ?? `${report.native.length} runs read back`,
     summary: {
+      step: subject.step,
       from: report.from,
       to: report.to,
+      // Every native write, and of them the ones read back (all, unless the subject samples, #2174).
+      native_writes: report.nativeWrites ?? report.native.length,
       native: report.native.length,
       // Landed fully, those a later write or a newer Submission moved on since among them (#2396).
       landed: report.native.filter(landedFully).length,
@@ -1089,31 +1233,66 @@ function endingOf(report: CanaryWatchReport, posted: boolean): JobRunEnding {
   }
 }
 
-/** The day's check, end to end. NEVER THROWS: its caller is a waitUntil, where a rejection reaches nobody (L71). */
-export async function runInvalidStateWatch(deps: CanaryWatchDeps): Promise<CanaryWatchReport> {
+/**
+ * Whether the day is to be read at all (#2174): yes when the live Main Flow
+ * holds the subject's port, or when any of its posts went direct in the window
+ * (the port undone since is a rollback the message must say, #2312), or when
+ * this check has ever posted a day (so a canary rolled back is said every day,
+ * never silenced). Only a subject never switched on stays quiet. A read that
+ * fails counts as yes, so a day is reported rather than silenced. Never throws.
+ */
+async function switchedOn(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from: string, to: string): Promise<boolean> {
+  const asks: Array<[string, (() => Promise<boolean>) | undefined]> = [
+    ['whether Main Flow holds the port', deps.livePorted],
+    ['whether any post went direct', deps.anyDirect && (() => deps.anyDirect!(from, to))],
+    ['whether this check has posted a day before', deps.reportedBefore],
+  ]
+  for (const [what, ask] of asks) {
+    if (!ask) return true
+    try {
+      if (await ask()) return true
+    } catch (e) {
+      console.error(`[${subject.job}] could not read ${what}, so the day is read:`, formatErr(e))
+      return true
+    }
+  }
+  return false
+}
+
+/** One subject's day, end to end. NEVER THROWS: its caller is a waitUntil, where a rejection reaches nobody (L71). */
+export async function runCanaryWatch(subject: CanaryWatchSubject, deps: CanaryWatchDeps): Promise<CanaryWatchReport> {
   const startedAtMs = deps.now()
   const { from, to } = canaryWatchWindow(startedAtMs)
-  const report = await measure(deps, from, to)
+  let report: CanaryWatchReport
   let posted = false
-  try {
-    posted = await deps.post(canaryWatchMessage(report, deps.appUrl))
-    if (!posted) console.error(`[${INVALID_STATE_WATCH_JOB}] Slack did not take the daily message`)
-  } catch (e) {
-    console.error(`[${INVALID_STATE_WATCH_JOB}] could not post the daily message:`, formatErr(e))
+  if (!(await switchedOn(subject, deps, from, to))) {
+    report = { from, to, native: [], skipped: [], relayInvalidState: 0, relayAfterSwitch: 0, lastWasRelay: false, nativeCompleted: 0, relay: { total: 0, sample: [], noSubmission: 0 }, notSwitchedOn: true }
+    console.log(`[${subject.job}] from=${from} to=${to} not switched on: Main Flow does not hold the ${subject.step} port and none of its posts went direct`)
+  } else {
+    report = await measure(subject, deps, from, to)
+    try {
+      posted = await deps.post(canaryWatchMessage(report, deps.appUrl, subject))
+      if (!posted) console.error(`[${subject.job}] Slack did not take the daily message`)
+    } catch (e) {
+      console.error(`[${subject.job}] could not post the daily message:`, formatErr(e))
+    }
+    const landed = report.native.filter(landedFully).length
+    const movedOn = report.native.filter((v) => v.kind === 'moved_on').length
+    console.log(
+      `[${subject.job}] from=${from} to=${to} native_writes=${report.nativeWrites ?? report.native.length} native=${report.native.length} landed=${landed} moved_on=${movedOn} skipped=${report.skipped.length} ` +
+        `relay_watched_step=${report.relayInvalidState} relay_after_switch=${report.relayAfterSwitch} last_was_relay=${report.lastWasRelay} posted=${posted}${report.readError ? ` read_error=${report.readError}` : ''}`,
+    )
   }
-  const landed = report.native.filter(landedFully).length
-  const movedOn = report.native.filter((v) => v.kind === 'moved_on').length
-  console.log(
-    `[${INVALID_STATE_WATCH_JOB}] from=${from} to=${to} native=${report.native.length} landed=${landed} moved_on=${movedOn} skipped=${report.skipped.length} ` +
-      `relay_invalid_state=${report.relayInvalidState} relay_after_switch=${report.relayAfterSwitch} last_was_relay=${report.lastWasRelay} posted=${posted}${report.readError ? ` read_error=${report.readError}` : ''}`,
-  )
   try {
-    await deps.recordRun?.(startedAtMs, endingOf(report, posted))
+    await deps.recordRun?.(startedAtMs, endingOf(report, posted, subject))
   } catch (e) {
-    console.error(`[${INVALID_STATE_WATCH_JOB}] could not record its run:`, formatErr(e))
+    console.error(`[${subject.job}] could not record its run:`, formatErr(e))
   }
   return report
 }
+
+/** The invalid state canary's day (#2173). */
+export const runInvalidStateWatch = (deps: CanaryWatchDeps): Promise<CanaryWatchReport> => runCanaryWatch(INVALID_STATE_SUBJECT, deps)
 
 /** The filter methods the relay filter calls, which every supabase-js filter builder has, each returning the builder. */
 interface RelayFilterable {
@@ -1166,39 +1345,75 @@ export async function readRelayPosts(supabase: SupabaseClient, from: string, to:
   return { total: ids.length, sample }
 }
 
-/** The production wiring: Main Flow's steps, its organization's Salesforce and Slack. Never throws. */
-export async function runInvalidStateWatchForEnv(supabase: SupabaseClient, env: Env): Promise<CanaryWatchReport> {
-  const keys = secretKeys(env)
-  let orgPromise: Promise<string> | null = null
-  const orgId = () => {
-    orgPromise ??= (async () => {
-      const { data, error } = await supabase.from('workflows').select('organization_id').eq('id', MAIN_FLOW_WORKFLOW_ID).maybeSingle()
-      if (error) throw new Error(`Main Flow's organization could not be read: ${error.message}`)
-      const id = (data as { organization_id?: unknown } | null)?.organization_id
-      if (typeof id !== 'string') throw new Error('Main Flow was not found in the workflows table')
-      return id
-    })()
-    return orgPromise
-  }
-  return runInvalidStateWatch({
-    now: () => Date.now(),
-    appUrl: env.APP_URL,
-    readSteps: async (from, to) => {
-      const { data, error } = await supabase
+/**
+ * Every step of `step` in [from, to), test runs left out, oldest run first, a
+ * page at a time under a full order (PostgREST answers at most 1,000 rows). A
+ * day past `maxSteps` throws rather than reading part of it. Throws on a failed
+ * read.
+ */
+export async function readWatchedSteps(supabase: SupabaseClient, step: string, from: string, to: string, maxSteps: number): Promise<WatchedStep[]> {
+  return fetchAllPaged<WatchedStep>(
+    (lo, hi) =>
+      supabase
         .from('execution_steps')
-        .select(STEP_COLUMNS)
+        .select(`id, ${STEP_COLUMNS}`)
         .eq('workflow_id', MAIN_FLOW_WORKFLOW_ID)
-        .eq('step_namespace', WATCHED_STEP)
+        .eq('step_namespace', step)
         .gte('execution_started_at', from)
         .lt('execution_started_at', to)
         .not('is_test', 'is', true)
         .order('execution_started_at', { ascending: true })
-        .range(0, MAX_STEPS - 1)
-      if (error) throw new Error(`execution_steps read failed: ${error.message}`)
-      const rows = (data ?? []) as WatchedStep[]
-      if (rows.length >= MAX_STEPS) throw new Error(`more than ${MAX_STEPS} invalid state steps in one day, so they were not all read`)
-      return rows
+        .order('id', { ascending: true })
+        .range(lo, hi),
+    `${step} steps`,
+    { maxPages: Math.ceil(maxSteps / PAGE_SIZE) },
+  )
+}
+
+/** The production wiring for one subject: Main Flow's steps and definition, its organization's Salesforce and Slack. Never throws. */
+export async function runCanaryWatchForEnv(subject: CanaryWatchSubject, supabase: SupabaseClient, env: Env): Promise<CanaryWatchReport> {
+  const keys = secretKeys(env)
+  let workflowPromise: Promise<{ organizationId: string; definition: unknown }> | null = null
+  const workflow = () => {
+    workflowPromise ??= (async () => {
+      const { data, error } = await supabase.from('workflows').select('organization_id, definition').eq('id', MAIN_FLOW_WORKFLOW_ID).maybeSingle()
+      if (error) throw new Error(`Main Flow could not be read: ${error.message}`)
+      const row = data as { organization_id?: unknown; definition?: unknown } | null
+      if (typeof row?.organization_id !== 'string') throw new Error('Main Flow was not found in the workflows table')
+      return { organizationId: row.organization_id, definition: row.definition }
+    })()
+    return workflowPromise
+  }
+  const orgId = async () => (await workflow()).organizationId
+  return runCanaryWatch(subject, {
+    now: () => Date.now(),
+    appUrl: env.APP_URL,
+    livePorted: async () => {
+      const definition = (await workflow()).definition as Definition | null
+      if (!definition || !Array.isArray(definition.nodes)) throw new Error("Main Flow's definition has no nodes")
+      return portStatus(definition).ported.includes(subject.step)
     },
+    anyDirect: async (from, to) => {
+      const { data, error } = await supabase
+        .from('execution_steps')
+        .select('id')
+        .eq('workflow_id', MAIN_FLOW_WORKFLOW_ID)
+        .eq('step_namespace', subject.step)
+        .eq('step_type', 'salesforce')
+        .gte('execution_started_at', from)
+        .lt('execution_started_at', to)
+        .not('is_test', 'is', true)
+        .limit(1)
+      if (error) throw new Error(`execution_steps read failed: ${error.message}`)
+      return (data ?? []).length > 0
+    },
+    reportedBefore: async () => {
+      // job_runs is this job's own daily record, one row a day; one row answers it.
+      const { data, error } = await supabase.from('job_runs').select('id').eq('job', subject.job).neq('outcome', 'not_switched_on').limit(1)
+      if (error) throw new Error(`job_runs read failed: ${error.message}`)
+      return (data ?? []).length > 0
+    },
+    readSteps: (from, to) => readWatchedSteps(supabase, subject.step, from, to, subject.maxSteps),
     readRelay: (from, to) => readRelayPosts(supabase, from, to),
     salesforce: async () => {
       const port = await salesforcePortFor(env, supabase, keys, await orgId(), MAIN_FLOW_WORKFLOW_ID)
@@ -1213,6 +1428,12 @@ export async function runInvalidStateWatchForEnv(supabase: SupabaseClient, env: 
       if (!slack) throw new Error("Main Flow's organization has no Slack connection")
       return (await postMessage(slack.bot_token, slack.default_channel, canaryWatchBlocks(message), message.title)) !== null
     },
-    recordRun: (startedAtMs, ending) => recordFinishedJobRun(supabase, INVALID_STATE_WATCH_JOB, startedAtMs, ending),
+    recordRun: (startedAtMs, ending) => recordFinishedJobRun(supabase, subject.job, startedAtMs, ending),
   })
 }
+
+/** The invalid state canary's production wiring (#2173). */
+export const runInvalidStateWatchForEnv = (supabase: SupabaseClient, env: Env): Promise<CanaryWatchReport> => runCanaryWatchForEnv(INVALID_STATE_SUBJECT, supabase, env)
+
+/** The send_salesforce canary's production wiring (#2174). */
+export const runSendSalesforceWatchForEnv = (supabase: SupabaseClient, env: Env): Promise<CanaryWatchReport> => runCanaryWatchForEnv(SEND_SALESFORCE_SUBJECT, supabase, env)

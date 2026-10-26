@@ -19,7 +19,10 @@ The planning list is [TODO.md](./TODO.md) (#2606): read it before work on anythi
   cron guard `FAILED OPEN` log line into `cron_guard_fail_opens` (#2166), the second
   record the hourly cron guard check counts alongside its own KV record, and copies
   each `[cron-once] delivery` line into `cron_tick_deliveries` (#2284), the record of
-  every tick delivery the check reads to page on a tick that may have run twice
+  every tick delivery the check reads to page on a tick that may have run twice,
+  and copies each `[slack] post outcome` line into `slack_post_outcomes` (#2364),
+  the record the minute Slack refusal check reads to page through Better Stack
+  when Slack refuses alert posts
 - `apps/compare-outbound`: the outbound Worker of the `bidspoke-code-nodes-compare`
   dispatch namespace (#1708). Shadow runs dispatch their code there, and it refuses
   every request a script makes, so a shadow run sends nothing. Its own deploy leg.

@@ -55,11 +55,13 @@ import { recordAndCheckBranchSkew } from './lib/strand-branch-skew'
 import { runUnconfirmedWriteSweepForEnv, UNCONFIRMED_WRITE_SWEEP_JOB } from './lib/unconfirmed-write-sweep'
 import { runSalesforceReadBackForEnv, checkSalesforceReadBackLivenessForEnv, SF_READ_BACK_JOB } from './lib/salesforce-read-back'
 import { runWritebackBacklogCheckForEnv, WRITEBACK_BACKLOG_JOB } from './lib/writeback-backlog'
+import { liveMissNoticeRunFailure, runLiveMissNoticeForEnv, PARTNER_LIVE_MISS_NOTICE_JOB } from './lib/partner-live-miss-notice'
 import { drainRunFailure, runWritebackDrainForEnv, WRITEBACK_DRAIN_JOB } from './lib/writeback-drain'
 import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { PARTNER_ERROR_RATE_JOB, runPartnerErrorRateCheck } from './lib/partner-error-rate'
+import { runSlackRefusalWatchForEnv, slackRefusalWatchRunFailure, SLACK_REFUSAL_WATCH_JOB } from './lib/slack-refusal-watch'
 import { LEAD_VALIDATION_REJECTION_JOB, runLeadValidationRejectionWatchForEnv } from './lib/lead-validation-rejection-watch'
 import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
 import { runDeadLetterBuildTriggerCheck } from './lib/deadletter-volume'
@@ -616,6 +618,25 @@ const scheduledJobs = {
           }
         })().catch((e) => console.error('[invalid-state-canary-watch] failed:', e))
       )
+      // The same read-back for the second canary, send_salesforce (#2174): a
+      // sample of its direct writes, since it runs about 1,271 times a day. Until
+      // the canary is switched on it records the day and posts nothing. Its own
+      // heartbeat and failure boundary; removed with the first (#2175).
+      track(
+        (async () => {
+          const { runSendSalesforceWatchForEnv, SEND_SALESFORCE_WATCH_JOB } = await import('./lib/invalid-state-canary-watch')
+          await writeHeartbeat(env.IDEMPOTENCY, SEND_SALESFORCE_WATCH_JOB).catch((e) =>
+            console.error('[cron-heartbeat] send-salesforce-canary-watch write failed:', e)
+          )
+          try {
+            await runSendSalesforceWatchForEnv(supabase, env)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, SEND_SALESFORCE_WATCH_JOB).catch((e) =>
+              console.error('[cron-heartbeat] send-salesforce-canary-watch completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[send-salesforce-canary-watch] failed:', e))
+      )
       // Money's Salesforce run as identity, for ops verify to refuse an ops
       // connection that authenticates as money's user (#2335). One userinfo call
       // with money's token, through getSalesforceToken unchanged. Its own
@@ -1131,6 +1152,25 @@ const scheduledJobs = {
           `[${WRITEBACK_BACKLOG_JOB}] check failed:`,
         ),
       )
+      // The live miss notice (#2220): one Slack notice per partners page live
+      // miss, to the miss's own organization, posted once (a claim per miss) and
+      // retried until Slack takes it. A run that could not read or post is a
+      // failed run, so three in a row page; its own heartbeat, both stamps (L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, PARTNER_LIVE_MISS_NOTICE_JOB)
+            .catch((e) => console.error(`[${PARTNER_LIVE_MISS_NOTICE_JOB}] heartbeat write failed:`, e))
+            .then(() => runLiveMissNoticeForEnv({
+              supabase,
+              kv: env.IDEMPOTENCY,
+              claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+              localDev: Boolean(env.LOCAL_DEV),
+            }))
+            .then((s) => liveMissNoticeRunFailure(s)),
+          PARTNER_LIVE_MISS_NOTICE_JOB,
+          `[${PARTNER_LIVE_MISS_NOTICE_JOB}] check failed:`,
+        ),
+      )
     } else if (event.cron === '*/15 * * * *') {
       // Drive the scheduled workflows the worker also watches (#1058). GitHub
       // stopped delivering this repository's cron events reliably on 2026-08-26
@@ -1404,6 +1444,25 @@ const scheduledJobs = {
             .then(() => runPartnerErrorRateCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)),
           PARTNER_ERROR_RATE_JOB,
           `[${PARTNER_ERROR_RATE_JOB}] check failed:`,
+        ),
+      )
+      // Slack refusing alert posts (#2364): reads the post outcomes the tail
+      // Worker copies and pages through Better Stack, never Slack. Its own
+      // heartbeat; a minute that could not measure, or whose page Better Stack
+      // did not take, is a failed run (lib/slack-refusal-watch.ts).
+      minuteJob(SLACK_REFUSAL_WATCH_JOB,
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, SLACK_REFUSAL_WATCH_JOB)
+            .catch((e) => console.error(`[${SLACK_REFUSAL_WATCH_JOB}] heartbeat write failed:`, e))
+            .then(() => runSlackRefusalWatchForEnv(supabase, env, reachability.claims))
+            .then((s) => {
+              if (s.paged.length > 0 || s.pageFailed.length > 0 || s.allClear.length > 0 || s.standing.length > 0 || s.errors.length > 0) {
+                console.log(`[${SLACK_REFUSAL_WATCH_JOB}] paged=${s.paged.length} page_failed=${s.pageFailed.length} standing=${s.standing.length} all_clear=${s.allClear.length} errors=${s.errors.length}`)
+              }
+              return slackRefusalWatchRunFailure(s)
+            }),
+          SLACK_REFUSAL_WATCH_JOB,
+          `[${SLACK_REFUSAL_WATCH_JOB}] check failed:`,
         ),
       )
       // The ops minute cron's report (#1949): the tick runs in the ops Worker and

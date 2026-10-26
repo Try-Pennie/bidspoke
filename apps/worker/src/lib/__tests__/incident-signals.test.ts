@@ -16,6 +16,7 @@ import { OPS_CONNECTION_LOGIN_SIGNAL } from '../ops-connection-logins'
 import { OPS_CONNECTION_OWNER_SIGNAL } from '../ops-connection-owner-check'
 import { SALESFORCE_BULKHEAD_SIGNAL } from '../salesforce-bulkhead-check'
 import { MINUTE_JOB_FAILING_SIGNAL } from '../minute-job-failures'
+import { SLACK_REFUSED_SIGNAL } from '../slack-refusal-watch'
 import { PARTNER_ERROR_RATE_SIGNAL, PARTNER_ERROR_RECOVERY_WORDS, WINDOW_MINUTES as PARTNER_ERROR_WINDOW_MINUTES } from '../partner-error-rate'
 import { LEAD_VALIDATION_REJECTION_RECOVERY_WORDS, LEAD_VALIDATION_REJECTION_SIGNAL, WINDOW_MINUTES as LEAD_VALIDATION_REJECTION_WINDOW_MINUTES } from '../lead-validation-rejection-watch'
 
@@ -28,7 +29,7 @@ import { LEAD_VALIDATION_REJECTION_RECOVERY_WORDS, LEAD_VALIDATION_REJECTION_SIG
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the twenty five signals in use, each once', () => {
+  it('names the twenty seven signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -47,9 +48,11 @@ describe('INCIDENT_SIGNALS', () => {
       'ops-connection-write-back',
       'partner-error-rate',
       'partner-page-live',
+      'partner-page-live-miss',
       'partner-reachability',
       'pg-cron-watch',
       'salesforce-bulkhead-limit',
+      'slack-post-refused',
       'slack-token-undecryptable',
       'slow-spike',
       'stored-copy-serving',
@@ -150,6 +153,14 @@ describe('INCIDENT_SIGNALS', () => {
   it('scopes the Salesforce bulkhead limit signal to the platform, keyed on a fixed name', () => {
     expect(incidentSignal(SALESFORCE_BULKHEAD_SIGNAL).signal).toBe('salesforce-bulkhead-limit')
     expect(incidentSignal('salesforce-bulkhead-limit')).toMatchObject({ scope: 'platform', subject: 'name', windowMinutes: null, label: 'Salesforce bulkhead limit' })
+  })
+
+  // #2364: one organization's default Slack channel refusing its alert posts,
+  // keyed on the organization, with the two kinds of refusal that page.
+  it('scopes the Slack refusal signal to the organization, opened when first seen', () => {
+    expect(incidentSignal(SLACK_REFUSED_SIGNAL).signal).toBe('slack-post-refused')
+    expect(incidentSignal('slack-post-refused')).toMatchObject({ scope: 'org', subject: 'organization', windowMinutes: null, label: 'Slack refusing alerts', startMeans: 'When the condition was first seen, before any page.' })
+    expect(incidentSignal('slack-post-refused').kinds).toEqual(['destination', 'transient'])
   })
 
   // #2523: one of this Worker's minute jobs, the same for every organization, keyed on the job id.
