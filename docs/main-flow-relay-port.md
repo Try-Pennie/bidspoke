@@ -163,7 +163,7 @@ then would discard that save too. Rehearse one rollback before the first canary.
 From version 172 (2026-10-16), `invalid_state_sf_post` is the one native outcome
 write. Every morning at 9 AM ET (the `0 13 * * *` daily batch, so 8 AM ET once
 clocks go back) the worker reads back from Salesforce every Main Flow run of the
-24 hours ending ten minutes before the run (12:50 UTC) whose invalid state step ran as a Salesforce step, and
+24 hours ending at 12:50 UTC, ten minutes before the batch, whose invalid state step ran as a Salesforce step, and
 posts one message to Main Flow's organization's alerts channel
 ([`apps/worker/src/lib/invalid-state-canary-watch.ts`](../apps/worker/src/lib/invalid-state-canary-watch.ts)).
 
@@ -196,8 +196,9 @@ the check reads was confirmed against the live org that day with a read only
 describe and Tooling `FieldDefinition` (the list is in the file's header).
 
 **The relay's figure is what Salesforce saved** (#2313), not what Pipedream
-answered. Each morning a sample of 100 of the day's relay posts of the other
-outcome steps (about 3,400 a day), spread evenly over it, is read back the same
+answered. Each morning a sample of 100 of the day's relay posts of the outcome
+steps no canary watches (seven since #2174 added `send_salesforce` as the second
+subject; about 2,000 a day), spread evenly over it, is read back the same
 way: the relay's own PATCH (the body with `executionId` and `submissionId`
 dropped and `UUID` and `leadUUID` renamed) against the Submission, with the
 link in `PDFlow_1__c`, and the Lead's Engine ids when the post sent them. A relay
@@ -218,12 +219,78 @@ Two parts of #2173's acceptance are not in it and are read by hand: that fields
 the body did not send are unchanged (which needs a snapshot from before the
 write), and Regal's Lead fields.
 
-**Removing it.** It ends with the canary, and the phase 6 pull request (#2175)
-removes it, since once the other seven posts move there is no relay to compare
-against. Delete `apps/worker/src/lib/invalid-state-canary-watch.ts` and its test
-in `apps/worker/src/lib/__tests__/`, the `invalid-state-canary-watch` entry in
-`CRON_JOBS` (`apps/worker/src/lib/cron-heartbeat.ts`), the block that runs it in
-the `0 13 * * *` batch of `apps/worker/src/index.ts`, and this section. The
+**The window ends at 12:50 UTC whatever time the run starts** (#2806, its first
+half): on 2026-10-22 the run started 31 minutes late and a window measured back
+from its start left 8:52 to 9:23 AM ET unread. The second half of #2806,
+ordering two runs that wrote one Submission by when each write arrived rather
+than when its run started, is still open: the stamp does not carry a send time.
+
+## The second canary: send_salesforce (#2174, phase 5)
+
+`send_salesforce` is the busiest outcome post (about 1,271 a day) and a JSON
+text body, the path the first canary could not exercise. The port, the stage
+(`canary_send_salesforce`) and the engine options it needs were built in phases
+1 and 2; `send-salesforce-canary.test.ts` runs the stage over the money gate's
+Main Flow (the live version, 174 on 2026-10-26), so a canvas edit that would
+make the apply refuse, or port more than this one post, fails there on the next
+fixture refresh. It also walks the ported write through the real engine for
+every Salesforce answer and requires each failure to end the same way as the
+invalid state write the first canary passed on.
+
+**Switching it on** (after the pull request that adds the watch is merged,
+deployed, and the live commit confirmed): the runbook above, steps 2 to 5, with
+the stage `canary_send_salesforce`. Preview first; it must answer that it ports
+`send_salesforce` alone, adds and removes nothing, and leaves the inquiry where
+it is. Save the apply's answer as the rollback record. Then refresh the money
+gate fixtures and set `LIVE_STAGE` to `canary_send_salesforce` in the same pull
+request. Nothing needs turning on in the worker: the watch reads the live
+definition every morning and starts reporting the first day Main Flow holds the
+port.
+
+**Rolling it back**: the rollback above, with the saved answer of this apply. It
+restores the version before it, which still has `invalid_state_sf_post` native,
+so the first canary is untouched.
+
+**Its daily read-back** is the same check as the first canary's, run as its own
+job (`send-salesforce-canary-watch`, its own heartbeat, `job_runs` row and
+message, titled "Direct Send Salesforce writes"), by the same rule: write stamp,
+`PDFlow_1__c`, every key sent, overwritten by a later run set aside (#2485),
+landed then moved on said apart (#2396). Three things differ:
+
+- It reads a sample of 200 of the day's direct writes, spread evenly over it,
+  not every one: one Salesforce read took about half a second in the first
+  canary's runs (230 reads in 57 to 229 s), so 1,271 would outrun the morning.
+  The direct reads stop after five minutes and the rest are said as not checked.
+  The message says how many were written and how many were checked.
+- Its body sends no Engine ids, so no Lead is read and none is claimed.
+- Until it is first switched on it records the day as `not_switched_on` and
+  posts nothing: that is a day on which Main Flow does not hold its port, none
+  of its posts went direct, and this check has never posted a day. Any one of
+  the three makes it report. So a direct write in the window reports even when
+  the live definition no longer holds the port, because a canvas save that undid
+  it is a rollback (#2312), and once it has posted a day it never goes quiet
+  again: a rollback is said every morning, as the first canary's always was.
+
+The relay comparison is the same 100 relay posts of the seven unwatched outcome
+posts, so the two messages compare against one figure.
+
+**The low volume posts** (`send_fallback_salesforce_1` ran 0 times in the 7
+days before the plan; `send_fallback_salesforce` is also rare) are not proved by
+waiting for traffic. After phase 6 ports them, each is proved by a deliberate run:
+a production test lead (the Skyfall test lead procedure), posted to Main Flow
+shaped to take that post's branch (`debt_screening`'s `else` route for
+`send_fallback_salesforce_1`, its `no_debt_but_adv` route for
+`send_fallback_salesforce`), then its Submission read back by the same rule as
+the daily check, with the run named in the phase 6 issue.
+
+**Removing them.** Both end with the canaries, and the phase 6 pull request
+(#2175) removes them, since once the other seven posts move there is no relay to
+compare against. Delete `apps/worker/src/lib/invalid-state-canary-watch.ts` and
+its tests in `apps/worker/src/lib/__tests__/` (`invalid-state-canary-watch*.test.ts`
+and `send-salesforce-canary-watch.test.ts`), the `invalid-state-canary-watch` and
+`send-salesforce-canary-watch` entries in `CRON_JOBS`
+(`apps/worker/src/lib/cron-heartbeat.ts`), the two blocks that run them in the
+`0 13 * * *` batch of `apps/worker/src/index.ts`, and these sections. The
 heartbeat's KV keys expire on their own and need nothing.
 
 ## Tests
@@ -245,6 +312,9 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
   inputs whose key sets and value types were measured from production.
 - `ported-walk.test.ts`: the real engine walk over one ported branch when the
   Apex call fails, and when it succeeds.
+- `send-salesforce-canary.test.ts`: the phase 5 stage over the live Main Flow,
+  and the ported `send_salesforce` walked by the real engine through every
+  Salesforce answer, each failure ending as the invalid state write's does.
 - `apply.test.ts` and `tab-bundle.test.ts`: the version checks, the read back,
   the rollback, and the built tab script run against a stand in tab.
 

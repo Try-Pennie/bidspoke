@@ -233,8 +233,9 @@ describe('a repeat visit to the same Submission (#2485)', () => {
     const report = await runInvalidStateWatch(d)
     expect(report.native).toEqual([{ kind: 'moved_on', executionId: RUN_2, laterWrite: [], newerSubmission: false, leadFromEarlierRun: RUN_1 }])
     expect(windows).toEqual([
-      ['2026-10-18T12:50:42.666Z', '2026-10-19T12:50:42.666Z'],
-      ['2026-10-17T12:50:42.666Z', '2026-10-18T12:50:42.666Z'],
+      // The run started 42.666 s late; the windows still end at 12:50 UTC (#2806).
+      ['2026-10-18T12:50:00.000Z', '2026-10-19T12:50:00.000Z'],
+      ['2026-10-17T12:50:00.000Z', '2026-10-18T12:50:00.000Z'],
     ])
     expect(posted[0].alert).toBe(false)
   })

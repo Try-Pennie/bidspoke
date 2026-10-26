@@ -42,7 +42,7 @@ import { REPEAT_RUN_1, REPEAT_RUN_2 } from './fixtures/invalid-state-repeat-visi
 
 const APP = 'https://bidspoke.example'
 /** The first paragraph of every message that reports runs (#2652). */
-const INTRO = "Since Oct 16, Main Flow writes the outcome for leads from states we don't serve straight to Salesforce. Every other outcome still goes through Pipedream."
+const INTRO = "Since Oct 16, Main Flow writes the outcome for leads from states we don't serve straight to Salesforce, while most other outcomes still go through Pipedream."
 // 13:00 UTC on 2026-10-18, when the daily batch runs.
 const NOW_MS = Date.parse('2026-10-18T13:00:00Z')
 const RUN_A = '01a14600-0000-7000-8000-00000000000a'
@@ -1072,7 +1072,7 @@ describe('the words of the daily message (#2652)', () => {
 })
 
 describe('reading the relay sample from the database', () => {
-  it('lists every relay post of the eight other outcome posts in the window, then reads back an even sample of them in time order', async () => {
+  it('lists every relay post of the seven outcome posts no canary watches in the window, then reads back an even sample of them in time order', async () => {
     const { supabase, queries } = relayDatabase(2500)
     const { total, sample } = await readRelayPosts(supabase, '2026-10-17T12:50:00.000Z', '2026-10-18T12:50:00.000Z')
     expect(total).toBe(2500)
@@ -1094,7 +1094,9 @@ describe('reading the relay sample from the database', () => {
     expect(sampleColumns.split(',').map((c) => c.trim())).toContain('started_at')
     expect(STEP_COLUMNS.split(',').map((c) => c.trim())).toContain('started_at')
     expect(RELAY_COMPARISON_POSTS).not.toContain(WATCHED_STEP)
-    expect(RELAY_COMPARISON_POSTS).toHaveLength(8)
+    // send_salesforce is the second canary's subject (#2174), so it is not a comparison either.
+    expect(RELAY_COMPARISON_POSTS).not.toContain('send_salesforce')
+    expect(RELAY_COMPARISON_POSTS).toHaveLength(7)
   })
 
   it('each read carries the relay filter and its own bound: the list pages under a full order, the sample is one limit (#1437)', async () => {

@@ -618,6 +618,25 @@ const scheduledJobs = {
           }
         })().catch((e) => console.error('[invalid-state-canary-watch] failed:', e))
       )
+      // The same read-back for the second canary, send_salesforce (#2174): a
+      // sample of its direct writes, since it runs about 1,271 times a day. Until
+      // the canary is switched on it records the day and posts nothing. Its own
+      // heartbeat and failure boundary; removed with the first (#2175).
+      track(
+        (async () => {
+          const { runSendSalesforceWatchForEnv, SEND_SALESFORCE_WATCH_JOB } = await import('./lib/invalid-state-canary-watch')
+          await writeHeartbeat(env.IDEMPOTENCY, SEND_SALESFORCE_WATCH_JOB).catch((e) =>
+            console.error('[cron-heartbeat] send-salesforce-canary-watch write failed:', e)
+          )
+          try {
+            await runSendSalesforceWatchForEnv(supabase, env)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, SEND_SALESFORCE_WATCH_JOB).catch((e) =>
+              console.error('[cron-heartbeat] send-salesforce-canary-watch completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[send-salesforce-canary-watch] failed:', e))
+      )
       // Money's Salesforce run as identity, for ops verify to refuse an ops
       // connection that authenticates as money's user (#2335). One userinfo call
       // with money's token, through getSalesforceToken unchanged. Its own

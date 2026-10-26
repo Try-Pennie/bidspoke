@@ -196,6 +196,22 @@ export const CRON_JOBS: CronJob[] = [
       "nobody is told each morning whether Main Flow's direct invalid state writes to Salesforce landed, so a lost write shows only when somebody opens the record (#2173)",
   },
   {
+    // The second canary's daily read-back (#2174), the same check on
+    // send_salesforce. It runs every day, and until the canary is switched on it
+    // records the day and posts nothing. Removed with the first by the phase 6
+    // change (#2175): see docs/main-flow-relay-port.md.
+    id: 'send-salesforce-canary-watch',
+    label: 'Main Flow Send Salesforce write report',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // A sample of 200 direct writes and 100 relay posts, one Salesforce read
+    // each, one at a time, each half of the reads bounded at 5 minutes.
+    maxRunMs: 30 * MIN,
+    dependents:
+      "nobody is told each morning whether Main Flow's direct Send Salesforce writes landed, so a lost write shows only when somebody opens the record (#2174)",
+  },
+  {
     // Money's Salesforce run as identity, measured for ops verify (#2335).
     id: 'money-identity',
     label: 'Money Salesforce identity measurement',
