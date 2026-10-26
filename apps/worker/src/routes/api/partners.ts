@@ -574,8 +574,9 @@ partners.get('/:id/versions', async (c) => {
 
 /**
  * POST /partners/live-miss: a page's probe found a version it heard no notice
- * of. Recorded, never alerted on: no miss threshold has been measured, and the
- * issue that sets one from these rows is filed with #2135 (L65). Who may call:
+ * of. Recorded here only; the five minute live miss notice
+ * (lib/partner-live-miss-notice.ts, #2220) posts each row to the
+ * organization's alert channel once. Who may call:
  * any allowlisted member of the org. Whose rows: a partner of this org only,
  * recorded against this org and the person whose page saw it.
  */
