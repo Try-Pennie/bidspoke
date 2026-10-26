@@ -15,6 +15,13 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # vercel builds the Pages artifact through @cloudflare/next-on-pages, which
+      # supports it only up to 47.0.4, so any later release fails
+      # vercel-cli-pinned.test.ts and can never merge (#2791). That test holds
+      # this bound to the adapter's declared range.
+      - dependency-name: vercel
+        versions: [">47.0.4"]
     labels:
       - dependencies
     commit-message:
