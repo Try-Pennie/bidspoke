@@ -1408,7 +1408,8 @@ export const api = {
     // The Add connection form's save, Reconnect and Remove (build PR 10). Each
     // refusal throws carrying the route's sentence in body.message; a Remove
     // refused because workflows use it carries them in body.workflows.
-    create: (body: { service: string; name: string; fields: Record<string, string> }) =>
+    // A list field's value (a Google connection's shared drives, #2572) is sent as a list.
+    create: (body: { service: string; name: string; fields: Record<string, string | string[]> }) =>
       req<{ connection: { id: string; name: string; service: string; acts_as: string | null; target: Record<string, unknown> | null; created_at: string } }>('/api/connections', {
         method: 'POST',
         body: JSON.stringify(body),

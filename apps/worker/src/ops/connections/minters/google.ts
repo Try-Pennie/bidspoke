@@ -95,8 +95,12 @@ function keyOf(raw: string | undefined): { clientEmail: string; pem: string } {
   return { clientEmail: key.client_email, pem: key.private_key }
 }
 
-/** The declared mailbox, lower case, and drives, or target_invalid. */
-function subjectsOf(target: unknown): { mailbox: string; drives: string[] } {
+/**
+ * The declared mailbox, lower case, and drives, or target_invalid: the one
+ * reading of a Google target the mint checks, which the catalogue contract
+ * test reads the form's target through (catalogue-connection-fields.test.ts).
+ */
+export function googleSubjectsOf(target: unknown): { mailbox: string; drives: string[] } {
   const fields = targetFields(target)
   const mailbox = targetString(fields, 'subject').trim().toLowerCase()
   if (!MAILBOX.test(mailbox)) throw new LoginMintError('not_allowed', 'target_invalid')
@@ -119,7 +123,7 @@ export function googleDelegationAuth(deps: GoogleDelegationDeps): MinterRules {
   return {
     expired: (response) => response.status === 401,
     authorize: async (input: AuthorizeInput): Promise<Authorization> => {
-      const { mailbox, drives } = subjectsOf(input.target)
+      const { mailbox, drives } = googleSubjectsOf(input.target)
       if (scope === '') throw new LoginMintError('not_allowed', 'no_delegation_scopes')
 
       // F129: the organization's allowlist, before any token is minted or reused.

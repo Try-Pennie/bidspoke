@@ -170,9 +170,14 @@ export const GOOGLE_SERVICE: ServiceSchema = {
   // The settled design's fields (D16): the connection's name, then the mailbox it acts as, from the
   // organization's list. The service account's key is the ops Worker's own secret, never a field: it can
   // act as anyone in the Workspace, so it is not handed to whoever adds a connection (minters/google.ts).
+  // Then the shared drives it may reach, ticked from the same list (#2572): the minter reads them as
+  // target.drives, an array of drive ids, and checks each against the list at every mint.
   connection: {
     tile: 'A mailbox or shared drive on the company list, or your own login',
     auth: 'service_account_delegation',
-    fields: [{ key: 'subject', label: 'Acts as', input: 'google_subject', required: true, target: 'subject' }],
+    fields: [
+      { key: 'subject', label: 'Acts as', input: 'google_subject', required: true, target: 'subject' },
+      { key: 'drives', label: 'Shared drives', input: 'google_drives', required: false, target: 'drives' },
+    ],
   },
 }

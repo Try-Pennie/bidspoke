@@ -30,16 +30,29 @@ export type ConnectionAuthKind = (typeof CONNECTION_AUTH_KINDS)[number]
  *   - `secret_block`, a masked box for a multi line key (a PEM);
  *   - `salesforce_org`, the dropdown of the orgs Bidspoke knows, with Another
  *     org last (R15);
- *   - `google_subject`, the dropdown of the organization's company list of
- *     mailboxes and drives (R16, D16), under the choice between a company
- *     mailbox or drive and your own Google account.
+ *   - `google_subject`, the dropdown of the mailboxes on the organization's
+ *     company list (R16, D16), under the choice between a company mailbox or
+ *     drive and your own Google account. A connection acts as a mailbox,
+ *     never a drive (#2572);
+ *   - `google_drives`, the shared drives on that company list, each ticked or
+ *     not: a LIST, so its value is an array of drive ids (#2572), the shape
+ *     the Google minter reads its target's drives in.
  * The Add connection form (apps/web/src/components/connections, build PR 10
  * of #2338) draws each.
  */
-export const CONNECTION_INPUTS = ['text', 'secret', 'secret_block', 'salesforce_org', 'google_subject'] as const
+export const CONNECTION_INPUTS = ['text', 'secret', 'secret_block', 'salesforce_org', 'google_subject', 'google_drives'] as const
 export type ConnectionInput = (typeof CONNECTION_INPUTS)[number]
 
 const SECRET_INPUTS: ReadonlySet<ConnectionInput> = new Set(['secret', 'secret_block'])
+const LIST_INPUTS: ReadonlySet<ConnectionInput> = new Set(['google_drives'])
+
+/** Whether a field drawn with this input holds a list of values rather than one text value. */
+export function isListInput(input: ConnectionInput): boolean {
+  return LIST_INPUTS.has(input)
+}
+
+/** A form's value for one field: text, or for a list input, its values. */
+export type ConnectionValue = string | readonly string[]
 
 export interface ConnectionField {
   /** The form's key for the value, unique within the service. */
@@ -101,6 +114,7 @@ export type ConnectionProblemCode =
   | 'target_field_duplicate'
   | 'secret_in_target'
   | 'secret_not_in_login'
+  | 'list_in_login'
 
 export interface ConnectionProblem {
   readonly code: ConnectionProblemCode
@@ -142,35 +156,52 @@ export function connectionProblems(service: ServiceSchema): ConnectionProblem[] 
       if (f.target !== undefined) add('secret_in_target', subject, `${subject} is a secret declared in the target, which is public`)
       if (f.login === undefined) add('secret_not_in_login', subject, `${subject} is a secret kept out of the sealed login`)
     }
+    if (LIST_INPUTS.has(f.input) && f.login !== undefined) add('list_in_login', subject, `${subject} is a list declared in the sealed login, which holds text only`)
   }
   return problems
 }
 
 export type ConnectionParts =
-  | { readonly ok: true; readonly login: Record<string, string>; readonly target: Record<string, string> }
-  | { readonly ok: false; readonly missing: readonly string[]; readonly unknown: readonly string[] }
+  | { readonly ok: true; readonly login: Record<string, string>; readonly target: Record<string, string | string[]> }
+  | { readonly ok: false; readonly missing: readonly string[]; readonly unknown: readonly string[]; readonly malformed: readonly string[] }
 
 /**
  * The login and target a filled in form makes, by field key. A blank value is
  * absent: a required one is named in `missing`, an optional one is left out.
- * Every other value is kept exactly as given (a PEM's line breaks are part of
- * it). A value no field declares is named in `unknown`, never dropped quietly.
+ * Every other text value is kept exactly as given (a PEM's line breaks are
+ * part of it). A list input's value is an array (#2572): its blank entries are
+ * dropped, each other entry kept as given, once, in the order given, and a
+ * list left empty is absent. A value no field declares is named in `unknown`,
+ * and a list given to a text field or text given to a list field in
+ * `malformed`, never dropped or guessed quietly.
  */
-export function connectionParts(connection: ConnectionDeclaration, values: Readonly<Record<string, string | undefined>>): ConnectionParts {
+export function connectionParts(connection: ConnectionDeclaration, values: Readonly<Record<string, ConnectionValue | undefined>>): ConnectionParts {
   const declaredKeys = new Set(connection.fields.map((f) => f.key))
   const unknown = Object.keys(values).filter((k) => !declaredKeys.has(k))
   const missing: string[] = []
+  const malformed: string[] = []
   const login: Record<string, string> = {}
-  const target: Record<string, string> = {}
+  const target: Record<string, string | string[]> = {}
   for (const f of connection.fields) {
-    const value = Object.hasOwn(values, f.key) ? values[f.key] : undefined
-    if (value === undefined || value.trim() === '') {
+    const raw = Object.hasOwn(values, f.key) ? values[f.key] : undefined
+    const list = isListInput(f.input)
+    if (raw !== undefined && Array.isArray(raw) !== list) {
+      malformed.push(f.key)
+      continue
+    }
+    const value: string | string[] | undefined = raw === undefined
+      ? undefined
+      : typeof raw === 'string'
+        ? (raw.trim() === '' ? undefined : raw)
+        : [...new Set(raw.filter((v) => typeof v === 'string' && v.trim() !== ''))]
+    if (value === undefined || value.length === 0) {
       if (f.required) missing.push(f.key)
       continue
     }
-    if (f.login !== undefined) login[f.login] = value
+    // A list is never declared in the login (connectionProblems, list_in_login), which holds text only.
+    if (f.login !== undefined && typeof value === 'string') login[f.login] = value
     if (f.target !== undefined) target[f.target] = value
   }
-  if (missing.length > 0 || unknown.length > 0) return { ok: false, missing, unknown }
+  if (missing.length > 0 || unknown.length > 0 || malformed.length > 0) return { ok: false, missing, unknown, malformed }
   return { ok: true, login, target }
 }

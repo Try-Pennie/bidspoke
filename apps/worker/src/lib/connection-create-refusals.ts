@@ -51,6 +51,8 @@ export const CREATE_ROUTE_REFUSAL_CODES = [
   'connection_money_host',
   /** A mailbox or drive not on the organization's Google list. */
   'google_subject_not_listed',
+  /** A listed shared drive named as the mailbox a Google connection acts as (#2572): names[0] the drive as the list shows it. */
+  'google_subject_is_drive',
   /** The Google list could not be read. */
   'google_list_unavailable',
   /** The login could not be sealed. */
@@ -168,6 +170,7 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   connection_host_owned: (c) => `The host ${c.names[0] ?? 'entered'} belongs to ${c.names[1] ?? 'another service'}, which an HTTP connection may never reach. Nothing was saved. Use another host, or a ${c.names[1] ?? 'service'} connection where Bidspoke offers one.`,
   connection_money_host: (c) => `The host ${c.names[0] ?? 'entered'} is one Bidspoke's bidding sends to, which a workflow connection may never reach. Nothing was saved. Use another host.`,
   google_subject_not_listed: (c) => `${listed(c.names)} ${isAre(c.names)} not on the company list of mailboxes and drives. Nothing was saved. Add ${itThem(c.names)} to the list on this page, then save again.`,
+  google_subject_is_drive: (c) => `${c.names[0] ?? 'That'} is a shared drive, and a Google connection acts as a mailbox. Nothing was saved. Choose a mailbox under Acts as, tick the drive under Shared drives, then save again.`,
   google_list_unavailable: () => 'The company list of mailboxes and drives could not be read. Nothing was saved. Save again in a minute.',
   connection_seal_failed: () => 'Bidspoke could not lock the login away for safe keeping. Nothing was saved. Save again, and tell Dan if it keeps happening.',
   connections_unavailable: () => 'Bidspoke\'s database did not answer. Nothing was saved. Save again in a minute.',

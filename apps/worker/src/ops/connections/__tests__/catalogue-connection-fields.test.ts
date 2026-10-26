@@ -4,12 +4,14 @@ import {
   connectionParts,
   type ConnectionAuthKind,
   type ConnectionDeclaration,
+  type ConnectionValue,
   type ServiceSchema,
 } from '@bidspoke/service-catalogue/schema'
 import { snowflakeTargetOf } from '@bidspoke/service-catalogue/runtime'
 import { LoginMintError } from '../refusals'
 import type { Authorization, AuthorizeInput } from '../service-rules'
 import { opsServiceRegistry } from '../services'
+import { googleSubjectsOf } from '../minters/google'
 import { makeSigningKey } from '../minters/__tests__/minter-harness'
 import { ORG } from './harness'
 
@@ -36,9 +38,15 @@ beforeAll(async () => {
  * Worker's own secret and its list check the ops database's (#2337), so here a
  * real key and a list that allows the sample mailbox.
  */
+/** What the Google minter asked the list check about, in order (#2572). */
+const delegationChecks: Array<{ mailbox: string; drives: readonly string[] }> = []
+
 const opsServiceEntry = (service: string) => opsServiceRegistry({
   google: {
-    checkDelegation: async () => 'allowed',
+    checkDelegation: async (_org, mailbox, drives) => {
+      delegationChecks.push({ mailbox, drives: [...drives] })
+      return 'allowed'
+    },
     serviceAccountKey: () => JSON.stringify({ type: 'service_account', client_email: 'bidspoke-ops@ops.iam.gserviceaccount.com', private_key: pem, token_uri: 'https://oauth2.googleapis.com/token' }),
     // A company mailbox's form (the catalogue's fields) never reaches a person's token object.
     tokens: { get: () => { throw new Error('a catalogue form login never asks a token object') } },
@@ -47,13 +55,15 @@ const opsServiceEntry = (service: string) => opsServiceRegistry({
   supabase: { laneProjectRefs: () => ['xvrmivmpfykwwtriqwpg', 'zwihpjxouklvkvngkvmw'] },
 })(service)
 
-const SAMPLES: Readonly<Record<string, () => Readonly<Record<string, string>>>> = {
+const SAMPLES: Readonly<Record<string, () => Readonly<Record<string, ConnectionValue>>>> = {
   anthropic: () => ({
     workspace_id: 'wrkspc_0PS2337',
     api_key: 'canary-ant-key-2337',
   }),
   google: () => ({
     subject: 'ops@trypennie.example',
+    // Two shared drive ids in the shape the company list holds them (mixed case, as Google issues them).
+    drives: ['0AFakeDriveOne2572PVA', '0AFakeDriveTwo2572PVA'],
   }),
   http: () => ({
     host: 'https://api.lender.example/v2',
@@ -96,6 +106,11 @@ const SAMPLES: Readonly<Record<string, () => Readonly<Record<string, string>>>> 
  */
 const TARGET_READERS: Readonly<Record<string, (target: unknown) => Readonly<Record<string, unknown>>>> = {
   snowflake: (target) => ({ ...snowflakeTargetOf(target) }),
+  // The Google minter's own reading, which every mint checks against the list (#2572).
+  google: (target) => {
+    const { mailbox, drives } = googleSubjectsOf(target)
+    return { subject: mailbox, drives }
+  },
 }
 
 interface TokenRequest {
@@ -138,15 +153,15 @@ async function mintRefusal(serviceKey: string, login: unknown, target: unknown):
   throw new Error('expected the minter to refuse, and it minted')
 }
 
-function partsOf(service: ServiceSchema): { login: Record<string, string>; target: Record<string, string> } {
+function partsOf(service: ServiceSchema): { login: Record<string, string>; target: Record<string, string | string[]> } {
   const sample = SAMPLES[service.key]
   if (!sample) throw new Error(`no sample values for ${service.key}: add them to SAMPLES`)
   const parts = connectionParts(service.connection, sample())
-  if (!parts.ok) throw new Error(`the ${service.key} samples do not fit its declaration: missing ${parts.missing.join(', ')}; unknown ${parts.unknown.join(', ')}`)
+  if (!parts.ok) throw new Error(`the ${service.key} samples do not fit its declaration: missing ${parts.missing.join(', ')}; unknown ${parts.unknown.join(', ')}; malformed ${parts.malformed.join(', ')}`)
   return { login: parts.login, target: parts.target }
 }
 
-const without = (fields: Record<string, string>, name: string) => Object.fromEntries(Object.entries(fields).filter(([k]) => k !== name))
+const without = <V>(fields: Record<string, V>, name: string) => Object.fromEntries(Object.entries(fields).filter(([k]) => k !== name))
 
 /** What each auth kind does when it mints, seen from the outside. A kind with no entry here fails, so a new kind brings its check. */
 const AUTH_KIND_BEHAVIOUR: Readonly<Partial<Record<ConnectionAuthKind, (seen: { auth: Authorization; tokenRequests: TokenRequest[]; login: Record<string, string> }) => void>>> = {
@@ -241,7 +256,8 @@ describe('the catalogue connection declarations, against the ops minters', () =>
         const read = reader!(target)
         // The reader's own fields are exactly the declared ones, so neither side can carry a name the other lacks.
         expect(Object.keys(read).sort()).toEqual(declared(service.connection, 'target').map((f) => f.name).sort())
-        for (const field of optional) expect(read[field.name], `target field ${field.name}`).toBe(target[field.name])
+        // By value: a list is read into a copy, and a copy holding the same entries is the same declaration.
+        for (const field of optional) expect(read[field.name], `target field ${field.name}`).toEqual(target[field.name])
       })
 
       it('has no optional login field, which no minter reads', () => {
@@ -249,4 +265,38 @@ describe('the catalogue connection declarations, against the ops minters', () =>
       })
     })
   }
+})
+
+describe("a Google form naming shared drives, through the real minter (#2572)", () => {
+  const google = () => {
+    const found = CATALOGUE.find((s) => s.key === 'google')
+    if (!found) throw new Error('the catalogue has no google service')
+    return found.connection
+  }
+
+  it('mints, and asks the list about the mailbox and exactly the two drives the form named, in their case', async () => {
+    const parts = connectionParts(google(), { subject: 'ops@trypennie.example', drives: ['0AFakeDriveOne2572PVA', '0AFakeDriveTwo2572PVA'] })
+    if (!parts.ok) throw new Error('the form did not build')
+    expect(Array.isArray(parts.target.drives)).toBe(true)
+    delegationChecks.length = 0
+    const seen = await mint('google', parts.login, parts.target)
+    expect(seen.auth.headers.authorization).toBe('Bearer canary-access-token-2338')
+    expect(delegationChecks).toEqual([{ mailbox: 'ops@trypennie.example', drives: ['0AFakeDriveOne2572PVA', '0AFakeDriveTwo2572PVA'] }])
+  })
+
+  it('would be refused at every mint if the drives reached it as text, which connectionParts no longer builds', async () => {
+    // The shape #2572 found: one string where the minter reads an array.
+    const err = await mintRefusal('google', {}, { subject: 'ops@trypennie.example', drives: '0AFakeDriveOne2572PVA' })
+    expect([err.kind, err.reason]).toEqual(['not_allowed', 'target_invalid'])
+    expect(connectionParts(google(), { subject: 'ops@trypennie.example', drives: '0AFakeDriveOne2572PVA' })).toMatchObject({ ok: false, malformed: ['drives'] })
+  })
+
+  it('mints a mailbox alone, naming no drive, with the drives left out of the target', async () => {
+    const parts = connectionParts(google(), { subject: 'ops@trypennie.example', drives: [] })
+    if (!parts.ok) throw new Error('the form did not build')
+    expect(parts.target).toEqual({ subject: 'ops@trypennie.example' })
+    delegationChecks.length = 0
+    await mint('google', parts.login, parts.target)
+    expect(delegationChecks).toEqual([{ mailbox: 'ops@trypennie.example', drives: [] }])
+  })
 })

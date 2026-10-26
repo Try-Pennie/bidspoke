@@ -29,23 +29,7 @@ import { rpcStub } from '../../../test-setup/rpc-stub'
 import type { AuthorizeInput } from '../../../ops/connections/service-rules'
 
 const fixtures = vi.hoisted(() => {
-  // A delegated service declaring drives too, which the shipped Google entry's form does not (#2337), so the
-  // route's drive check is still driven; keyed apart from the shipped google.
-  const google: ServiceSchema = {
-    key: 'google_drives_fixture',
-    name: 'Google drives fixture',
-    actions: [],
-    connection: {
-      tile: 'A company mailbox or drive',
-      auth: 'service_account_delegation',
-      fields: [
-        { key: 'subject', label: 'Mailbox', input: 'text', required: true, target: 'subject' },
-        { key: 'drives', label: 'Drive', input: 'text', required: false, target: 'drives' },
-        { key: 'client_email', label: 'Service account', input: 'text', required: true, login: 'client_email' },
-        { key: 'private_key', label: 'Private key', input: 'secret_block', required: true, login: 'private_key' },
-      ],
-    },
-  }
+  // The shipped Google entry declares its drives since #2572, so the route's drive check is driven through it.
   const supabase: ServiceSchema = {
     key: 'supabase',
     name: 'Supabase',
@@ -61,7 +45,7 @@ const fixtures = vi.hoisted(() => {
   }
   // Slack is the real catalogue's own since #2337.
   // sealDelayMs: a real time delay before each seal, for the test that must not count on sealing being quick (L290).
-  return { extra: [google, supabase], publicKeys: {} as Record<string, string>, sealDelayMs: 0 }
+  return { extra: [supabase], publicKeys: {} as Record<string, string>, sealDelayMs: 0 }
 })
 
 vi.mock('@bidspoke/service-catalogue/schema', async (importOriginal) => {
@@ -702,9 +686,8 @@ describe('refused before anything is sealed or verified', () => {
 })
 
 describe('Google: a mailbox or drive must be on the organization\'s list before verify is asked', () => {
-  const google = (fields: Record<string, string>) => ({
-    service: 'google_drives_fixture', name: 'Ops mailbox', fields: { client_email: 'ops@pennie-ops.iam.gserviceaccount.com', private_key: 'pem', ...fields },
-  })
+  // The shipped Google entry's form: the mailbox it acts as, and the shared drives it names, a list (#2572).
+  const google = (fields: Record<string, string | string[]>) => ({ service: 'google', name: 'Ops mailbox', fields })
 
   it('refuses a mailbox not on the list, naming it, and asks verify nothing', async () => {
     const db = storeDouble()
@@ -723,20 +706,64 @@ describe('Google: a mailbox or drive must be on the organization\'s list before 
   it('refuses a drive not on the list, though its mailbox is', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
     const { env, binding } = makeEnv({ list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }]) })
-    const res = await post(env, google({ subject: 'OPS@trypennie.com', drives: '0AFinanceDrive' }))
+    const res = await post(env, google({ subject: 'OPS@trypennie.com', drives: ['0AFinanceDrive'] }))
     expect(((await res.json()) as Refusal).message).toContain('0AFinanceDrive is not on the company list')
     expect(binding.verify).not.toHaveBeenCalled()
   })
 
-  it('goes on to verify a mailbox and drive that are on the list', async () => {
+  it('goes on to verify a mailbox and two drives that are on the list, sending the drives as the list the minter reads', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    let asked: VerifyRequest | null = null
     const { env, binding } = makeEnv({
-      list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }, { kind: 'drive', subject: '0AFinanceDrive' }]),
-      verify: async () => ({ ok: false, refused: 'connection_service_unknown', detail: 'no rules for the google service on this Worker', retry_at: null }),
+      list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }, { kind: 'drive', subject: '0AFinanceDrive' }, { kind: 'drive', subject: '0AReportsDrive' }]),
+      verify: async (r) => {
+        asked = r
+        return { ok: false, refused: 'connection_service_unknown', detail: 'no rules for the google service on this Worker', retry_at: null }
+      },
     })
-    const res = await post(env, google({ subject: 'Ops@TryPennie.com ', drives: '0AFinanceDrive' }))
+    const res = await post(env, google({ subject: 'Ops@TryPennie.com ', drives: ['0AFinanceDrive', '0AReportsDrive'] }))
     expect(binding.verify).toHaveBeenCalledTimes(1)
+    expect(asked!.candidate!.target).toEqual({ subject: 'Ops@TryPennie.com ', drives: ['0AFinanceDrive', '0AReportsDrive'] })
     expect(((await res.json()) as Refusal).error).toBe('connection_service_unknown')
+  })
+
+  it('refuses a listed drive chosen as the mailbox it acts as, naming the drive as the list holds it, never lower cased', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env, binding } = makeEnv({ list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }, { kind: 'drive', subject: '0AFinanceDrive' }]) })
+    const res = await post(env, google({ subject: '0AFinanceDrive' }))
+    expect(res.status).toBe(422)
+    const body = (await res.json()) as Refusal
+    expect(body.error).toBe('google_subject_is_drive')
+    expect(body.message).toContain('0AFinanceDrive is a shared drive')
+    expect(body.message).not.toContain('0afinancedrive')
+    expect(binding.verify).not.toHaveBeenCalled()
+  })
+
+  it('names a listed drive chosen as the mailbox by the name the list gives it', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env } = makeEnv({
+      list: async () => ({ ok: true, reached_limit: false, subjects: [{ kind: 'drive', subject: '0AFinanceDrive', display_name: 'Finance', added_by: 'Dan Wright', added_at: '2026-10-20T15:00:00Z' }] }),
+    })
+    const body = (await (await post(env, google({ subject: '0AFinanceDrive' }))).json()) as Refusal
+    expect(body.error).toBe('google_subject_is_drive')
+    expect(body.message).toContain('Finance is a shared drive')
+  })
+
+  it('refuses drives sent as text rather than a list, before the list is asked, so the minter never sees a string', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env, binding } = makeEnv({ list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }, { kind: 'drive', subject: '0AFinanceDrive' }]) })
+    const res = await post(env, google({ subject: 'ops@trypennie.com', drives: '0AFinanceDrive' }))
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as Refusal & { detail: string })).toMatchObject({ error: 'connection_request_invalid', detail: 'drives is not in the shape its field takes' })
+    expect(binding.listDelegationSubjects).not.toHaveBeenCalled()
+    expect(binding.verify).not.toHaveBeenCalled()
+  })
+
+  it('refuses a list holding anything but text, by the field\'s name', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env } = makeEnv({ list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }]) })
+    const res = await post(env, { service: 'google', name: 'Ops mailbox', fields: { subject: 'ops@trypennie.com', drives: ['0AFinanceDrive', 7] } })
+    expect(((await res.json()) as Refusal & { detail: string })).toMatchObject({ error: 'connection_request_invalid', detail: 'drives is not text' })
   })
 
   it('refuses when the list cannot be read, never passing', async () => {
