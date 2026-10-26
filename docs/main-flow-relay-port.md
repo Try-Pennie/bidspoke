@@ -168,8 +168,9 @@ then would discard that save too. Rehearse one rollback before the first canary.
 
 ## The canary's daily read-back (#2173)
 
-From version 172 (2026-10-16), `invalid_state_sf_post` is the one native outcome
-write. Every morning at 9 AM ET (the `0 13 * * *` daily batch, so 8 AM ET once
+From version 172 (2026-10-16), `invalid_state_sf_post` was the one native outcome
+write, until version 175 (2026-10-26) made `send_salesforce` native as well
+(below). Every morning at 9 AM ET (the `0 13 * * *` daily batch, so 8 AM ET once
 clocks go back) the worker reads back from Salesforce every Main Flow run of the
 24 hours ending at 12:50 UTC, ten minutes before the batch, whose invalid state step ran as a Salesforce step, and
 posts one message to Main Flow's organization's alerts channel

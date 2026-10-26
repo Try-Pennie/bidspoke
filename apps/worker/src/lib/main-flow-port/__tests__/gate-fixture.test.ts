@@ -1,5 +1,6 @@
 /**
- * The money gate's Main Flow fixture is fully ported at the stage last applied (#2173).
+ * The money gate's Main Flow fixture is fully ported at the stage last applied
+ * (#2173, then canary_send_salesforce, #2174).
  *
  * Step 5 of the runbook (docs/main-flow-relay-port.md) refreshes the gate's
  * fixtures from production after each apply. This holds the result as a check:
