@@ -41,6 +41,7 @@ import { openOutageForPost, type OpenOutage } from './outage-notice'
 import { createSlackClient, slackCallFailure, slackNetworkCause, type AnyMessageBlock } from '@bidspoke/slack-client'
 import { STALL_SNAPSHOT_DEADLINE_MS, STALL_SNAPSHOT_TTL_SECONDS, type StallSnapshotCount } from './db-stall-snapshot'
 import { isIdleShutdownRefusal } from '@bidspoke/partner-page-live'
+import { alertTitleOf, logSlackPostOutcome, THREAD_REPLY_TITLE } from './slack-post-outcome'
 export type { SlackConnection } from './slack-connection'
 
 export interface FailureAlertPayload {
@@ -896,24 +897,36 @@ export async function sendUpstreamOutageAlert(
  * pins every case.
  */
 export async function sendThreadReply(handle: SlackAlertHandle, text: string): Promise<void> {
+  // Through the same outcome logger as deliverMessage (#2364), titled only as a
+  // thread reply: its text summarises a failure and is never recorded.
+  const channel = handle.channel
+  const title = THREAD_REPLY_TITLE
   try {
     const result = await createSlackClient(handle).chat.postMessage({
-      channel: handle.channel,
+      channel,
       thread_ts: handle.ts,
       text,
       unfurl_links: false,
     })
     // ok:false with no error code is returned, not thrown, by the library.
-    if (result.ok !== true) console.error(`[slack] thread reply API error: ${result.error}`)
+    if (result.ok !== true) {
+      console.error(`[slack] thread reply API error: ${result.error}`)
+      logSlackPostOutcome({ outcome: 'refused', reason: result.error ?? null, status: 200, channel, title })
+    } else {
+      logSlackPostOutcome({ outcome: 'delivered', status: 200, channel, title })
+    }
   } catch (e) {
     const failure = slackCallFailure(e)
     if (!failure) {
       console.error('[slack] thread reply failed:', slackNetworkCause(e))
+      logSlackPostOutcome({ outcome: 'no_answer', channel, title })
     } else if (failure.kind === 'api') {
       console.error(`[slack] thread reply API error: ${failure.error}`)
+      logSlackPostOutcome({ outcome: 'refused', reason: failure.error, status: 200, channel, title })
     } else {
       const wait = failure.retryAfter === null ? '' : `, Retry-After ${failure.retryAfter} s, not waited for`
       console.error(`[slack] thread reply HTTP error ${failure.status}${wait}`)
+      logSlackPostOutcome({ outcome: 'refused', status: failure.status, retryAfter: failure.retryAfter, channel, title })
     }
   }
 }
@@ -4326,6 +4339,22 @@ export async function sendSalesforceBulkheadLimitRecoveryAlert(
   )
 }
 
+// ── Slack taking alert posts again after refusing them (#2364) ───────────────
+
+/**
+ * The one Slack all clear of slack-refusal-watch.ts, which composes its words
+ * (slackRefusalAllClearMessage): the refusals by reason and the alerts lost, by
+ * title. The page itself went to Better Stack, since Slack was refusing it.
+ * Returns whether it reached Slack.
+ */
+export async function sendSlackRefusalAllClear(slack: { bot_token: string }, channel: string, m: { title: string; sections: string[] }): Promise<boolean> {
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(slack.bot_token, channel, blocks, `${m.title}: Slack is taking alert posts again`)) !== null
+}
+
 // ── A scheduled job whose runs keep failing while they finish (#2523, #2526) ───
 
 /** What the failing scheduled job page says (minute-job-failures.ts builds it). */
@@ -4695,6 +4724,11 @@ function postOutageOwnerMessage(botToken: string, channel: string, blocks: unkno
  * the pinned library throws for an answer are listed on slackCallFailure. A 429
  * is logged with its Retry-After and never waited out here: the client has no
  * retry handler.
+ *
+ * Every post also writes ONE outcome line (logSlackPostOutcome,
+ * slack-post-outcome.ts, #2364) in every branch, a post with no answer before
+ * it is rethrown, which the tail Worker copies for the minute refusal check.
+ * It adds no I/O and changes no return or throw.
  */
 async function deliverMessage(
   botToken: string,
@@ -4703,6 +4737,8 @@ async function deliverMessage(
   text: string
 ): Promise<string | null> {
   let ts: string | undefined
+  // The title only, redacted, for the outcome line (#2364): never the body or `text`.
+  const title = alertTitleOf(blocks)
   try {
     const result = await createSlackClient({ bot_token: botToken }).chat.postMessage({
       channel,
@@ -4713,17 +4749,25 @@ async function deliverMessage(
     })
     if (result.ok !== true) {
       console.error(`[slack] API error: ${result.error}`)
+      logSlackPostOutcome({ outcome: 'refused', reason: result.error ?? null, status: 200, channel, title })
       return null
     }
+    logSlackPostOutcome({ outcome: 'delivered', status: 200, channel, title })
     ts = result.ts
   } catch (e) {
     const failure = slackCallFailure(e)
-    if (!failure) throw slackNetworkCause(e)
+    if (!failure) {
+      // No answer: said before the throw, so the record holds it (#2364).
+      logSlackPostOutcome({ outcome: 'no_answer', channel, title })
+      throw slackNetworkCause(e)
+    }
     if (failure.kind === 'api') {
       console.error(`[slack] API error: ${failure.error}`)
+      logSlackPostOutcome({ outcome: 'refused', reason: failure.error, status: 200, channel, title })
     } else {
       const wait = failure.retryAfter === null ? '' : `, Retry-After ${failure.retryAfter} s, not waited for`
       console.error(`[slack] HTTP error ${failure.status}${wait}`)
+      logSlackPostOutcome({ outcome: 'refused', status: failure.status, retryAfter: failure.retryAfter, channel, title })
     }
     return null
   }

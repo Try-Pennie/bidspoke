@@ -54,6 +54,9 @@ export const KNOWN_BIG_TABLES = new Set([
   // One row per cron delivery, about 1,900 a day kept 7 days (#2284); the daily
   // growth check flagged it on 2026-10-18 (#2390).
   'cron_tick_deliveries',
+  // One row per Slack post, kept 7 days (#2364); read only through two
+  // aggregating rpcs, never as a list.
+  'slack_post_outcomes',
   // One row per day or partition each purge run decides on, never pruned: 233
   // rows on 2026-10-18 and about 5 more a day (#962).
   'purge_run_log',
