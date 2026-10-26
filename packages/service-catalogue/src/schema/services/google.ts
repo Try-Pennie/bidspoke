@@ -134,6 +134,26 @@ export const GOOGLE_GMAIL_SEND_EMAIL_V1: ActionSchema = {
 export const GOOGLE_DRIVE_LIST_FILES_V1 = read('google.drive-list-files', 'Drive: list files', [fixed('query', false), json('binds'), value('drive_id')], DRIVE)
 export const GOOGLE_DRIVE_DOWNLOAD_FILE_V1 = read('google.drive-download-file', 'Drive: download a file', [value('file_id', true), fixed('export_mime_type', false), fixed('as', false)], DRIVE)
 
+/**
+ * Version 2 of the two Drive actions (#2805, Dan's decision of 2026-10-26):
+ * the connection's own drive list holds in the action, not only at save and
+ * mint. A list with no drive searches the mailbox's own files and each
+ * declared drive, never every drive the mailbox can reach; a download reads
+ * which drive the file is in and refuses one the connection does not declare.
+ * The mailbox's own files are always allowed. Same arguments as version 1,
+ * which stays for the steps pinned to it.
+ */
+export const GOOGLE_DRIVE_LIST_FILES_V2: ActionSchema = {
+  ...GOOGLE_DRIVE_LIST_FILES_V1,
+  version: 2,
+  idempotentBecause: 'It reads and changes nothing, so a repeat answers the same files as one run, less any changed since.',
+}
+export const GOOGLE_DRIVE_DOWNLOAD_FILE_V2: ActionSchema = {
+  ...GOOGLE_DRIVE_DOWNLOAD_FILE_V1,
+  version: 2,
+  idempotentBecause: 'It reads the file and changes nothing, so a repeat reads it again as one run does.',
+}
+
 export const GOOGLE_CALENDAR_CREATE_EVENT_V1: ActionSchema = {
   key: 'google.calendar-create-event', name: 'Calendar: create an event', version: 1,
   arguments: [
@@ -165,7 +185,7 @@ export const GOOGLE_SERVICE: ServiceSchema = {
   actions: [
     GOOGLE_SHEETS_ADD_ROW_V1, GOOGLE_SHEETS_ADD_ROWS_V1, GOOGLE_SHEETS_UPDATE_CELL_V1, GOOGLE_SHEETS_GET_VALUES_V1, GOOGLE_SHEETS_FIND_ROW_V1, GOOGLE_SHEETS_GET_CELL_V1,
     GOOGLE_SHEETS_GET_SPREADSHEET_V1, GOOGLE_SHEETS_CREATE_WORKSHEET_V1, GOOGLE_SHEETS_DELETE_ROWS_V1, GOOGLE_SHEETS_CLEAR_ROWS_V1, GOOGLE_GMAIL_SEND_EMAIL_V1,
-    GOOGLE_DRIVE_LIST_FILES_V1, GOOGLE_DRIVE_DOWNLOAD_FILE_V1, GOOGLE_CALENDAR_CREATE_EVENT_V1, GOOGLE_CALENDAR_DELETE_EVENT_V1, GOOGLE_CALENDAR_LIST_EVENTS_V1,
+    GOOGLE_DRIVE_LIST_FILES_V1, GOOGLE_DRIVE_DOWNLOAD_FILE_V1, GOOGLE_DRIVE_LIST_FILES_V2, GOOGLE_DRIVE_DOWNLOAD_FILE_V2, GOOGLE_CALENDAR_CREATE_EVENT_V1, GOOGLE_CALENDAR_DELETE_EVENT_V1, GOOGLE_CALENDAR_LIST_EVENTS_V1,
   ],
   // The settled design's fields (D16): the connection's name, then the mailbox it acts as, from the
   // organization's list. The service account's key is the ops Worker's own secret, never a field: it can
