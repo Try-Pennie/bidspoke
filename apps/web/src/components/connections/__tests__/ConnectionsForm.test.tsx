@@ -144,6 +144,13 @@ describe("a Google connection's mailbox and shared drives (#2572)", () => {
     return opened
   }
 
+  it('names the company card a mailbox alone, since drives are ticked below it (Dan, 2026-10-26)', async () => {
+    await openGoogle()
+    expect(screen.getAllByRole('radio').map((r) => r.closest('[data-part="choice-card"]')?.textContent ?? r.textContent)).toEqual([
+      'A company mailboxFrom the company list', 'My own Google accountSigned in as you',
+    ])
+  })
+
   it('offers only the mailboxes on the company list under Acts as, never a drive', async () => {
     await openGoogle()
     const trigger = within(part('add-form')!).getByRole('combobox', { name: 'The mailbox it acts as' })

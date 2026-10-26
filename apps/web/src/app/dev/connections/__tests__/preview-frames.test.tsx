@@ -39,7 +39,7 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'add-saving': ['Checking the login with Salesforce, 6 s'],
   'add-failed': ['Salesforce refused the client secret. Nothing was saved. Check the secret and save again.'],
   'add-salesforce-new-org': ['Client id'],
-  'add-google-company': ['A company mailbox or drive', 'From the company list'],
+  'add-google-company': ['A company mailbox', 'From the company list'],
   'add-google-own': ['Sign in with Google'],
   'saved': ['Achieve Salesforce 2', 'just now'],
   'reconnect': ['Reconnect Achieve Salesforce', 'New client secret'],

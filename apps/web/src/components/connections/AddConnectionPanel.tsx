@@ -46,9 +46,12 @@ export interface AddPanelProps {
 /** The line's words while a sign in fetches Google's link, before the browser goes there (build PR 13). */
 export const SIGN_IN_WORKING_LABEL = 'Opening Google'
 
-/** The words a Google connection's two cards say (R16, D16). */
+/**
+ * The words a Google connection's two cards say (R16, D16). The company card names a mailbox alone
+ * (Dan, 2026-10-26, #2572): its drives are ticked under Shared drives below it.
+ */
 const GOOGLE_WAYS: ReadonlyArray<{ value: GoogleWay; label: string; hint: string }> = [
-  { value: 'company', label: 'A company mailbox or drive', hint: 'From the company list' },
+  { value: 'company', label: 'A company mailbox', hint: 'From the company list' },
   { value: 'own', label: 'My own Google account', hint: 'Signed in as you' },
 ]
 

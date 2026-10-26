@@ -477,7 +477,7 @@ function addPanel(variant) {
     var own = variant.google === "own";
     // Round 16: two choice cards; the company card shows a dropdown of the company list.
     var cards = el("div", "gk-cards");
-    [["A company mailbox or drive", "From the company list", !own], ["My own Google account", "Signed in as you", own]].forEach(function (k) {
+    [["A company mailbox", "From the company list", !own], ["My own Google account", "Signed in as you", own]].forEach(function (k) {
       var card = part(el("div", "gk-card" + (k[2] ? " on" : "")), "choice-card");
       if (k[2]) card.setAttribute("data-chosen", "true");
       card.append(document.createTextNode(k[0]), el("span", "cx-hint", k[1]));
