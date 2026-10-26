@@ -202,8 +202,10 @@ subject; about 2,000 a day), spread evenly over it, is read back the same
 way: the relay's own PATCH (the body with `executionId` and `submissionId`
 dropped and `UUID` and `leadUUID` renamed) against the Submission, with the
 link in `PDFlow_1__c`, and the Lead's Engine ids when the post sent them. A relay
-post has no write stamp, so a Submission holding a later Main Flow run's link
-was overwritten since and is left out, and a post with no Submission, which the
+post has no write stamp, so a Submission holding the link of a Main Flow run
+whose write was sent later (#2806, below) was overwritten since and is left out,
+one whose order against this post cannot be told is left out as order unknown,
+and a post with no Submission, which the
 relay's filter stops, is said apart. The relay reads share the direct reads'
 circuit and stop after five minutes. A day with a run that did not
 land or could not be checked is titled as an alert, and so is a day Main Flow
@@ -300,8 +302,9 @@ the daily check, with the run named in the phase 6 issue.
 **Removing them.** Both end with the canaries, and the phase 6 pull request
 (#2175) removes them, since once the other seven posts move there is no relay to
 compare against. Delete `apps/worker/src/lib/invalid-state-canary-watch.ts` and
-its tests in `apps/worker/src/lib/__tests__/` (`invalid-state-canary-watch*.test.ts`
-and `send-salesforce-canary-watch.test.ts`), the `invalid-state-canary-watch` and
+its tests in `apps/worker/src/lib/__tests__/` (`invalid-state-canary-watch*.test.ts`,
+`send-salesforce-canary-watch.test.ts` and `canary-watch-send-order.test.ts`,
+with the fixture `fixtures/invalid-state-repeat-visit-2026-10-18.ts`), the `invalid-state-canary-watch` and
 `send-salesforce-canary-watch` entries in `CRON_JOBS`
 (`apps/worker/src/lib/cron-heartbeat.ts`), the two blocks that run them in the
 `0 13 * * *` batch of `apps/worker/src/index.ts`, and these sections. The

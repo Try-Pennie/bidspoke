@@ -149,7 +149,7 @@
  *
  * REMOVING IT. Both subjects end with the canaries: the phase 6 pull request
  * (#2175, which moves the other seven posts and so leaves no relay to compare
- * against) deletes this file, its three tests, both CRON_JOBS entries and both
+ * against) deletes this file, its four tests, both CRON_JOBS entries and both
  * blocks in index.ts. The steps are in docs/main-flow-relay-port.md. Until then,
  * a day on which no other post went through the relay says so.
  */
