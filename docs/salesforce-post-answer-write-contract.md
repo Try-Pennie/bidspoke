@@ -1254,9 +1254,7 @@ above, extended rather than copied.
   that is gone or has no Lead is never sent, and is said in the first alert,
   worded as not resent. The unread and not running alerts count posts with the
   updates and say how many are posts.
-- **What it does not cover.** A post inside a parallel node is not recorded (the
-  watch's request hook is one slot on the run); the ported Main Flow has none
-  there. Two runs on one Lead within the same seconds could read each other's
+- **What it does not cover.** Two runs on one Lead within the same seconds could read each other's
   file as their own. A resend shed by our own bulkhead uses up the one resend;
   the read-back sends nothing while the bulkhead is full, so this needs a slot
   to vanish between that check and the send.
@@ -1306,8 +1304,10 @@ read-back above uses too.
   flight, or one the read-back may resend, is held by the read-back from before
   it was sent (its intent record is written first) until it is settled, and a
   recovery sends nothing while it is held. What is left is a post the read-back
-  does not hold: one inside a parallel node (not recorded, see above), or one
-  whose record could not be written, which its own run already logs as an error.
+  does not hold: one whose record could not be written, which its own run
+  already logs as an error. A post inside a parallel node is recorded like any
+  other since #2832: every step carries its own watch with its call
+  (`engine/step-watch.ts`), so two children writing at once never share one.
 
 ### The unfinished work alert (#2024)
 

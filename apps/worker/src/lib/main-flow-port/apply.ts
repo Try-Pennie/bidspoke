@@ -305,6 +305,7 @@ export async function previewPort(api: WorkflowApi, stage: PortStage) {
     live_version: read.version,
     ports: portedStatus.ported.filter((p) => !liveStatus.ported.includes(p)),
     moves_inquiry: portedStatus.inquiryMoved && !liveStatus.inquiryMoved,
+    adds_collections: portedStatus.collections && !liveStatus.collections,
     adds: [...portedNamespaces].filter((ns) => !liveNamespaces.has(ns)),
     removes: [...liveNamespaces].filter((ns) => !portedNamespaces.has(ns)),
     unchanged: sameJson(ported, live),

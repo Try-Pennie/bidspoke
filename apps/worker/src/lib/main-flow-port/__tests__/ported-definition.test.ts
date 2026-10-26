@@ -17,11 +17,13 @@ import { buildContext } from '../../../engine/context'
 import { executeSalesforceNode } from '../../../engine/nodes/salesforce'
 import { runCanvasScript } from '../../../engine/scripts/__tests__/canvas-script'
 import { stubFetch } from '../../../__tests__/helpers/fetch-mock'
-import { PORT_STAGES, portMainFlow, type DefNode, type Definition } from '../transform'
+import { COLLECTIONS_APEX_PATH, INQUIRY_APEX_PATH, PORT_STAGES, portMainFlow, type DefNode, type Definition } from '../transform'
 import { nodeByNamespace, productionMainFlow, relayUrls } from './production-fixture'
 
 const before = productionMainFlow()
-const ported = portMainFlow(productionMainFlow(), PORT_STAGES.inquiry)
+/** Every stage applied: the inquiry and collections posts side by side after each write (#2832). */
+const ported = portMainFlow(productionMainFlow(), PORT_STAGES.collections)
+const APEX_PATHS = [INQUIRY_APEX_PATH, COLLECTIONS_APEX_PATH]
 
 const byId = (def: Definition) => new Map(def.nodes.map((n) => [n.id, n]))
 const outOf = (def: Definition, id: string) => def.edges.filter((e) => e.source === id)
@@ -84,7 +86,21 @@ function worstCaseMs(node: DefNode): number {
   return total
 }
 
-describe('the Apex call follows every outcome write on the trades present route', () => {
+/** The credit posts block after a write, and each of its slots as [body, apex], found by walking. */
+function blockAfter(def: Definition, write: DefNode) {
+  const nodes = byId(def)
+  const [toBlock] = outOf(def, write.id)
+  const block = nodes.get(toBlock.target)!
+  const slots = outOf(def, block.id).filter((e) => (e.source_handle ?? '').startsWith('child-')).sort((a, b) => String(a.source_handle).localeCompare(String(b.source_handle))).map((e) => {
+    const body = nodes.get(e.target)!
+    const apex = nodes.get(outOf(def, body.id)[0].target)!
+    return { slot: e.source_handle, body, apex, next: outOf(def, apex.id).map((x) => nodes.get(x.target)!) }
+  })
+  const end = nodes.get(outOf(def, block.id).find((e) => e.source_handle === 'output')!.target)!
+  return { block, slots, end }
+}
+
+describe('the credit posts follow every outcome write on the trades present route', () => {
   const writes = tradesPresentOutcomeWrites(ported)
 
   it('finds the nine outcome writes by walking from equifax_debt, the three exit branches among them', () => {
@@ -94,31 +110,25 @@ describe('the Apex call follows every outcome write on the trades present route'
     ])
   })
 
-  it('each is followed by a body step and then a credit-inquiries Apex call that reads it and is never resent', () => {
-    const nodes = byId(ported)
+  it('each is followed by one parallel block whose slots are a body step then its Apex call, the inquiry and the collections post, each sent once', () => {
     for (const write of writes) {
-      const [toBody] = outOf(ported, write.id)
-      const body = nodes.get(toBody.target)!
-      const [toApex] = outOf(ported, body.id)
-      const apex = nodes.get(toApex.target)!
-      expect({ write: write.namespace, steps_after: outOf(ported, write.id).length, body: body.type, apex: apex.type }).toEqual({ write: write.namespace, steps_after: 1, body: 'code', apex: 'salesforce' })
-      expect({ write: write.namespace, ...apex.config }).toMatchObject({
-        write: write.namespace,
-        operation: 'apex',
-        apex_path: '/services/apexrest/credit-inquiries',
-        body: `{{steps.${body.namespace}.output}}`,
-        retries: 0,
-        skip_when_empty: true,
-      })
+      const { block, slots, end } = blockAfter(ported, write)
+      expect({ write: write.namespace, steps_after: outOf(ported, write.id).length, block: block.type, end: end.type }).toEqual({ write: write.namespace, steps_after: 1, block: 'parallel', end: 'parallel_end' })
+      expect(slots.map((s) => ({ slot: s.slot, body: s.body.type, apex: s.apex.type, path: s.apex.config.apex_path, next: s.next.map((n) => n.id) }))).toEqual([
+        { slot: 'child-0', body: 'code', apex: 'salesforce', path: INQUIRY_APEX_PATH, next: [end.id] },
+        { slot: 'child-1', body: 'code', apex: 'salesforce', path: COLLECTIONS_APEX_PATH, next: [end.id] },
+      ])
+      for (const { body, apex } of slots) {
+        expect({ write: write.namespace, ...apex.config }).toMatchObject({ write: write.namespace, operation: 'apex', body: `{{steps.${body.namespace}.output}}`, retries: 0, skip_when_empty: true })
+      }
     }
   })
 
-  it('the Apex call comes before what followed the write: the branch Achieve step, or exit_1 to exit_3', () => {
+  it('the block comes before what followed the write: the branch Achieve step, or exit_1 to exit_3', () => {
     const nodes = byId(ported)
     const after = Object.fromEntries(writes.map((w) => {
-      const body = nodes.get(outOf(ported, w.id)[0].target)!
-      const apex = nodes.get(outOf(ported, body.id)[0].target)!
-      return [w.namespace, outOf(ported, apex.id).map((e) => nodes.get(e.target)!.namespace)]
+      const { end } = blockAfter(ported, w)
+      return [w.namespace, outOf(ported, end.id).map((e) => nodes.get(e.target)!.namespace)]
     }))
     expect(after).toEqual({
       tripoint_sf_post: ['achieve_tripoint_win'],
@@ -134,23 +144,44 @@ describe('the Apex call follows every outcome write on the trades present route'
   })
 
   it('no Apex call runs before the answer', () => {
-    for (const n of ported.nodes.filter((x) => x.config.apex_path === '/services/apexrest/credit-inquiries')) {
+    const calls = ported.nodes.filter((x) => APEX_PATHS.includes(String(x.config.apex_path)))
+    expect(calls).toHaveLength(18)
+    for (const n of calls) {
       expect({ apex: n.namespace, afterAnswer: chainFromAnswer(ported, n.id) !== null }).toEqual({ apex: n.namespace, afterAnswer: true })
     }
   })
 })
 
 describe('the worst case after the answer fits the 12 s window', () => {
-  it('for every Apex call, the steps from the answer to it finish inside CONTINUATION_WINDOW_MS', () => {
-    const chains = ported.nodes.filter((n) => n.config.apex_path === '/services/apexrest/credit-inquiries').map((apex) => {
-      const chain = chainFromAnswer(ported, apex.id)!
-      return { apex: apex.namespace, steps: chain.map((n) => `${n.namespace} ${worstCaseMs(n)}`), worstMs: chain.reduce((t, n) => t + worstCaseMs(n), 0) }
+  /**
+   * The longest the block holds the walk: it waits for its slots side by side,
+   * so the longest slot, and never longer than its own timeout (engine/nodes/parallel.ts).
+   */
+  const blockWorstMs = (write: DefNode) => {
+    const { block, slots } = blockAfter(ported, write)
+    const longestSlot = Math.max(...slots.map((s) => worstCaseMs(s.body) + worstCaseMs(s.apex)))
+    return { longestSlot, blockTimeout: Number(block.config.timeout_ms), worst: Math.min(longestSlot, Number(block.config.timeout_ms)) }
+  }
+
+  it('for every outcome write, the steps from the answer through its credit posts block finish inside CONTINUATION_WINDOW_MS', () => {
+    const chains = tradesPresentOutcomeWrites(ported).map((write) => {
+      const chain = chainFromAnswer(ported, write.id)!
+      const block = blockWorstMs(write)
+      return { write: write.namespace, steps: [...chain.map((n) => `${n.namespace} ${worstCaseMs(n)}`), `credit posts ${block.worst}`], worstMs: chain.reduce((t, n) => t + worstCaseMs(n), 0) + block.worst }
     })
     expect(chains).toHaveLength(9)
     for (const c of chains) expect({ ...c, fits: c.worstMs <= CONTINUATION_WINDOW_MS }).toEqual({ ...c, fits: true })
     // The longest is send_salesforce's branch, which runs calculate_internal_debt
-    // (three 150 ms attempts and 1.5 s of backoff) after its answer.
+    // (three 150 ms attempts and 1.5 s of backoff) after its answer. The two
+    // credit posts run side by side, so adding the collections post added nothing.
     expect(Math.max(...chains.map((c) => c.worstMs))).toBe(11_450)
+  })
+
+  it('each slot ends on its own deadline before the block stops waiting, so it is recorded as what it did', () => {
+    for (const write of tradesPresentOutcomeWrites(ported)) {
+      const { longestSlot, blockTimeout } = blockWorstMs(write)
+      expect({ write: write.namespace, longestSlot, blockTimeout, before: longestSlot < blockTimeout }).toEqual({ write: write.namespace, longestSlot: 5_000, blockTimeout: 5_500, before: true })
+    }
   })
 
   it('the model of a step is the engine: withRetry waits exactly the backoffs it adds up', async () => {
@@ -272,5 +303,49 @@ describe('the inquiry body step', () => {
         ['https://example.my.salesforce.com/services/apexrest/credit-inquiries', 'POST', body],
       ])
     })
+  })
+})
+
+describe('the collections body step (#2832)', () => {
+  const script = String(nodeByNamespace(ported, 'collections_body_tripoint_sf_post').config.script)
+  const report = (fields: Record<string, unknown>) => ({ output: { data: { consumers: { equifaxUSConsumerCreditReport: [{ trades: [{}], ...fields }] } } } })
+  const run = (route: string | undefined, fields: Record<string, unknown>, submission: string | null = 'a0X000000000001AAA') =>
+    runCanvasScript(script, {
+      payload: submission === null ? {} : { Submission__c: submission },
+      steps: { ...(route ? { equifax_debt: { output: { _route: route } } } : {}), equifax_credit_report: report(fields) },
+    })
+
+  it('sends every non null field of every item unchanged, an account number among them, and drops only null valued keys', async () => {
+    const item = {
+      industryCode: 'YC', customerNumber: '123ZZ45678', accountNumber: '9988776655', balance: 412, originalBalance: 700,
+      dateReported: '09012026', creditorClassification: { code: '02', description: 'Medical/Health Care' }, narrativeCodes: [{ code: 'FA' }], status: null,
+    }
+    const body = await run('trades_present', { collections: [item, { industryCode: 'YC', balance: 0, comment: '' }] })
+    const { status: _dropped, ...kept } = item
+    expect(body).toEqual({
+      submissionId: 'a0X000000000001AAA',
+      collectionsJson: JSON.stringify({ collections: [kept, { industryCode: 'YC', balance: 0, comment: '' }] }),
+    })
+    expect(JSON.parse((body as { collectionsJson: string }).collectionsJson).collections[0].accountNumber).toBe('9988776655')
+  })
+
+  it('sends an empty list, which the endpoint reads as none now', async () => {
+    expect(await run('trades_present', { collections: [] })).toEqual({ submissionId: 'a0X000000000001AAA', collectionsJson: '{"collections":[]}' })
+  })
+
+  it('is null, so the call is skipped, when the report has no collections key, or it is null', async () => {
+    expect(await run('trades_present', {})).toBeNull()
+    expect(await run('trades_present', { collections: null })).toBeNull()
+  })
+
+  it('is null off the trades present route, or with no Submission', async () => {
+    const one = { collections: [{ industryCode: 'YC' }] }
+    expect(await run('trades_missing', one)).toBeNull()
+    expect(await run(undefined, one)).toBeNull()
+    expect(await run('trades_present', one, null)).toBeNull()
+  })
+
+  it('fails by name on a collections value that is not a list, rather than sending nothing in silence', async () => {
+    await expect(run('trades_present', { collections: { industryCode: 'YC' } })).rejects.toThrow(/map is not a function/)
   })
 })

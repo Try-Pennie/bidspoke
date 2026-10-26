@@ -12,7 +12,7 @@ import { buildSandboxEnv } from '../lib/sandbox-env'
 import { loadPartnerConstants } from '../lib/partner-constants-loader'
 import { buildContext, recordStepOutput, resolveValue } from './context'
 import { executeNode, createNodeExecutor, type ExecuteNode } from './nodes/index'
-import { executeParallelNode } from './nodes/parallel'
+import { continuingSlots, executeParallelNode } from './nodes/parallel'
 import type { ParallelChildResult, ParallelFailureCause } from './nodes/parallel'
 import { executeBidGroupNode } from './nodes/bid-group'
 import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
@@ -85,11 +85,11 @@ import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailabl
 import { log } from '../lib/logger'
 import { assertDefinitionRunsInLane, assertTriggerStartsRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError, TriggerLaneError } from './lane'
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
-import { startAtRiskWatch, startWatchSafely, runWatched, heldUntilOf } from './at-risk-writes'
+import { startAtRiskWatch, heldUntilOf } from './at-risk-writes'
+import { runWatchedStep } from './step-watch'
 import { AtRiskLedger } from './at-risk-gap'
-import { isCreditInquiryPost, stepRetries } from './inquiry-post'
+import { stepRetries } from './inquiry-post'
 import { readRecoveryOrigin, type RecoveryOrigin } from './recovery-origin'
-import { writeMarker, withWriteMarker, ENGINE_ATTEMPT } from './write-marker'
 import { unfinishedWorkPages } from './unfinished-work'
 import { StepFlushCursor, recordLateSteps } from './late-steps'
 import { readBackHoldsStep } from '../lib/salesforce-read-back'
@@ -142,6 +142,10 @@ class StepFailureError extends Error {
     // Salesforce's answer to the failed write (#2054), which the capture judges
     // refused or replayable by; null when the failure carried none.
     public readonly salesforceAnswer: SalesforceAnswer | null = null,
+    // A parallel block's failure carries the failed step of the child that
+    // failed it (#2832), so a failed Salesforce write inside the block is kept
+    // for replay or left to the read-back as it would be in the walk itself.
+    public readonly childFailure: StepFailureError | null = null,
   ) {
     super(message)
   }
@@ -925,10 +929,13 @@ export async function executeWorkflow(
         // the background work failed (e.g. the Salesforce patch after Offer
         // Response). Without surfacing it here the run is silently recorded as
         // a success with no alert — the failed step row is the only trace.
+        // A failed parallel slot marked on_failure: 'continue' (#2832) let the walk
+        // go on, so it is raised here as one: degraded, and alerted on the same
+        // path. An error that ended the walk outranks it.
         const continuationError =
           walkResult && typeof walkResult === 'object' && '__error' in walkResult
             ? (walkResult as { __error: unknown }).__error
-            : null
+            : ctx.continuedFailures?.[0] ?? null
 
         // Status means "was the lead served correctly", not "did every
         // post-response side-effect succeed". A served-correctly run whose
@@ -1011,7 +1018,9 @@ export async function executeWorkflow(
           // stays quiet for, is exactly when these writes fail. A test run stores
           // nothing; anything not a Salesforce write is left alone by the capture.
           if (continuationError instanceof StepFailureError) {
-            const failedNodeType = definition.nodes.find((n) => n.namespace === continuationError.stepNamespace)?.type
+            // A parallel block's failure is captured as the step inside it that failed (#2832).
+            const failedWrite = continuationError.childFailure ?? continuationError
+            const failedNodeType = definition.nodes.find((n) => n.namespace === failedWrite.stepNamespace)?.type
             if (failedNodeType === 'salesforce') {
               // Started inside the promise, so nothing about the key ring can throw
               // into the finalize: every failure lands in the capture's own handling.
@@ -1022,13 +1031,13 @@ export async function executeWorkflow(
                     workflowId,
                     workflowName: workflow_name,
                     executionId,
-                    stepNamespace: continuationError.stepNamespace,
+                    stepNamespace: failedWrite.stepNamespace,
                     nodeType: failedNodeType,
-                    errorType: continuationError.errorType,
-                    error: continuationError,
-                    resolvedInput: continuationError.resolvedInput,
-                    heldUntil: continuationError.heldUntil,
-                    salesforceAnswer: continuationError.salesforceAnswer,
+                    errorType: failedWrite.errorType,
+                    error: failedWrite,
+                    resolvedInput: failedWrite.resolvedInput,
+                    heldUntil: failedWrite.heldUntil,
+                    salesforceAnswer: failedWrite.salesforceAnswer,
                     isTest: reality.isTest,
                   },
                   { ...outcomeDeps, supabase: runDb, encryptionKeys: secretKeys(env) },
@@ -1794,11 +1803,32 @@ export async function walkGraph(
       let errorType: ErrorType = null
       let parallelSuppressAlert = false
 
+      // Slot handle ids parallel to resolvedChildren: needed when wait_for='specific',
+      // and to find the slots marked on_failure: 'continue' (#2832).
+      const slotHandleIds = slotChildren.length > 0
+        ? slotEdges.map((e) => e.source_handle ?? '')
+        : []
+      // The steps the children are on, so a cut-off names them rather than the
+      // block (#2832), and the step each failed child failed on.
+      const runningChildSteps = new Set<string>()
+      const childFailures = new Map<number, StepFailureError>()
+      // Set once the block stops waiting: a slot still running after that (one the
+      // block did not wait for, or one cut off at its timeout) must not rename what
+      // the walk is on, which by then has moved on.
+      let blockSettled = false
+      const trackingFor = (childIndex: number): ParallelChildTracking => ({
+        onStep: (namespace, running) => {
+          if (blockSettled) return
+          if (running) runningChildSteps.add(namespace)
+          else runningChildSteps.delete(namespace)
+          ctx.runningNamespaces = runningChildSteps.size > 0 ? [...runningChildSteps] : [node.namespace]
+        },
+        onFailure: (failure) => { childFailures.set(childIndex, failure) },
+      })
+      const continuing = continuingSlots(execNode.config)
+      const isContinuing = (childIndex: number) => continuing.has(slotHandleIds[childIndex] ?? '')
+
       try {
-        // Slot handle ids parallel to resolvedChildren — needed when wait_for='specific'.
-        const slotHandleIds = slotChildren.length > 0
-          ? slotEdges.map((e) => e.source_handle ?? '')
-          : []
         // Chain-walk children only when a parallel_end is present in the
         // workflow. Legacy parallel definitions (no parallel_end) rely on
         // single-node child execution and the parent's last-child-edge
@@ -1808,9 +1838,10 @@ export async function walkGraph(
           execNode,
           resolvedChildren,
           (child, childIndex, abandonSignal) =>
-            runParallelChild(child, ctx, env, supabase, lane, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue, definition, chainEndId, abandonSignal),
+            runParallelChild(child, ctx, env, supabase, lane, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue, definition, chainEndId, abandonSignal, trackingFor(childIndex)),
           slotHandleIds
         )
+        blockSettled = true
         output = result.output
         lastOutput = output
         forwardBlockSightings(result)
@@ -1831,6 +1862,7 @@ export async function walkGraph(
           }
         }
       } catch (err) {
+        blockSettled = true
         stepStatus = 'failed'
         errorMessage = formatErr(err)
         forwardBlockSightings(err)
@@ -1850,6 +1882,25 @@ export async function walkGraph(
         } else {
           errorType = classifyStepError(err) ?? 'transient'
         }
+      }
+
+      // A failed slot marked on_failure: 'continue' (#2832) did not fail the block.
+      // Its step row says it failed; the walk goes on, and the failure is raised
+      // once the walk is done, through the same failure alert as a write after the
+      // answer that ends the walk (ctx.continuedFailures, read at finalize).
+      // Only under wait_for 'all', the one mode that waits for every slot: under
+      // 'first' or 'specific' a sibling not awaited shows as a timeout without
+      // having failed.
+      if (Array.isArray(output) && ((execNode.config.wait_for as string | undefined) ?? 'all') === 'all') {
+        (output as ParallelChildResult[]).forEach((childResult, childIndex) => {
+          if (!isContinuing(childIndex) || (childResult.status !== 'rejected' && childResult.status !== 'timeout')) return
+          const failure = childFailures.get(childIndex) ?? new StepFailureError(
+            `Parallel group timed out after ${(execNode.config.timeout_ms as number | undefined) ?? 15000}ms before slot ${childResult.namespace} completed`,
+            childResult.namespace,
+            'transient',
+          )
+          ;(ctx.continuedFailures ??= []).push(failure)
+        })
       }
 
       const parallelDurationMs = Date.now() - new Date(stepStartedAt).getTime()
@@ -1873,7 +1924,9 @@ export async function walkGraph(
       }
 
       if (stepStatus === 'failed') {
-        throw new StepFailureError(errorMessage!, node.namespace, errorType, parallelSuppressAlert)
+        // The first failed slot that does fail the block, by slot order.
+        const failedChild = [...childFailures.entries()].sort((a, b) => a[0] - b[0]).find(([i]) => !isContinuing(i))?.[1] ?? null
+        throw new StepFailureError(errorMessage!, node.namespace, errorType, parallelSuppressAlert, null, null, null, failedChild)
       }
 
       if (endNode) {
@@ -2410,28 +2463,13 @@ export async function walkGraph(
     let stepLogs: import('../types').StepLogEntry[] | undefined
 
     try {
-      // A Salesforce update after the answer is watched around its whole retry
-      // loop, so one still out after 2 s is recorded however it ends (#2022), and
-      // carries its own write marker for the read-back (#2023). One fact decides
-      // both, the same one the Salesforce bulkhead share reads (#2170):
-      // `ctx.afterAnswer`, set by `answerEarly` together with the answer.
-      const postAnswerUpdate = ctx.afterAnswer === true && node.type === 'salesforce' && node.config.operation === 'update'
-      // A credit inquiry post is watched before or after the answer (#2172, D5):
-      // it is never resent blind, and its watch records it before it is sent.
-      const inquiryPost = node.type === 'salesforce' && isCreditInquiryPost(node.config)
-      const atRisk = postAnswerUpdate || inquiryPost ? startWatchSafely(ctx.startAtRiskWatch, node.namespace) : null
-      const marker = postAnswerUpdate && ctx.execution?.execution_id
-        ? writeMarker(ctx.execution.execution_id, node.namespace, ENGINE_ATTEMPT) ?? undefined
-        : undefined
-      const result = await withWriteMarker(ctx, marker, () => runWatched(
-        atRisk,
-        (note) => {
-          ctx.noteSalesforceRequest = note
-          // The credit inquiry post records at once, through the same watch (#2172).
-          ctx.recordSalesforceRequest = note && atRisk ? (req) => atRisk.recordNow(req) : undefined
-        },
-        () => withRetry(
-          (signal) => runNode(node, ctx, env, supabase, signal, lastOutput),
+      // Watched with its own hooks (engine/step-watch.ts, #2832): a post-answer
+      // Salesforce update (#2022, #2023) or a credit inquiry post (#2172).
+      const result = await runWatchedStep(
+        ctx,
+        node,
+        (stepCtx) => withRetry(
+          (signal) => runNode(node, stepCtx, env, supabase, signal, lastOutput),
           retryConfig,
           classifyStepError,
           retryStats,
@@ -2439,7 +2477,7 @@ export async function walkGraph(
           ctx.stepDeadline
         ),
         () => retryStats.retries,
-      ))
+      )
       retriesUsed = retryStats.retries
       output = result.output
       stepStatus = 'completed'
@@ -2716,6 +2754,14 @@ export function parallelChildExitMessage(node: Pick<NodeDefinition, 'type' | 'na
   return `The ${node.type.replace(/_/g, ' ')} step ${node.namespace} ended the run inside a parallel block, which cannot end it while the other slots run. Move it before the parallel block.`
 }
 
+/** What a parallel block follows of its children while they run (#2832). */
+export interface ParallelChildTracking {
+  /** A step of a child started (true) or ended (false). */
+  onStep(namespace: string, running: boolean): void
+  /** A step of a child failed, as the walk would have thrown it. */
+  onFailure(failure: StepFailureError): void
+}
+
 // Execute a single child node within a parallel group — simplified version of
 // the main walkGraph step loop: retries + logging, but no on_error branching
 // (parallel children always contribute their result, fulfilled or rejected).
@@ -2740,7 +2786,11 @@ export async function runParallelChild(
   // Tripped when the parent parallel stops waiting (timeout / first-winner /
   // specific-target). A late-completing child must not write a second step row
   // or overwrite ctx.steps after that (#63).
-  abandonSignal?: AbortSignal
+  abandonSignal?: AbortSignal,
+  // What the parallel block follows of its children (#2832): which step each is
+  // on, for a cut-off to name, and the failure of a step, for a slot whose
+  // failure does not fail the block to raise once the walk is done.
+  tracking?: ParallelChildTracking,
 ): Promise<ParallelChildResult> {
   // The slot's identifying namespace is always the FIRST node in the chain.
   // Bid Evaluation and other downstream consumers key off this namespace.
@@ -2782,14 +2832,24 @@ export async function runParallelChild(
     // success and throw path) so this child's step log records it instead of 0.
     const retryStats = { retries: 0 }
 
+    let caught: unknown = null
+    tracking?.onStep(node.namespace, true)
     try {
-      const result = await withRetry(
-        (signal) => runNode(node, ctx, env, supabase, signal, lastOutput),
-        retryConfig,
-        classifyStepError,
-        retryStats,
-        ctx.retrySleep,
-        ctx.stepDeadline
+      // Watched with its own hooks, as in the walk (engine/step-watch.ts, #2832),
+      // so a Salesforce write here keeps its at-risk record and write marker
+      // while its siblings run.
+      const result = await runWatchedStep(
+        ctx,
+        node,
+        (stepCtx) => withRetry(
+          (signal) => runNode(node, stepCtx, env, supabase, signal, lastOutput),
+          retryConfig,
+          classifyStepError,
+          retryStats,
+          ctx.retrySleep,
+          ctx.stepDeadline
+        ),
+        () => retryStats.retries,
       )
       output = result.output
       stepLogs = result.logs
@@ -2819,6 +2879,7 @@ export async function runParallelChild(
         throw new Error('Code returned an exit sentinel inside a parallel block. Early-exit is not supported for parallel children — throw an error instead.')
       }
     } catch (err) {
+      caught = err
       stepStatus = 'failed'
       errorMessage = formatErr(err)
       // The block swallows this error, so its sightings would be lost with it (#1265).
@@ -2838,6 +2899,7 @@ export async function runParallelChild(
       if (errResolvedInput) resolvedInput = errResolvedInput
     }
 
+    tracking?.onStep(node.namespace, false)
     const nodeDurationMs = Date.now() - new Date(stepStartedAt).getTime()
     if (stepStatus === 'completed') {
       log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: nodeDurationMs })
@@ -2857,6 +2919,7 @@ export async function runParallelChild(
     logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retryStats.retries, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs)
 
     if (stepStatus === 'failed') {
+      tracking?.onFailure(new StepFailureError(errorMessage ?? 'the step failed', node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(caught), salesforceAnswerOf(caught)))
       // The slot's result is the FIRST node's namespace — but downstream chain
       // failures still surface as a slot rejection so executeParallelNode's
       // on_child_error policy applies.

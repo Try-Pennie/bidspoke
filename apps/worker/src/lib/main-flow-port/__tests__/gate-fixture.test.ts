@@ -49,5 +49,6 @@ describe("the money gate's Main Flow fixture", () => {
     expect(status.ported.sort()).toEqual(ported.sort())
     expect(status.relay.sort()).toEqual(OUTCOME_POSTS.filter((p) => !ported.includes(p)).sort())
     expect(status.inquiryMoved).toBe(stage.moveInquiry)
+    expect(status.collections).toBe(stage.collections === true)
   })
 })

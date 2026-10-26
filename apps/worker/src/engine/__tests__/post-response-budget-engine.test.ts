@@ -1532,3 +1532,80 @@ describe('the answer is recorded at the answer (#1883)', () => {
     expect(journal.status).toBe('degraded')
   })
 })
+
+// #2832: a parallel block after the answer, one slot marked on_failure:
+// 'continue'. Its failure must not end the walk, and must still be raised, through
+// the same post-answer failure alert as a write that ends the walk. An unmarked
+// slot failing ends the walk as before, and the failure is kept as the step that
+// failed inside the block, not as the block.
+describe('a failed slot of a parallel block after the answer (#2832)', () => {
+  const blockAfterAnswer = {
+    trigger: { id: 'trigger', type: 'trigger', config: {} },
+    nodes: [
+      { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } },
+      { id: 'fan', namespace: 'credit_posts', type: 'parallel', config: { wait_for: 'all', on_child_error: 'fail', on_timeout: 'partial', timeout_ms: 6000, children: [{ id: 'child-0', label: 'inquiry' }, { id: 'child-1', label: 'collections', on_failure: 'continue' }] } },
+      { id: 'i', namespace: 'inquiry_apex', type: 'salesforce', config: { retries: 0, operation: 'apex', apex_path: '/services/apexrest/credit-inquiries' } },
+      { id: 'c', namespace: 'collections_apex', type: 'salesforce', config: { retries: 0, operation: 'apex', apex_path: '/services/apexrest/credit-collections' } },
+      { id: 'end', namespace: 'credit_posts_end', type: 'parallel_end', config: {} },
+      { id: 'a', namespace: 'achieve_step', type: 'code', config: { retries: 0, timeout_ms: 100 } },
+    ],
+    edges: [
+      { id: 'e0', source: 'r', target: 'fan' },
+      { id: 'e1', source: 'fan', target: 'i', source_handle: 'child-0' },
+      { id: 'e2', source: 'fan', target: 'c', source_handle: 'child-1' },
+      { id: 'e3', source: 'fan', target: 'end', source_handle: 'output' },
+      { id: 'e4', source: 'i', target: 'end' },
+      { id: 'e5', source: 'c', target: 'end' },
+      { id: 'e6', source: 'end', target: 'a' },
+    ],
+  } as unknown as WorkflowDefinition
+  const apexRequest = (path: string) => ({ template: {}, resolved: { operation: 'apex', method: 'POST', url: `https://sf.test${path}`, body: { submissionId: 'a0XUi00000AbCdEFGH' } } })
+
+  async function walkWith(failing: 'inquiry_apex' | 'collections_apex' | null) {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: blockAfterAnswer, workflow_version_id: 'v1', workflow_name: 'Main Flow', org_id: 'org-1', slack_channel: null, lane: 'money',
+    })
+    const ran: string[] = []
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      ran.push(node.namespace)
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      if (node.namespace === failing) {
+        throw Object.assign(new Error('Salesforce API error (400): INVALID_FIELD money gate refused'), { status: 400, permanent: true, resolvedInput: apexRequest(String(node.config.apex_path)) })
+      }
+      return { output: { ok: node.namespace } }
+    })
+    const key = Buffer.from(new Uint8Array(32).map((_, i) => i + 9)).toString('base64')
+    const outcome = await run(() => 'up', { SECRET_ENCRYPTION_KEY: key })
+    const row = outcome.db.executions.get(outcome.result.executionId)
+    const failureDeadLetter = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === 'sf_writeback')
+    const uncapturable = vi.mocked(recordOutcomeDeadLetter).mock.calls.filter((c) => c[0] === WRITEBACK_UNCAPTURABLE_LABEL).map((c) => (c[1] as Error).message)
+    return { ...outcome, ran, row, failureDeadLetter, uncapturable }
+  }
+
+  it('the marked slot failing: the walk goes on to the next step, and the run is degraded and alerted with that step named', async () => {
+    const { result, ran, row, failureDeadLetter, deadLetters, uncapturable } = await walkWith('collections_apex')
+    expect(result.status).toBe(200)
+    expect(ran).toContain('achieve_step')
+    expect(row?.status).toBe('degraded')
+    expect(String(row?.error_message)).toMatch(/money gate refused/)
+    expect(deadLetters('sf_writeback')).toHaveLength(1)
+    expect((failureDeadLetter?.[1] as { stepNamespace?: string }).stepNamespace).toBe('collections_apex')
+    // An Apex post cannot be replayed, so the capture says so for that step.
+    expect(uncapturable).toEqual([expect.stringMatching(/^collections_apex: /)])
+  })
+
+  it('the unmarked slot failing: the walk ends before the next step, and the failure is kept as the step inside the block', async () => {
+    const { ran, row, deadLetters, uncapturable } = await walkWith('inquiry_apex')
+    expect(ran).not.toContain('achieve_step')
+    expect(row?.status).toBe('degraded')
+    expect(deadLetters('sf_writeback')).toHaveLength(1)
+    expect(uncapturable).toEqual([expect.stringMatching(/^inquiry_apex: /)])
+  })
+
+  it('control: no slot failing completes the run with no failure alert', async () => {
+    const { ran, row, deadLetters } = await walkWith(null)
+    expect(ran).toContain('achieve_step')
+    expect(row?.status).toBe('completed')
+    expect(deadLetters('sf_writeback')).toEqual([])
+  })
+})

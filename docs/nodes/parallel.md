@@ -26,7 +26,7 @@ Every step produced inside the parallel block is tagged with the same `parallel_
 | `on_timeout` | `'partial'` \| `'fail'` | No (applies to `wait_for: 'all'`) | `'partial'` | On timeout, `partial` continues with whatever settled (unsettled children marked `timeout`); `fail` throws. |
 | `on_child_error` | `'fail'` \| `'continue'` | No (applies to `wait_for: 'all'`) | `'fail'` | When a child rejects, `fail` stops the workflow; `continue` keeps going so a downstream step can handle the rejection in the result array. |
 
-The `children` slot list also lives in `node.config`; the editor manages it for you when you add slots and wire nodes. In the editor these map to: "Wait for" (All slots / First to succeed / Specific slot), "Wait for slot", "Timeout (ms)", "On timeout" (Continue with partial results / Fail the execution), and "On child error".
+The `children` slot list also lives in `node.config`; the editor manages it for you when you add slots and wire nodes. A slot entry may also carry `on_failure: 'continue'` (see [A slot whose failure does not stop the run](#a-slot-whose-failure-does-not-stop-the-run)); the editor does not show it. In the editor these map to: "Wait for" (All slots / First to succeed / Specific slot), "Wait for slot", "Timeout (ms)", "On timeout" (Continue with partial results / Fail the execution), and "On child error".
 
 ## Wait modes
 
@@ -41,6 +41,16 @@ Races the children and resolves with the first child that succeeds (status `fulf
 ### `specific`
 
 Waits for one named slot (`wait_for_slot`). Sibling slots keep running in the background but are not awaited; if they have not settled when the named slot finishes, they appear as `timeout` in the output. The named slot's status drives success: if it rejects or times out, the node throws.
+
+## A slot whose failure does not stop the run
+
+A slot entry in `children` marked `"on_failure": "continue"` never fails the block under `wait_for: 'all'`, whatever `on_child_error` says: when it fails, or is still running at the timeout with `on_timeout: 'partial'`, the block completes and the run goes on to the step after `parallel_end`. With `on_timeout: 'fail'` a timeout still fails the block, as it does whichever slot is late. Its failure is not silent. The failed step's row says what went wrong, and once the run's walk is done the failure is raised as the run's own: the run is recorded as degraded and the failure goes through the same alert as any Salesforce write after the answer that fails (the `sf_writeback` dead letter, and, for a Salesforce step, the failed write capture). A failure that ended the walk outranks it.
+
+Every other slot follows `on_child_error` as before. Main Flow's credit posts block uses both (#2832): the inquiry slot fails the block, so a failed inquiry post ends the run's walk, and the collections slot is marked, so a failed collections post never stops Achieve.
+
+## Salesforce writes inside a block
+
+Each step in a slot is watched exactly as a step of the main walk is: a Salesforce update after the answer has its at-risk record and write marker, and a credit inquiry post is recorded before it is sent. Each step carries its own watch with its call, so two slots writing at once never share one (#2832). While the slots run, the run names the steps they are on, so a run cut off 12 s after its answer names them rather than the block.
 
 ## Output shape
 

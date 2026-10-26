@@ -7,7 +7,7 @@
  * alone (L290, L524). Each test now advances time itself.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { executeParallelNode } from '../parallel'
+import { continuingSlots, executeParallelNode } from '../parallel'
 import type { ParallelChildResult } from '../parallel'
 import type { NodeDefinition } from '../../../types'
 
@@ -243,5 +243,48 @@ describe('executeParallelNode', () => {
       await vi.advanceTimersByTimeAsync(30)
       await verdict
     })
+  })
+})
+
+// #2832: a slot whose failure is recorded and alerted but does not fail the block.
+describe('a slot marked on_failure: continue', () => {
+  const marked = (extra: Record<string, unknown> = {}) => makeNode({
+    wait_for: 'all', on_child_error: 'fail', timeout_ms: 5000, ...extra,
+    children: [{ id: 'child-0', label: 'inquiry' }, { id: 'child-1', label: 'collections', on_failure: 'continue' }],
+  })
+  const slots = ['child-0', 'child-1']
+  afterEach(() => vi.useRealTimers())
+
+  it('a failure in the marked slot leaves the block completed, the rejection in its output', async () => {
+    const runChild = makeRunChild([fulfilled('inquiry'), rejected('collections', 'Salesforce API error (500)')])
+    const result = await executeParallelNode(marked(), [makeChild('inquiry'), makeChild('collections')], runChild, slots)
+    expect((result.output as ParallelChildResult[]).map((c) => c.status)).toEqual(['fulfilled', 'rejected'])
+  })
+
+  it('a marked slot still running at the block timeout leaves the block completed too', async () => {
+    vi.useFakeTimers()
+    const runChild = vi.fn().mockImplementation(async (child: NodeDefinition) =>
+      child.namespace === 'collections' ? new Promise(() => {}) : fulfilled('inquiry'))
+    const pending = executeParallelNode(marked({ on_timeout: 'partial' }), [makeChild('inquiry'), makeChild('collections')], runChild, slots)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(((await pending).output as ParallelChildResult[]).map((c) => c.status)).toEqual(['fulfilled', 'timeout'])
+  })
+
+  it('an unmarked slot failing still fails the block, whatever the marked one did', async () => {
+    const runChild = makeRunChild([rejected('inquiry', 'Salesforce API error (500)'), fulfilled('collections')])
+    await expect(executeParallelNode(marked(), [makeChild('inquiry'), makeChild('collections')], runChild, slots)).rejects.toThrow(/child "inquiry" failed/)
+  })
+
+  it('the mark is read from the slot it is on, not from a slot position', async () => {
+    const runChild = makeRunChild([rejected('collections', 'boom'), fulfilled('inquiry')])
+    const swapped = makeNode({ wait_for: 'all', on_child_error: 'fail', timeout_ms: 5000, children: [{ id: 'child-1', label: 'inquiry' }, { id: 'child-0', label: 'collections', on_failure: 'continue' }] })
+    const result = await executeParallelNode(swapped, [makeChild('collections'), makeChild('inquiry')], runChild, ['child-0', 'child-1'])
+    expect((result.output as ParallelChildResult[]).map((c) => c.status)).toEqual(['rejected', 'fulfilled'])
+  })
+
+  it('continuingSlots names exactly the marked slots', () => {
+    expect([...continuingSlots(marked().config)]).toEqual(['child-1'])
+    expect([...continuingSlots({ children: [{ id: 'child-0', on_failure: 'fail' }, { id: 'child-1' }] })]).toEqual([])
+    expect([...continuingSlots({})]).toEqual([])
   })
 })

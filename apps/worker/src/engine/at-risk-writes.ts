@@ -205,11 +205,9 @@ export function startWatchSafely(start: ((stepNamespace: string) => AtRiskWatch)
  * points at the watch while the whole retry loop runs, and the outcome settles
  * it. With no watch the step simply runs.
  *
- * The hook is one slot on the run's context, which holds because only the
- * walk's own sequential step loop runs watched steps: a parallel node's children
- * run their own loop, unwatched, while the walk waits on them, so two watched
- * steps never overlap. A post-answer update inside a parallel node is therefore
- * NOT recorded; none is live.
+ * The hook is the step's own (engine/step-watch.ts, #2832): every step is called
+ * with its own view of the run's context, so the children of a parallel block,
+ * which run at once, are each watched on their own.
  */
 export async function runWatched<T>(
   watch: AtRiskWatch | null,

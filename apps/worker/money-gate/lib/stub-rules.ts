@@ -221,6 +221,18 @@ export const RULES: Rule[] = [
       failed: () => json({ message: 'money gate: UNABLE_TO_LOCK_ROW, unable to obtain exclusive access to this record', statusCode: 500 }, 500),
     },
   },
+  // The credit-collections Apex REST call beside it once the collections post is
+  // added (#2832). The endpoint (CollectionParserRest) is not live yet, so the
+  // success body is the gate's own, not one measured from the org.
+  {
+    name: 'salesforce_credit_collections',
+    match: (r) => r.method === 'POST' && path(r) === '/services/apexrest/credit-collections',
+    default: 'ok',
+    scenarios: {
+      ok: () => json({ message: 'money gate: collections accepted', statusCode: 200 }),
+      failed: () => json({ message: 'money gate: UNABLE_TO_LOCK_ROW, unable to obtain exclusive access to this record', statusCode: 500 }, 500),
+    },
+  },
   {
     name: 'salesforce_apex_other',
     match: (r) => path(r).startsWith('/services/apexrest/'),

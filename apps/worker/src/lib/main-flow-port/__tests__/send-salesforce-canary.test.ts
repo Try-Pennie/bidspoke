@@ -66,17 +66,19 @@ describe('the send_salesforce canary stage over the live Main Flow', () => {
       ported: ['send_salesforce', 'invalid_state_sf_post'],
       relay: OUTCOME_POSTS.filter((p) => p !== 'invalid_state_sf_post' && p !== 'send_salesforce'),
       inquiryMoved: false,
+      collections: false,
     })
   })
 
   it('ports send_salesforce and nothing else over the definition before it: no node added or removed, the inquiry relay left where it is', () => {
     const before = beforeCanary()
     const after = portMainFlow(beforeCanary(), PORT_STAGES.canary_send_salesforce)
-    expect(portStatus(before)).toEqual({ ported: ['invalid_state_sf_post'], relay: OUTCOME_POSTS.filter((p) => p !== 'invalid_state_sf_post'), inquiryMoved: false })
+    expect(portStatus(before)).toEqual({ ported: ['invalid_state_sf_post'], relay: OUTCOME_POSTS.filter((p) => p !== 'invalid_state_sf_post'), inquiryMoved: false, collections: false })
     expect(portStatus(after)).toEqual({
       ported: ['send_salesforce', 'invalid_state_sf_post'],
       relay: OUTCOME_POSTS.filter((p) => p !== 'invalid_state_sf_post' && p !== 'send_salesforce'),
       inquiryMoved: false,
+      collections: false,
     })
     expect(after.nodes.map((n) => n.id).sort()).toEqual(before.nodes.map((n) => n.id).sort())
     expect(after.edges).toEqual(before.edges)

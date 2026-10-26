@@ -114,7 +114,8 @@ export interface ExecutionContext {
   lastCompletedNamespace?: string
   /**
    * The step or steps the walk is on right now, by namespace (#1882, #2024). Set
-   * by the walk as it reaches each node, so a run whose work after the answer is
+   * by the walk as it reaches each node, and by a parallel block to the steps its
+   * slots are on while they run (#2832), so a run whose work after the answer is
    * still out at the cut-off can name what it was waiting on, and ask the
    * Salesforce read-back whether it holds each of them.
    */
@@ -128,21 +129,22 @@ export interface ExecutionContext {
    */
   afterAnswer?: boolean
   /**
-   * Set by the walk around a post-answer Salesforce update (#2022): the node
+   * Set around a post-answer Salesforce update (#2022) on that step's own view of
+   * the context (engine/step-watch.ts, #2832), never on the run's: the node
    * reports the request it is about to send, and again if it changes the body,
    * so a write still out after 2 s can be recorded for the read-back.
    */
   noteSalesforceRequest?: (req: import('./engine/at-risk-writes').SalesforceRequestNote) => void
   /**
-   * Set by the walk beside it, around a credit inquiry post (#2172): records the
-   * post at once, and the node waits for it before sending, so an isolate
-   * cancelled mid call still leaves the record.
+   * Set beside it, around a credit inquiry post (#2172), on the step's own view of
+   * the context (#2832): records the post at once, and the node waits for it
+   * before sending, so an isolate cancelled mid call still leaves the record.
    */
   recordSalesforceRequest?: (req: import('./engine/at-risk-writes').SalesforceRequestNote) => Promise<void>
   /**
-   * This write's marker (#2023), set by the walk around a post-answer Salesforce
-   * update for that step only, and stamped by the node on the objects that have
-   * the field (engine/write-marker.ts). Absent before the answer.
+   * This write's marker (#2023), set around a post-answer Salesforce update on
+   * that step's own view of the context (#2832), and stamped by the node on the
+   * objects that have the field (engine/write-marker.ts). Absent before the answer.
    */
   writeMarker?: string
   /**
@@ -152,6 +154,13 @@ export interface ExecutionContext {
    * what keeps a test run's writes unrecorded.
    */
   startAtRiskWatch?: (stepNamespace: string) => import('./engine/at-risk-writes').AtRiskWatch
+  /**
+   * The failures of parallel slots marked on_failure: 'continue' (#2832), in the
+   * order they were met. The walk went on past each; finalize raises the first as
+   * the run's failure after the answer (degraded and alerted) unless an error
+   * ended the walk. Written only by the parallel block, never cleared.
+   */
+  continuedFailures?: Error[]
   /**
    * How the engine waits out a step's retry backoff (#1063). Undefined in
    * production, which means the real timer.

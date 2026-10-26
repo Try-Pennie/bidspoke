@@ -172,9 +172,9 @@ describe('how the post settles its record', () => {
     expect(kv.store.has(HELD)).toBe(false)
   })
 
-  // The hook is one slot on the run: a post inside a parallel node is not watched,
-  // and must not be recorded through the slot a finished step left behind.
-  it('leaves no record hook behind once the step settles, so a later unwatched post records nothing under its name', async () => {
+  // Each step carries its own hook (#2832): a post inside a parallel node is
+  // watched under its own name, never through a hook a finished step left behind.
+  it('leaves no record hook behind once the step settles: a later post in a parallel node is recorded under its own name only', async () => {
     fetchMock.mockImplementation((url: string, init: { signal?: AbortSignal }) =>
       apexCalls(fetchMock).length === 1 ? answer(200, { statusCode: '200' }) : hangUntilAborted(url, init))
     const first = line({ afterAnswer: true }).nodes
@@ -199,7 +199,9 @@ describe('how the post settles its record', () => {
     }
     await walk(def)
     expect(apexCalls(fetchMock)).toHaveLength(2)
-    expect([...kv.store.keys()]).toEqual([])
+    // The first post landed and cleared; the child's post timed out, so its own record stays.
+    expect([...kv.store.keys()]).toEqual([atRiskKey(EXEC, 'inquiry_in_parallel')])
+    expect(parseAtRiskEntry(kv.store.get(atRiskKey(EXEC, 'inquiry_in_parallel')) ?? null)?.step_namespace).toBe('inquiry_in_parallel')
   })
 
   // #2170 part B: after the answer the post takes the post-answer bulkhead share
