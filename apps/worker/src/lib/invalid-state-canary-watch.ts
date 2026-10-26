@@ -118,10 +118,12 @@
  *    message says how many were written and how many were checked;
  *  - its body sends no Engine ids, so it reads no Lead and claims none;
  *  - it is switched on by applying the port's `canary_send_salesforce` stage,
- *    a separate step, so until Main Flow holds that port and a direct write has
- *    run in the window it posts nothing and records the day as not switched on.
- *    A direct write in the window reports whatever the live definition says,
- *    because a canvas save that undid the port is a rollback (#2312).
+ *    a separate step, so it posts nothing and records the day as not switched
+ *    on while all three hold: Main Flow does not hold that port, none of its
+ *    posts went direct in the window, and this job has never posted a day. Any
+ *    one of them makes it report: a direct write in the window whatever the live
+ *    definition says, because a canvas save that undid the port is a rollback
+ *    (#2312), and a job that has posted before, so a rollback is said every day.
  * The relay comparison leaves out every subject's post.
  *
  * WINDOWS TILE (#2806, its first half). The window ends at 12:50 UTC, ten

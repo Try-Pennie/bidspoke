@@ -11,8 +11,9 @@
  *    day as the relay's is, is read back, and the message says how many were
  *    written and how many were checked;
  *  - it is switched on by a separate, visible step (Dan's apply of the
- *    `canary_send_salesforce` stage), so until Main Flow holds the port and a
- *    direct write has run, the check posts nothing rather than an alert a day;
+ *    `canary_send_salesforce` stage), so while Main Flow does not hold the port,
+ *    nothing went direct and the check has never posted a day, it posts nothing
+ *    rather than an alert a day; any one of the three makes it report;
  *  - its body sends no Engine ids, so no Lead is read and none is claimed.
  * And for both subjects: the window ends at 12:50 UTC whenever the run starts,
  * so a late run neither leaves a gap nor overlaps (#2806, its first half).
