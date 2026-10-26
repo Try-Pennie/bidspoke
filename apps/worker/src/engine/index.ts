@@ -1881,7 +1881,10 @@ export async function walkGraph(
       // Its step row says it failed; the walk goes on, and the failure is raised
       // once the walk is done, through the same failure alert as a write after the
       // answer that ends the walk (ctx.continuedFailures, read at finalize).
-      if (Array.isArray(output)) {
+      // Only under wait_for 'all', the one mode that waits for every slot: under
+      // 'first' or 'specific' a sibling not awaited shows as a timeout without
+      // having failed.
+      if (Array.isArray(output) && ((execNode.config.wait_for as string | undefined) ?? 'all') === 'all') {
         (output as ParallelChildResult[]).forEach((childResult, childIndex) => {
           if (!isContinuing(childIndex) || (childResult.status !== 'rejected' && childResult.status !== 'timeout')) return
           const failure = childFailures.get(childIndex) ?? new StepFailureError(

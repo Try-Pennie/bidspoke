@@ -159,4 +159,21 @@ describe('two children of a parallel block writing at once are each watched on t
     await walkGraph(ctx, definition(), EXEC, '2027-10-15T12:00:00.000Z', supabase, env, 'money', 'v1', [], () => {}).catch(() => null)
     expect(runningWhileInFlight.sort()).toEqual(['inquiry_a', 'inquiry_b', 'update_c'])
   })
+
+  it('raises a marked slot only under wait_for all: under specific, an unawaited marked sibling is not a failure', async () => {
+    const def = definition()
+    const fan = def.nodes.find((n) => n.namespace === 'fan')!
+    fan.config = { wait_for: 'specific', wait_for_slot: 'child-0', timeout_ms: 30_000, children: [{ id: 'child-0' }, { id: 'child-1', on_failure: 'continue' }, { id: 'child-2', on_failure: 'continue' }] }
+    fetchMock.mockImplementation(async (url: string, init: { body?: string }) => {
+      // The named slot answers at once; the marked siblings never do while the block waits.
+      if (url === APEX_URL && (JSON.parse(init.body ?? '{}') as { submissionId?: string }).submissionId === SUB_A) {
+        return new Response(JSON.stringify({ message: 'ok', statusCode: 200 }), { status: 200 })
+      }
+      return new Promise(() => {})
+    })
+    const ctx = ctxAtTheAnswer()
+    const ending = await walkGraph(ctx, def, EXEC, '2027-10-15T12:00:00.000Z', supabase, env, 'money', 'v1', [], () => {}).then(() => null, (e: Error) => e)
+    expect(ending).toBeNull()
+    expect(ctx.continuedFailures).toBeUndefined()
+  })
 })
