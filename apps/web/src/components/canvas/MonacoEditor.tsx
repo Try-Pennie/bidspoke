@@ -24,12 +24,12 @@ import Editor, { loader } from '@monaco-editor/react'
 self.MonacoEnvironment = {
   getWorker(_workerId: string, label: string) {
     if (label === 'json') {
-      return new Worker(new URL('monaco-editor/language/json/json.worker.js', import.meta.url))
+      return new Worker(new URL('monaco-editor/esm/vs/language/json/json.worker.js', import.meta.url))
     }
     if (label === 'typescript' || label === 'javascript') {
-      return new Worker(new URL('monaco-editor/language/typescript/ts.worker.js', import.meta.url))
+      return new Worker(new URL('monaco-editor/esm/vs/language/typescript/ts.worker.js', import.meta.url))
     }
-    return new Worker(new URL('monaco-editor/editor/editor.worker.js', import.meta.url))
+    return new Worker(new URL('monaco-editor/esm/vs/editor/editor.worker.js', import.meta.url))
   },
 }
 
