@@ -16,8 +16,8 @@ import { fakeGoogle, gAnswer, gError, MAILBOX, SHEET, worksheets } from './fake-
  * partial batch where a request carries several rows.
  */
 
-function action(key: string): RuntimeAction {
-  const resolved = resolveRuntimeAction(key, 1)
+function action(key: string, version = 1): RuntimeAction {
+  const resolved = resolveRuntimeAction(key, version)
   if (!resolved.ok) throw new Error(resolved.message)
   return resolved.action
 }
@@ -35,6 +35,9 @@ const CLEAR_ROWS = action('google.sheets-clear-rows')
 const SEND = action('google.gmail-send-email')
 const LIST_FILES = action('google.drive-list-files')
 const DOWNLOAD = action('google.drive-download-file')
+// Version 2 holds the connection's own drive list (#2805); version 1 stays for steps pinned to it.
+const LIST_FILES_2 = action('google.drive-list-files', 2)
+const DOWNLOAD_2 = action('google.drive-download-file', 2)
 const CREATE_EVENT = action('google.calendar-create-event')
 const DELETE_EVENT = action('google.calendar-delete-event')
 const LIST_EVENTS = action('google.calendar-list-events')
@@ -74,15 +77,19 @@ const CASES: Array<{ a: RuntimeAction; args: ActionArgs; pre: () => Response[]; 
   { a: SEND, args: { to: ['partner@lender.example'], subject: 'Report', body: 'Hello' }, pre: () => [], ok: () => gAnswer({ id: 'm1', threadId: 't1', labelIds: ['SENT'] }) },
   { a: LIST_FILES, args: { query: 'name contains ?', binds: ['report'] }, pre: () => [], ok: () => gAnswer({ files: [] }) },
   { a: DOWNLOAD, args: { file_id: '1FileId' }, pre: () => [], ok: () => gAnswer({ id: '1FileId', name: 'r.csv', mimeType: 'text/csv', size: '5' }) },
+  // One declared drive named, so the work is one request, as the shared fixtures below expect.
+  { a: LIST_FILES_2, args: { query: 'name contains ?', binds: ['report'], drive_id: '0AReportsDrive' }, pre: () => [], ok: () => gAnswer({ files: [] }) },
+  { a: DOWNLOAD_2, args: { file_id: '1FileId' }, pre: () => [], ok: () => gAnswer({ id: '1FileId', name: 'r.csv', mimeType: 'text/csv', size: '5', driveId: '0AReportsDrive' }) },
   { a: CREATE_EVENT, args: { summary: 'Call', start: '2026-10-23T15:00:00-04:00', end: '2026-10-23T15:30:00-04:00', time_zone: 'America/New_York' }, pre: () => [], ok: () => gAnswer({ id: 'e1', status: 'confirmed' }) },
   { a: DELETE_EVENT, args: { event_id: 'e1' }, pre: () => [], ok: () => new Response(null, { status: 204 }) },
   { a: LIST_EVENTS, args: { time_min: '2026-10-23T00:00:00Z' }, pre: () => [], ok: () => gAnswer({ items: [] }) },
 ]
 
 describe('the Google actions decide their own traits', () => {
-  it('are the sixteen the workflows need, each declaring its one delegation scope, all within the grant', () => {
+  it('are the sixteen the workflows need, two of them in a second version, each declaring its one delegation scope, all within the grant', () => {
     const google = catalogueActions(CATALOGUE).filter((a) => a.key.startsWith('google.'))
-    expect(google.map((a) => `${a.key}@${a.version}`).sort()).toEqual(CASES.map(({ a }) => `${a.key}@1`).sort())
+    expect(google.map((a) => `${a.key}@${a.version}`).sort()).toEqual(CASES.map(({ a }) => `${a.key}@${a.version}`).sort())
+    expect(new Set(google.map((a) => a.key)).size).toBe(16)
     for (const a of google) {
       expect(a.googleScopes, a.key).toHaveLength(1)
       expect(GOOGLE_DELEGATION_GRANTED_SCOPES as readonly string[], a.key).toContain(a.googleScopes![0])
@@ -95,8 +102,10 @@ describe('the Google actions decide their own traits', () => {
   })
 
   it('decide idempotency per action: an append, a send, a created event, a new worksheet and a row delete are never repeated', () => {
-    const traits = Object.fromEntries(CASES.map(({ a }) => [a.key, [a.sideEffect, a.idempotent]]))
+    const traits = Object.fromEntries(CASES.map(({ a }) => [a.version === 1 ? a.key : `${a.key}@${a.version}`, [a.sideEffect, a.idempotent]]))
     expect(traits).toEqual({
+      'google.drive-list-files@2': [false, true],
+      'google.drive-download-file@2': [false, true],
       'google.sheets-add-row': [true, false],
       'google.sheets-add-rows': [true, false],
       'google.sheets-update-cell': [true, true],
@@ -452,6 +461,136 @@ describe('the Drive actions', () => {
     const k = fakeGoogle()
     k.respond(gAnswer({ id: '1G', name: 'Big', mimeType: 'application/vnd.google-apps.spreadsheet' }), new Response(new Uint8Array(DRIVE_DOWNLOAD_MAX_BYTES + 1)))
     expect((await failure(DOWNLOAD.run(k.ctx, { file_id: '1G', export_mime_type: 'text/csv' }))).code).toBe('google_drive_file_too_large')
+  })
+})
+
+describe("the Drive actions, version 2: the connection's own drive list holds (#2805)", () => {
+  const TWO_DRIVES = { subject: MAILBOX, drives: ['0AReportsDrive', '0AFinanceDrive'] }
+  const META = 'https://www.googleapis.com/drive/v3/files/1F?fields=id%2Cname%2CmimeType%2Csize%2CdriveId&supportsAllDrives=true'
+  const corpusOf = (url: string) => {
+    const u = new URL(url)
+    return [u.searchParams.get('corpora'), u.searchParams.get('driveId')]
+  }
+
+  it('download reads which drive the file is in with its metadata, and reads a file of a declared drive', async () => {
+    const f = fakeGoogle()
+    f.respond(gAnswer({ id: '1F', name: 'report.csv', mimeType: 'text/csv', size: '7', driveId: '0AReportsDrive' }), new Response('id,bid\n'))
+    expect(await DOWNLOAD_2.run(f.ctx, { file_id: '1F' })).toEqual({ id: '1F', name: 'report.csv', mime_type: 'text/csv', size: 7, content: 'id,bid\n' })
+    expect(f.sent.map((s) => s.url)).toEqual([META, 'https://www.googleapis.com/drive/v3/files/1F?alt=media&supportsAllDrives=true'])
+  })
+
+  it("download always reads the mailbox's own files, which are in no shared drive", async () => {
+    const f = fakeGoogle({ subject: MAILBOX })
+    f.respond(gAnswer({ id: '1F', name: 'mine.csv', mimeType: 'text/csv', size: '3' }), new Response('a,b'))
+    expect(await DOWNLOAD_2.run(f.ctx, { file_id: '1F' })).toMatchObject({ id: '1F', content: 'a,b' })
+  })
+
+  it('download refuses a file in a shared drive the connection does not declare, naming it, and downloads nothing', async () => {
+    const f = fakeGoogle()
+    f.respond(gAnswer({ id: '1F', name: 'payroll.csv', mimeType: 'text/csv', size: '7', driveId: '0AHumanResDrive' }))
+    const failed = await failure(DOWNLOAD_2.run(f.ctx, { file_id: '1F' }))
+    expect([failed.code, failed.outcome, f.sent.length]).toEqual(['google_drive_not_declared', 'not_applied', 1])
+    expect(failed.message).toContain('0AHumanResDrive')
+  })
+
+  it('download refuses a file whose drive Google names in a shape no drive id has, rather than reading it', async () => {
+    const f = fakeGoogle()
+    f.respond(gAnswer({ id: '1F', name: 'r.csv', mimeType: 'text/csv', size: '7', driveId: 42 }))
+    const failed = await failure(DOWNLOAD_2.run(f.ctx, { file_id: '1F' }))
+    expect([failed.code, failed.outcome, f.sent.length]).toEqual(['google_answer_unreadable', 'not_applied', 1])
+  })
+
+  it('download answers a 403 or a 404 on the file lookup by Google\'s status, not applied, and asks for no content', async () => {
+    for (const [answer, code] of [
+      [() => gError(403, 'PERMISSION_DENIED', 'insufficientFilePermissions'), 'google_permission_denied'],
+      [() => gError(404, 'NOT_FOUND', 'notFound', 'File not found: 1F.'), 'google_not_found'],
+    ] as Array<[() => Response, string]>) {
+      const f = fakeGoogle()
+      f.respond(answer())
+      const failed = await failure(DOWNLOAD_2.run(f.ctx, { file_id: '1F' }))
+      expect([failed.code, failed.outcome, f.sent.length], code).toEqual([code, 'not_applied', 1])
+      expect(failed.message).not.toContain('1F.')
+    }
+  })
+
+  it('download answers a 429 on the file lookup as not applied, naming the wait', async () => {
+    const f = fakeGoogle()
+    f.respond(gError(429, 'RESOURCE_EXHAUSTED', 'userRateLimitExceeded', 'Quota exceeded', { 'retry-after': '12' }))
+    const failed = await failure(DOWNLOAD_2.run(f.ctx, { file_id: '1F' }))
+    expect([failed.code, failed.outcome, f.sent.length]).toEqual(['google_resource_exhausted', 'not_applied', 1])
+    expect(failed.message).toContain('12')
+  })
+
+  it("list with no drive searches the mailbox's own files, then each declared drive, and never all drives", async () => {
+    const f = fakeGoogle(TWO_DRIVES)
+    f.respond(
+      gAnswer({ files: [{ id: 'own1' }], nextPageToken: 'u2' }), gAnswer({ files: [{ id: 'own2' }] }),
+      gAnswer({ files: [{ id: 'rep1', driveId: '0AReportsDrive' }] }),
+      gAnswer({ files: [{ id: 'fin1', driveId: '0AFinanceDrive' }] }),
+    )
+    expect(await LIST_FILES_2.run(f.ctx, { query: 'name contains ?', binds: ['report'] })).toEqual({
+      files: [{ id: 'own1' }, { id: 'own2' }, { id: 'rep1', driveId: '0AReportsDrive' }, { id: 'fin1', driveId: '0AFinanceDrive' }],
+    })
+    expect(f.sent.map((s) => corpusOf(s.url))).toEqual([['user', null], ['user', null], ['drive', '0AReportsDrive'], ['drive', '0AFinanceDrive']])
+    for (const s of f.sent) {
+      const u = new URL(s.url)
+      expect(u.searchParams.get('corpora')).not.toBe('allDrives')
+      expect(u.searchParams.get('q')).toBe("name contains 'report'")
+    }
+    // The mailbox's own search leaves out shared drive items, which only a declared drive's search reaches.
+    expect(new URL(f.sent[0].url).searchParams.get('includeItemsFromAllDrives')).toBe('false')
+    expect(new URL(f.sent[1].url).searchParams.get('pageToken')).toBe('u2')
+  })
+
+  it("list with no drive, on a connection declaring none, searches the mailbox's own files only", async () => {
+    const f = fakeGoogle({ subject: MAILBOX })
+    f.respond(gAnswer({ files: [{ id: 'own1' }] }))
+    expect(await LIST_FILES_2.run(f.ctx, {})).toEqual({ files: [{ id: 'own1' }] })
+    expect(f.sent.map((s) => corpusOf(s.url))).toEqual([['user', null]])
+  })
+
+  it('list never returns a file of a shared drive the connection does not declare, whichever search answered it', async () => {
+    const f = fakeGoogle()
+    f.respond(gAnswer({ files: [{ id: 'own1' }, { id: 'hr1', driveId: '0AHumanResDrive' }] }), gAnswer({ files: [{ id: 'rep1', driveId: '0AReportsDrive' }] }))
+    expect(await LIST_FILES_2.run(f.ctx, {})).toEqual({ files: [{ id: 'own1' }, { id: 'rep1', driveId: '0AReportsDrive' }] })
+  })
+
+  it('list with a drive named searches that drive alone when it is declared, and refuses one that is not before anything is sent', async () => {
+    const f = fakeGoogle(TWO_DRIVES)
+    f.respond(gAnswer({ files: [{ id: 'fin1', driveId: '0AFinanceDrive' }] }))
+    expect(await LIST_FILES_2.run(f.ctx, { drive_id: ' 0AFinanceDrive ' })).toEqual({ files: [{ id: 'fin1', driveId: '0AFinanceDrive' }] })
+    expect(f.sent.map((s) => corpusOf(s.url))).toEqual([['drive', '0AFinanceDrive']])
+
+    const g = fakeGoogle(TWO_DRIVES)
+    const failed = await failure(LIST_FILES_2.run(g.ctx, { drive_id: '0AHumanResDrive' }))
+    expect([failed.code, failed.outcome, g.sent.length]).toEqual(['google_drive_not_declared', 'not_applied', 0])
+    expect(failed.message).toContain('0AHumanResDrive')
+  })
+
+  it('list holds one page cap across all the searches together, and fails by name at it rather than answering part', async () => {
+    const f = fakeGoogle(TWO_DRIVES)
+    // Four pages of the mailbox's own, four of the first drive, and the second drive never finishes.
+    for (let i = 0; i < 4; i++) f.respond(gAnswer({ files: [{ id: `u${i}` }], nextPageToken: `u${i + 1}` }))
+    f.respond(gAnswer({ files: [{ id: 'u4' }] }))
+    for (let i = 0; i < 4; i++) f.respond(gAnswer({ files: [{ id: `r${i}`, driveId: '0AReportsDrive' }], nextPageToken: `r${i + 1}` }))
+    f.respond(gAnswer({ files: [{ id: 'r4', driveId: '0AReportsDrive' }], nextPageToken: 'r5' }))
+    const failed = await failure(LIST_FILES_2.run(f.ctx, {}))
+    expect([failed.code, failed.outcome, f.sent.length]).toEqual(['google_drive_list_page_cap', 'not_applied', DRIVE_LIST_MAX_PAGES])
+  })
+
+  it('list answers a 429 on a later search as not applied, naming the wait, and returns no part of the list', async () => {
+    const f = fakeGoogle(TWO_DRIVES)
+    f.respond(gAnswer({ files: [{ id: 'own1' }] }), gError(429, 'RESOURCE_EXHAUSTED', 'rateLimitExceeded', 'Quota exceeded', { 'retry-after': '30' }))
+    const failed = await failure(LIST_FILES_2.run(f.ctx, {}))
+    expect([failed.code, failed.outcome, f.sent.length]).toEqual(['google_resource_exhausted', 'not_applied', 2])
+    expect(failed.message).toContain('30')
+  })
+
+  it('version 1 stays as it was for the steps pinned to it: a list with no drive still searches all drives', async () => {
+    const f = fakeGoogle(TWO_DRIVES)
+    f.respond(gAnswer({ files: [] }))
+    await LIST_FILES.run(f.ctx, {})
+    expect(f.sent.map((s) => corpusOf(s.url))).toEqual([['allDrives', null]])
   })
 })
 
