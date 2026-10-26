@@ -5,6 +5,8 @@
  *   wait_for: 'all'      — Promise.allSettled(); waits for every child.
  *                          on_timeout: 'partial' → continue with settled results;
  *                          on_timeout: 'fail'    → throw if any child unsettled.
+ *                          A slot marked on_failure: 'continue' (#2832) never
+ *                          fails the block; the engine raises its failure itself.
  *   wait_for: 'first'    — Race; first successful child wins. All children run to
  *                          completion in the background (results discarded except winner).
  *                          Fails if all children reject OR timeout fires first.
@@ -79,6 +81,17 @@ interface ParallelConfig {
   // workflow stops. Set to 'continue' when the downstream step (e.g. a Bid
   // Evaluation node) handles rejections in the result array itself.
   on_child_error?: 'fail' | 'continue'
+  // The slot list. A slot marked `on_failure: 'continue'` (#2832) never fails the
+  // block under wait_for 'all': its failure or timeout stays in the output, and
+  // the engine records it and raises it through the post-answer failure alert
+  // once the walk is done. Every other slot follows on_child_error as before.
+  children?: Array<{ id?: unknown; on_failure?: unknown }>
+}
+
+/** The slot handle ids marked `on_failure: 'continue'` (#2832). */
+export function continuingSlots(config: Record<string, unknown>): Set<string> {
+  const children = Array.isArray(config.children) ? (config.children as ParallelConfig['children'] & unknown[]) : []
+  return new Set(children.filter((c) => c && c.on_failure === 'continue' && typeof c.id === 'string').map((c) => c.id as string))
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -129,7 +142,8 @@ export async function executeParallelNode(
 
     // wait_for:'all' with on_child_error:'fail' — bail if any child failed
     if (waitFor === 'all' && onChildError === 'fail') {
-      const failed = output.find((c) => c.status === 'rejected' || c.status === 'timeout')
+      const continuing = continuingSlots(node.config)
+      const failed = output.find((c, i) => (c.status === 'rejected' || c.status === 'timeout') && !continuing.has(slotHandleIds[i] ?? ''))
       if (failed) {
         const reason = failed.status === 'timeout'
           ? `child "${failed.namespace}" did not complete in time`

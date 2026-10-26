@@ -153,6 +153,13 @@ export interface ExecutionContext {
    */
   startAtRiskWatch?: (stepNamespace: string) => import('./engine/at-risk-writes').AtRiskWatch
   /**
+   * The failures of parallel slots marked on_failure: 'continue' (#2832), in the
+   * order they were met. The walk went on past each; finalize raises the first as
+   * the run's failure after the answer (degraded and alerted) unless an error
+   * ended the walk. Written only by the parallel block, never cleared.
+   */
+  continuedFailures?: Error[]
+  /**
    * How the engine waits out a step's retry backoff (#1063). Undefined in
    * production, which means the real timer.
    *

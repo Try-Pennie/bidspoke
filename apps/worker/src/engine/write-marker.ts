@@ -106,9 +106,9 @@ export function readBackOwns(object: string, body: unknown, executionId: string,
 }
 
 /**
- * Runs one step with the marker on the run's context, and takes it back however
- * the step ends. One slot holds because only the walk's own sequential loop sets
- * it, as with the at-risk watch's request hook.
+ * Runs one step with the marker on the context it is given, and takes it back
+ * however the step ends. The walk gives it the step's own view of the run's
+ * context (engine/step-watch.ts, #2832), so steps running at once never share it.
  */
 export async function withWriteMarker<T>(ctx: { writeMarker?: string }, marker: string | undefined, work: () => Promise<T>): Promise<T> {
   ctx.writeMarker = marker
