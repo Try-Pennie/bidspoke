@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { accessTokenFromCookies, applyPort, httpWorkflowApi, previewPort, rollbackPort, type SaveAnswer, type SaveRequest, type WorkflowApi } from '../apply'
-import { MainFlowPortRefusal, MAIN_FLOW_WORKFLOW_ID, portMainFlow, PORT_STAGES } from '../transform'
+import { MainFlowPortRefusal, MAIN_FLOW_WORKFLOW_ID, OUTCOME_POSTS, portMainFlow, PORT_STAGES } from '../transform'
 import { productionMainFlow } from './production-fixture'
 
 interface Version { id: string; version_number: number; definition: unknown }
@@ -232,8 +232,18 @@ describe('previewPort', () => {
     const api = new FakeApi(productionMainFlow())
     const preview = await previewPort(api, 'inquiry')
     expect(preview).toMatchObject({ live_version: { version_number: 1 }, ports: expect.arrayContaining(['invalid_state_sf_post', 'send_salesforce']), moves_inquiry: true })
-    expect(preview.adds).toHaveLength(18)
+    // Per outcome write: the credit posts block, its join, the inquiry body and its Apex call.
+    expect(preview.adds).toHaveLength(36)
+    expect(preview).toMatchObject({ adds_collections: false })
     expect(preview.removes).toEqual(['send_salesforce_inquiry'])
+    expect(api.puts).toHaveLength(0)
+  })
+
+  it('names the collections post the collections stage would add over the inquiry stage (#2832)', async () => {
+    const api = new FakeApi(portMainFlow(productionMainFlow(), PORT_STAGES.inquiry))
+    const preview = await previewPort(api, 'collections')
+    expect(preview).toMatchObject({ ports: [], moves_inquiry: false, adds_collections: true, removes: [] })
+    expect(preview.adds.sort()).toEqual(OUTCOME_POSTS.flatMap((p) => [`collections_body_${p}`, `collections_apex_${p}`]).sort())
     expect(api.puts).toHaveLength(0)
   })
 })

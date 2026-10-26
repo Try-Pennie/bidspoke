@@ -47,8 +47,10 @@ and adding what the relay did on its side:
   Bidspoke run link (decision D4), which the inquiry relay wrote before.
 
 **The inquiry post** (`send_salesforce_inquiry`) leaves `parallel_1`, and after
-every outcome write come two steps, before what followed the write (the branch's
-Achieve step, or `exit_1` to `exit_3`):
+every outcome write comes a parallel block, `credit_posts_<post>`, joined at
+`credit_posts_end_<post>`, before what followed the write (the branch's Achieve
+step, or `exit_1` to `exit_3`). Its first slot (`child-0`, labelled `inquiry`)
+holds two steps:
 
 - `inquiry_body_<post>`, a code node that builds the relay's Apex body,
   `{ submissionId, inquiriesJson }`, or returns null, which skips the call,
@@ -62,12 +64,19 @@ Achieve step, or `exit_1` to `exit_3`):
   resending it at most once (#2172; the contract doc's "The credit inquiry post's
   read-back").
 
-A failed Apex call ends the walk after the answer, as a failed outcome post does
-today: the branch's Achieve step does not run after it, and the run is recorded
-as failed. `ported-walk.test.ts` proves this through the real engine walk over the
-ported definition's Tripoint win branch: the lead is answered, the Submission is
-written, the Apex call is made once and fails, and Achieve is not reached (and,
-as its control, is reached when the call succeeds).
+The block's settings are `wait_for: all`, `on_child_error: fail`, `on_timeout:
+partial`, `timeout_ms: 5500`. A failed inquiry call fails the block, which ends
+the walk after the answer, as a failed outcome post does today: the branch's
+Achieve step does not run after it, and the run is recorded as degraded and
+alerted, with the failure captured as the inquiry step itself. The block is
+there so the collections post (below) can run beside the inquiry post rather
+than after it. Each step in a slot is watched as a step of the walk is, so the
+inquiry post is still recorded before it is sent and read back (#2832,
+`engine/step-watch.ts`). `ported-walk.test.ts` proves this through the real
+engine walk over the ported definition's Tripoint win branch: the lead is
+answered, the Submission is written, each Apex call is made once, the inquiry
+call fails, and Achieve is not reached (and, as its control, is reached when the
+calls succeed).
 
 The inquiry relay's `VantageScore__c` patch is not kept: the outcome write
 already sets it last today, so its value stands (plan point 2).
@@ -81,9 +90,25 @@ to time out (more if the completing write is slower, which is inferred, not
 measured); each is held by the at-risk record for #2023's read-back rather than
 resent. The Apex call gets one
 attempt of 4.5 s, sized on the same org's `credit-trades` call (p99 4,001 ms).
-The body step gets 500 ms. The longest branch, `send_salesforce`, whose
-`calculate_internal_debt` runs after its answer, has a worst case of 11.45 s; a
-test walks every branch and fails when one no longer fits.
+The body step gets 500 ms. The block waits at most 5.5 s, the longest slot (5 s)
+plus 500 ms, so each call ends on its own deadline before the block stops
+waiting. Its slots run side by side, so the block costs its longest slot, never
+the sum. The longest branch, `send_salesforce`, whose `calculate_internal_debt`
+runs after its answer, has a worst case of 11.45 s through the block; a test
+walks every branch and fails when one no longer fits.
+
+**Achieve after the block is not inside the 12 s in the worst case**, and was
+not before the block either (measured 2026-10-26 for #2832, not changed by it).
+Achieve's step starts after the block, which is up to 9.5 s after the answer on
+the six branches that run it (the 4.5 s write, then 5 s), and it waits up to 9 s
+for Achieve's reply (`ACHIEVE_FETCH_TIMEOUT_MS`; its step timeouts are 15 to 18
+s). So in the worst case it ends about 18.5 s after the answer, and the run is
+reported as unfinished work. Today, on five of the six, the outcome post still
+goes to the relay (three attempts of 3.5 to 4.5 s each), so Achieve can already
+start 12 to 15 s after the answer in the worst case. Typically the write takes
+about 0.1 s, the block about 2 s (the median of the `credit-trades` call, the
+closest one measured) and Achieve 4.7 s (9 in 10 within 5.8 s), which fits. No limit
+was raised for this; it is Dan's call (#2832).
 
 ## Stages
 
@@ -95,7 +120,48 @@ nothing. A post already ported is recognised and left alone.
 | `canary_invalid_state` | 4 | ports `invalid_state_sf_post` |
 | `canary_send_salesforce` | 5 | also ports `send_salesforce` |
 | `outcome_posts` | 6 | ports the other seven (gated on #2163 and #2023, D6) |
-| `inquiry` | 7 | moves the inquiry post after the answer (gated on #2172) |
+| `inquiry` | 7 | moves the inquiry post after the answer, into a credit posts block after each outcome write (gated on #2172) |
+| `collections` | #2832 | adds the collections post as the block's second slot (built, not applied: waits for the Salesforce endpoint) |
+
+The `collections` stage also moves the inquiry, so applied over a definition
+before `inquiry` it does both; it is meant to be applied after it. Every stage
+before it leaves a definition holding the collections steps exactly as it is.
+
+## The collections post (#2832)
+
+Equifax's `collections` array (collection agency placements, industry YC) goes to
+`POST /services/apexrest/credit-collections` (`CollectionParserRest`, Geoff's
+spec, being built by another team), after the answer, as the credit posts
+block's second slot (`child-1`, labelled `collections`):
+
+- `collections_body_<post>`, a code node building `{ submissionId,
+  collectionsJson }`, `collectionsJson` the JSON text of `{ collections: [...] }`
+  with every field of every item as Equifax sent it, and only null valued keys
+  dropped, exactly as `trades_body` builds the trades (Geoff on #2832: the body is
+  the same as trades, and all of the information in the array comes through). It
+  returns null, which skips the call, off the `trades_present` route, with no
+  `Submission__c`, and when the report has no `collections` key (or it is null).
+  An empty list is sent; the endpoint reads it as none now. The missing key skip
+  and the empty list send are defaults pending the spec answer on #2832. A
+  `collections` value that is not a list fails the step by name.
+- `collections_apex_<post>`, the Apex call, one attempt of 4.5 s. A repeat call
+  is harmless (each call replaces the Lead's collection rows, and Geoff accepts
+  the extra file a repeat attaches, as with trades, whose call runs with two
+  retries), so the engine does not treat it as never resent and it has no
+  read-back; it gets one attempt only because a retry does not fit the 12 s.
+
+Its slot is marked `on_failure: 'continue'`: a failed or timed out collections
+call does not fail the block, so the walk goes on to Achieve, and the failure is
+raised once the walk is done, through the same alert as a failed Salesforce
+write after the answer (the run is degraded, the `sf_writeback` dead letter, and
+the failed write capture, which counts an Apex call as uncapturable).
+`ported-walk.test.ts` walks this too.
+
+**Turning it on**: when the endpoint is live in the Pennie org, try it on a test
+lead, then apply `collections` with the runbook below, after the `inquiry` stage
+(the port's order on #1680). The money gate answers it as
+`salesforce_credit_collections`; a failure variant for it should be added to the
+gate's fixtures with the refresh that follows the apply.
 
 ## When the transform refuses
 
@@ -334,9 +400,11 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
   the transform at `LIVE_STAGE`, the stage last applied, with exactly that
   stage's posts native, and an unported definition fails the same check.
 - `ported-definition.test.ts`: walks the ported graph. Every Submission write
-  after the answer on the `trades_present` route is followed by the Apex call;
-  the worst case from each answer to its Apex call fits 12 s by the engine's own
-  retry rules; every `success_node_namespaces` entry exists; neither relay is
+  after the answer on the `trades_present` route is followed by the credit posts
+  block, the inquiry and collections pairs side by side; the worst case from
+  each answer through the block fits 12 s by the engine's own retry rules, and
+  each slot ends before the block's own timeout; the collections body sends every
+  non null field and skips a missing key; every `success_node_namespaces` entry exists; neither relay is
   named; the save route's definition rules pass (no loop, no malformed
   Salesforce write option). The route itself is driven by
   `save-route-contract.test.ts`.
@@ -344,7 +412,9 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
   wrote from what the webhook posted, through the engine's real executors, over
   inputs whose key sets and value types were measured from production.
 - `ported-walk.test.ts`: the real engine walk over one ported branch when the
-  Apex call fails, and when it succeeds.
+  inquiry call fails (the walk ends before Achieve), when the collections call
+  fails (the failure is recorded and the walk reaches Achieve), and when both
+  succeed.
 - `send-salesforce-canary.test.ts`: the phase 5 stage over the live Main Flow,
   and the ported `send_salesforce` walked by the real engine through every
   Salesforce answer, each failure ending as the invalid state write's does.
@@ -358,6 +428,6 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
   save landing between the re-read and the PUT is `refused_live_changed`.
 
 The money gate answers the native Submission PATCH (`salesforce_submission_update`)
-and the Apex call (`salesforce_credit_inquiries`), each with a failing answer,
+and the Apex calls (`salesforce_credit_inquiries`, `salesforce_credit_collections`), each with a failing answer,
 and its `salesforce_inquiry_post_fails` variant fails the inquiry post both
 before the port and after it.

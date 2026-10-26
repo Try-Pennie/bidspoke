@@ -1,13 +1,15 @@
 /**
- * A failed credit-inquiries call, walked by the real engine over the ported Main
- * Flow (#2171, the lessons review on #2197).
+ * A failed credit post, walked by the real engine over the ported Main Flow
+ * (#2171, the lessons review on #2197, then #2832).
  *
  * docs/main-flow-relay-port.md says that once the inquiry moves after the answer,
- * a failed Apex call ends the walk: the lead is still answered, the call is made
- * once and never resent, and the branch's Achieve step does not run. This walks
- * the Tripoint win branch of the ported production definition, from its response
- * to its Achieve step, with the nodes and edges exactly as the transform builds
- * them, through the real walkGraph and the real Salesforce executor. The steps
+ * a failed inquiry call ends the walk: the lead is still answered, the call is
+ * made once and never resent, and the branch's Achieve step does not run. A
+ * failed collections call, beside it in the same block, is recorded for the
+ * failure alert and the walk goes on to Achieve. This walks the Tripoint win
+ * branch of the ported production definition, from its response to its Achieve
+ * step, with the nodes and edges exactly as the transform builds them, through
+ * the real walkGraph and the real Salesforce executor. The steps
  * before the answer are given as context, and the inquiry body code node runs its
  * real script in place of the sandbox dispatch (canvas-script.ts builds the same
  * function the deployer does). Only fetch is a recorder.
@@ -45,6 +47,7 @@ import { productionMainFlow } from './production-fixture'
 
 const INSTANCE = 'https://example.my.salesforce.com'
 const APEX_URL = `${INSTANCE}/services/apexrest/credit-inquiries`
+const COLLECTIONS_URL = `${INSTANCE}/services/apexrest/credit-collections`
 const SUBMISSION = 'a0XGATE00000000001'
 
 const env = {
@@ -55,8 +58,11 @@ const supabase = {} as SupabaseClient
 
 /** The Tripoint win branch of the ported definition, its response to its Achieve step, nodes and edges as built. */
 function tripointBranch() {
-  const ported = portMainFlow(productionMainFlow(), PORT_STAGES.inquiry)
-  const slice = ['tripoint_response', 'tripoint_sf_post', 'inquiry_body_tripoint_sf_post', 'inquiry_apex_tripoint_sf_post', 'achieve_tripoint_win']
+  const ported = portMainFlow(productionMainFlow(), PORT_STAGES.collections)
+  const slice = [
+    'tripoint_response', 'tripoint_sf_post', 'credit_posts_tripoint_sf_post', 'inquiry_body_tripoint_sf_post', 'inquiry_apex_tripoint_sf_post',
+    'collections_body_tripoint_sf_post', 'collections_apex_tripoint_sf_post', 'credit_posts_end_tripoint_sf_post', 'achieve_tripoint_win',
+  ]
   const nodes = ported.nodes.filter((n) => slice.includes(n.namespace)) as unknown as NodeDefinition[]
   expect(nodes.map((n) => n.namespace).sort()).toEqual([...slice].sort())
   const ids = new Set(nodes.map((n) => n.id))
@@ -72,7 +78,7 @@ function contextAtTheAnswer() {
   ctx.retrySleep = async () => {}
   const steps: Record<string, unknown> = {
     equifax_debt: { matched_branch: 'trades_present', _route: 'trades_present' },
-    equifax_credit_report: { data: { consumers: { equifaxUSConsumerCreditReport: [{ trades: [{}], inquiries: [{ industryCode: 'BB', inquiryDate: '2026-09-01' }] }] } } },
+    equifax_credit_report: { data: { consumers: { equifaxUSConsumerCreditReport: [{ trades: [{}], inquiries: [{ industryCode: 'BB', inquiryDate: '2026-09-01' }], collections: [{ industryCode: 'YC', balance: 412 }] }] } } },
     tripoint_win_body: {
       clientBody: { routingPartner: 2, tripointLeadId: 'TP-GATE-0001' },
       sfBody: { submissionId: SUBMISSION, executionId: 'exec-gate', External_Partner_Name__c: 'Tripoint', External_Routing_Code__c: 2, Tripoint_Response__c: 'Success' },
@@ -92,39 +98,54 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-async function walkWithApexAnswering(apexStatus: number) {
+async function walkWithAnswers(inquiryStatus: number, collectionsStatus = 200) {
   fetchMock.mockImplementation(async (url: string) => {
-    if (url === APEX_URL) return new Response(JSON.stringify({ message: 'money gate: refused', statusCode: apexStatus }), { status: apexStatus })
+    if (url === APEX_URL) return new Response(JSON.stringify({ message: 'money gate: inquiry answer', statusCode: inquiryStatus }), { status: inquiryStatus })
+    if (url === COLLECTIONS_URL) return new Response(JSON.stringify({ message: 'money gate: collections answer', statusCode: collectionsStatus }), { status: collectionsStatus })
     if (url.startsWith(`${INSTANCE}/services/data/`)) return new Response(null, { status: 204 })
     return new Response(JSON.stringify({ response: 'accepted', offers: [] }), { status: 200 })
   })
   const queue: StepLogEntry[] = []
   const answered: WalkGraphResult[] = []
-  const ending = await walkGraph(contextAtTheAnswer(), tripointBranch(), 'exec-gate', '2026-10-15T12:00:00.000Z', supabase, env, 'money', 'v1', queue, (r) => { answered.push(r) })
+  const ctx = contextAtTheAnswer()
+  const ending = await walkGraph(ctx, tripointBranch(), 'exec-gate', '2026-10-15T12:00:00.000Z', supabase, env, 'money', 'v1', queue, (r) => { answered.push(r) })
     .then(() => null, (e: Error) => e)
   const calls = fetchMock.mock.calls.map((c) => `${(c[1] as { method?: string } | undefined)?.method ?? 'GET'} ${String(c[0])}`)
-  return { ending, answered, queue, calls }
+  const statusOf = (ns: string) => queue.find((r) => r.step_namespace === ns)?.status
+  return { ending, answered, queue, calls, statusOf, continued: (ctx.continuedFailures ?? []) as Array<Error & { stepNamespace?: string }> }
 }
 
 describe('the ported Tripoint win branch when the credit-inquiries call fails', () => {
-  it('answers the lead, writes the Submission, calls the Apex endpoint once, and stops before Achieve', async () => {
-    const { ending, answered, queue, calls } = await walkWithApexAnswering(500)
+  it('answers the lead, writes the Submission, calls each Apex endpoint once, and stops before Achieve', async () => {
+    const { ending, answered, queue, calls, statusOf } = await walkWithAnswers(500)
     expect(answered).toEqual([expect.objectContaining({ status: 200, body: { routingPartner: 2, tripointLeadId: 'TP-GATE-0001' } })])
-    expect(calls).toEqual([`PATCH ${INSTANCE}/services/data/v60.0/sobjects/Submission__c/${SUBMISSION}`, `POST ${APEX_URL}`])
-    expect(ending?.message).toMatch(/Salesforce API error \(500\)/)
-    expect(queue.map((r) => [r.step_namespace, r.status])).toEqual([
-      ['tripoint_response', 'completed'],
-      ['tripoint_sf_post', 'completed'],
-      ['inquiry_body_tripoint_sf_post', 'completed'],
-      ['inquiry_apex_tripoint_sf_post', 'failed'],
-    ])
+    expect(calls[0]).toBe(`PATCH ${INSTANCE}/services/data/v60.0/sobjects/Submission__c/${SUBMISSION}`)
+    expect(calls.slice(1).sort()).toEqual([`POST ${APEX_URL}`, `POST ${COLLECTIONS_URL}`].sort())
+    expect(ending?.message).toMatch(/Parallel failed: child "inquiry_body_tripoint_sf_post" failed: Salesforce API error \(500\)/)
+    expect({
+      inquiry: statusOf('inquiry_apex_tripoint_sf_post'), collections: statusOf('collections_apex_tripoint_sf_post'), block: statusOf('credit_posts_tripoint_sf_post'), achieve: statusOf('achieve_tripoint_win'),
+    }).toEqual({ inquiry: 'failed', collections: 'completed', block: 'failed', achieve: undefined })
     expect(queue.find((r) => r.step_namespace === 'inquiry_apex_tripoint_sf_post')?.retries_used).toBe(0)
   })
 
-  it('control: when the call succeeds the walk goes on to Achieve', async () => {
-    const { ending, queue, calls } = await walkWithApexAnswering(200)
+  it('control: when both calls succeed the walk goes on to Achieve', async () => {
+    const { ending, calls, statusOf, continued } = await walkWithAnswers(200)
     expect(calls.filter((c) => c === `POST ${APEX_URL}`)).toHaveLength(1)
-    expect(queue.map((r) => r.step_namespace)).toContain('achieve_tripoint_win')
-    expect(ending === null || !/inquiry/.test(ending.message)).toBe(true)
+    expect(calls.filter((c) => c === `POST ${COLLECTIONS_URL}`)).toHaveLength(1)
+    expect(statusOf('achieve_tripoint_win')).toBeDefined()
+    expect(ending === null || !/inquiry|collections/.test(ending.message)).toBe(true)
+    expect(continued).toEqual([])
+  })
+})
+
+describe('the ported Tripoint win branch when the credit-collections call fails (#2832)', () => {
+  it('records the failed call for the failure alert, once, and the walk still goes on to Achieve', async () => {
+    const { ending, calls, statusOf, continued, queue } = await walkWithAnswers(200, 500)
+    expect(calls.filter((c) => c === `POST ${COLLECTIONS_URL}`)).toHaveLength(1)
+    expect({ collections: statusOf('collections_apex_tripoint_sf_post'), block: statusOf('credit_posts_tripoint_sf_post') }).toEqual({ collections: 'failed', block: 'completed' })
+    expect(statusOf('achieve_tripoint_win')).toBeDefined()
+    expect(ending === null || !/collections/.test(ending.message)).toBe(true)
+    expect(continued.map((f) => [f.stepNamespace, f.message])).toEqual([['collections_apex_tripoint_sf_post', expect.stringMatching(/Salesforce API error \(500\)/)]])
+    expect(queue.find((r) => r.step_namespace === 'collections_apex_tripoint_sf_post')?.retries_used).toBe(0)
   })
 })

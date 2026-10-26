@@ -80,7 +80,7 @@ describe('the apply, through PUT /api/workflows/:id', () => {
 describe('every stage still to apply, over live Main Flow, through PUT /api/workflows/:id', () => {
   // The route's checks of a LIVE workflow's definition (lead validation, unfinished
   // steps, connections) run on each, so a stage the route would refuse fails here.
-  it.each(['outcome_posts', 'inquiry'] as const)('%s is accepted and stored as built', async (s) => {
+  it.each(['outcome_posts', 'inquiry', 'collections'] as const)('%s is accepted and stored as built', async (s) => {
     const result = await applyPort(client(), s)
     expect(result).toMatchObject({ outcome: 'applied' })
     expect(backend.row.definition).toEqual(portMainFlow(live(), PORT_STAGES[s]))
