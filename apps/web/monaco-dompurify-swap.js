@@ -1,8 +1,8 @@
 // @ts-check
 /**
  * Monaco's ESM build carries its own copy of DOMPurify at
- * `monaco-editor/esm/vs/base/browser/dompurify/dompurify.js` (3.2.7 in Monaco
- * 0.55.1), imported by relative path from `domSanitize.js`, so the lockfile's
+ * `monaco-editor/esm/vs/base/browser/dompurify/dompurify.js` (3.2.7 in Monaco 0.55.1, 3.4.15 in
+ * 0.57.0), imported by relative path from `domSanitize.js`, so the lockfile's
  * `dompurify` override never reaches it. next.config.js uses this module to point
  * that one import at the npm `dompurify` package instead, which the lockfile holds
  * at a patched release (GHSA-mrv2-3pqr-j5jr, #2695). Both export the same default
