@@ -86,6 +86,34 @@ function compare(a: string, b: string): number {
   return 0
 }
 
+/**
+ * The vercel range the adapter declares. Read from the adapter, never copied: an
+ * adapter upgrade that moves the range moves every assertion on it, rather than
+ * leaving a number here that is right on the day it is written and silently
+ * wrong after.
+ */
+function adapterRange(): { range: string; low: string; high: string } {
+  const range = read(ADAPTER_PKG).peerDependencies?.vercel
+  expect(range, '@cloudflare/next-on-pages no longer declares a vercel peer range').toBeDefined()
+
+  const bounds = /^>=\s*([\d.]+)\s*&&\s*<=\s*([\d.]+)$/.exec(range!.trim())
+  // Refuse an unparseable range rather than treat it as satisfied. A guard
+  // that answers "fine" when it could not read its own input is
+  // indistinguishable from one that checked (L215).
+  expect(
+    bounds,
+    `the vercel peer range is now '${range!}', which this guard cannot read. Teach it the new shape rather than deleting the check.`,
+  ).not.toBeNull()
+  return { range: range!, low: bounds![1], high: bounds![2] }
+}
+
+const DEPENDABOT = path.join(REPO_ROOT, '.github/dependabot.yml')
+
+/** The single version range a Dependabot config ignores for vercel, if any. */
+function dependabotVercelIgnore(config: string): string | undefined {
+  return /-\s*dependency-name:\s*vercel\s*\n\s*versions:\s*\[\s*["']([^"']+)["']\s*\]/.exec(config)?.[1]
+}
+
 describe('the Vercel CLI used by pages:build is pinned (#1064)', () => {
   it('is declared as a dependency rather than fetched by npx at build time', () => {
     expect(
@@ -105,27 +133,26 @@ describe('the Vercel CLI used by pages:build is pinned (#1064)', () => {
   })
 
   it('is a version next-on-pages says it supports', () => {
-    // Read from the adapter, never copied. An adapter upgrade that moves the
-    // supported range moves this assertion with it, rather than leaving a number
-    // here that is right on the day it is written and silently wrong after.
-    const range = read(ADAPTER_PKG).peerDependencies?.vercel
-    expect(range, '@cloudflare/next-on-pages no longer declares a vercel peer range').toBeDefined()
-
-    const bounds = /^>=\s*([\d.]+)\s*&&\s*<=\s*([\d.]+)$/.exec(range!.trim())
-    // Refuse an unparseable range rather than treat it as satisfied. A guard
-    // that answers "fine" when it could not read its own input is
-    // indistinguishable from one that checked (L215).
-    expect(
-      bounds,
-      `the vercel peer range is now '${range!}', which this guard cannot read. Teach it the new shape rather than deleting the check.`,
-    ).not.toBeNull()
-
-    const [, low, high] = bounds!
+    const { range, low, high } = adapterRange()
     const declared = declaredVercel()!
     expect(
       compare(declared, low) >= 0 && compare(declared, high) <= 0,
-      `apps/web pins vercel ${declared}, outside the ${range!} that @cloudflare/next-on-pages declares it supports. The Pages artifact would be built by a version the adapter is not verified against.`,
+      `apps/web pins vercel ${declared}, outside the ${range} that @cloudflare/next-on-pages declares it supports. The Pages artifact would be built by a version the adapter is not verified against.`,
     ).toBe(true)
+  })
+
+  it('is never offered by Dependabot past the top of that range', () => {
+    // Every vercel release past the adapter's top fails the test above, so a
+    // Dependabot PR for one can never merge (vercel 65, #2791), and one inside
+    // the weekly minor and patch group turns the whole group red. Dependabot
+    // ignores those versions, at the bound the adapter declares.
+    expect(dependabotVercelIgnore(readFileSync(DEPENDABOT, 'utf8'))).toBe(`>${adapterRange().high}`)
+  })
+
+  it('reads the vercel ignore from a Dependabot config', () => {
+    const config = ['    ignore:', '      - dependency-name: vercel', '        versions: [">47.0.4"]'].join('\n')
+    expect(dependabotVercelIgnore(config)).toBe('>47.0.4')
+    expect(dependabotVercelIgnore('    ignore:\n      - dependency-name: next\n        versions: [">15"]')).toBeUndefined()
   })
 
   it('runs on a pnpm whose `pnpm list` output next-on-pages can read', () => {
