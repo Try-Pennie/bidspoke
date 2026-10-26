@@ -15,6 +15,7 @@ import { ConnectionsScreen, type ConnectionsClock, type ConnectionsSource } from
 import { CHANGE_DEADLINES } from '../connections-state'
 import { catalogueServices, type CreatedConnection } from '../add-form-model'
 import type { DelegationEntry } from '../connection-model'
+import { chooseOption, readSelect } from '@/components/ui/__tests__/_select'
 
 vi.mock('next/link', () => ({ default: ({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) => <a href={href} className={className}>{children}</a> }))
 
@@ -129,6 +130,54 @@ describe('Add connection (R11, R12, D11, D12)', () => {
     await openForm()
     fireEvent.click(within(part('add-form')!).getByRole('button', { name: 'Cancel' }))
     expect(part('detail')!.querySelector('h2')!.textContent).toBe('Pennie Salesforce')
+  })
+})
+
+describe("a Google connection's mailbox and shared drives (#2572)", () => {
+  const drive = (subject: string, display_name: string | null): DelegationEntry => ({ kind: 'drive', subject, display_name, added_by: 'Dan Wright', added_at: '2026-10-19T16:00:00Z' })
+  const LISTED = [ENTRY, { ...ENTRY, subject: 'reports@trypennie.com' }, drive('0AFinanceDrive', 'Finance'), drive('0AReportsDrive', null)]
+
+  async function openGoogle(over: Partial<ConnectionsSource> = {}) {
+    const opened = await openForm({ googleSubjects: vi.fn(async () => ({ subjects: LISTED, reached_limit: false })), ...over })
+    fireEvent.click(within(part('add-form')!).getByRole('button', { name: /^Google/ }))
+    await waitFor(() => expect(within(part('add-form')!).queryByRole('combobox', { name: 'The mailbox it acts as' })).not.toBeNull())
+    return opened
+  }
+
+  it('offers only the mailboxes on the company list under Acts as, never a drive', async () => {
+    await openGoogle()
+    const trigger = within(part('add-form')!).getByRole('combobox', { name: 'The mailbox it acts as' })
+    expect(readSelect(trigger).options).toEqual(['ops@trypennie.com', 'reports@trypennie.com'])
+  })
+
+  it('lists each shared drive on the company list to tick, by the name the list shows it under', async () => {
+    await openGoogle()
+    const drives = field('Shared drives')
+    expect(within(drives).getAllByRole('checkbox').map((c) => [c.textContent, c.getAttribute('aria-checked')])).toEqual([['Finance', 'false'], ['0AReportsDrive', 'false']])
+  })
+
+  it('sends the mailbox chosen and the drives ticked as a list', async () => {
+    const { s } = await openGoogle()
+    fireEvent.change(within(field('Name')).getByRole('textbox'), { target: { value: 'Ops mailbox' } })
+    chooseOption(within(part('add-form')!).getByRole('combobox', { name: 'The mailbox it acts as' }), 'ops@trypennie.com')
+    fireEvent.click(within(field('Shared drives')).getByRole('checkbox', { name: 'Finance' }))
+    fireEvent.click(within(field('Shared drives')).getByRole('checkbox', { name: '0AReportsDrive' }))
+    expect(within(field('Shared drives')).getByRole('checkbox', { name: 'Finance' }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(within(part('add-form')!).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(s.create).toHaveBeenCalledTimes(1))
+    expect(s.create).toHaveBeenCalledWith({ service: 'google', name: 'Ops mailbox', fields: { subject: 'ops@trypennie.com', drives: ['0AFinanceDrive', '0AReportsDrive'] } })
+  })
+
+  it('says so when the company list holds no shared drive, and asks for no drive', async () => {
+    await openGoogle({ googleSubjects: vi.fn(async () => ({ subjects: [ENTRY], reached_limit: false })) })
+    expect(within(field('Shared drives')).queryAllByRole('checkbox')).toEqual([])
+    expect(field('Shared drives').textContent).toContain('No shared drive is on the company list yet.')
+  })
+
+  it('draws no drives for your own Google account, which names none', async () => {
+    await openGoogle()
+    fireEvent.click(screen.getByRole('radio', { name: 'My own Google account' }))
+    expect(field('Shared drives')).toBeNull()
   })
 })
 

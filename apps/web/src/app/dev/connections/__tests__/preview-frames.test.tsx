@@ -123,6 +123,13 @@ describe('the preview frames for states the design never drew', () => {
     expect(lines[1].querySelector('button')?.textContent).toBe('Add')
   })
 
+  it("draws the Google add form at production length with ?google=<n>: every mailbox under Acts as, every drive to tick (#2572)", () => {
+    const script = previewScript('add-google-company', 12)!
+    const { container } = render(<ConnectionsScreen source={quiet()} clock={{ now: () => PREVIEW_NOW, every: () => () => {} }} orgNames={script.orgNames} initialEvents={script.events} noInitialLoad />)
+    // The design's 2 mailboxes and 1 drive, then 12 more, every fourth a drive: 11 mailboxes and 4 drives.
+    expect(container.querySelectorAll('[data-field="Shared drives"] [role="checkbox"]')).toHaveLength(4)
+  })
+
   it('answers no script for a settled frame, which loads through the page itself', () => {
     expect(previewScript('healthy')).toBeNull()
     expect(previewScript(undefined)).toBeNull()

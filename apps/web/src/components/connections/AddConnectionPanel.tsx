@@ -17,10 +17,10 @@
  */
 import { useCallback, useId, useMemo } from 'react'
 import type { ConnectionField } from '@bidspoke/service-catalogue/schema'
-import { Button, ChoiceGroup, FieldError, Outcome, SecretBlock, SecretInput, TextInput } from '@/components/ui/form'
+import { Button, ChoiceGroup, FieldError, Outcome, SecretBlock, SecretInput, TextInput, TickRow } from '@/components/ui/form'
 import { Combobox, type ComboboxOption } from '@/components/ui/Combobox'
 import { Select } from '@/components/ui/Select'
-import { draftValues, workingLabel, type FormService, type GoogleWay, type OrgOption } from './add-form-model'
+import { draftList, draftValues, workingLabel, type FormService, type GoogleWay, type OrgOption } from './add-form-model'
 import { delegationShown } from './connection-model'
 import type { AddState, ConnectionsState, SaveState } from './connections-state'
 
@@ -33,6 +33,8 @@ export interface AddPanelProps {
   onService: (key: string | null) => void
   onName: (text: string) => void
   onField: (field: string, text: string, typedNew?: boolean) => void
+  /** One value of a list field ticked or unticked: a shared drive, by id (#2572). */
+  onPick: (field: string, value: string, picked: boolean) => void
   onGoogle: (way: GoogleWay) => void
   onSave: () => void
   /** Sign in with Google for a person's own account (R17): the link from the Worker, then Google (build PR 13). */
@@ -89,7 +91,7 @@ export function GoogleSignIn({ onClick, disabled }: { onClick: () => void; disab
 }
 
 export function AddConnectionPanel(props: AddPanelProps) {
-  const { add, now, services, orgs, google, onService, onName, onField, onGoogle, onSave, onSignIn, onCancel, onGoogleRetry } = props
+  const { add, now, services, orgs, google, onService, onName, onField, onPick, onGoogle, onSave, onSignIn, onCancel, onGoogleRetry } = props
   const base = useId()
   const draft = add.draft
   const service = services.find((s) => s.key === draft.service) ?? null
@@ -97,6 +99,10 @@ export function AddConnectionPanel(props: AddPanelProps) {
   const saving = add.save.kind === 'saving'
   const delegation = service?.connection.auth === 'service_account_delegation'
   const own = delegation && draft.google === 'own'
+  const subjects = google?.kind === 'loaded' ? google.subjects : []
+  const mailboxes = subjects.filter((e) => e.kind === 'mailbox')
+  const drives = subjects.filter((e) => e.kind === 'drive')
+  const picked = (field: string) => draftList(draft, field)
   const orgOptions = useMemo<ComboboxOption[]>(() => orgs.map((o) => ({ value: o.value, label: o.label, hint: o.hint })), [orgs])
   const loadOrgs = useCallback(() => Promise.resolve(orgOptions), [orgOptions])
   const idOf = (key: string) => `${base}-${key}`
@@ -125,6 +131,7 @@ export function AddConnectionPanel(props: AddPanelProps) {
           />
         )
       case 'google_subject':
+      case 'google_drives':
         return null
       default:
         return <TextInput id={id} value={value} onChange={(t) => onField(f.key, t)} />
@@ -177,18 +184,19 @@ export function AddConnectionPanel(props: AddPanelProps) {
                   {!own && (
                     <div className="gk-pick">
                       {google?.kind === 'loaded'
-                        ? google.subjects.length > 0
+                        ? mailboxes.length > 0
                           ? (
+                            // A connection acts as a mailbox, never a drive: its drives are ticked under Shared drives (#2572).
                             <Select
                               id={idOf(f.key)}
                               value={values[f.key] ?? ''}
                               onChange={(v) => onField(f.key, v)}
-                              aria-label="The mailbox or drive it acts as"
-                              placeholder="Choose a mailbox or drive"
-                              options={google.subjects.map((e) => ({ value: e.subject, label: delegationShown(e) }))}
+                              aria-label="The mailbox it acts as"
+                              placeholder="Choose a mailbox"
+                              options={mailboxes.map((e) => ({ value: e.subject, label: delegationShown(e) }))}
                             />
                           )
-                          : <p className="cx-empty">Nothing is on the company list yet. Add a mailbox or drive to it under Google first.</p>
+                          : <p className="cx-empty">No mailbox is on the company list yet. Add one to it under Google first.</p>
                         : google?.kind === 'failed'
                           ? (
                             <div className="ga-failed">
@@ -201,7 +209,20 @@ export function AddConnectionPanel(props: AddPanelProps) {
                   )}
                 </div>
               )
-              : <FormRow key={f.key} id={idOf(f.key)} label={f.label}>{fieldControl(f)}</FormRow>))}
+              : f.input === 'google_drives'
+                ? (!own && google?.kind === 'loaded' && (
+                  // The shared drives the connection may reach, each ticked from the company list (#2572); drawn
+                  // once the list has loaded, since Acts as above already says when it is loading or failed.
+                  <div key={f.key} className="ad-field" data-part="field" data-field={f.label} role="group" aria-labelledby={`${idOf(f.key)}-label`}>
+                    <span id={`${idOf(f.key)}-label`} className="ad-label">{f.label}</span>
+                    {drives.length > 0
+                      ? drives.map((e) => (
+                        <TickRow key={e.subject} checked={picked(f.key).includes(e.subject)} onChange={(on) => onPick(f.key, e.subject, on)} label={delegationShown(e)} />
+                      ))
+                      : <p className="cx-empty">No shared drive is on the company list yet.</p>}
+                  </div>
+                ))
+                : <FormRow key={f.key} id={idOf(f.key)} label={f.label}>{fieldControl(f)}</FormRow>))}
           </>
         )}
 
