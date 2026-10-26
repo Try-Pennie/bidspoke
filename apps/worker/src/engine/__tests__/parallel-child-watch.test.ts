@@ -176,4 +176,23 @@ describe('two children of a parallel block writing at once are each watched on t
     expect(ending).toBeNull()
     expect(ctx.continuedFailures).toBeUndefined()
   })
+
+  it('a slot that ends after its block stopped waiting does not rename what the walk is on', async () => {
+    const def = definition()
+    def.nodes.find((n) => n.namespace === 'fan')!.config = { wait_for: 'specific', wait_for_slot: 'child-0', timeout_ms: 30_000, children: [{ id: 'child-0' }, { id: 'child-1' }, { id: 'child-2' }] }
+    let releaseLate!: () => void
+    const late = new Promise<void>((r) => { releaseLate = r })
+    fetchMock.mockImplementation(async (url: string, init: { body?: string }) => {
+      if (url !== APEX_URL || (JSON.parse(init.body ?? '{}') as { submissionId?: string }).submissionId !== SUB_A) await late
+      return new Response(JSON.stringify({ message: 'ok', statusCode: 200 }), { status: 200 })
+    })
+    const ctx = ctxAtTheAnswer()
+    await walkGraph(ctx, def, EXEC, '2027-10-15T12:00:00.000Z', supabase, env, 'money', 'v1', [], () => {}).catch(() => null)
+    const atTheEnd = [...(ctx.runningNamespaces ?? [])]
+    releaseLate()
+    // The late inquiry post settles (its record cleared), then every queued step of it runs out.
+    await vi.waitFor(() => { if (fetchMock.mock.calls.length < 3 || kvStore.has(atRiskKey(EXEC, 'inquiry_b'))) throw new Error('the late slots have not settled') })
+    await new Promise((r) => setImmediate(r))
+    expect(ctx.runningNamespaces).toEqual(atTheEnd)
+  })
 })

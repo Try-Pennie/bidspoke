@@ -1812,8 +1812,13 @@ export async function walkGraph(
       // block (#2832), and the step each failed child failed on.
       const runningChildSteps = new Set<string>()
       const childFailures = new Map<number, StepFailureError>()
+      // Set once the block stops waiting: a slot still running after that (one the
+      // block did not wait for, or one cut off at its timeout) must not rename what
+      // the walk is on, which by then has moved on.
+      let blockSettled = false
       const trackingFor = (childIndex: number): ParallelChildTracking => ({
         onStep: (namespace, running) => {
+          if (blockSettled) return
           if (running) runningChildSteps.add(namespace)
           else runningChildSteps.delete(namespace)
           ctx.runningNamespaces = runningChildSteps.size > 0 ? [...runningChildSteps] : [node.namespace]
@@ -1836,6 +1841,7 @@ export async function walkGraph(
             runParallelChild(child, ctx, env, supabase, lane, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue, definition, chainEndId, abandonSignal, trackingFor(childIndex)),
           slotHandleIds
         )
+        blockSettled = true
         output = result.output
         lastOutput = output
         forwardBlockSightings(result)
@@ -1856,6 +1862,7 @@ export async function walkGraph(
           }
         }
       } catch (err) {
+        blockSettled = true
         stepStatus = 'failed'
         errorMessage = formatErr(err)
         forwardBlockSightings(err)
