@@ -89,7 +89,7 @@ describe('the bound and the signal', () => {
 
   // #2526: the slower completeAfter jobs, and the bound each cadence pages at.
   it.each([
-    ['partner-reachability', 3], ['database-memory', 3], ['partner-page-monitor', 3], ['incident-drain', 3], ['writeback-backlog', 3],
+    ['partner-reachability', 3], ['database-memory', 3], ['partner-page-monitor', 3], ['incident-drain', 3], ['writeback-backlog', 3], ['partner-live-miss-notice', 3],
     ['buyer-sales-checks', 3], ['tripoint-ping-outcome-rate', 3], ['click-path-checks', 3],
     ['buyer-select-parity', 2], ['live-share-refusals', 2], ['engine-script-drift', 2],
     ['ops-connection-logins', 3],

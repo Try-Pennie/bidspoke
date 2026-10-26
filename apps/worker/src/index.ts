@@ -55,6 +55,7 @@ import { recordAndCheckBranchSkew } from './lib/strand-branch-skew'
 import { runUnconfirmedWriteSweepForEnv, UNCONFIRMED_WRITE_SWEEP_JOB } from './lib/unconfirmed-write-sweep'
 import { runSalesforceReadBackForEnv, checkSalesforceReadBackLivenessForEnv, SF_READ_BACK_JOB } from './lib/salesforce-read-back'
 import { runWritebackBacklogCheckForEnv, WRITEBACK_BACKLOG_JOB } from './lib/writeback-backlog'
+import { liveMissNoticeRunFailure, runLiveMissNoticeForEnv, PARTNER_LIVE_MISS_NOTICE_JOB } from './lib/partner-live-miss-notice'
 import { drainRunFailure, runWritebackDrainForEnv, WRITEBACK_DRAIN_JOB } from './lib/writeback-drain'
 import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
@@ -1130,6 +1131,25 @@ const scheduledJobs = {
             }),
           WRITEBACK_BACKLOG_JOB,
           `[${WRITEBACK_BACKLOG_JOB}] check failed:`,
+        ),
+      )
+      // The live miss notice (#2220): one Slack notice per partners page live
+      // miss, to the miss's own organization, posted once (a claim per miss) and
+      // retried until Slack takes it. A run that could not read or post is a
+      // failed run, so three in a row page; its own heartbeat, both stamps (L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, PARTNER_LIVE_MISS_NOTICE_JOB)
+            .catch((e) => console.error(`[${PARTNER_LIVE_MISS_NOTICE_JOB}] heartbeat write failed:`, e))
+            .then(() => runLiveMissNoticeForEnv({
+              supabase,
+              kv: env.IDEMPOTENCY,
+              claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+              localDev: Boolean(env.LOCAL_DEV),
+            }))
+            .then((s) => liveMissNoticeRunFailure(s)),
+          PARTNER_LIVE_MISS_NOTICE_JOB,
+          `[${PARTNER_LIVE_MISS_NOTICE_JOB}] check failed:`,
         ),
       )
     } else if (event.cron === '*/15 * * * *') {

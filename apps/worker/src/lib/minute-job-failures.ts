@@ -18,7 +18,8 @@
  * (buyer-sale-drain, unconfirmed-write-sweep, salesforce-read-back,
  * writeback-drain, ops-tick-report, ops-connection-logins,
  * ops-connection-write-backs; #2523), every five minutes (partner-reachability,
- * database-memory, partner-page-monitor, incident-drain, writeback-backlog),
+ * database-memory, partner-page-monitor, incident-drain, writeback-backlog,
+ * partner-live-miss-notice),
  * every fifteen (buyer-sales-checks, tripoint-ping-outcome-rate,
  * click-path-checks) and on the hour (buyer-select-parity, live-share-refusals,
  * engine-script-drift; #2526). The daily, two hourly and :23 hourly jobs are not
@@ -39,7 +40,10 @@
  * page (FailedRunCopy), since "stopped at an error" would not be true of it.
  * The Tripoint ping outcome rate returns it for a run with finished hours it
  * could not record for its baseline (#2529, tripoint-ping-outcome-rate.ts
- * pingRunFailure), which reached only a log line and job_runs. A
+ * pingRunFailure), which reached only a log line and job_runs. The live miss
+ * notice returns it for a run that could not read the misses or post a notice
+ * (#2220, partner-live-miss-notice.ts liveMissNoticeRunFailure), which nothing
+ * else pages. A
  * run the platform kills is not counted: it never reaches completeAfter, and
  * the heartbeat already pages it.
  *
