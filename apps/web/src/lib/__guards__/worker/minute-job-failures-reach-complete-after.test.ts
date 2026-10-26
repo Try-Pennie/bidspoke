@@ -129,6 +129,8 @@ describe('a counted job stamped through completeAfter hands its failures to it (
       // #2582: the partner ping failure page.
       'partner-error-rate',
       'salesforce-read-back',
+      // #2364: the Slack refusal watch.
+      'slack-refusal-watch',
       'unconfirmed-write-sweep',
       'writeback-drain',
       // Every five minutes, every fifteen, and hourly (#2526).
