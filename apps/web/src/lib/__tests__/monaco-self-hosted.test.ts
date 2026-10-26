@@ -37,6 +37,25 @@ export function configuresLocalMonaco(source: string): boolean {
   return /import\s+\*\s+as\s+monaco\s+from\s+['"]monaco-editor['"]/.test(source) && /loader\.config\(\s*\{\s*monaco\s*\}\s*\)/.test(source)
 }
 
+/** The module paths the editor hands `new Worker(new URL(...))`. */
+export function workerSpecifiers(source: string): string[] {
+  return [...source.matchAll(/new\s+Worker\(\s*new\s+URL\(\s*['"]([^'"]+)['"]/g)].map((m) => m[1])
+}
+
+/**
+ * Monaco's install folder, found from its main entry, because Monaco 0.57's
+ * exports map sends 'monaco-editor/package.json' to a file that does not exist.
+ */
+function monacoRoot(): string {
+  let dir = path.dirname(requireFromWeb.resolve('monaco-editor'))
+  while (!existsSync(path.join(dir, 'package.json')) || JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8')).name !== 'monaco-editor') {
+    const up = path.dirname(dir)
+    if (up === dir) throw new Error('monaco-editor install folder not found')
+    dir = up
+  }
+  return dir
+}
+
 describe('Monaco is served from our own build (#2695)', () => {
   it('recognises the import and config shapes it guards', () => {
     expect(importsOf("import Editor, { loader } from '@monaco-editor/react'", '@monaco-editor/react')).toBe(true)
@@ -60,13 +79,34 @@ describe('Monaco is served from our own build (#2695)', () => {
     expect(offenders.map((f) => path.relative(WEB_SRC, f))).toEqual([])
   })
 
+  it('finds every worker URL in a new Worker(new URL(...)) call', () => {
+    expect(workerSpecifiers("new Worker(new URL('monaco-editor/a.js', import.meta.url))\nnew Worker(new URL(\"monaco-editor/b.js\", import.meta.url))")).toEqual(['monaco-editor/a.js', 'monaco-editor/b.js'])
+    expect(workerSpecifiers("new URL('./local.js', import.meta.url)")).toEqual([])
+  })
+
+  // Monaco 0.57 added a package exports map, so a path Monaco 0.55 accepted
+  // ('monaco-editor/esm/vs/...') no longer resolves and the production build fails.
+  // The unit suite resolves each worker the way the bundler does, so the next
+  // layout change fails here too, not only in the build.
+  it("every editor worker resolves through Monaco's package exports", () => {
+    const specifiers = workerSpecifiers(readFileSync(EDITOR, 'utf8'))
+    expect(specifiers.length, 'MonacoEditor.tsx names no worker; re-check this guard').toBeGreaterThanOrEqual(3)
+    const unresolved = specifiers.filter((s) => {
+      try {
+        return !existsSync(requireFromWeb.resolve(s))
+      } catch {
+        return true
+      }
+    })
+    expect(unresolved).toEqual([])
+  })
+
   it("the DOMPurify swap matches Monaco's real import and points at the npm package", () => {
     const swap = requireFromWeb('./monaco-dompurify-swap.js') as {
       isMonacoVendoredDompurify: (request: string, context: string) => boolean
       npmDompurifyPath: (fromDir: string) => string
     }
-    const monacoRoot = path.dirname(requireFromWeb.resolve('monaco-editor/package.json'))
-    const sanitizeDir = path.join(monacoRoot, 'esm/vs/base/browser')
+    const sanitizeDir = path.join(monacoRoot(), 'esm/vs/base/browser')
     const sanitize = readFileSync(path.join(sanitizeDir, 'domSanitize.js'), 'utf8')
     const imported = /import\s+\w+\s+from\s+['"](\.\/dompurify\/[^'"]+)['"]/.exec(sanitize)?.[1]
     expect(imported, "Monaco's domSanitize.js no longer imports a ./dompurify/ file; re-check the swap").toBeDefined()
