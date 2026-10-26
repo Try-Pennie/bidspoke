@@ -13,7 +13,7 @@
  * tested against, and answers each refusal in its own sentence, which the page
  * shows as it is (lib/connection-create-refusals.ts in the Worker).
  */
-import { CATALOGUE, isOwnAccountTarget, type ConnectionDeclaration, type ConnectionInput } from '@bidspoke/service-catalogue/schema'
+import { CATALOGUE, isListInput, isOwnAccountTarget, type ConnectionDeclaration, type ConnectionInput } from '@bidspoke/service-catalogue/schema'
 import type { ConnectionView } from './connection-model'
 
 /** A service as the form offers it: its catalogue key and name, its tile's line, and its connection. */
@@ -29,7 +29,7 @@ export function catalogueServices(): FormService[] {
   return CATALOGUE.map((s) => ({ key: s.key, name: s.name, tile: s.connection.tile, connection: s.connection }))
 }
 
-/** Which way a Google connection acts: as a mailbox or drive on the company list, or as your own account (R16). */
+/** Which way a Google connection acts: as a mailbox on the company list (its drives ticked apart, #2572), or as your own account (R16). */
 export type GoogleWay = 'company' | 'own'
 
 /** What the form holds: the service chosen, the name, and each service's own values, kept apart so switching service loses nothing. */
@@ -37,17 +37,42 @@ export interface AddDraft {
   service: string | null
   name: string
   values: Readonly<Record<string, Readonly<Record<string, string>>>>
+  /**
+   * The values of each list field ticked, in the order ticked, by service and
+   * field key (#2572): a Google connection's shared drives, by drive id.
+   */
+  lists: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>>
   /** A value typed into an org box as a new org rather than chosen from the list, by service and field key. */
   typedNew: Readonly<Record<string, Readonly<Record<string, boolean>>>>
   google: GoogleWay
 }
 
-export const EMPTY_ADD_DRAFT: AddDraft = { service: null, name: '', values: {}, typedNew: {}, google: 'company' }
+export const EMPTY_ADD_DRAFT: AddDraft = { service: null, name: '', values: {}, lists: {}, typedNew: {}, google: 'company' }
 
-/** Whether leaving now would lose something typed: a service chosen with nothing typed loses nothing. */
+/** Whether leaving now would lose something typed or ticked: a service chosen with nothing typed loses nothing. */
 export function draftDirty(d: AddDraft): boolean {
   if (d.name.trim() !== '') return true
+  if (Object.values(d.lists).some((fields) => Object.values(fields).some((v) => v.length > 0))) return true
   return Object.values(d.values).some((fields) => Object.values(fields).some((v) => v.trim() !== ''))
+}
+
+/** The values ticked in one list field of the chosen service, in the order ticked. */
+export function draftList(d: AddDraft, field: string): readonly string[] {
+  return (d.service && d.lists[d.service]?.[field]) || []
+}
+
+/** A list with one value ticked (added once, at the end) or unticked. */
+export function pickedList(list: readonly string[], value: string, picked: boolean): string[] {
+  if (!picked) return list.filter((v) => v !== value)
+  return list.includes(value) ? [...list] : [...list, value]
+}
+
+/** The draft with a shared drive unticked wherever it is ticked: the drive lists are the only list fields (CONNECTION_INPUTS). */
+export function withoutDrive(d: AddDraft, driveId: string): AddDraft {
+  const lists = Object.fromEntries(Object.entries(d.lists).map(([service, fields]) => [
+    service, Object.fromEntries(Object.entries(fields).map(([field, list]) => [field, list.filter((v) => v !== driveId)])),
+  ]))
+  return { ...d, lists }
 }
 
 /** The values of the chosen service's fields. */
@@ -103,18 +128,29 @@ export function readOrgAddress(text: string): { ok: true; url: string } | { ok: 
   return { ok: true, url: `https://${host}` }
 }
 
-/** What POST /api/connections is sent: the service, the name, and each field's value by its key. */
+/** What POST /api/connections is sent: the service, the name, and each field's value by its key, a list field's as a list. */
 export interface CreateBody {
   service: string
   name: string
-  fields: Record<string, string>
+  fields: Record<string, string | string[]>
 }
 
-/** The save's body: blank fields left out (the route names a missing one), an org's address read out of what was typed. */
+/**
+ * The save's body: blank fields and empty lists left out (the route names a
+ * missing one), an org's address read out of what was typed, and a list
+ * field's ticked values as a list, the shape connectionParts builds the
+ * target from (#2572).
+ */
 export function createBodyOf(service: FormService, d: AddDraft): CreateBody {
   const values = d.values[service.key] ?? {}
-  const fields: Record<string, string> = {}
+  const lists = d.lists[service.key] ?? {}
+  const fields: Record<string, string | string[]> = {}
   for (const f of service.connection.fields) {
+    if (isListInput(f.input)) {
+      const picked = lists[f.key] ?? []
+      if (picked.length > 0) fields[f.key] = [...picked]
+      continue
+    }
     const v = values[f.key]
     if (v === undefined || v.trim() === '') continue
     if (f.input === 'salesforce_org') {

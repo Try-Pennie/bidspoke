@@ -62,7 +62,7 @@ import { requireRowsAffected } from '../../lib/db-retry'
 import { DELEGATION_KINDS, type DelegationKind } from '../../ops/run-vocabulary'
 import {
   actsAsOf, AUTH_TYPE_OF, connectionNameOf, connectionsNamingSubject, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
-  secretLabelOf, unlistedGoogleSubjects,
+  listedDriveNamedAsMailbox, secretLabelOf, unlistedGoogleSubjects,
 } from '../../lib/connection-create'
 import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
 import {
@@ -400,6 +400,7 @@ const CREATE_STATUS: Readonly<Record<CreateRouteRefusalCode, 400 | 409 | 422 | 5
   connection_host_owned: 422,
   connection_money_host: 422,
   google_subject_not_listed: 422,
+  google_subject_is_drive: 422,
   google_list_unavailable: 503,
   connection_seal_failed: 500,
   connections_unavailable: 503,
@@ -461,7 +462,8 @@ const CREATED_COLUMNS = 'id, name, service_type, acts_as, target, created_at'
 //   4. a money identity in the target (lib/connection-money-targets.ts), and
 //      for an HTTP connection its host: refused when another catalogue
 //      service owns it, or when bidding sends to it (moneyHostOf, #2337)
-//   5. for a Google delegation login, a mailbox or drive not on the
+//   5. for a Google delegation login, a listed shared drive named as the
+//      mailbox it acts as (#2572), then a mailbox or drive not on the
 //      organization's list
 //   6. the login sealed to the ops key under a fresh uuid, and verify asked
 //      with that envelope, generation 1 and the target (ciphertext and the
@@ -521,6 +523,10 @@ connections.post('/', async (c) => {
   if (!parts.ok) {
     const labelOf = (key: string) => service.connection.fields.find((f) => f.key === key)?.label ?? key
     if (parts.unknown.length > 0) return refuse('connection_fields_undeclared', { ...words, names: parts.unknown }, { fields: parts.unknown })
+    // A list sent for a text field or text for a list field (#2572): never the form's own shape.
+    if (parts.malformed.length > 0) {
+      return refuse('connection_request_invalid', words, { detail: `${parts.malformed.join(', ')} ${parts.malformed.length === 1 ? 'is' : 'are'} not in the shape ${parts.malformed.length === 1 ? 'its field takes' : 'their fields take'}` })
+    }
     return refuse('connection_fields_missing', { ...words, names: parts.missing.map(labelOf) }, { fields: parts.missing })
   }
   const { login, target } = parts
@@ -574,6 +580,8 @@ connections.post('/', async (c) => {
       console.error(JSON.stringify({ event: 'connection_google_list_unavailable', organization_id: orgId, refused: list.refused }))
       return refuse('google_list_unavailable', words)
     }
+    const drive = listedDriveNamedAsMailbox(target, list.subjects)
+    if (drive !== null) return refuse('google_subject_is_drive', { ...words, names: [drive] })
     const unlisted = unlistedGoogleSubjects(target, list.subjects)
     if (unlisted.length > 0) return refuse('google_subject_not_listed', { ...words, names: unlisted }, { subjects: unlisted })
   }

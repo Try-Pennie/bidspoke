@@ -10,6 +10,7 @@ import {
   connectionParts,
   connectionProblems,
   connectionSecretLabel,
+  isListInput,
   loginFieldNames,
   targetFieldNames,
   type ServiceSchema,
@@ -119,6 +120,44 @@ describe("Supabase's connection (#2337)", () => {
   })
 })
 
+describe("Google's connection (#2572)", () => {
+  it('acts as one mailbox and names its shared drives as a list, both only in the target', () => {
+    const c = service('google').connection
+    expect(c.auth).toBe('service_account_delegation')
+    expect(connectionFormLabels(c)).toEqual(['Name', 'Acts as', 'Shared drives'])
+    expect(Object.fromEntries(c.fields.map((f) => [f.key, f.input]))).toEqual({ subject: 'google_subject', drives: 'google_drives' })
+    expect(loginFieldNames(c)).toEqual([])
+    // The minter reads target.drives (apps/worker/src/ops/connections/minters/google.ts); a connection may name none.
+    expect(targetFieldNames(c)).toEqual(['subject', 'drives'])
+    expect(c.fields.filter((f) => f.required).map((f) => f.key)).toEqual(['subject'])
+  })
+
+  it('builds the drives as an array, in the order given, each once', () => {
+    expect(connectionParts(service('google').connection, { subject: 'ops@trypennie.com', drives: ['0AbcDriveOne1234', '0XyzDriveTwo5678', '0AbcDriveOne1234'] })).toEqual({
+      ok: true,
+      login: {},
+      target: { subject: 'ops@trypennie.com', drives: ['0AbcDriveOne1234', '0XyzDriveTwo5678'] },
+    })
+  })
+
+  it('leaves the drives out when none is named, or only blanks are', () => {
+    const c = service('google').connection
+    expect(connectionParts(c, { subject: 'ops@trypennie.com', drives: [] })).toEqual({ ok: true, login: {}, target: { subject: 'ops@trypennie.com' } })
+    expect(connectionParts(c, { subject: 'ops@trypennie.com', drives: [' ', ''] })).toEqual({ ok: true, login: {}, target: { subject: 'ops@trypennie.com' } })
+    expect(connectionParts(c, { subject: 'ops@trypennie.com' })).toEqual({ ok: true, login: {}, target: { subject: 'ops@trypennie.com' } })
+  })
+
+  it('names a list given as text, and text given as a list, rather than guessing either', () => {
+    // One text value for the drives would reach the minter as a string, which it refuses at every mint (#2572).
+    expect(connectionParts(service('google').connection, { subject: 'ops@trypennie.com', drives: '0AbcDriveOne1234' })).toEqual({ ok: false, missing: [], unknown: [], malformed: ['drives'] })
+    expect(connectionParts(service('google').connection, { subject: ['ops@trypennie.com'] })).toEqual({ ok: false, missing: [], unknown: [], malformed: ['subject'] })
+  })
+
+  it('has the company list drive input as its one list input', () => {
+    expect(CONNECTION_INPUTS.filter((i) => isListInput(i))).toEqual(['google_drives'])
+  })
+})
+
 describe('every shipped connection', () => {
   it('passes the connection checks', () => {
     expect(CATALOGUE.flatMap((s) => connectionProblems(s))).toEqual([])
@@ -162,6 +201,13 @@ describe('the connection checks', () => {
     expect(codes(serviceWith({ auth: 'service_account_delegation', fields: [{ key: 'subject', label: 'Acts as', input: 'google_subject', required: true, target: 'subject' }] }))).toEqual([])
   })
 
+  it('refuse a list written into the sealed login, which holds text only', () => {
+    expect(codes(serviceWith({ fields: [
+      { key: 'api_key', label: 'API key', input: 'secret', required: true, login: 'api_key' },
+      { key: 'drives', label: 'Drives', input: 'google_drives', required: false, login: 'drives' },
+    ] }))).toEqual(['list_in_login'])
+  })
+
   it('refuse a field that goes into neither the login nor the target', () => {
     expect(codes(serviceWith({ fields: [{ key: 'k', label: 'K', input: 'text', required: true }] }))).toEqual(['field_not_placed'])
   })
@@ -201,6 +247,7 @@ describe('connectionParts: the login and target a form makes', () => {
       ok: false,
       missing: ['instance_url', 'client_secret'],
       unknown: ['acts_as'],
+      malformed: [],
     })
   })
 

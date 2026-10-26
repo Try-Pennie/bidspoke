@@ -34,7 +34,8 @@
  * (GOOGLE_DELEGATION_KEY, read through deps.serviceAccountKey, #2337), never in
  * a connection's sealed login: the key can act as anyone in the Workspace, so
  * it is not handed to whoever adds a connection, and the settled Connections
- * form asks only for the mailbox (D16). A Google connection's sealed login is
+ * form asks only for the mailbox (D16) and the shared drives it may reach
+ * (#2572), both public target fields. A Google connection's sealed login is
  * empty and is never read. A key unset, unreadable, unable to sign or naming
  * another token_uri is refused by rule (connection_not_allowed:
  * delegation_key_unset or delegation_key_malformed), nothing sent and nothing
@@ -95,8 +96,12 @@ function keyOf(raw: string | undefined): { clientEmail: string; pem: string } {
   return { clientEmail: key.client_email, pem: key.private_key }
 }
 
-/** The declared mailbox, lower case, and drives, or target_invalid. */
-function subjectsOf(target: unknown): { mailbox: string; drives: string[] } {
+/**
+ * The declared mailbox, lower case, and drives, or target_invalid: the one
+ * reading of a Google target the mint checks, which the catalogue contract
+ * test reads the form's target through (catalogue-connection-fields.test.ts).
+ */
+export function googleSubjectsOf(target: unknown): { mailbox: string; drives: string[] } {
   const fields = targetFields(target)
   const mailbox = targetString(fields, 'subject').trim().toLowerCase()
   if (!MAILBOX.test(mailbox)) throw new LoginMintError('not_allowed', 'target_invalid')
@@ -119,7 +124,7 @@ export function googleDelegationAuth(deps: GoogleDelegationDeps): MinterRules {
   return {
     expired: (response) => response.status === 401,
     authorize: async (input: AuthorizeInput): Promise<Authorization> => {
-      const { mailbox, drives } = subjectsOf(input.target)
+      const { mailbox, drives } = googleSubjectsOf(input.target)
       if (scope === '') throw new LoginMintError('not_allowed', 'no_delegation_scopes')
 
       // F129: the organization's allowlist, before any token is minted or reused.

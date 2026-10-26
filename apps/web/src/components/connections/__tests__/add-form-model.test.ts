@@ -94,6 +94,27 @@ describe('an unsaved form', () => {
     expect(draftDirty({ ...EMPTY_ADD_DRAFT, name: 'Achieve' })).toBe(true)
     expect(draftDirty(draftFor('salesforce', { client_secret: 'x' }, ''))).toBe(true)
   })
+
+  it('is dirty once a shared drive is ticked, and not for a list ticked empty again (#2572)', () => {
+    expect(draftDirty({ ...EMPTY_ADD_DRAFT, service: 'google', lists: { google: { drives: ['0AFinanceDrive'] } } })).toBe(true)
+    expect(draftDirty({ ...EMPTY_ADD_DRAFT, service: 'google', lists: { google: { drives: [] } } })).toBe(false)
+  })
+})
+
+describe("what a Google save sends (#2572)", () => {
+  const google = (): FormService => catalogueServices().find((s) => s.key === 'google')!
+
+  it('sends the mailbox it acts as and the ticked drives as a list, which the catalogue builds into the target the minter reads', () => {
+    const d: AddDraft = { ...EMPTY_ADD_DRAFT, service: 'google', name: 'Ops mailbox', values: { google: { subject: 'ops@trypennie.com' } }, lists: { google: { drives: ['0AFinanceDrive', '0AReportsDrive'] } } }
+    const body = createBodyOf(google(), d)
+    expect(body).toEqual({ service: 'google', name: 'Ops mailbox', fields: { subject: 'ops@trypennie.com', drives: ['0AFinanceDrive', '0AReportsDrive'] } })
+    expect(connectionParts(google().connection, body.fields)).toEqual({ ok: true, login: {}, target: { subject: 'ops@trypennie.com', drives: ['0AFinanceDrive', '0AReportsDrive'] } })
+  })
+
+  it('leaves the drives out when none is ticked', () => {
+    const d: AddDraft = { ...EMPTY_ADD_DRAFT, service: 'google', name: 'Ops mailbox', values: { google: { subject: 'ops@trypennie.com' } }, lists: { google: { drives: [] } } }
+    expect(createBodyOf(google(), d).fields).toEqual({ subject: 'ops@trypennie.com' })
+  })
 })
 
 describe('Reconnect keeps what the connection names and asks for the login anew (R19, D19)', () => {

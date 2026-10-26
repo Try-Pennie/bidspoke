@@ -16,7 +16,7 @@
  * event's, never the machine's, so tests move time by hand.
  */
 import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, LIST_NO_ANSWER, listGroups, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry, type UsingWorkflow } from './connection-model'
-import { draftDirty, EMPTY_ADD_DRAFT, type AddDraft, type GoogleWay } from './add-form-model'
+import { draftDirty, EMPTY_ADD_DRAFT, pickedList, withoutDrive, type AddDraft, type GoogleWay } from './add-form-model'
 import { alertsReducer, alertsUnsaved, initialAlertsState, type AlertsEvent, type AlertsState } from './alert-settings-state'
 import { SLACK_ALERT_LOGIN_LINK_ID } from '@bidspoke/service-catalogue/schema'
 
@@ -148,6 +148,8 @@ export type ConnectionsEvent =
   | { type: 'add_name'; text: string }
   /** A field of the chosen service; `typedNew` when an org was typed as a new one rather than chosen. */
   | { type: 'add_field'; field: string; text: string; typedNew?: boolean }
+  /** One value of a list field of the chosen service ticked or unticked: a Google connection's shared drive, by id (#2572). */
+  | { type: 'add_pick'; field: string; value: string; picked: boolean }
   | { type: 'add_google'; way: GoogleWay }
   | { type: 'add_closed' }
   /** A save, numbered by the caller above every earlier one, with the sentence its line says if it stalls. */
@@ -300,7 +302,9 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       return { ...s, edit: { kind: 'removing', entry: e.entry, shown: e.shown, startedAt: e.at } }
     case 'remove_answered': {
       if (s.edit.kind !== 'removing' || s.google?.kind !== 'loaded') return s
-      return { ...s, edit: { kind: 'idle' }, google: { ...s.google, subjects: s.google.subjects.filter((x) => !sameEntry(x, e.entry)) } }
+      // A drive taken off the list leaves the add form's ticked drives too, where it is no longer drawn, so it is never sent unseen (#2572).
+      const add = s.add && e.entry.kind === 'drive' ? { ...s.add, draft: withoutDrive(s.add.draft, e.entry.subject) } : s.add
+      return { ...s, add, edit: { kind: 'idle' }, google: { ...s.google, subjects: s.google.subjects.filter((x) => !sameEntry(x, e.entry)) } }
     }
     case 'remove_refused':
       return s.edit.kind === 'removing' ? { ...s, edit: { kind: 'failed', sentence: e.sentence } } : s
@@ -321,6 +325,12 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
         const values = { ...d.values, [d.service]: { ...(d.values[d.service] ?? {}), [e.field]: e.text } }
         const typedNew = e.typedNew === undefined ? d.typedNew : { ...d.typedNew, [d.service]: { ...(d.typedNew[d.service] ?? {}), [e.field]: e.typedNew } }
         return { ...d, values, typedNew }
+      })
+    case 'add_pick':
+      return editDraft(s, (d) => {
+        if (!d.service) return d
+        const fields = d.lists[d.service] ?? {}
+        return { ...d, lists: { ...d.lists, [d.service]: { ...fields, [e.field]: pickedList(fields[e.field] ?? [], e.value, e.picked) } } }
       })
     case 'add_google':
       return editDraft(s, (d) => ({ ...d, google: e.way }))

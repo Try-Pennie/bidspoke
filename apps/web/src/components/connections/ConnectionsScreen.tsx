@@ -562,6 +562,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
                   onService={(service) => dispatch({ type: 'add_service', service })}
                   onName={(text) => dispatch({ type: 'add_name', text })}
                   onField={(field, text, typedNew) => dispatch({ type: 'add_field', field, text, typedNew })}
+                  onPick={(field, value, picked) => dispatch({ type: 'add_pick', field, value, picked })}
                   onGoogle={(way) => dispatch({ type: 'add_google', way })}
                   onSave={save}
                   onSignIn={signIn}

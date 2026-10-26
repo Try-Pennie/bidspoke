@@ -304,7 +304,7 @@ export const SCRIPTED_FRAMES = [
   'add-google-own-finishing', 'add-google-own-declined',
 ] as const
 
-export function previewScript(frame: string | undefined): PreviewScript | null {
+export function previewScript(frame: string | undefined, moreGoogle = 0): PreviewScript | null {
   if (!frame || !(SCRIPTED_FRAMES as readonly string[]).includes(frame)) return null
   const T = PREVIEW_NOW
   const S = T - ELAPSED_MS
@@ -313,7 +313,8 @@ export function previewScript(frame: string | undefined): PreviewScript | null {
     ({ type: 'list_answered', attempt: 1, data: loadedOf({ connections: rows.map(over), statuses }) })
   const stale = (asOf: string | null): ConnectionList['statuses'] => ({ stale: true, as_of: asOf, unavailable: { cause: 'deadline', detail: 'the preview' } })
   const choose = (name: string): ConnectionsEvent => ({ type: 'choose', chosen: { kind: 'connection', id: idOf(name) } })
-  const google: ConnectionsEvent[] = [listed(), { type: 'google_answered', subjects: delegationOf(0), reachedLimit: false }, { type: 'choose', chosen: { kind: 'google' } }]
+  // ?google=<n> lengthens the list in a scripted frame too, as it does a settled one (#2572).
+  const google: ConnectionsEvent[] = [listed(), { type: 'google_answered', subjects: delegationOf(moreGoogle), reachedLimit: false }, { type: 'choose', chosen: { kind: 'google' } }]
   const ops = delegationOf(0)[0]
   const achieve = (over: Partial<ConnectionListRow>) => (r: ConnectionListRow) => (r.name === 'Achieve Salesforce' ? { ...r, ...over } : r)
   const achieveRow = rows.find((r) => r.name === 'Achieve Salesforce')!
@@ -363,7 +364,7 @@ export function previewScript(frame: string | undefined): PreviewScript | null {
     case 'alert-login':
       return script([listed(), choose('Bidspoke Alerts'), ALERTS_READ])
   }
-  return alertScript(frame) ?? formScript(frame)
+  return alertScript(frame) ?? formScript(frame, moreGoogle)
 }
 
 /** The alert settings read, as every alert frame starts. */
@@ -428,14 +429,15 @@ function alertScript(frame: string): PreviewScript | null {
 }
 
 /** The form's and the dialogs' frames (build PR 10), each drawn by the events a person's presses would send. */
-function formScript(frame: string): PreviewScript | null {
+function formScript(frame: string, moreGoogle: number): PreviewScript | null {
   const T = PREVIEW_NOW
   const known = PREVIEW_ORG_NAMES
   const rows = fixture.connections.map((c) => rowOf(c as FixtureConnection))
   const justSaved = rowOf(fixture.justSaved as FixtureConnection)
   const statuses: ConnectionList['statuses'] = { stale: false, as_of: new Date(T).toISOString(), unavailable: null }
   const listed = (extra: ConnectionListRow[] = []): ConnectionsEvent => ({ type: 'list_answered', attempt: 1, data: loadedOf({ connections: [...rows, ...extra], statuses }) })
-  const google: ConnectionsEvent = { type: 'google_answered', subjects: delegationOf(0), reachedLimit: false }
+  // ?google=<n>: the add form's mailboxes and drives at production length (#2572).
+  const google: ConnectionsEvent = { type: 'google_answered', subjects: delegationOf(moreGoogle), reachedLimit: false }
   const choose = (name: string): ConnectionsEvent => ({ type: 'choose', chosen: { kind: 'connection', id: idOf(name) } })
   const sf = fixture.draft.salesforce
   const elapsed = Number.parseInt(sf.elapsed, 10) * 1000
