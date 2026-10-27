@@ -37,14 +37,33 @@ const DEFAULT_STEP_RETRIES = 2
  */
 export const INQUIRY_MARKER_MARGIN_MS = 2_000
 
+/**
+ * The credit collections post (#2832): CollectionParserRest, before the answer
+ * as a slot of Main Flow's `parallel_1`. It replaces the Lead's collection rows
+ * on each call, so a repeat is harmless and the inquiry post's never-resend rule
+ * does not reach it. The engine gives it its own share of the Salesforce
+ * bulkhead (#2847, `salesforceBulkheads`).
+ */
+export const CREDIT_COLLECTIONS_APEX_PATH = '/services/apexrest/credit-collections'
+
 const normalPath = (path: unknown): string =>
   typeof path === 'string' ? `/${path.trim().replace(/^\/+/, '').replace(/\/+$/, '')}` : ''
 
-/** Whether a Salesforce step's config is the credit inquiry post. */
-export function isCreditInquiryPost(config: Record<string, unknown> | null | undefined): boolean {
+/** Whether a Salesforce step's config is an Apex POST to `path`, however its path is spelled. */
+function isApexPostTo(config: Record<string, unknown> | null | undefined, path: string): boolean {
   if (!config || config.operation !== 'apex') return false
   if (config.apex_method === 'GET') return false
-  return normalPath(config.apex_path) === CREDIT_INQUIRY_APEX_PATH
+  return normalPath(config.apex_path) === path
+}
+
+/** Whether a Salesforce step's config is the credit inquiry post. */
+export function isCreditInquiryPost(config: Record<string, unknown> | null | undefined): boolean {
+  return isApexPostTo(config, CREDIT_INQUIRY_APEX_PATH)
+}
+
+/** Whether a Salesforce step's config is the credit collections post, by its endpoint, never its namespace (#2847). */
+export function isCreditCollectionsPost(config: Record<string, unknown> | null | undefined): boolean {
+  return isApexPostTo(config, CREDIT_COLLECTIONS_APEX_PATH)
 }
 
 /**

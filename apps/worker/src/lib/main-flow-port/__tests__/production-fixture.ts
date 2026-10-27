@@ -8,10 +8,17 @@
  * fixture is part ported, and the transform's tests need the definition the port
  * starts from: nine relay posts, none of them native yet.
  *
- * The gate's fixture is held to this copy instead: `gate-fixture.test.ts`
- * requires it to equal the transform of version 169 at the stage last applied,
- * so a canvas save on Main Flow that the port did not make fails there by name
- * on the next fixture refresh.
+ * The gate's fixture is no longer required to equal the transform of this copy:
+ * that check failed on every canvas save, and Main Flow is edited on the canvas
+ * as a matter of course, so it was replaced on 2026-10-21. `gate-fixture.test.ts`
+ * now checks that the port's work survives on the live definition. Every stage
+ * in its `APPLIED_STAGES` list, run again over the gate's Main Flow, changes
+ * nothing, and the definition holds exactly what those stages built: their posts
+ * native and every other on the relay, the inquiry moved only if a stage moved
+ * it, and the collections slot (#2832) only if that stage was applied. This copy
+ * serves there only as the control, a Main Flow the last stage was never applied
+ * to, and as the start the transform is run from to check how a list of stages
+ * is read.
  */
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import MAIN_FLOW_V169_RAW from './fixtures/main-flow-v169.json?raw'

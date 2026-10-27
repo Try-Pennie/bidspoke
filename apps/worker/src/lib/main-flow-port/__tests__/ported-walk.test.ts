@@ -31,6 +31,8 @@ import type { Env } from '../../../index'
 import type { EdgeDefinition, NodeDefinition } from '../../../types'
 import type { StepLogEntry } from '../../../engine/step-logger'
 import { stubFetch, type FetchMock } from '../../../__tests__/helpers/fetch-mock'
+import { fakeBulkheads } from '../../../__tests__/helpers/fake-bulkheads'
+import { SALESFORCE_BULKHEAD_KEY, SALESFORCE_COLLECTIONS_BULKHEAD_KEY, SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT } from '../../bulkhead-client'
 import { runCanvasScript } from '../../../engine/scripts/__tests__/canvas-script'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import GATE_MAIN_FLOW_RAW from '../../../../money-gate/fixtures/definitions/60e2e0bc-5aa2-47db-b333-3a8fe1c62e09.json?raw'
@@ -114,7 +116,7 @@ const answer = (status: Answer, message: string, url: string, init?: { signal?: 
     ? new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error(`aborted ${url}`), { name: 'AbortError' }))))
     : Promise.resolve(new Response(JSON.stringify({ message, statusCode: status }), { status }))
 
-async function walk(graph: { nodes: NodeDefinition[]; edges: EdgeDefinition[] }, answers: { inquiry?: Answer; collections?: Answer; trades?: Answer }) {
+async function walk(graph: { nodes: NodeDefinition[]; edges: EdgeDefinition[] }, answers: { inquiry?: Answer; collections?: Answer; trades?: Answer }, envExtra: Record<string, unknown> = {}) {
   fetchMock.mockImplementation(async (url: string, init?: { signal?: AbortSignal }) => {
     if (url === APEX_URL) return answer(answers.inquiry ?? 200, 'money gate: inquiry answer', url, init)
     if (url === COLLECTIONS_URL) return answer(answers.collections ?? 200, 'money gate: collections answer', url, init)
@@ -129,7 +131,7 @@ async function walk(graph: { nodes: NodeDefinition[]; edges: EdgeDefinition[] },
   const queue: StepLogEntry[] = []
   const answered: WalkGraphResult[] = []
   const ctx = context()
-  const ending = await walkGraph(ctx, graph, 'exec-gate', '2026-10-27T12:00:00.000Z', supabase, env, 'money', 'v1', queue, (r) => { answered.push(r) })
+  const ending = await walkGraph(ctx, graph, 'exec-gate', '2026-10-27T12:00:00.000Z', supabase, { ...env, ...envExtra } as Env, 'money', 'v1', queue, (r) => { answered.push(r) })
     .then(() => null, (e: Error) => e)
   const calls = fetchMock.mock.calls.map((c) => `${(c[1] as { method?: string } | undefined)?.method ?? 'GET'} ${String(c[0])}`)
   const statusOf = (ns: string) => queue.find((r) => r.step_namespace === ns)?.status
@@ -215,6 +217,28 @@ describe('before the answer: parallel_1 with the collections slot, over live Mai
     expect(continued.map((f) => f.stepNamespace)).toEqual([COLLECTIONS_APEX])
     expect(continued[0].message).toMatch(message)
     expect(queue.find((r) => r.step_namespace === COLLECTIONS_APEX)?.retries_used).toBe(0)
+  })
+
+  // #2847: on a Salesforce slowdown the collections share fills first. A shed
+  // collections call fails its step like any shed; the slot's mark keeps the lead
+  // answered, and the failure is left for finalize to raise (degraded, dead
+  // lettered: post-response-budget-engine.test.ts proves that for a shed too).
+  it('the collections share full: the collections call is shed without reaching Salesforce, the trades call still gets its main slot, and the lead is answered', async () => {
+    const fake = fakeBulkheads({ seed: { [SALESFORCE_COLLECTIONS_BULKHEAD_KEY]: SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT } })
+    // No real waiting here; the wait itself is held by salesforce-collections-bulkhead.test.ts.
+    const { ending, answered, calls, statusOf, continued, queue } = await walk(block(), {}, { SALESFORCE_BULKHEAD: fake.namespace, SALESFORCE_BULKHEAD_WAIT_MS: '0' })
+    expect(ending).toBeNull()
+    expect(answered).toEqual([expect.objectContaining({ status: 200, body: { routingPartner: 2, tripointLeadId: 'TP-GATE-0001' } })])
+    expect(calls.filter((c) => c === `POST ${COLLECTIONS_URL}`)).toEqual([])
+    expect(calls.filter((c) => c === `POST ${TRADES_URL}`)).toHaveLength(1)
+    expect({ trades: statusOf('pennie_debt_calculation'), collections: statusOf(COLLECTIONS_APEX), block: statusOf('parallel_1') })
+      .toEqual({ trades: 'completed', collections: 'failed', block: 'completed' })
+    expect(continued.map((f) => f.stepNamespace)).toEqual([COLLECTIONS_APEX])
+    expect(continued[0].message).toMatch(new RegExp(`Salesforce bulkhead: at capacity \\(${SALESFORCE_COLLECTIONS_BULKHEAD_KEY}`))
+    expect(queue.find((r) => r.step_namespace === COLLECTIONS_APEX)?.retries_used).toBe(0)
+    // Only the trades call held a main slot, and it handed it back.
+    expect(fake.acquires.filter((k) => k === SALESFORCE_BULKHEAD_KEY)).toHaveLength(1)
+    expect(fake.inflight(SALESFORCE_BULKHEAD_KEY)).toBe(0)
   })
 
   it('the trades call failing still fails the block and the run before any answer, as today, the collections call made once all the same', async () => {

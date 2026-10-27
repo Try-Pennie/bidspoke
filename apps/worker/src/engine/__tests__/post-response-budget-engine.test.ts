@@ -56,6 +56,8 @@ import { fakeBulkheads } from '../../__tests__/helpers/fake-bulkheads'
 import { stubFetch } from '../../__tests__/helpers/fetch-mock'
 import {
   SALESFORCE_BULKHEAD_KEY,
+  SALESFORCE_COLLECTIONS_BULKHEAD_KEY,
+  SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT,
   SALESFORCE_POST_ANSWER_BULKHEAD_KEY,
   SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT,
 } from '../../lib/bulkhead-client'
@@ -1672,6 +1674,55 @@ describe('a failed marked slot of a parallel block BEFORE the answer (#2832)', (
     expect(deadLetters('sf_writeback')).toHaveLength(1)
     expect((failureDeadLetter?.[1] as { stepNamespace?: string }).stepNamespace).toBe('collections_apex')
     expect(uncapturable).toEqual([expect.stringMatching(/^collections_apex: /)])
+  })
+
+  // #2847: a collections call shed by its full bulkhead share fails its step like
+  // any shed. The real Salesforce node runs both calls here, so what is proved is
+  // the shed itself reaching the same alert: the lead answered, the run degraded,
+  // the sf_writeback dead letter naming the step, and the trades call sent.
+  it('the collections call shed at a full collections share: the lead is answered and the run is degraded and alerted with that step named', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: blockBeforeAnswer, workflow_version_id: 'v1', workflow_name: 'Main Flow', org_id: 'org-1', slack_channel: null, lane: 'money',
+    })
+    const ran: string[] = []
+    vi.mocked(executeNode).mockImplementation(async (node, ctx, env, _supabase, signal) => {
+      ran.push(node.namespace)
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      if (node.type === 'salesforce') return executeSalesforceNode({ ...node, config: { ...node.config, body: { submissionId: 'a0XUi00000AbCdEFGH' } } }, ctx, env, signal)
+      return { output: { ok: node.namespace } }
+    })
+    const salesforceCalls: string[] = []
+    const fetchMock = stubFetch()
+    fetchMock.mockImplementation((url: string) => {
+      salesforceCalls.push(url)
+      return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    })
+    const fake = fakeBulkheads({ seed: { [SALESFORCE_COLLECTIONS_BULKHEAD_KEY]: SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT } })
+    try {
+      const key = Buffer.from(new Uint8Array(32).map((_, i) => i + 9)).toString('base64')
+      const { result, db, deadLetters } = await run(() => 'up', {
+        SECRET_ENCRYPTION_KEY: key,
+        SALESFORCE_CLIENT_ID: 'id',
+        SALESFORCE_CLIENT_SECRET: 'secret',
+        SALESFORCE_INSTANCE_URL: 'https://trypennie.my.salesforce.com',
+        SALESFORCE_BULKHEAD: fake.namespace as unknown as string,
+        // No real waiting; the collections wait is held by salesforce-collections-bulkhead.test.ts.
+        SALESFORCE_BULKHEAD_WAIT_MS: '0',
+        WORKFLOW_CACHE: { get: () => Promise.resolve('cached-token'), put: () => Promise.resolve(), delete: () => Promise.resolve() } as unknown as string,
+      })
+      expect(result.status).toBe(200)
+      expect(result.response).toEqual(RESPONSE.body)
+      expect(ran).toContain('outcome_write')
+      expect(salesforceCalls).toEqual(['https://trypennie.my.salesforce.com/services/apexrest/credit-trades'])
+      const row = db.executions.get(result.executionId)
+      expect(row?.status).toBe('degraded')
+      expect(String(row?.error_message)).toContain(`Salesforce bulkhead: at capacity (${SALESFORCE_COLLECTIONS_BULKHEAD_KEY}`)
+      expect(deadLetters('sf_writeback')).toHaveLength(1)
+      const failureDeadLetter = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === 'sf_writeback')
+      expect((failureDeadLetter?.[1] as { stepNamespace?: string }).stepNamespace).toBe('collections_apex')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('the trades slot failing still fails the run before any answer, as today', async () => {

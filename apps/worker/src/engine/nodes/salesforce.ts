@@ -34,7 +34,7 @@ import { containsHtmlDocument, summarizeHtmlErrorBody } from '../../lib/html-err
 import { attachBlockSighting, noteBlockSighting, sightingFromResponse } from '../block-sightings'
 import { salesforceConfigProblem } from '@bidspoke/workflow-definition'
 import { stampWriteMarker } from '../write-marker'
-import { CREDIT_INQUIRY_APEX_PATH, INQUIRY_MARKER_MARGIN_MS, inquiryPostOf, isCreditInquiryPost, lookupInquiryMarker, type InquiryMarkerLookup, type InquiryPost, type SalesforceRead } from '../inquiry-post'
+import { CREDIT_INQUIRY_APEX_PATH, INQUIRY_MARKER_MARGIN_MS, inquiryPostOf, isCreditCollectionsPost, isCreditInquiryPost, lookupInquiryMarker, type InquiryMarkerLookup, type InquiryPost, type SalesforceRead } from '../inquiry-post'
 import type { RecoveryOrigin } from '../recovery-origin'
 import { formatErr } from '../../lib/format-error'
 import {
@@ -405,8 +405,11 @@ export async function executeSalesforceNode(
   //
   // A call after the run's answer also takes the post-answer share (#2170), told
   // so by the walk's own fact, and waits at most 3 s so a shed write fails inside
-  // the 12 s window. The wait runs on the run's clock, so a test drives it.
-  const { gates: bulkheads, waitMs } = salesforceBulkheads(env, ctx.afterAnswer === true)
+  // the 12 s window. The Main Flow collections post before the answer takes its
+  // own share (#2847), recognised by its endpoint, and waits at most 400 ms, so it
+  // never competes with the trades call for long. The wait runs on the run's
+  // clock, so a test drives it.
+  const { gates: bulkheads, waitMs } = salesforceBulkheads(env, ctx.afterAnswer === true, isCreditCollectionsPost(config as unknown as Record<string, unknown>))
   const clock = ctx.retryTiming?.clock
   const targetLabel = object || (config.apex_path ?? '')
 

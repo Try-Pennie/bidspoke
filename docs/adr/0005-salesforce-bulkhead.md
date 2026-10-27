@@ -24,6 +24,20 @@ record, rather than being cut off still waiting. A Durable Object error fails
 open for either key alike and logs `salesforce_bulkhead_failed_open` with the key.
 The write replay (#1993) runs outside any run and keeps the main key only.
 
+Amended 2026-10-27 (#2847): the Main Flow collections post (#2832,
+`POST /services/apexrest/credit-collections`, recognised by `isCreditCollectionsPost`)
+runs BEFORE the answer, beside the trades call the answer waits on, so it gets a
+share of its own: `salesforce-collections`, capped at
+`SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT` (3), taken first and a main slot second,
+waiting at most `SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS` (400 ms) for both. It
+holds at most 3 of the 20, so of the 14 slots the post-answer share leaves to
+pre-answer calls, the trades call and every other pre-answer call are now
+guaranteed 11. On a full main bulkhead it gives up after 0.4 s
+while the trades call waits 15 s, so a slowdown sheds collections first. Every
+other pre-answer call keeps the main key alone; after the answer the post-answer
+share governs every call, a collections post included. The reasoning for both
+numbers is in `lib/bulkhead-client.ts` and docs/main-flow-relay-port.md.
+
 ## Context
 
 Per-partner circuit breakers protect against a *partner* failing, but nothing plays that role for shared non-scaling dependencies — chiefly Salesforce. The inline bid path must stay synchronous (ping-post must respond within the partner timeout), so the answer is not to queue the path but to bound concurrency on the dependency. The per-partner daily-cap and circuit-breaker Durable Objects are single-threaded actors and are the one place concurrency concentrates, but they are fast in-memory counters and judged a scaling watch-point, not a current problem. No *other* shared inline chokepoint was identified as needing this treatment now.

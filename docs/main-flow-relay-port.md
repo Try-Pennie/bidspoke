@@ -166,8 +166,45 @@ The slot is `child-2`, labelled `collections`:
 
 **It posts for every lead on the `trades_present` route**, since a file with no
 collections still sends an empty list: about as many calls as `trades_request`
-makes (9,771 attempts in the 3 days to 2026-10-15, about 3,250 a day). Each takes a
-slot of the pre-answer Salesforce bulkhead beside the trades call.
+makes (9,771 attempts in the 3 days to 2026-10-15, about 3,250 a day), about 2%
+of the 142,000 to 191,000 Salesforce steps a day.
+
+**It has its own small share of the Salesforce bulkhead (#2847)**, so on a
+Salesforce slowdown day it cannot take a slot the trades call beside it needs.
+The main `salesforce` key (cap 20, wait 15 s) filled at least once in the week to
+2026-10-27, during a slowdown (a shed at 20 of 20 after 15,042 ms in Workers Logs,
+read on #2847; the counts there are the query engine's estimates), as it reached
+20 of 20 on 2026-10-11 without shedding. The collections call takes a slot of
+`salesforce-collections` first and a main slot second, as a post-answer call takes
+its own share (#2170, ADR 0005), so it never holds a main slot while waiting on
+its share. The trades call and every other call before the answer take the main
+key alone, as before; a call after the answer, a collections post included, takes
+the post-answer share. The engine recognises the call by the endpoint it posts to
+(`isCreditCollectionsPost` in `engine/inquiry-post.ts`, beside the inquiry post's
+own test), never by the step's name. Both numbers live in `lib/bulkhead-client.ts`
+with their reasoning:
+
+- **Cap 3** (`SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT`). Even with the whole day's
+  calls packed into 8 hours and every one running its full 4.5 s, about 0.5 are
+  in flight on average (about 0.23 at the trades call's 2 s median), so a fourth
+  at once is rare and an ordinary day sheds almost nothing, where a cap of 2 would
+  make about 2% of calls wait. Three is at most 15% of the main cap; with the
+  post-answer share (6) full too, 11 of the 20 stay out of both shares' reach.
+  These are estimates: the endpoint has never been called. Like the post-answer
+  share it is held below the main cap (a main cap of 4 gives a share of 3, of 2 a
+  share of 1) and is never 0 (a main cap of 1 gives a share of 1).
+- **Wait 400 ms** (`SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS`, or the main wait if
+  that is set lower). The wait is inside the call's one 4.5 s attempt, so a call
+  granted at the end of it still has 4.1 s, above the trades call's p99 of
+  4,001 ms, and never takes a main slot only to be cut off. A shed ends at about
+  0.4 s, and the slot still ends within its 5 s, so the answer's worst case does
+  not grow. On a full main bulkhead the trades call waits up to 15 s and the
+  collections call gives up after 0.4 s: the money path sheds collections first.
+
+A shed collections call fails its step like any shed (`Salesforce bulkhead: at
+capacity (salesforce-collections, ...)`, logged as `salesforce_bulkhead_shed
+key=salesforce-collections`), and the slot's mark below turns it into the run's
+degraded alert, never a failed run or a lost lead.
 
 **Its slot is marked `on_failure: 'continue'`.** A failed or timed out
 collections call never fails `parallel_1`, so it never costs the lead its answer:
@@ -213,7 +250,10 @@ org (not a sandbox):
    `salesforce_credit_collections`; add a failure variant for it to the gate's
    fixtures in the same refresh.
 4. Watch the first day's runs: a failed collections call shows as a degraded run
-   and in the `sf_writeback` dead letter count, never as a lost lead.
+   and in the `sf_writeback` dead letter count, never as a lost lead. Count the
+   `salesforce_bulkhead_shed key=salesforce-collections` lines per day: more than
+   a handful on an ordinary day means the cap of 3 is too small for the real
+   call times, which the estimate above could not measure.
 
 Rolling it back is the runbook's rollback with that saved answer.
 
@@ -499,7 +539,15 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
   live Main Flow's `parallel_1` with the collections stage applied, when the
   collections call succeeds, fails and times out (the lead is answered each time,
   the other slots run as today, a failure is left for finalize to raise), and
-  when the trades call fails (the run fails before any answer, as today).
+  when the trades call fails (the run fails before any answer, as today); and when
+  the collections call is shed by a full `salesforce-collections` share (#2847:
+  never sent, the trades call still gets its main slot, the lead answered).
+- `engine/nodes/__tests__/salesforce-collections-bulkhead.test.ts` and
+  `lib/__tests__/bulkhead-client.test.ts` (#2847): the collections call takes its
+  share then a main slot and waits 400 ms, the trades call the main key alone and
+  15 s, a full share sheds only the collections call, and the share's limits at
+  main caps of 1 to 4; `post-response-budget-engine.test.ts` walks a shed
+  collections call to a degraded, dead lettered run with the lead answered.
 - `send-salesforce-canary.test.ts`: the phase 5 stage over the live Main Flow,
   and the ported `send_salesforce` walked by the real engine through every
   Salesforce answer, each failure ending as the invalid state write's does.
