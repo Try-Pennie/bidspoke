@@ -30,7 +30,9 @@ runs BEFORE the answer, beside the trades call the answer waits on, so it gets a
 share of its own: `salesforce-collections`, capped at
 `SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT` (3), taken first and a main slot second,
 waiting at most `SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS` (400 ms) for both. It
-holds at most 3 of the 20, and on a full main bulkhead it gives up after 0.4 s
+holds at most 3 of the 20, so of the 14 slots the post-answer share leaves to
+pre-answer calls, the trades call and every other pre-answer call are now
+guaranteed 11. On a full main bulkhead it gives up after 0.4 s
 while the trades call waits 15 s, so a slowdown sheds collections first. Every
 other pre-answer call keeps the main key alone; after the answer the post-answer
 share governs every call, a collections post included. The reasoning for both
