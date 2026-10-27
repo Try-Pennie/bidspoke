@@ -16,20 +16,19 @@
  */
 
 // Config (trigger.config.muted_failure_signals, alongside duration_alert_ms) is
-// the domain type MutedFailureSignal in ../types; re-exported so callers can
-// import it from here.
+// MutedFailureSignal, from @bidspoke/workflow-definition (#1947).
 import { minuteAlertClaimKey, minuteAllClearClaim, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
 import type { AlertClaims } from './alert-claim'
 import { logReadFailure } from './scheduled-read'
 import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { MutedFailureSignal, WorkflowDefinition } from '../types'
+import type { MutedFailureSignal } from '@bidspoke/workflow-definition'
+import type { WorkflowDefinition } from '../types'
 import { sendFailureSpikeAlert } from './slack'
 import { fetchAllPaged } from './paginate'
 import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
 import { onlyFailureRateCandidates, signalMatches } from './failure-rate-match'
-export type { MutedFailureSignal }
 
 // Which runs a signal counts lives in failure-rate-match.ts (#2102), shared with
 // the incident record's list of an incident's failed runs; re-exported here for
