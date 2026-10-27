@@ -101,19 +101,22 @@ function scanSource(file: string, raw: string): { findings: Finding[]; pushesFro
   return { findings, pushesFromWriter }
 }
 
-function scan(): { findings: Finding[]; pushesFromWriter: boolean; writeWorkflowCalls: number } {
+function scan(): { findings: Finding[]; pushesFromWriter: boolean; writeWorkflowCalls: number; callers: string[] } {
   const findings: Finding[] = []
   let pushesFromWriter = false
   let writeWorkflowCalls = 0
+  const callers: string[] = []
   for (const full of listTsFiles(WORKER_SRC)) {
     const file = path.relative(WORKER_SRC, full)
     const raw = readFileSync(full, 'utf8')
     const one = scanSource(file, raw)
     findings.push(...one.findings)
     pushesFromWriter ||= one.pushesFromWriter
-    writeWorkflowCalls += callsOf(sanitizeSource(raw, { blankStrings: false }), 'writeWorkflow').length
+    const calls = callsOf(sanitizeSource(raw, { blankStrings: false }), 'writeWorkflow').length
+    writeWorkflowCalls += calls
+    if (calls > 0) callers.push(file)
   }
-  return { findings, pushesFromWriter, writeWorkflowCalls }
+  return { findings, pushesFromWriter, writeWorkflowCalls, callers }
 }
 
 /** The ops whose branch of the newest write_workflow definition answers with the version it wrote. */
@@ -133,7 +136,9 @@ describe('every workflow version the Worker writes is pushed to the GitHub backu
   const result = scan()
 
   it('reads the writers it exists to check (a scan that found none would pass on nothing)', () => {
-    expect(result.writeWorkflowCalls).toBeGreaterThanOrEqual(6)
+    expect(result.writeWorkflowCalls).toBeGreaterThanOrEqual(7)
+    // The workflow routes (create, duplicate, save, switch, delete, restore) and Connections Replace.
+    expect(result.callers).toEqual(expect.arrayContaining(['routes/api/workflows.ts', 'routes/api/connections.ts']))
   })
 
   it('pushes the backup from writeWorkflow, after its write', () => {
