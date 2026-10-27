@@ -75,7 +75,7 @@ describe('codeOf keeps everything that can change behaviour', () => {
 
   it('keeps whether two tokens are on one line, which automatic semicolon insertion reads', () => {
     differs('function f() {\nreturn x\n}\n', 'function f() {\nreturn\nx\n}\n')
-    differs('function f() {\nreturn x\n}\n', 'function f() {\nreturn x\n}\n')
+    differs('function f() {\nreturn x\n}\n', 'function f() {\nreturn\u2028x\n}\n')
     // A block comment holding a line break is a line break to the grammar too.
     differs('function f() {\nreturn x\n}\n', 'function f() {\nreturn /* a\nb */ x\n}\n')
     same('function f() {\nreturn x\n}\n', 'function f() {\nreturn /* a b */ x\n}\n')
