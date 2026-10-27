@@ -90,6 +90,13 @@ class FakeRunDb implements RunDb {
     this.steps.push(record)
     return 'recorded' as const
   }
+  // These walks run with continuation off (#1951), so nothing is named or read.
+  async recordCheckpoint(): Promise<never> {
+    throw new Error('no checkpoint is named with continuation off')
+  }
+  async readCheckpoint(): Promise<never> {
+    throw new Error('no checkpoint is read with continuation off')
+  }
   async complete(_run: ClaimedRun, end: CompleteOutcome) {
     this.completes.push(end)
     return { outcome: 'completed' as const, runStatus: end.outcome }

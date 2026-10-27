@@ -1,0 +1,55 @@
+{
+  "0e2e0c00-0000-4000-8000-000000000003": {
+    "entries": [
+      {
+        "id": "0e2e0a00-0000-4000-8000-000000000003",
+        "action": "UPDATE",
+        "at": "2026-10-20T19:12:00Z",
+        "by": "Editor B",
+        "credential_changed": false,
+        "changes": {
+          "name": {
+            "old": "Achieve",
+            "new": "Achieve Salesforce"
+          }
+        }
+      },
+      {
+        "id": "0e2e0a00-0000-4000-8000-000000000002",
+        "action": "UPDATE",
+        "at": "2026-10-16T19:40:00Z",
+        "by": "editor-a@example.com",
+        "credential_changed": true,
+        "changes": {}
+      },
+      {
+        "id": "0e2e0a00-0000-4000-8000-000000000001",
+        "action": "INSERT",
+        "at": "2026-10-14T14:00:00Z",
+        "by": "Editor A",
+        "credential_changed": false,
+        "changes": {}
+      }
+    ]
+  },
+  "0e2e0c00-0000-4000-8000-000000000001": {
+    "entries": [
+      {
+        "id": "0e2e0a00-0000-4000-8000-000000000012",
+        "action": "connection_rechecked",
+        "at": "2026-10-22T13:05:00Z",
+        "by": "Editor B",
+        "credential_changed": false,
+        "changes": {}
+      },
+      {
+        "id": "0e2e0a00-0000-4000-8000-000000000011",
+        "action": "INSERT",
+        "at": "2026-10-14T14:00:00Z",
+        "by": "Editor A",
+        "credential_changed": false,
+        "changes": {}
+      }
+    ]
+  }
+}

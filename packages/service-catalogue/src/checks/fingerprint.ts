@@ -10,6 +10,7 @@ import {
 } from '../schema/types'
 import { linkedPath, resolveDependencies, type ImporterLock } from './lockfile'
 import { collectModuleImports } from './module-graph'
+import { codeOf } from './source-code'
 
 /**
  * The fingerprint of one released action version (#1689 D1, #2337): a sha256
@@ -22,10 +23,14 @@ import { collectModuleImports } from './module-graph'
  * So a dependency upgrade anywhere in that closure, and an edit to a workspace
  * package's source, is a change to the version.
  *
- * Taken from the source TEXT, not from `run.toString()`, so a transpiler or
- * test runner upgrade that reformats emitted code cannot move it. Line endings
- * are normalised and object keys sorted, so a checkout setting or a reordered
- * object literal does not either.
+ * Taken from the source, not from `run.toString()`, so a transpiler or test
+ * runner upgrade that reformats emitted code cannot move it. Each file counts
+ * by its CODE (source-code.ts, #2732): its tokens as written, string, template
+ * and regex literals exactly, and which tokens share a line, with comments and
+ * the whitespace between tokens left out. So rewording a comment in a shared
+ * package moves no version, and a one character change to what runs does.
+ * Line endings are normalised and object keys sorted, so a checkout setting or
+ * a reordered object literal does not move it either.
  */
 
 /** The id a fingerprint is committed under. */
@@ -61,7 +66,8 @@ export function canonicalJson(value: unknown): string {
 }
 
 /**
- * Throws ModuleGraphError for an import the walker cannot follow, and
+ * Throws ModuleGraphError for an import the walker cannot follow,
+ * SourceCodeError for a reached file whose code it cannot account for, and
  * LockfileError for an npm package `lock` does not resolve to a pinned version.
  */
 export function computeFingerprint(action: ActionSchema, runFile: string, packageRoot: string, lock: ImporterLock): string {
@@ -71,7 +77,7 @@ export function computeFingerprint(action: ActionSchema, runFile: string, packag
   })
   const sources = reached.files.map((file) => ({
     path: path.relative(packageRoot, file).split(path.sep).join('/'),
-    text: readFileSync(file, 'utf8').replace(/\r\n/g, '\n'),
+    code: codeOf(file, readFileSync(file, 'utf8')),
   }))
   const { direct, closure } = resolveDependencies(lock, reached.packages)
   const material = canonicalJson({ behaviour: behaviourOf(action), sources, dependencies: direct, closure })
