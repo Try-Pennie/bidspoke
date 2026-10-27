@@ -328,6 +328,92 @@ describe('reading back a sample of the direct writes', () => {
   })
 })
 
+/**
+ * The inquiry relay's link in PDFlow_4__c (2026-10-27). Main Flow posts the lead
+ * to Pipedream's Inquiries relay before the outcome write; Pipedream answers in
+ * about 0.1 s and PATCHes PDFlow_4__c with its own inspector link afterwards, on
+ * its own clock. The direct send_salesforce write comes 2 to 5 s after that post,
+ * so on 11 of 200 sampled writes in the first report Pipedream's PATCH arrived
+ * last: every field the run sent, its stamp and its run link were saved, and
+ * only PDFlow_4__c held the Pipedream link. #2313 kept PDFlow_4__c as one more
+ * key sent when the invalid state write came 10 to 16 s after the inquiry, a race
+ * it did not expect to lose; send_salesforce loses it about 1 time in 20. The
+ * shape below is the live one (Submission a04Ui00000OMG6jIAH, read 2026-10-27).
+ */
+describe("the inquiry relay's Pipedream link in PDFlow_4__c", () => {
+  const PIPEDREAM_INQUIRY_LINK = 'https://pipedream.com/@penniefinancial/projects/proj_YRsogdx/test-equifax-p_V9CVLOq/inspect/3LFhD9CF1Atnjdx4H0e09wosebI'
+  /** Landed, then Pipedream's inquiry PATCH arrived 56 s after the direct write's step began. */
+  const inquiryWonRace = (i: number) => ok({ ...landed(i), PDFlow_4__c: PIPEDREAM_INQUIRY_LINK, LastModifiedDate: '2026-10-27T15:05:00.000+0000' })
+
+  it('a write whose only difference is the inquiry relay replacing PDFlow_4__c afterwards arrived complete, and is said apart, not as a sale finishing', async () => {
+    const records = (id: string) => (id === subId(1) ? inquiryWonRace(1) : landedRecords(id))
+    const { d, posted, recorded } = deps({ steps: [directStep(0), directStep(1)], records })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native).toEqual([
+      { kind: 'landed', executionId: runId(0) },
+      { kind: 'moved_on', executionId: runId(1), laterWrite: ['PDFlow_4__c'], newerSubmission: false },
+    ])
+    const m = posted[0]
+    expect(m.alert).toBe(false)
+    expect(m.fixHint).toBeUndefined()
+    expect(m.title).toBe('Direct Send Salesforce writes: all 2 arrived complete')
+    expect(m.lines[1]).toBe(
+      "From Oct 27, 8:50 AM to Oct 28, 8:50 AM ET, 2 leads were written directly, and all 2 arrived complete. Each Submission has every field the run sent. 1 of those had its second Bidspoke link replaced afterwards by a Pipedream link: Pipedream's credit inquiry step still writes that link, and sometimes finishes after the direct write, which is expected until that step moves off Pipedream too.",
+    )
+    expect(m.lines.join('\n')).not.toContain('when the sale finished')
+    expect(recorded[0]).toMatchObject({ outcome: 'all_landed', summary: { landed: 2, not_landed: 0, inquiry_link_replaced: 1, superseded_by_later_write: 0 } })
+  })
+
+  it('the inquiry link and a sale finishing on one Submission are each said, and counted under each', async () => {
+    const records = (id: string) =>
+      id === subId(1)
+        ? ok({ ...landed(1), PDFlow_4__c: PIPEDREAM_INQUIRY_LINK, External_Exchange_Status__c: 'Completed', LastModifiedDate: '2026-10-27T15:06:00.000+0000' })
+        : landedRecords(id)
+    const step = directStep(1, { input: { resolved: { operation: 'update', object: 'Submission__c', record_id: subId(1), body: { ...sentBody(runId(1)), External_Exchange_Status__c: 'Pending' } } } })
+    const { d, posted, recorded } = deps({ steps: [step], records })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native).toEqual([{ kind: 'moved_on', executionId: runId(1), laterWrite: ['External_Exchange_Status__c', 'PDFlow_4__c'], newerSubmission: false }])
+    expect(posted[0].alert).toBe(false)
+    expect(posted[0].lines[1]).toContain('updated again later when the sale finished')
+    expect(posted[0].lines[1]).toContain('replaced afterwards by a Pipedream link')
+    expect(recorded[0]).toMatchObject({ summary: { inquiry_link_replaced: 1, superseded_by_later_write: 1 } })
+  })
+
+  it('a Pipedream link on a Submission not written since the write began cannot be shown to come after it, so it did not arrive complete', async () => {
+    const records = (id: string) => (id === subId(1) ? ok({ ...landed(1), PDFlow_4__c: PIPEDREAM_INQUIRY_LINK }) : landedRecords(id))
+    const { d, posted } = deps({ steps: [directStep(1)], records })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native).toEqual([{ kind: 'not_landed', executionId: runId(1), problems: ['1 of its fields holds a different value from the one this run sent'], fields: ['PDFlow_4__c'] }])
+    expect(posted[0].alert).toBe(true)
+  })
+
+  it('the inquiry link beside any other differing field still did not arrive complete, naming both', async () => {
+    const records = (id: string) => (id === subId(1) ? ok({ ...landed(1), PDFlow_4__c: PIPEDREAM_INQUIRY_LINK, InternalDebtRouting__c: 50000, LastModifiedDate: '2026-10-27T15:05:00.000+0000' }) : landedRecords(id))
+    const { d, posted } = deps({ steps: [directStep(1)], records })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native).toEqual([
+      { kind: 'not_landed', executionId: runId(1), problems: ['2 of its fields hold different values from the ones this run sent'], fields: ['InternalDebtRouting__c', 'PDFlow_4__c'] },
+    ])
+    expect(posted[0].alert).toBe(true)
+  })
+
+  it('PDFlow_4__c holding anything but a pipedream.com link, a lookalike host or a blank included, still did not arrive complete', async () => {
+    for (const value of ['https://pipedream.com.example/@penniefinancial/inspect/1', 'https://evil.example/https://pipedream.com/x', null, '']) {
+      const records = (id: string) => (id === subId(1) ? ok({ ...landed(1), PDFlow_4__c: value, LastModifiedDate: '2026-10-27T15:05:00.000+0000' }) : landedRecords(id))
+      const { d } = deps({ steps: [directStep(1)], records })
+      const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+      expect(report.native[0]).toMatchObject({ kind: 'not_landed', fields: ['PDFlow_4__c'] })
+    }
+  })
+
+  it("the inquiry link is judged only once this run's stamp and run link are on the Submission: another run's link is never excused by it", async () => {
+    const records = (id: string) => (id === subId(1) ? ok({ ...landed(1), PDFlow_1__c: null, PDFlow_4__c: PIPEDREAM_INQUIRY_LINK, LastModifiedDate: '2026-10-27T15:05:00.000+0000' }) : landedRecords(id))
+    const { d } = deps({ steps: [directStep(1)], records })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native[0]).toMatchObject({ kind: 'not_landed', fields: ['PDFlow_4__c'] })
+  })
+})
+
 describe('the invalid state subject is unchanged by the second', () => {
   it('is configured to read every write and check the Lead, where send_salesforce samples and reads no Lead', () => {
     expect(INVALID_STATE_SUBJECT.sampleSize).toBeNull()

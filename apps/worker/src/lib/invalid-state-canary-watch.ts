@@ -95,8 +95,19 @@
  * relay era invalid state Submissions read on 2026-10-17 held a pipedream.com
  * link there, and the four direct ones the Bidspoke link only because the direct
  * write came later. So PDFlow_4__c cannot be read on the relay side at all, and
- * on the direct side it is checked as one more key sent, where the inquiry
- * relay winning that race shows as that field differing.
+ * on the direct side it is checked as one more key sent.
+ * THE INQUIRY RELAY WINNING THAT RACE (2026-10-27). The first send_salesforce
+ * report said 11 of 200 sampled direct writes did not arrive complete, and all 11
+ * had: each Submission held this run's stamp, run link and every other field
+ * sent, and only PDFlow_4__c held a pipedream.com inspector link, on a record
+ * modified 1 to 12 minutes after the write. Pipedream answers the inquiry post in
+ * about 0.1 s and PATCHes afterwards on its own clock, and send_salesforce's
+ * direct write comes 2 to 5 s after that post (invalid state's came 10 to 16 s
+ * after), so Pipedream's PATCH sometimes arrives last. A pipedream.com link
+ * there is therefore a LATER_WRITE_FIELDS rule like the sale's own completion:
+ * landed, moved on since, counted (`inquiry_link_replaced`) and said apart. Any
+ * other value there still reads as did not land. The rule ends with the
+ * inquiry's own move (#2175).
  *
  * NOT CHECKED HERE, from #2173's acceptance: that fields the body did not send
  * are unchanged (that needs a snapshot taken before the write, which only the
@@ -320,9 +331,31 @@ const LEAD_SUBMISSION = 'Submission_Object_ID__c'
  * to change, so a difference there still reads as not landed. A later write
  * leaves a status set, never cleared, and moves its timestamp forward, never back.
  */
-const LATER_WRITE_FIELDS: Readonly<Record<string, 'set' | 'later'>> = {
+const LATER_WRITE_FIELDS: Readonly<Record<string, 'set' | 'later' | 'inquiry_link'>> = {
   External_Exchange_Status__c: 'set',
   External_Timestamp__c: 'later',
+  // The inquiry relay's own PATCH (2026-10-27): it writes PDFlow_4__c with a
+  // pipedream.com inspector link on every run, Pipedream answering the post in
+  // about 0.1 s and PATCHing afterwards on its own clock. send_salesforce's direct
+  // write comes 2 to 5 s after that post, so Pipedream's PATCH arrives last about
+  // 1 time in 20 (11 of 200 sampled on 2026-10-27, every other field saved).
+  // #2313 kept PDFlow_4__c as a key to judge when the only direct write came 10
+  // to 16 s after the inquiry; it ends when the inquiry moves too (#2175).
+  PDFlow_4__c: 'inquiry_link',
+}
+
+/** The fields a sale's own completion moves on (#2396), as opposed to the inquiry relay's link. */
+const SALE_COMPLETION_FIELDS: ReadonlySet<string> = new Set(['External_Exchange_Status__c', 'External_Timestamp__c'])
+
+/** The inquiry relay's link: an https link on pipedream.com itself, never a lookalike host. */
+function isPipedreamLink(v: unknown): boolean {
+  if (typeof v !== 'string') return false
+  try {
+    const u = new URL(v)
+    return u.protocol === 'https:' && u.hostname === 'pipedream.com'
+  } catch {
+    return false
+  }
 }
 /** A value the step logger's PII scrub replaced: what was sent cannot be known from it. */
 const REDACTED = '[REDACTED]'
@@ -717,6 +750,7 @@ function supersededByLaterWrite(differing: string[], current: Record<string, unk
     const now = current[k]
     if (rule === 'set') return now !== null && now !== undefined && now !== ''
     if (rule === 'later') return salesforceTimeMs(now) > salesforceTimeMs(sent[k])
+    if (rule === 'inquiry_link') return isPipedreamLink(now)
     return false
   })
 }
@@ -1073,7 +1107,9 @@ const landedFully = (v: RunVerdict) => v.kind === 'landed' || v.kind === 'moved_
 /** Did not land fully, or could not be checked: what alerts, and what the record lists by run. */
 const isBad = (v: RunVerdict) => v.kind === 'not_landed' || v.kind === 'unchecked'
 
-const supersededByLater = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.laterWrite.length > 0).length
+const supersededByLater = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.laterWrite.some((k) => SALE_COMPLETION_FIELDS.has(k))).length
+/** Landed, then the inquiry relay's PATCH replaced the link the port adds (2026-10-27). */
+const inquiryLinkReplaced = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.laterWrite.some((k) => LATER_WRITE_FIELDS[k] === 'inquiry_link')).length
 const followedNewerSubmission = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.newerSubmission).length
 const leadFromFirstCompletion = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.leadFromEarlierRun).length
 /** Set aside because a later run wrote the same Submission (#2485). */
@@ -1111,8 +1147,12 @@ function movedOnSentences(vs: RunVerdict[], ofThose: string): string {
   const a = supersededByLater(vs)
   const b = followedNewerSubmission(vs)
   const c = leadFromFirstCompletion(vs)
+  const i = inquiryLinkReplaced(vs)
   return [
     a > 0 ? ` ${fmt(a)} ${ofThose} ${a === 1 ? 'was' : 'were'} updated again later when the sale finished, which is expected.` : '',
+    i > 0
+      ? ` ${fmt(i)} ${ofThose} had ${i === 1 ? 'its' : 'their'} second Bidspoke link replaced afterwards by a Pipedream link: Pipedream's credit inquiry step still writes that link, and sometimes finishes after the direct write, which is expected until that step moves off Pipedream too.`
+      : '',
     b > 0
       ? ` ${fmt(b)} ${b === 1 ? 'belongs to a customer' : 'belong to customers'} who came back and started a new Submission, so only the Submission was checked for ${b === 1 ? 'it' : 'those'}.`
       : '',
@@ -1396,6 +1436,8 @@ function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWat
       not_landed: count('not_landed'),
       unchecked: count('unchecked'),
       superseded_by_later_write: supersededByLater(report.native),
+      // Landed, then the inquiry relay's PATCH replaced the PDFlow_4__c link (2026-10-27).
+      inquiry_link_replaced: inquiryLinkReplaced(report.native),
       followed_newer_submission: followedNewerSubmission(report.native),
       // Overwritten by a later RUN's write to the same Submission (#2485), not judged; and the runs, by id.
       superseded: overwritten(report.native).length,

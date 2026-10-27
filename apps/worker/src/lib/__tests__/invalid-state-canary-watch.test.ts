@@ -220,7 +220,10 @@ describe('the invalid state canary watch', () => {
     expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ["the Submission's run link is not this run's"] })
   })
 
-  it("PDFlow_4__c overwritten by the inquiry relay's Pipedream link is a field that holds a different value, not a missing run link", async () => {
+  // A pipedream.com link there, on a Submission written since, is the inquiry
+  // relay's PATCH arriving last and counts as moved on
+  // (send-salesforce-canary-watch.test.ts); any other value is still a field that differs.
+  it('PDFlow_4__c holding a link that is not on pipedream.com is a field that holds a different value, not a missing run link', async () => {
     const { d } = deps({
       steps: [nativeStep(RUN_A, SUB_A)],
       records: { [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_4__c: 'https://pipedream.example/@pennie/p_abc/inspect/1' }), [LEAD_A]: ok(landedLead(RUN_A)) },

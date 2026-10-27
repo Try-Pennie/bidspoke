@@ -78,6 +78,8 @@ export interface UnderProvisionedNode {
   sample_size: number
   /** The window (in days) this node's p99 locked at; gauges sample confidence. */
   window_days: number | null
+  /** The retries severity was judged with: red is below max with none, below p99 with some. */
+  retries: number
   severity: 'red' | 'amber'
 }
 
@@ -297,6 +299,7 @@ export function findUnderProvisionedNodes(
       max_ms: stats.max_ms,
       sample_size: stats.sample_size,
       window_days: stats.window_days ?? null,
+      retries,
       severity: timeoutSeverity(timeout, stats.p99, stats.max_ms, retries),
     })
   }

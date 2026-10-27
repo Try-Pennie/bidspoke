@@ -189,6 +189,7 @@ describe('findUnderProvisionedNodes', () => {
       max_ms: 11000,
       sample_size: 1996,
       window_days: null,
+      retries: 2,
       severity: 'amber',
     }])
   })
@@ -250,7 +251,7 @@ describe('warningsSignature with under-provisioned entries', () => {
     nodes: [{
       node_id: 'n1', namespace: 'n1', label: null, type: 'code',
       configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
-      sample_size: 1996, window_days: 1, severity: 'red' as const,
+      sample_size: 1996, window_days: 1, retries: 2, severity: 'red' as const,
     }],
   }]
 
@@ -355,7 +356,7 @@ describe('isAlertWorthyUnderProvision', () => {
   const mk = (s: Partial<UnderProvisionedNode>): UnderProvisionedNode => ({
     node_id: 'n', namespace: 'n', label: null, type: 'code',
     configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
-    sample_size: 100, window_days: null, severity: 'red', ...s,
+    sample_size: 100, window_days: null, retries: 2, severity: 'red', ...s,
   })
 
   it('is worthy when the sample is confident, even on a narrow window', () => {
@@ -389,7 +390,7 @@ describe('alertWorthyUnderProvisioned', () => {
   const mkNode = (s: Partial<UnderProvisionedNode>): UnderProvisionedNode => ({
     node_id: 'n', namespace: 'n', label: null, type: 'code',
     configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
-    sample_size: 100, window_days: null, severity: 'red', ...s,
+    sample_size: 100, window_days: null, retries: 2, severity: 'red', ...s,
   })
 
   it('drops nodes off a thin un-widened sample and prunes emptied workflows', () => {
