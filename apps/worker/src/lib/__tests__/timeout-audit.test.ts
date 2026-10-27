@@ -202,7 +202,7 @@ describe('findUnderProvisionedNodes', () => {
     expect(out[0]).toMatchObject({ window_days: 7 })
   })
 
-  it('marks red when typical runs would time out (below p99 with retries)', () => {
+  it('marks red when the timeout is below the p99 with retries', () => {
     const out = findUnderProvisionedNodes(
       def([node({ id: 'equifax', type: 'code', config: { timeout_ms: 4000 } })]),
       new Map([['equifax', stats({})]])
@@ -381,7 +381,7 @@ describe('isAlertWorthyUnderProvision', () => {
     expect(isAlertWorthyUnderProvision(mk({ severity: 'amber', sample_size: SAMPLE_CONFIDENT }))).toBe(false)
   })
 
-  it('is worthy when red and confidently sampled — typical runs actually time out', () => {
+  it('is worthy when red and confidently sampled, below the p99 or the slowest run', () => {
     expect(isAlertWorthyUnderProvision(mk({ severity: 'red', sample_size: SAMPLE_CONFIDENT }))).toBe(true)
   })
 })
