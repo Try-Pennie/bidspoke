@@ -29,7 +29,7 @@ import {
   claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeOpsStepRecords, purgeScheduleObservations, purgeStepTestResults, readConnectionCheckTargets,
   readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
-  saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
+  saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions, observeOpsReseal,
 } from './ops-writes'
 import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps } from './connections/connection-fetch'
 import { boundFetch, type OpsServiceEntry } from './connections/ops-connections'
@@ -99,6 +99,7 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     recordSfLimitsReading: (sfOrgId, reading) => recordSfBudgetReading(client, sfOrgId, { ...reading, source: 'limits' }, rpc),
     connectionCheckTargets: (limit) => readConnectionCheckTargets(client, limit, rpc),
     recordConnectionCheck: (org, connectionId, result) => recordConnectionCheck(client, org, connectionId, result, rpc),
+    observeReseal: (mode, restartAfterSeconds) => observeOpsReseal(client, mode, restartAfterSeconds, rpc),
   }
 }
 
@@ -165,18 +166,24 @@ function connectionCheckProbe(env: OpsEnv, options: LiveTickOptions): OpsTickPor
   }
 }
 
-/** The ops database, or each setting that keeps it out of reach, by name. */
-export function opsTickDatabase(env: OpsEnv, options: LiveTickOptions = {}): OpsTickPorts['db'] {
+/** The ops database client, or each setting that keeps it out of reach, by name: the tick's, and the reseal's (reseal-live.ts). */
+export function opsDatabaseClient(env: OpsEnv, options: Pick<LiveTickOptions, 'fetch'> = {}): OpsSupabaseClient | { notConfigured: string; secrets: string[] } {
   const missing = (['OPS_SUPABASE_URL', 'OPS_SUPABASE_SECRET_KEY'] as const).filter((k) => typeof env[k] !== 'string' || env[k].trim() === '')
   if (missing.length > 0) {
     return { notConfigured: `${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} not set on bidspoke-worker-ops`, secrets: [...missing] }
   }
   try {
-    return databaseFor(createOpsSupabaseClient(env, options.fetch ? { fetch: options.fetch } : {}), options.rpc)
+    return createOpsSupabaseClient(env, options.fetch ? { fetch: options.fetch } : {})
   } catch (err) {
     if (err instanceof OpsDatabaseConfigError) return { notConfigured: err.message, secrets: [err.secret] }
     throw err
   }
+}
+
+/** The ops database, or each setting that keeps it out of reach, by name. */
+export function opsTickDatabase(env: OpsEnv, options: LiveTickOptions = {}): OpsTickPorts['db'] {
+  const client = opsDatabaseClient(env, options)
+  return 'notConfigured' in client ? client : databaseFor(client, options.rpc)
 }
 
 async function bounded<T>(what: string, work: () => Promise<T>, deadlineMs: number, delay: LiveTickOptions['delay']): Promise<T> {
@@ -214,6 +221,7 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
       return answer as RunInvocationReport
     },
     tickId,
+    resealSwitch: env.OPS_RESEAL,
     scheduledTime,
     now,
     db: opsTickDatabase(env, options),

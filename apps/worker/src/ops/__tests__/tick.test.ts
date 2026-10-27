@@ -21,7 +21,7 @@ import { MAX_DEFINITIONS_PER_REQUEST, OPS_TICK_PROBLEM_RULES } from '../../lib/o
 import { organizationIdFrom, type OrganizationId } from '../ops-db'
 import {
   OpsWriteTimeoutError, type ConnectionCopyInput, type SaveConnectionCopiesResult, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
-  type WorkflowCopy, type WorkflowCopyInput,
+  type OpsResealState, type WorkflowCopy, type WorkflowCopyInput,
 } from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
 import { ConnectionRefusal, RequeueAt } from '../connections/refusals'
@@ -195,6 +195,10 @@ function fake(opts: {
   probe?: (t: ConnectionCheckTarget) => Promise<ProbeAnswer>
   /** What each connection's ConnectionTokenObject answers the write back read with; none held by default. */
   writeBack?: (t: ConnectionCheckTarget) => Promise<unknown>
+  /** OPS_RESEAL as the Worker reads it (#2486); unset by default, as outside a rotation. */
+  resealSwitch?: string
+  /** What observe_ops_reseal answers; switched on two minutes before the database clock by default. */
+  resealState?: Partial<OpsResealState>
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
@@ -222,6 +226,13 @@ function fake(opts: {
       fail('recordConnectionCheck'); connectionChecks.push({ connectionId, result }); return 'recorded' as const
     },
     async now() { fail('now'); return opts.dbNow ?? DB_NOW },
+    async observeReseal(mode: 'preview' | 'apply', restartAfterSeconds: number): Promise<OpsResealState> {
+      fail('observeReseal'); calls.push(`observeReseal:${mode}:${restartAfterSeconds}`)
+      return {
+        mode, modeSince: new Date(Date.parse(DB_NOW) - 2 * 60_000).toISOString(), lastRunAt: null, lastRunNothingLeft: null, lastRunLeft: null,
+        nothingLeftSince: null, restarted: false, dbNow: DB_NOW, ...opts.resealState,
+      }
+    },
     savedDefinitions: [] as Array<{ organizationId: string; workflowId: string; versionNumber: number; definition: unknown }>,
     fires: [] as Array<{ organizationId: string; fire: ScheduleFire }>,
     claims: [] as ClaimRunRequests[],
@@ -297,6 +308,7 @@ function fake(opts: {
       return (opts.runReport ?? (async () => ({ outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' }) as RunInvocationReport))(run)
     },
     tickId: 'tick-1',
+    resealSwitch: opts.resealSwitch,
     scheduledTime: Date.parse('2026-10-17T11:02:48.004Z'),
     now: () => WORKER_NOW,
     db: opts.db === 'not_configured'
@@ -1431,5 +1443,49 @@ describe('the write back check inside the tick (#2340, phase 10 item 4)', () => 
     expect(report.write_backs).toBeNull()
     expect(report.problem_keys).toEqual(['write_back_check_failed'])
     expect(f.dispatched).toHaveLength(1)
+  })
+})
+
+describe('the reseal watch (#2486)', () => {
+  const hoursAgo = (h: number) => new Date(Date.parse(DB_NOW) - h * 3600_000).toISOString()
+
+  it('reports the switch off, asking the database nothing, outside a rotation', async () => {
+    const f = fake()
+    const report = await runOpsTick(f.ports)
+    expect(report.reseal).toEqual({ verdict: 'off', mode: null, since: null, nothing_left_since: null, last_run_at: null, last_run_left: null, db_now: null })
+    expect(f.db.calls.filter((c) => c.startsWith('observeReseal'))).toEqual([])
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('observes the switch every tick it is set, and reports the verdict for the bidding Worker to page, not as a tick problem', async () => {
+    const f = fake({ resealSwitch: 'apply', resealState: { modeSince: hoursAgo(3), lastRunAt: hoursAgo(0.02), lastRunNothingLeft: false, lastRunLeft: 2 } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls).toContain('observeReseal:apply:600')
+    expect(report.reseal).toEqual({
+      verdict: 'logins_left', mode: 'apply', since: hoursAgo(3), nothing_left_since: null, last_run_at: hoursAgo(0.02), last_run_left: 2, db_now: DB_NOW,
+    })
+    expect(report.outcome).toBe('ok')
+    expect(report.problems).toEqual([])
+  })
+
+  it('reports a switch naming no mode as switch_unknown without asking the database', async () => {
+    const f = fake({ resealSwitch: 'yes' })
+    expect((await runOpsTick(f.ports)).reseal?.verdict).toBe('switch_unknown')
+    expect(f.db.calls.filter((c) => c.startsWith('observeReseal'))).toEqual([])
+  })
+
+  it('reports a failed read as a problem held for three ticks and judges nothing, and the rest of the tick goes on', async () => {
+    const f = fake({ resealSwitch: 'apply', failing: { observeReseal: new OpsWriteTimeoutError('observe_ops_reseal did not answer within 9000 ms') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.reseal).toBeNull()
+    expect(report.problem_keys).toEqual(['reseal_state_failed'])
+    expect(OPS_TICK_PROBLEM_RULES.reseal_state_failed).toBe('three_in_a_row')
+    expect(f.dispatched).toHaveLength(1)
+  })
+
+  it('judges nothing with no database, which pages as not configured', async () => {
+    const report = await runOpsTick(fake({ resealSwitch: 'apply', db: 'not_configured' }).ports)
+    expect(report.reseal).toBeNull()
+    expect(report.outcome).toBe('not_configured')
   })
 })

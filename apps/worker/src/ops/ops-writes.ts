@@ -1671,3 +1671,71 @@ export async function purgeOpsStepRecords(client: OpsSupabaseClient, limit: numb
   const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
   return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
 }
+
+// ── The reseal watch (#2486, ops migration 20261027160000) ──────────────────
+
+/** The modes OPS_RESEAL may name, which the state row keeps (its CHECK). */
+export const OPS_RESEAL_MODES = ['preview', 'apply'] as const
+export type OpsResealMode = (typeof OPS_RESEAL_MODES)[number]
+
+/**
+ * ops_reseal_state as either function answers it: the mode the switch was
+ * seen in and since when, the last run's result, the first of an unbroken line
+ * of runs that left nothing, whether this call started the clock afresh, and
+ * the database's clock to judge it all by.
+ */
+export interface OpsResealState {
+  mode: OpsResealMode
+  modeSince: string
+  lastRunAt: string | null
+  lastRunNothingLeft: boolean | null
+  lastRunLeft: number | null
+  nothingLeftSince: string | null
+  restarted: boolean
+  dbNow: string
+}
+
+const isResealMode = (v: unknown): v is OpsResealMode => (OPS_RESEAL_MODES as readonly unknown[]).includes(v)
+const isBoolOrNull = (v: unknown): v is boolean | null => v === null || typeof v === 'boolean'
+const isCountOrNull = (v: unknown): v is number | null => v === null || isCount(v)
+
+function resealModeArg(name: string, mode: unknown): OpsResealMode {
+  if (!isResealMode(mode)) throw new OpsWriteError(`${name}: the mode must be preview or apply`)
+  return mode
+}
+
+function resealState(name: string, data: unknown): OpsResealState {
+  const row = oneRow(name, data)
+  return {
+    mode: field(name, row, 'mode', isResealMode, 'preview or apply'),
+    modeSince: field(name, row, 'mode_since', isTime, 'a time'),
+    lastRunAt: field(name, row, 'last_run_at', isTimeOrNull, 'a time or null'),
+    lastRunNothingLeft: field(name, row, 'last_run_nothing_left', isBoolOrNull, 'true, false or null'),
+    lastRunLeft: field(name, row, 'last_run_left', isCountOrNull, 'a count or null'),
+    nothingLeftSince: field(name, row, 'nothing_left_since', isTimeOrNull, 'a time or null'),
+    restarted: field(name, row, 'restarted', isBool, 'true or false'),
+    dbNow: field(name, row, 'db_now', isTime, 'a time'),
+  }
+}
+
+/** The tick's sighting of OPS_RESEAL in `mode` (reseal-watch.ts): stamps it seen, restarting its clock on a change of mode or a gap past the window. */
+export async function observeOpsReseal(client: OpsSupabaseClient, mode: OpsResealMode, restartAfterSeconds: number, options?: OpsRpcOptions): Promise<OpsResealState> {
+  const name = 'observe_ops_reseal'
+  const p_mode = resealModeArg(name, mode)
+  return resealState(name, await callOpsRpc(client, name, { p_mode, p_restart_after_seconds: restartAfterSeconds }, options))
+}
+
+/**
+ * One reseal run's result in `mode` (reseal-live.ts): nothingLeft only when the
+ * run reported nothing_left, with left 0; a failed or refused run is
+ * nothingLeft false with left null.
+ */
+export async function recordOpsResealRun(
+  client: OpsSupabaseClient, mode: OpsResealMode, run: { nothingLeft: boolean; left: number | null }, restartAfterSeconds: number, options?: OpsRpcOptions,
+): Promise<OpsResealState> {
+  const name = 'record_ops_reseal_run'
+  const p_mode = resealModeArg(name, mode)
+  return resealState(name, await callOpsRpc(client, name, {
+    p_mode, p_nothing_left: run.nothingLeft, p_left: run.left, p_restart_after_seconds: restartAfterSeconds,
+  }, options))
+}

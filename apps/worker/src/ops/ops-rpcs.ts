@@ -80,6 +80,10 @@ export const OPS_LANE_RPCS = [
   'purge_step_test_results',
   // And the records of run attempts started more than 7 days ago (#2703).
   'purge_ops_step_records',
+  // How long an ops key reseal has been switched on, and what its runs last
+  // said (#2486): the lane's own state, which belongs to no organization.
+  'observe_ops_reseal',
+  'record_ops_reseal_run',
 ] as const
 
 /**
