@@ -175,7 +175,9 @@ describe('opening and paging', () => {
     await run(kv, NOW)
     // job_runs now vouches for the job: the same dark job is reported as unstamped, a new status, posted at once.
     const supabase = fakeSupabase(['org-1']) as unknown as { from: (t: string) => unknown }
-    const runs = { select: () => runs, eq: () => runs, not: () => runs, order: () => runs, limit: () => Promise.resolve({ data: [{ finished_at: iso(NOW + 20 * MIN) }], error: null }) }
+    // The vouching run finished 36 hours after the stamp, so it began well after
+    // the stamped run's allowance and passes the started_at filter as it would in Postgres.
+    const runs = { select: () => runs, eq: () => runs, not: () => runs, gt: () => runs, order: () => runs, limit: () => Promise.resolve({ data: [{ finished_at: iso(NOW + 20 * MIN) }], error: null }) }
     const orgs = supabase.from('organizations')
     const vouching = { from: (t: string) => (t === 'job_runs' ? runs : orgs) } as unknown as SupabaseClient
     othersFresh(kv, NOW + 30 * MIN)
