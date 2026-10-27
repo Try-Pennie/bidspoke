@@ -13,10 +13,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { findSalesforceConfigProblems, findWorkflowCycle, validateDefinitionReferences, validateWorkflowDef } from '@bidspoke/workflow-definition'
 import type { Env } from '../../../index'
 import type { NodeDefinition } from '../../../types'
-import { CONTINUATION_WINDOW_MS } from '../../post-response-budget'
+import { CONTINUATION_WINDOW_MS, PostResponseBudget, realClock } from '../../post-response-budget'
 import { withRetry } from '../../../engine/retry'
 import { buildContext } from '../../../engine/context'
 import { executeSalesforceNode } from '../../../engine/nodes/salesforce'
+import { executeAchieveOffersNode } from '../../../engine/nodes/achieve-offers'
 import { runCanvasScript } from '../../../engine/scripts/__tests__/canvas-script'
 import { stubFetch } from '../../../__tests__/helpers/fetch-mock'
 import { COLLECTIONS_APEX, COLLECTIONS_APEX_PATH, COLLECTIONS_BODY, COLLECTIONS_SLOT, INQUIRY_APEX_PATH, PORT_STAGES, portMainFlow, type DefNode, type Definition, type PortOptions } from '../transform'
@@ -86,6 +87,44 @@ function worstCaseMs(node: DefNode): number {
   let total = (retries + 1) * timeout
   for (let a = 0; a < retries; a++) total += backoffMs(a, linear)
   return total
+}
+
+/**
+ * When an Achieve step that starts `startsAtMs` after the answer ends, measured
+ * by running it (#2834): the real node inside the engine's own attempt timeout
+ * and retries from its settings, a reply that never comes, and the window read
+ * from a post-response budget armed at the answer, as the engine wires it.
+ */
+async function achieveEndsAtMs(node: DefNode, startsAtMs: number): Promise<number> {
+  vi.useFakeTimers({ now: 0 })
+  try {
+    const budget = new PostResponseBudget(realClock)
+    budget.arm()
+    vi.setSystemTime(startsAtMs)
+    const fetchMock = stubFetch()
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+    }))
+    const ctx = buildContext({
+      Submission__c: 'a0X000000000001AAA',
+      personalInformation: { email: 'lead@example.com', primaryPhone: '6467706541', firstName: 'A', lastName: 'B', state: 'NY' },
+      loanInformation: { loanAmount: 12_000 },
+    }, 'test', 'wf', 'trace', { ACHIEVE_ENV: 'production', ACHIEVE_USERNAME: 'user', ACHIEVE_PASSWORD: 'pass' }, 'org', 'exec')
+    ctx.continuationMsLeft = () => budget.msLeftInContinuationWindow()
+    const retries = typeof node.config.retries === 'number' ? node.config.retries : ENGINE_DEFAULT_RETRIES
+    const timeout_ms = typeof node.config.timeout_ms === 'number' ? node.config.timeout_ms : ENGINE_DEFAULT_TIMEOUT_MS
+    let endedAt: number | null = null
+    const step = withRetry((signal) => executeAchieveOffersNode(node as unknown as NodeDefinition, ctx, {} as Env, signal), { retries, backoff: 'exponential', timeout_ms }, () => 'transient')
+      .finally(() => { endedAt = Date.now() })
+    await vi.runAllTimersAsync()
+    await step
+    // It reached Achieve, unless it chose not to; either way it ended on its own.
+    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(1)
+    return endedAt!
+  } finally {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  }
 }
 
 /** Each slot of a parallel block, walked from its handle along single edges to the block's join, with its worst case. */
@@ -174,6 +213,34 @@ describe('the worst case after the answer fits the 12 s window', () => {
     expect(Object.fromEntries(chains.map((c) => [c.write, c.worstMs]))).toEqual({
       tripoint_sf_post: 9_500, amone_sf_post: 9_500, engine_no_bids_sf_post: 9_500, under_10000_sf_post: 9_500, invalid_state_sf_post: 9_500,
       debt_missing_sf_post: 9_500, send_fallback_salesforce: 9_500, send_fallback_salesforce_1: 9_500, send_salesforce: 11_450,
+    })
+  })
+
+  // #2834: on six branches the inquiry Apex call is followed by Achieve, the last
+  // step of the branch that does any work (only branch ends follow it). Its step
+  // timeout (15 to 18 s) is not what bounds it: the node ends its own wait first.
+  // So it is not added up from its settings like the steps before it; it is RUN,
+  // starting at the worst case of the steps before it, against a reply that never
+  // comes, with the run's own window, and the time it ends is what is judged.
+  it('for every outcome write, the steps from the answer through Achieve, where the branch runs it, finish inside CONTINUATION_WINDOW_MS', async () => {
+    const nodes = byId(ported)
+    const ends: Record<string, { achieve: string | null; startsAtMs: number; endsAtMs: number }> = {}
+    for (const write of tradesPresentOutcomeWrites(ported)) {
+      const apex = nodes.get(outOf(ported, nodes.get(outOf(ported, write.id)[0].target)!.id)[0].target)!
+      const startsAtMs = chainFromAnswer(ported, apex.id)!.reduce((t, n) => t + worstCaseMs(n), 0)
+      const next = outOf(ported, apex.id).map((e) => nodes.get(e.target)!)
+      const achieve = next.find((n) => n.type === 'achieve_offers') ?? null
+      // Nothing but branch ends follows Achieve, so it is the last step that waits on anything.
+      if (achieve) expect({ achieve: achieve.namespace, after: outOf(ported, achieve.id).map((e) => nodes.get(e.target)!.type) }).toEqual({ achieve: achieve.namespace, after: ['branch_end'] })
+      ends[write.namespace] = { achieve: achieve?.namespace ?? null, startsAtMs, endsAtMs: achieve ? await achieveEndsAtMs(achieve, startsAtMs) : startsAtMs }
+    }
+    for (const [write, e] of Object.entries(ends)) expect({ write, ...e, fits: e.endsAtMs <= CONTINUATION_WINDOW_MS }).toEqual({ write, ...e, fits: true })
+    // Achieve starts 9.5 s after the answer at worst, so it waits the 2.5 s left
+    // less its 500 ms margin, and ends 11.5 s after the answer.
+    expect(Object.fromEntries(Object.entries(ends).map(([w, e]) => [w, [e.achieve, e.endsAtMs]]))).toEqual({
+      tripoint_sf_post: ['achieve_tripoint_win', 11_500], amone_sf_post: ['achieve_amone_win', 11_500], engine_no_bids_sf_post: ['achieve_no_bids', 11_500],
+      under_10000_sf_post: ['achieve_under_10k', 11_500], invalid_state_sf_post: ['achieve_invalid_state', 11_500], debt_missing_sf_post: ['achieve_debt_missing', 11_500],
+      send_salesforce: [null, 11_450], send_fallback_salesforce: [null, 9_500], send_fallback_salesforce_1: [null, 9_500],
     })
   })
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { executeAchieveOffersNode } from '../achieve-offers'
+import { executeAchieveOffersNode, achieveWait, ACHIEVE_FETCH_TIMEOUT_MS, ACHIEVE_MIN_WAIT_MS, ACHIEVE_WINDOW_MARGIN_MS } from '../achieve-offers'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
 
@@ -125,6 +125,108 @@ describe('executeAchieveOffersNode', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // #2834: the node waits only as long as the window after the answer has left,
+  // less a margin, and never longer than 9 s. The engine hands it that time as
+  // ctx.continuationMsLeft; absent (before the answer, or a test run) means no window.
+  describe('waits only for the time left of the 12 s after the answer (#2834)', () => {
+    const hangingFetch = () => {
+      const fetchMock = vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
+      }))
+      vi.stubGlobal('fetch', fetchMock)
+      return fetchMock
+    }
+    const ctxWithLeft = (msLeft: number) => Object.assign(makeCtx(), { continuationMsLeft: () => msLeft })
+
+    /** When the node's own wait ends, on fake time, and what it recorded. */
+    async function waitEndsAt(ctx: ExecutionContext): Promise<{ abortedAtMs: number | null; reason: unknown; fetched: number }> {
+      vi.useFakeTimers({ now: 0 })
+      try {
+        const fetchMock = hangingFetch()
+        let abortedAtMs: number | null = null
+        const pending = executeAchieveOffersNode(makeNode(), ctx, {} as Env)
+        await vi.advanceTimersByTimeAsync(0)
+        const signal = fetchMock.mock.calls[0]?.[1]?.signal as AbortSignal | undefined
+        signal?.addEventListener('abort', () => { abortedAtMs = Date.now() })
+        await vi.runAllTimersAsync()
+        const { output } = await pending
+        return { abortedAtMs, reason: (output as { response_reason?: unknown }).response_reason, fetched: fetchMock.mock.calls.length }
+      } finally {
+        vi.useRealTimers()
+      }
+    }
+
+    it('a typical run, starting 0.1 s after the answer, still waits the full 9 s, as before', async () => {
+      expect(await waitEndsAt(ctxWithLeft(11_900))).toEqual({ abortedAtMs: 9_000, reason: 'Achieve API timed out after 9000ms', fetched: 1 })
+    })
+
+    it('a run with no window (before the answer, or a test run) waits the full 9 s', async () => {
+      expect(await waitEndsAt(makeCtx())).toEqual({ abortedAtMs: 9_000, reason: 'Achieve API timed out after 9000ms', fetched: 1 })
+      expect(await waitEndsAt(ctxWithLeft(Number.POSITIVE_INFINITY))).toEqual({ abortedAtMs: 9_000, reason: 'Achieve API timed out after 9000ms', fetched: 1 })
+    })
+
+    it('a run starting 9.5 s after the answer waits the 2.5 s left less the 500 ms margin, and says why it stopped', async () => {
+      expect(await waitEndsAt(ctxWithLeft(2_500))).toEqual({
+        abortedAtMs: 2_000,
+        reason: 'Achieve API timed out after 2000ms, all that was left of the 12 s a run waits after the answer',
+        fetched: 1,
+      })
+    })
+
+    it('a reply inside the shortened wait is recorded as usual', async () => {
+      vi.useFakeTimers({ now: 0 })
+      try {
+        mockFetchOnce(200, acceptedResponse(2))
+        const { output } = await executeAchieveOffersNode(makeNode(), ctxWithLeft(2_500), {} as Env)
+        expect(output).toMatchObject({ _achieve_evaluation: true, ok: true, response_status: 'accepted', offer_count: 2 })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('sends with the shortest wait it allows (1 s), and skips at a millisecond less, sending nothing', async () => {
+      expect(await waitEndsAt(ctxWithLeft(ACHIEVE_WINDOW_MARGIN_MS + ACHIEVE_MIN_WAIT_MS))).toMatchObject({ abortedAtMs: ACHIEVE_MIN_WAIT_MS, fetched: 1 })
+      const fetchMock = hangingFetch()
+      const { output } = await executeAchieveOffersNode(makeNode(), ctxWithLeft(ACHIEVE_WINDOW_MARGIN_MS + ACHIEVE_MIN_WAIT_MS - 1), {} as Env)
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(output).toEqual({
+        _achieve_skipped: true,
+        reason: 'answer_window_spent',
+        window: { ms_left: ACHIEVE_WINDOW_MARGIN_MS + ACHIEVE_MIN_WAIT_MS - 1, margin_ms: ACHIEVE_WINDOW_MARGIN_MS, min_wait_ms: ACHIEVE_MIN_WAIT_MS },
+        ok: false,
+        response_status: 'skipped',
+        offer_count: 0,
+        offers: [],
+      })
+      // No evaluation marker, so nothing is written to achieve_evaluations for a lead never sent.
+      expect(output).not.toHaveProperty('_achieve_evaluation')
+    })
+
+    it('skips, sending nothing, when the window has already closed before the step starts', async () => {
+      const fetchMock = hangingFetch()
+      const { output } = await executeAchieveOffersNode(makeNode(), ctxWithLeft(-3_000), {} as Env)
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(output).toMatchObject({ _achieve_skipped: true, reason: 'answer_window_spent', window: { ms_left: -3_000 } })
+    })
+  })
+
+  describe('achieveWait, the rule the node applies (#2834)', () => {
+    it('is the full 9 s while at least 9.5 s is left, the time left less 500 ms below that, and a skip under 1 s', () => {
+      expect(achieveWait(undefined)).toEqual({ send: true, waitMs: ACHIEVE_FETCH_TIMEOUT_MS, shortened: false })
+      expect(achieveWait(Number.POSITIVE_INFINITY)).toEqual({ send: true, waitMs: 9_000, shortened: false })
+      expect(achieveWait(12_000)).toEqual({ send: true, waitMs: 9_000, shortened: false })
+      expect(achieveWait(9_500)).toEqual({ send: true, waitMs: 9_000, shortened: false })
+      expect(achieveWait(9_499)).toEqual({ send: true, waitMs: 8_999, shortened: true })
+      expect(achieveWait(1_500)).toEqual({ send: true, waitMs: 1_000, shortened: true })
+      expect(achieveWait(1_499)).toEqual({ send: false, waitMs: 999 })
+      expect(achieveWait(0)).toEqual({ send: false, waitMs: -500 })
+    })
+
+    it('treats a time left it cannot read as no window, the behaviour before #2834', () => {
+      expect(achieveWait(Number.NaN)).toEqual({ send: true, waitMs: 9_000, shortened: false })
+    })
   })
 
   // Pinned to production: off production the lead's identity is deliberately swapped for
