@@ -377,7 +377,11 @@ describe('Reconnect of an ops Slack bot never takes the alerts bot (Dan\'s decis
 
 describe('Reconnect of an OpenAI project key (#2715)', () => {
   const OPENAI_CONN = 'c0000000-0000-4000-8000-000000000005'
-  const REFUSED = 'OpenAI refused the API key with this Project ID, so either the key or the Project ID is wrong. Nothing was saved. Check the Project ID first, then the key, and save again.'
+  // Reconnect cannot change the Project ID (it is the stored target; a changed one is reconnect_target_changed),
+  // so the sentence sends the person to the key alone (L111).
+  const REFUSED = 'OpenAI refused the API key with this connection\'s Project ID, so the key is wrong or belongs to another project. Nothing was saved. Check the key is from this connection\'s project and save again.'
+  const MISMATCH = 'OpenAI says this API key belongs to another project than this connection\'s Project ID. Nothing was saved. Check the key is from this connection\'s project and save again.'
+  const sendsToProjectId = /Check the Project ID|Project ID is wrong/
   function openaiWorld(order: string[]) {
     const db = storeDouble(order)
     db.table.push({
@@ -389,14 +393,26 @@ describe('Reconnect of an OpenAI project key (#2715)', () => {
   }
   const refused = async () => ({ ok: false, refused: 'connection_needs_reauth', detail: 'refused', retry_at: null })
 
-  it('a new key OpenAI refuses is answered as the key or the Project ID, and nothing is committed', async () => {
+  it('a new key OpenAI refuses is answered as the key, never the Project ID it cannot change, and nothing is committed', async () => {
     const order: string[] = []
     const db = openaiWorld(order)
     const { env } = makeEnv(order, { verify: refused })
     const res = await reconnect(env, OPENAI_CONN, { fields: { api_key: 'canary-openai-key-2715' } })
     expect(res.status).toBe(422)
-    expect(await res.json()).toMatchObject({ error: 'connection_needs_reauth', message: REFUSED })
+    const body = (await res.json()) as { error: string; message: string }
+    expect(body).toMatchObject({ error: 'connection_needs_reauth', message: REFUSED })
+    expect(body.message).not.toMatch(sendsToProjectId)
     expect(db.rpcs).toEqual([])
+  })
+
+  it('a new key of another project is answered as the key, never the Project ID', async () => {
+    const order: string[] = []
+    openaiWorld(order)
+    const { env } = makeEnv(order, { verify: async () => ({ ok: false, refused: 'verify_openai_project_mismatch', detail: 'named on ops' }) })
+    const res = await reconnect(env, OPENAI_CONN, { fields: { api_key: 'canary-openai-key-2715' } })
+    const body = (await res.json()) as { error: string; message: string }
+    expect(body).toMatchObject({ error: 'verify_openai_project_mismatch', message: MISMATCH })
+    expect(body.message).not.toMatch(sendsToProjectId)
   })
 
   it('a check of the stored key OpenAI refuses says the same', async () => {

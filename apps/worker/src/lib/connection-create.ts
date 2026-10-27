@@ -116,8 +116,8 @@ export function secretLabelOf(service: ServiceSchema): string {
  * cannot tell them apart and the sentence names both. Anthropic is not listed:
  * nothing measured says a wrong workspace is answered as a refused key.
  */
-const KEY_SCOPED: Readonly<Record<string, { key: string; scope: string }>> = {
-  openai: { key: 'api_key', scope: 'project_id' },
+const KEY_SCOPED: Readonly<Record<string, { key: string; scope: string; owner: string }>> = {
+  openai: { key: 'api_key', scope: 'project_id', owner: 'project' },
 }
 
 /** The key's and its scope's labels as the form shows them, for the refused key sentence; null for a service whose key names no scope. */
@@ -129,7 +129,17 @@ export function keyScopeOf(service: ServiceSchema): KeyScope | null {
   const scope = label(keys.scope)
   // A renamed field would otherwise drop the scope silently and send the person to the key alone.
   if (key === undefined || scope === undefined) throw new Error(`${service.key} declares no field ${key === undefined ? keys.key : keys.scope} for its key scope`)
-  return { key, scope }
+  return { key, scope, owner: keys.owner }
+}
+
+/**
+ * keyScopeOf for Reconnect, where the scope is the stored connection's and a
+ * changed one is refused (reconnect_target_changed), so the sentences name the
+ * key alone as the thing to fix (L111, #2715).
+ */
+export function storedKeyScopeOf(service: ServiceSchema): KeyScope | null {
+  const scope = keyScopeOf(service)
+  return scope === null ? null : { ...scope, fixed: true }
 }
 
 /** The Salesforce org a target declares, by its host, for the sentences that name it (#2556). */

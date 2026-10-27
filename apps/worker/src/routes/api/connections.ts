@@ -75,7 +75,7 @@ import { DELEGATION_KINDS, type DelegationKind } from '../../ops/run-vocabulary'
 import { readGoogleTarget } from '../../ops/connections/minters/google-target'
 import {
   actsAsOf, AUTH_TYPE_OF, connectionNameOf, connectionsNamingSubject, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
-  keyScopeOf, listedDriveNamedAsMailbox, secretLabelOf, unlistedGoogleSubjects,
+  keyScopeOf, listedDriveNamedAsMailbox, secretLabelOf, storedKeyScopeOf, unlistedGoogleSubjects,
 } from '../../lib/connection-create'
 import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
 import {
@@ -967,7 +967,7 @@ connections.post('/:id/reconnect', async (c) => {
   const row = data as ReconnectRow
   const service = declaredService(CATALOGUE, row.service_type)
   if (!service) return createRefusal('connection_service_undeclared', { service: row.service_type })
-  Object.assign(words, { service: service.name, secret: secretLabelOf(service), keyScope: keyScopeOf(service) })
+  Object.assign(words, { service: service.name, secret: secretLabelOf(service), keyScope: storedKeyScopeOf(service) })
   const target = isRecordValue(row.target) ? row.target : null
   const publicConfig = isRecordValue(row.config) ? row.config : {}
 
