@@ -9,27 +9,41 @@
  */
 import { describe, expect, it } from 'vitest'
 import { sanitizeCodeNodeScripts } from '@bidspoke/script-hygiene'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import GATE_MAIN_FLOW_RAW from '../../../../money-gate/fixtures/definitions/60e2e0bc-5aa2-47db-b333-3a8fe1c62e09.json?raw'
 import {
   OUTCOME_POSTS,
   PORT_STAGES,
   MainFlowPortRefusal,
+  COLLECTIONS_APEX,
   COLLECTIONS_APEX_PATH,
+  COLLECTIONS_BODY,
+  COLLECTIONS_SLOT,
   INQUIRY_APEX_PATH,
-  collectionsApexNamespace,
-  collectionsBodyNamespace,
-  creditPostsEndNamespace,
-  creditPostsNamespace,
   inquiryApexNamespace,
   inquiryBodyNamespace,
   portMainFlow,
   portStatus,
   type Definition,
   type PortOptions,
+  type PortStage,
 } from '../transform'
 import { nextOf, nodeByNamespace, productionMainFlow, relayUrls } from './production-fixture'
 
-/** Everything the port does: every stage, the collections post (#2832) last. */
-const FULL = PORT_STAGES.collections
+/** Everything the port does at once: every post, the inquiry moved, and the collections slot (#2832). */
+const FULL: PortOptions = { posts: 'all', moveInquiry: true, collections: true }
+
+/** Main Flow as the money gate holds it: the live version 175, canary_send_salesforce applied. */
+const live = (): Definition => structuredClone((JSON.parse(GATE_MAIN_FLOW_RAW as string) as { definition: Definition }).definition)
+
+/** The same definition whatever order its nodes and edges are listed in. */
+const canonical = (d: Definition) => ({
+  ...d,
+  nodes: [...d.nodes].sort((a, b) => a.id.localeCompare(b.id)),
+  edges: [...d.edges].sort((a, b) => a.id.localeCompare(b.id)),
+})
+
+const applyAll = (def: Definition, stages: readonly PortStage[]) => stages.reduce((d, s) => portMainFlow(d, PORT_STAGES[s]), def)
 
 function refusalOf(def: unknown, options: PortOptions = FULL): string[] {
   try {
@@ -40,6 +54,8 @@ function refusalOf(def: unknown, options: PortOptions = FULL): string[] {
   }
   throw new Error('the transform did not refuse')
 }
+
+const COLLECTIONS_CHILD = { id: COLLECTIONS_SLOT, label: 'collections', on_failure: 'continue' }
 
 describe('portMainFlow over the production definition', () => {
   it('turns every outcome post into a native Submission update under its own namespace', () => {
@@ -81,42 +97,26 @@ describe('portMainFlow over the production definition', () => {
     expect(typeof nodeByNamespace(ported, 'send_salesforce').config.body).toBe('string')
   })
 
-  it('drops the inquiry relay from parallel_1 and leaves the trades chain alone', () => {
+  it('drops the inquiry relay from parallel_1 and leaves the trades chain and the collections slot in it', () => {
     const ported = portMainFlow(productionMainFlow(), FULL)
     expect(ported.nodes.some((n) => n.namespace === 'send_salesforce_inquiry')).toBe(false)
-    expect(nodeByNamespace(ported, 'parallel_1').config.children).toEqual([{ id: 'child-0', label: 'pennie_debt_calc' }])
-    expect(nextOf(ported, 'parallel_1').sort()).toEqual(['child-0:trades_body', 'output:parallel_end_1'])
+    expect(nodeByNamespace(ported, 'parallel_1').config.children).toEqual([{ id: 'child-0', label: 'pennie_debt_calc' }, COLLECTIONS_CHILD])
+    expect(nextOf(ported, 'parallel_1').sort()).toEqual(['child-0:trades_body', `${COLLECTIONS_SLOT}:${COLLECTIONS_BODY}`, 'output:parallel_end_1'])
   })
 
-  it('puts a credit posts block straight after every outcome write, the inquiry and collections pairs side by side, before what followed it', () => {
+  it('puts the inquiry body then its Apex call straight after every outcome write, before what followed it, with no block around them', () => {
     const before = productionMainFlow()
     const ported = portMainFlow(before, FULL)
     for (const ns of OUTCOME_POSTS) {
       const after = nextOf(before, ns)
-      const block = creditPostsNamespace(ns)
-      const end = creditPostsEndNamespace(ns)
-      expect({ ns, next: nextOf(ported, ns) }).toEqual({ ns, next: [`output:${block}`] })
-      expect({ ns, next: nextOf(ported, block).sort() }).toEqual({ ns, next: [`child-0:${inquiryBodyNamespace(ns)}`, `child-1:${collectionsBodyNamespace(ns)}`, `output:${end}`] })
+      expect({ ns, next: nextOf(ported, ns) }).toEqual({ ns, next: [`output:${inquiryBodyNamespace(ns)}`] })
       expect({ ns, next: nextOf(ported, inquiryBodyNamespace(ns)) }).toEqual({ ns, next: [`output:${inquiryApexNamespace(ns)}`] })
-      expect({ ns, next: nextOf(ported, inquiryApexNamespace(ns)) }).toEqual({ ns, next: [`output:${end}`] })
-      expect({ ns, next: nextOf(ported, collectionsBodyNamespace(ns)) }).toEqual({ ns, next: [`output:${collectionsApexNamespace(ns)}`] })
-      expect({ ns, next: nextOf(ported, collectionsApexNamespace(ns)) }).toEqual({ ns, next: [`output:${end}`] })
-      expect({ ns, next: nextOf(ported, end) }).toEqual({ ns, next: after })
-    }
-  })
-
-  it('the block fails on the inquiry slot and never on the collections slot, and waits for both', () => {
-    const ported = portMainFlow(productionMainFlow(), FULL)
-    for (const ns of OUTCOME_POSTS) {
-      expect({ ns, config: nodeByNamespace(ported, creditPostsNamespace(ns)).config }).toEqual({ ns, config: {
-        wait_for: 'all', on_child_error: 'fail', on_timeout: 'partial', timeout_ms: 5_500,
-        children: [{ id: 'child-0', label: 'inquiry' }, { id: 'child-1', label: 'collections', on_failure: 'continue' }],
+      expect({ ns, next: nextOf(ported, inquiryApexNamespace(ns)) }).toEqual({ ns, next: after })
+      expect({ ns, apex: nodeByNamespace(ported, inquiryApexNamespace(ns)).config }).toEqual({ ns, apex: {
+        operation: 'apex', apex_path: INQUIRY_APEX_PATH, body: `{{steps.${inquiryBodyNamespace(ns)}.output}}`, skip_when_empty: true, retries: 0, timeout_ms: 4_500,
       } })
-      expect({ ns, apex: nodeByNamespace(ported, collectionsApexNamespace(ns)).config }).toEqual({ ns, apex: {
-        operation: 'apex', apex_path: COLLECTIONS_APEX_PATH, body: `{{steps.${collectionsBodyNamespace(ns)}.output}}`, skip_when_empty: true, retries: 0, timeout_ms: 4_500,
-      } })
-      expect(nodeByNamespace(ported, inquiryApexNamespace(ns)).config.apex_path).toBe(INQUIRY_APEX_PATH)
     }
+    expect(ported.nodes.filter((n) => n.type === 'parallel').map((n) => n.namespace)).toEqual(['parallel_1'])
   })
 
   it('names neither relay anywhere once fully ported', () => {
@@ -139,11 +139,11 @@ describe('portMainFlow over the production definition', () => {
     expect(before).toEqual(copy)
   })
 
-  it('touches nothing but the posts, the inquiry relay and the nodes it adds', () => {
+  it('touches nothing but the posts, the inquiry relay, parallel_1 and the nodes it adds', () => {
     const before = productionMainFlow()
     const ported = portMainFlow(before, FULL)
-    const touched = new Set<string>([...OUTCOME_POSTS, 'parallel_1', 'send_salesforce_inquiry', ...OUTCOME_POSTS.flatMap((p) => [
-      creditPostsNamespace(p), creditPostsEndNamespace(p), inquiryBodyNamespace(p), inquiryApexNamespace(p), collectionsBodyNamespace(p), collectionsApexNamespace(p),
+    const touched = new Set<string>([...OUTCOME_POSTS, 'parallel_1', 'send_salesforce_inquiry', COLLECTIONS_BODY, COLLECTIONS_APEX, ...OUTCOME_POSTS.flatMap((p) => [
+      inquiryBodyNamespace(p), inquiryApexNamespace(p),
     ])])
     const untouched = (d: Definition) => d.nodes.filter((n) => !touched.has(n.namespace))
     expect(untouched(ported)).toEqual(untouched(before))
@@ -151,7 +151,80 @@ describe('portMainFlow over the production definition', () => {
   })
 })
 
+describe('the collections stage (#2832): a slot of parallel_1, before the answer', () => {
+  it('over live Main Flow (canary_send_salesforce, version 175) ports nothing and adds the collections body and Apex call alone', () => {
+    const before = live()
+    const after = portMainFlow(before, PORT_STAGES.collections)
+    expect(portStatus(before)).toMatchObject({ collections: false })
+    expect(portStatus(after)).toEqual({ ...portStatus(before), collections: true })
+    const added = after.nodes.filter((n) => !before.nodes.some((b) => b.id === n.id)).map((n) => n.namespace).sort()
+    expect(added).toEqual([COLLECTIONS_APEX, COLLECTIONS_BODY])
+    // Every node already there is unchanged but parallel_1, which names the new slot.
+    const changed = before.nodes.filter((n) => JSON.stringify(n) !== JSON.stringify(after.nodes.find((a) => a.id === n.id))).map((n) => n.namespace)
+    expect(changed).toEqual(['parallel_1'])
+    expect(after.edges.slice(0, before.edges.length)).toEqual(before.edges)
+    expect(nodeByNamespace(after, 'send_salesforce_inquiry').type).toBe('webhook')
+  })
+
+  it('is a third slot of parallel_1, beside the trades chain and the inquiry relay, marked continue, the settings otherwise as they were', () => {
+    const before = nodeByNamespace(live(), 'parallel_1')
+    const after = portMainFlow(live(), PORT_STAGES.collections)
+    const p = nodeByNamespace(after, 'parallel_1')
+    expect(p.config).toEqual({ ...before.config, children: [...(before.config.children as unknown[]), COLLECTIONS_CHILD] })
+    expect(p.config).toMatchObject({ wait_for: 'all', on_child_error: 'fail', on_timeout: 'partial', timeout_ms: 20_000 })
+    expect(nextOf(after, 'parallel_1').sort()).toEqual(['child-0:trades_body', 'child-1:send_salesforce_inquiry', `${COLLECTIONS_SLOT}:${COLLECTIONS_BODY}`, 'output:parallel_end_1'])
+    expect(nextOf(after, COLLECTIONS_BODY)).toEqual([`output:${COLLECTIONS_APEX}`])
+    expect(nextOf(after, COLLECTIONS_APEX)).toEqual(['output:parallel_end_1'])
+  })
+
+  it('posts once to credit-collections, 4.5 s, skipped only for a null body; its body step has one 500 ms attempt', () => {
+    const after = portMainFlow(live(), PORT_STAGES.collections)
+    expect(nodeByNamespace(after, COLLECTIONS_APEX).config).toEqual({
+      operation: 'apex', apex_path: COLLECTIONS_APEX_PATH, body: `{{steps.${COLLECTIONS_BODY}.output}}`, skip_when_empty: true, retries: 0, timeout_ms: 4_500,
+    })
+    expect(nodeByNamespace(after, COLLECTIONS_APEX).type).toBe('salesforce')
+    expect(nodeByNamespace(after, COLLECTIONS_BODY)).toMatchObject({ type: 'code', config: { retries: 0, timeout_ms: 500 } })
+  })
+
+  it('outcome_posts and inquiry applied later keep the collections slot exactly as it is', () => {
+    const withSlot = portMainFlow(live(), PORT_STAGES.collections)
+    const slot = (d: Definition) => {
+      const ids = new Set(d.nodes.filter((n) => n.namespace === COLLECTIONS_BODY || n.namespace === COLLECTIONS_APEX).map((n) => n.id))
+      return { nodes: d.nodes.filter((n) => ids.has(n.id)), edges: d.edges.filter((e) => ids.has(e.source) || ids.has(e.target)) }
+    }
+    const posts = portMainFlow(withSlot, PORT_STAGES.outcome_posts)
+    expect(slot(posts)).toEqual(slot(withSlot))
+    expect(nodeByNamespace(posts, 'parallel_1').config).toEqual(nodeByNamespace(withSlot, 'parallel_1').config)
+    const inquiry = portMainFlow(posts, PORT_STAGES.inquiry)
+    expect(slot(inquiry)).toEqual(slot(withSlot))
+    // The inquiry relay leaves parallel_1; the collections slot stays in it.
+    expect(nodeByNamespace(inquiry, 'parallel_1').config.children).toEqual([{ id: 'child-0', label: 'pennie_debt_calc' }, COLLECTIONS_CHILD])
+    expect(portStatus(inquiry)).toEqual({ ported: expect.arrayContaining([...OUTCOME_POSTS]), relay: [], inquiryMoved: true, collections: true })
+  })
+
+  it('outcome_posts and inquiry never add the slot when it is absent', () => {
+    const posts = portMainFlow(live(), PORT_STAGES.outcome_posts)
+    const inquiry = portMainFlow(posts, PORT_STAGES.inquiry)
+    for (const d of [posts, inquiry]) {
+      expect(portStatus(d).collections).toBe(false)
+      expect(d.nodes.some((n) => n.namespace === COLLECTIONS_BODY || n.namespace === COLLECTIONS_APEX)).toBe(false)
+    }
+    expect(nodeByNamespace(inquiry, 'parallel_1').config.children).toEqual([{ id: 'child-0', label: 'pennie_debt_calc' }])
+  })
+
+  it('applied after the inquiry has moved, it adds the same slot to parallel_1', () => {
+    const inquiry = applyAll(live(), ['outcome_posts', 'inquiry'])
+    const after = portMainFlow(inquiry, PORT_STAGES.collections)
+    expect(nodeByNamespace(after, 'parallel_1').config.children).toEqual([{ id: 'child-0', label: 'pennie_debt_calc' }, COLLECTIONS_CHILD])
+    expect(after.nodes.filter((n) => !inquiry.nodes.some((m) => m.id === n.id)).map((n) => n.namespace).sort()).toEqual([COLLECTIONS_APEX, COLLECTIONS_BODY])
+  })
+})
+
 describe('stages', () => {
+  it('are listed in the order they are applied: the collections slot before the rest of #1680', () => {
+    expect(Object.keys(PORT_STAGES)).toEqual(['canary_invalid_state', 'canary_send_salesforce', 'collections', 'outcome_posts', 'inquiry'])
+  })
+
   it('the canary stage ports invalid_state_sf_post alone and leaves the inquiry relay where it is', () => {
     const ported = portMainFlow(productionMainFlow(), PORT_STAGES.canary_invalid_state)
     expect(portStatus(ported)).toEqual({
@@ -164,10 +237,18 @@ describe('stages', () => {
     expect(nodeByNamespace(ported, 'send_salesforce_inquiry').type).toBe('webhook')
   })
 
-  it('each stage builds on the one before to the same result as porting at once', () => {
-    let def = productionMainFlow()
-    for (const stage of Object.values(PORT_STAGES)) def = portMainFlow(def, stage)
-    expect(def).toEqual(portMainFlow(productionMainFlow(), FULL))
+  it('each stage in its order builds on the one before to exactly the result of porting at once', () => {
+    expect(applyAll(productionMainFlow(), Object.keys(PORT_STAGES) as PortStage[])).toEqual(portMainFlow(productionMainFlow(), FULL))
+  })
+
+  it('the collections stage applied later instead, after outcome_posts or after inquiry, builds the same definition', () => {
+    const atOnce = canonical(portMainFlow(productionMainFlow(), FULL))
+    for (const order of [
+      ['canary_invalid_state', 'canary_send_salesforce', 'outcome_posts', 'collections', 'inquiry'],
+      ['canary_invalid_state', 'canary_send_salesforce', 'outcome_posts', 'inquiry', 'collections'],
+    ] as PortStage[][]) {
+      expect({ order, def: canonical(applyAll(productionMainFlow(), order)) }).toEqual({ order, def: atOnce })
+    }
   })
 
   it('applying a stage twice changes nothing the second time', () => {
@@ -177,29 +258,15 @@ describe('stages', () => {
     }
   })
 
-  it('the inquiry stage builds the block with the inquiry slot alone, and the collections stage adds the second slot over it', () => {
-    const inquiry = portMainFlow(productionMainFlow(), PORT_STAGES.inquiry)
+  it('every stage leaves a fully ported definition exactly as it is', () => {
+    const full = portMainFlow(productionMainFlow(), FULL)
+    for (const [name, stage] of Object.entries(PORT_STAGES)) expect({ name, def: portMainFlow(full, stage) }).toEqual({ name, def: full })
+  })
+
+  it('the inquiry stage puts the inquiry pair after each write and touches parallel_1 only to drop the relay', () => {
+    const inquiry = applyAll(productionMainFlow(), ['outcome_posts', 'inquiry'])
     expect(portStatus(inquiry)).toMatchObject({ inquiryMoved: true, collections: false })
-    for (const ns of OUTCOME_POSTS) {
-      expect(nodeByNamespace(inquiry, creditPostsNamespace(ns)).config.children).toEqual([{ id: 'child-0', label: 'inquiry' }])
-      expect(inquiry.nodes.some((n) => n.namespace === collectionsApexNamespace(ns))).toBe(false)
-    }
-    const collections = portMainFlow(inquiry, PORT_STAGES.collections)
-    expect(portStatus(collections)).toMatchObject({ inquiryMoved: true, collections: true })
-    const added = collections.nodes.filter((n) => !inquiry.nodes.some((m) => m.id === n.id)).map((n) => n.namespace).sort()
-    expect(added).toEqual(OUTCOME_POSTS.flatMap((p) => [collectionsBodyNamespace(p), collectionsApexNamespace(p)]).sort())
-  })
-
-  it('a stage before collections leaves a definition holding the collections steps exactly as it is', () => {
-    const collections = portMainFlow(productionMainFlow(), PORT_STAGES.collections)
-    for (const stage of [PORT_STAGES.canary_invalid_state, PORT_STAGES.canary_send_salesforce, PORT_STAGES.outcome_posts, PORT_STAGES.inquiry]) {
-      expect(portMainFlow(collections, stage)).toEqual(collections)
-    }
-  })
-
-  it('refuses the collections post without moving the inquiry, which it rides beside', () => {
-    const posts = portMainFlow(productionMainFlow(), PORT_STAGES.outcome_posts)
-    expect(refusalOf(posts, { posts: 'all', moveInquiry: false, collections: true }).join('\n')).toMatch(/collections.*moving the inquiry/)
+    for (const ns of OUTCOME_POSTS) expect({ ns, next: nextOf(inquiry, ns) }).toEqual({ ns, next: [`output:${inquiryBodyNamespace(ns)}`] })
   })
 
   it('refuses to move the inquiry while any outcome post still goes to the relay', () => {
@@ -261,8 +328,15 @@ describe('refuses a definition whose ported parts are not the shape it expects',
   it('parallel_1 changed: another child', () => {
     const def = productionMainFlow()
     const p = nodeByNamespace(def, 'parallel_1')
-    ;(p.config.children as unknown[]).push({ id: 'child-2', label: 'something_new' })
+    ;(p.config.children as unknown[]).push({ id: 'child-3', label: 'something_new' })
     expect(refusalOf(def).join('\n')).toMatch(/parallel_1/)
+  })
+
+  it('parallel_1 changed: a child-2 slot that is not the collections slot', () => {
+    const def = productionMainFlow()
+    ;(nodeByNamespace(def, 'parallel_1').config.children as unknown[]).push({ id: COLLECTIONS_SLOT, label: 'something_new' })
+    expect(refusalOf(def, PORT_STAGES.collections).join('\n')).toMatch(/parallel_1/)
+    expect(refusalOf(def, PORT_STAGES.canary_invalid_state).join('\n')).toMatch(/parallel_1/)
   })
 
   it('parallel_1 changed: the inquiry relay wired to another slot', () => {
@@ -290,10 +364,22 @@ describe('refuses a definition whose ported parts are not the shape it expects',
     expect(refusalOf(def).join('\n')).toMatch(/mutate_bes.*send_salesforce_inquiry/)
   })
 
+  it('a step that reads parallel_1\'s output, which the collections slot adds to', () => {
+    const def = live()
+    nodeByNamespace(def, 'mutate_bes').config.note = '{{steps.parallel_1.output[1]}}'
+    expect(refusalOf(def, PORT_STAGES.collections).join('\n')).toMatch(/mutate_bes.*parallel_1/)
+  })
+
   it('a namespace the transform would add already taken', () => {
     const def = productionMainFlow()
     nodeByNamespace(def, 'mutate_bes').namespace = inquiryApexNamespace('tripoint_sf_post')
     expect(refusalOf(def).join('\n')).toContain(inquiryApexNamespace('tripoint_sf_post'))
+  })
+
+  it('a collections namespace already taken when the collections slot is added', () => {
+    const def = live()
+    nodeByNamespace(def, 'mutate_bes').namespace = COLLECTIONS_APEX
+    expect(refusalOf(def, PORT_STAGES.collections).join('\n')).toContain(`${COLLECTIONS_APEX}: the namespace the port adds is already taken`)
   })
 
   it('no equifax_debt trades_present route for the inquiry body to read', () => {
@@ -303,23 +389,44 @@ describe('refuses a definition whose ported parts are not the shape it expects',
     expect(refusalOf(def).join('\n')).toMatch(/equifax_debt.*trades_present/)
   })
 
-  it('a credit posts block whose settings changed on the canvas', () => {
-    const def = portMainFlow(productionMainFlow(), PORT_STAGES.inquiry)
-    nodeByNamespace(def, creditPostsNamespace('amone_sf_post')).config.on_child_error = 'continue'
-    expect(refusalOf(def).join('\n')).toMatch(/credit_posts_amone_sf_post: its settings/)
-  })
-
-  it('a credit posts block with a step added inside a slot', () => {
-    const def = portMainFlow(productionMainFlow(), PORT_STAGES.inquiry)
+  it('the inquiry moved but its body and Apex call no longer follow a post', () => {
+    const def = applyAll(productionMainFlow(), ['outcome_posts', 'inquiry'])
     const toApex = def.edges.find((e) => e.source === nodeByNamespace(def, inquiryBodyNamespace('send_salesforce')).id)!
     toApex.target = nodeByNamespace(def, 'mutate_bes').id
-    expect(refusalOf(def).join('\n')).toMatch(/credit_posts_send_salesforce: its child-0 slot/)
+    expect(refusalOf(def, PORT_STAGES.inquiry).join('\n')).toMatch(/send_salesforce: .*inquiry body and Apex call/)
   })
 
-  it('a collections namespace already taken when the collections post is added', () => {
-    const def = portMainFlow(productionMainFlow(), PORT_STAGES.inquiry)
-    nodeByNamespace(def, 'mutate_bes').namespace = collectionsApexNamespace('tripoint_sf_post')
-    expect(refusalOf(def).join('\n')).toContain(`${collectionsApexNamespace('tripoint_sf_post')}: the namespace the port adds is already taken`)
+  describe('a collections slot changed on the canvas, by every stage', () => {
+    const withSlot = () => portMainFlow(live(), PORT_STAGES.collections)
+    const stages = Object.keys(PORT_STAGES) as PortStage[]
+
+    it.each(stages)('%s: its continue mark removed', (stage) => {
+      const def = withSlot()
+      const children = nodeByNamespace(def, 'parallel_1').config.children as Array<Record<string, unknown>>
+      delete children.find((c) => c.id === COLLECTIONS_SLOT)!.on_failure
+      expect(refusalOf(def, PORT_STAGES[stage]).join('\n')).toMatch(/parallel_1/)
+    })
+
+    it.each(stages)('%s: a step added inside the slot', (stage) => {
+      const def = withSlot()
+      const toApex = def.edges.find((e) => e.source === nodeByNamespace(def, COLLECTIONS_BODY).id)!
+      toApex.target = nodeByNamespace(def, 'mutate_bes').id
+      expect(refusalOf(def, PORT_STAGES[stage]).join('\n')).toMatch(/collections/)
+    })
+
+    it.each(stages)('%s: the Apex call pointed at another endpoint', (stage) => {
+      const def = withSlot()
+      nodeByNamespace(def, COLLECTIONS_APEX).config.apex_path = '/services/apexrest/credit-trades'
+      expect(refusalOf(def, PORT_STAGES[stage]).join('\n')).toMatch(/collections_apex/)
+    })
+
+    it.each(stages)('%s: the slot named in parallel_1 but its steps gone', (stage) => {
+      const def = withSlot()
+      def.nodes = def.nodes.filter((n) => n.namespace !== COLLECTIONS_BODY && n.namespace !== COLLECTIONS_APEX)
+      const ids = new Set(def.nodes.map((n) => n.id))
+      def.edges = def.edges.filter((e) => ids.has(e.source) && ids.has(e.target))
+      expect(refusalOf(def, PORT_STAGES[stage]).join('\n')).toMatch(/collections/)
+    })
   })
 
   it('names every problem at once rather than the first', () => {

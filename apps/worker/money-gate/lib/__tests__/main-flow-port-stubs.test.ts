@@ -15,21 +15,21 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { stubAnswer, type StubRequest } from '../stub-rules'
 import { resolveVariant, type VariantFile } from '../../harness/replay-env'
-import { MAIN_FLOW_WORKFLOW_ID, PORT_STAGES, portMainFlow, type Definition } from '../../../src/lib/main-flow-port/transform'
+import { MAIN_FLOW_WORKFLOW_ID, portMainFlow, type Definition } from '../../../src/lib/main-flow-port/transform'
 import { runCanvasScript } from '../../../src/engine/scripts/__tests__/canvas-script'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fixtures = join(here, '..', '..', 'fixtures')
 // The definition before any stage, the port tests' own copy of version 169 (#2173):
 // the gate's Main Flow fixture is part ported once a stage is live, and these
-// requests are those of the whole port, nine updates and eighteen Apex calls (the
-// inquiry and collections posts after each, #2832). The
+// requests are those of the whole port, nine updates and ten Apex calls (the
+// inquiry post after each, and the collections post in parallel_1, #2832). The
 // gate's fixture is held to the transform of this copy by gate-fixture.test.ts.
 const prePortFile = join(here, '..', '..', '..', 'src', 'lib', 'main-flow-port', '__tests__', 'fixtures', 'main-flow-v169.json')
 const prePort = JSON.parse(readFileSync(prePortFile, 'utf8')) as { id: string; definition: Definition }
 if (prePort.id !== MAIN_FLOW_WORKFLOW_ID) throw new Error(`the pre-port Main Flow copy names workflow ${prePort.id}`)
 const production = prePort.definition
-const ported = portMainFlow(structuredClone(production), PORT_STAGES.collections)
+const ported = portMainFlow(structuredClone(production), { posts: 'all', moveInquiry: true, collections: true })
 const variants = JSON.parse(readFileSync(join(fixtures, 'variants', 'main-flow.json'), 'utf8')) as VariantFile
 
 const INSTANCE = 'https://salesforce-instance.placeholder.invalid'
@@ -45,9 +45,9 @@ function requestOf(config: Record<string, unknown>): StubRequest {
 const portedSteps = ported.nodes.filter((n) => n.type === 'salesforce' && !production.nodes.some((p) => p.id === n.id && p.type === 'salesforce'))
 
 describe('the native steps the port adds are answered by name', () => {
-  it('finds the nine Submission updates and eighteen Apex calls in the ported definition', () => {
+  it('finds the nine Submission updates and ten Apex calls in the ported definition', () => {
     expect(portedSteps.filter((n) => n.config.operation === 'update')).toHaveLength(9)
-    expect(portedSteps.filter((n) => n.config.operation === 'apex')).toHaveLength(18)
+    expect(portedSteps.filter((n) => n.config.operation === 'apex')).toHaveLength(10)
   })
 
   it.each(portedSteps.map((n) => [n.namespace, n.config] as const))('%s', (_ns, config) => {

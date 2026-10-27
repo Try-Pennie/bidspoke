@@ -232,19 +232,25 @@ describe('previewPort', () => {
     const api = new FakeApi(productionMainFlow())
     const preview = await previewPort(api, 'inquiry')
     expect(preview).toMatchObject({ live_version: { version_number: 1 }, ports: expect.arrayContaining(['invalid_state_sf_post', 'send_salesforce']), moves_inquiry: true })
-    // Per outcome write: the credit posts block, its join, the inquiry body and its Apex call.
-    expect(preview.adds).toHaveLength(36)
+    // Per outcome write: the inquiry body and its Apex call.
+    expect(preview.adds.sort()).toEqual(OUTCOME_POSTS.flatMap((p) => [`inquiry_body_${p}`, `inquiry_apex_${p}`]).sort())
     expect(preview).toMatchObject({ adds_collections: false })
     expect(preview.removes).toEqual(['send_salesforce_inquiry'])
     expect(api.puts).toHaveLength(0)
   })
 
-  it('names the collections post the collections stage would add over the inquiry stage (#2832)', async () => {
-    const api = new FakeApi(portMainFlow(productionMainFlow(), PORT_STAGES.inquiry))
+  it('names the collections slot the collections stage would add over the canary stage live now, and nothing else (#2832)', async () => {
+    const api = new FakeApi(portMainFlow(productionMainFlow(), PORT_STAGES.canary_send_salesforce))
     const preview = await previewPort(api, 'collections')
     expect(preview).toMatchObject({ ports: [], moves_inquiry: false, adds_collections: true, removes: [] })
-    expect(preview.adds.sort()).toEqual(OUTCOME_POSTS.flatMap((p) => [`collections_body_${p}`, `collections_apex_${p}`]).sort())
+    expect(preview.adds.sort()).toEqual(['collections_apex', 'collections_body'])
     expect(api.puts).toHaveLength(0)
+  })
+
+  it('names the same slot when the collections stage comes after the inquiry stage (#2832)', async () => {
+    const api = new FakeApi(portMainFlow(portMainFlow(productionMainFlow(), PORT_STAGES.outcome_posts), PORT_STAGES.inquiry))
+    const preview = await previewPort(api, 'collections')
+    expect(preview).toMatchObject({ ports: [], moves_inquiry: false, adds_collections: true, removes: [], adds: ['collections_body', 'collections_apex'] })
   })
 })
 

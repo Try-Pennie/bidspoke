@@ -47,10 +47,8 @@ and adding what the relay did on its side:
   Bidspoke run link (decision D4), which the inquiry relay wrote before.
 
 **The inquiry post** (`send_salesforce_inquiry`) leaves `parallel_1`, and after
-every outcome write comes a parallel block, `credit_posts_<post>`, joined at
-`credit_posts_end_<post>`, before what followed the write (the branch's Achieve
-step, or `exit_1` to `exit_3`). Its first slot (`child-0`, labelled `inquiry`)
-holds two steps:
+every outcome write come two steps, before what followed the write (the branch's
+Achieve step, or `exit_1` to `exit_3`):
 
 - `inquiry_body_<post>`, a code node that builds the relay's Apex body,
   `{ submissionId, inquiriesJson }`, or returns null, which skips the call,
@@ -64,19 +62,20 @@ holds two steps:
   resending it at most once (#2172; the contract doc's "The credit inquiry post's
   read-back").
 
-The block's settings are `wait_for: all`, `on_child_error: fail`, `on_timeout:
-partial`, `timeout_ms: 5500`. A failed inquiry call fails the block, which ends
-the walk after the answer, as a failed outcome post does today: the branch's
-Achieve step does not run after it, and the run is recorded as degraded and
-alerted, with the failure captured as the inquiry step itself. The block is
-there so the collections post (below) can run beside the inquiry post rather
-than after it. Each step in a slot is watched as a step of the walk is, so the
-inquiry post is still recorded before it is sent and read back (#2832,
-`engine/step-watch.ts`). `ported-walk.test.ts` proves this through the real
+A failed Apex call ends the walk after the answer, as a failed outcome post does
+today: the branch's Achieve step does not run after it, and the run is recorded
+as degraded and alerted. `ported-walk.test.ts` proves this through the real
 engine walk over the ported definition's Tripoint win branch: the lead is
-answered, the Submission is written, each Apex call is made once, the inquiry
-call fails, and Achieve is not reached (and, as its control, is reached when the
-calls succeed).
+answered, the Submission is written, the Apex call is made once and fails, and
+Achieve is not reached (and, as its control, is reached when the call succeeds).
+
+For a day (#2833, 2026-10-26) the two steps sat in a parallel block after each
+write, so the collections post could run beside them. The collections post now
+runs before the answer instead (below), which left that block holding one slot,
+so it was taken out (#2832): a one slot block only added a join and 500 ms of
+block timeout to every branch. What #2833 changed in the engine stays: every step
+in a parallel slot is watched as a step of the walk is, and a slot can be marked
+`on_failure: 'continue'` ([parallel.md](./nodes/parallel.md)).
 
 The inquiry relay's `VantageScore__c` patch is not kept: the outcome write
 already sets it last today, so its value stands (plan point 2).
@@ -90,78 +89,133 @@ to time out (more if the completing write is slower, which is inferred, not
 measured); each is held by the at-risk record for #2023's read-back rather than
 resent. The Apex call gets one
 attempt of 4.5 s, sized on the same org's `credit-trades` call (p99 4,001 ms).
-The body step gets 500 ms. The block waits at most 5.5 s, the longest slot (5 s)
-plus 500 ms, so each call ends on its own deadline before the block stops
-waiting. Its slots run side by side, so the block costs its longest slot, never
-the sum. The longest branch, `send_salesforce`, whose `calculate_internal_debt`
-runs after its answer, has a worst case of 11.45 s through the block; a test
-walks every branch and fails when one no longer fits.
+The body step gets 500 ms. The longest branch, `send_salesforce`, whose
+`calculate_internal_debt` runs after its answer, has a worst case of 11.45 s;
+every other branch 9.5 s. A test walks every branch and fails when one no longer
+fits.
 
-**Achieve after the block is not inside the 12 s in the worst case**, and was
-not before the block either (measured 2026-10-26 for #2832, not changed by it).
-Achieve's step starts after the block, which is up to 9.5 s after the answer on
-the six branches that run it (the 4.5 s write, then 5 s), and it waits up to 9 s
-for Achieve's reply (`ACHIEVE_FETCH_TIMEOUT_MS`; its step timeouts are 15 to 18
-s). So in the worst case it ends about 18.5 s after the answer, and the run is
-reported as unfinished work. Today, on five of the six, the outcome post still
-goes to the relay (three attempts of 3.5 to 4.5 s each), so Achieve can already
-start 12 to 15 s after the answer in the worst case. Typically the write takes
-about 0.1 s, the block about 2 s (the median of the `credit-trades` call, the
-closest one measured) and Achieve 4.7 s (9 in 10 within 5.8 s), which fits. No limit
-was raised for this; it is Dan's call (#2832).
+**Achieve after the inquiry post is not inside the 12 s in the worst case**, and
+was not before the port either (measured 2026-10-26 for #2832). Achieve's step
+starts after the inquiry post, which is up to 9.5 s after the answer on the six
+branches that run it (the 4.5 s write, the 500 ms body step, the 4.5 s call), and
+it waits up to 9 s for Achieve's reply (`ACHIEVE_FETCH_TIMEOUT_MS`; its step
+timeouts are 15 to 18 s). So in the worst case it ends about 18.5 s after the
+answer, and the run is reported as unfinished work. Today, on five of the six, the
+outcome post still goes to the relay (three attempts of 3.5 to 4.5 s each), so
+Achieve can already start 12 to 15 s after the answer in the worst case.
+Typically the write takes about 0.1 s, the inquiry post about 2 s (the median of
+the `credit-trades` call, the closest one measured) and Achieve 4.7 s (9 in 10
+within 5.8 s), which fits. No limit was raised for this; it is Dan's call
+(#2832).
 
 ## Stages
 
 Each stage is applied over the one before, and applying one twice changes
-nothing. A post already ported is recognised and left alone.
+nothing. A post already ported is recognised and left alone. The table is in the
+order the stages are applied.
 
 | Stage | Plan phase | What it does |
 |---|---|---|
 | `canary_invalid_state` | 4 | ports `invalid_state_sf_post` |
 | `canary_send_salesforce` | 5 | also ports `send_salesforce` |
+| `collections` | #2832 | adds the collections post to `parallel_1`, before the answer (built, not applied: waits for the Salesforce endpoint in production) |
 | `outcome_posts` | 6 | ports the other seven (gated on #2163 and #2023, D6) |
-| `inquiry` | 7 | moves the inquiry post after the answer, into a credit posts block after each outcome write (gated on #2172) |
-| `collections` | #2832 | adds the collections post as the block's second slot (built, not applied: waits for the Salesforce endpoint) |
+| `inquiry` | 7 | moves the inquiry post after the answer (gated on #2172) |
 
-The `collections` stage also moves the inquiry, so applied over a definition
-before `inquiry` it does both; it is meant to be applied after it. Every stage
-before it leaves a definition holding the collections steps exactly as it is.
+**The collections stage is independent of the rest of #1680.** It can be applied
+now, over live Main Flow (`canary_send_salesforce`, version 175): it ports the
+same two posts that stage did, so over the live definition it ports nothing and
+adds the collections body and Apex call alone. `outcome_posts` and `inquiry`,
+applied after it, keep its slot exactly as it is, and when `inquiry` takes the
+inquiry relay out of `parallel_1` the collections slot stays there. Applied
+before it, they never add the slot. It may equally be applied after either of
+them, and builds the same definition. The transform's `collections` option says
+"the slot is there afterwards": only the `collections` stage sets it; every other
+stage keeps a slot it finds (or refuses one that is not exactly the port's) and
+never adds one (the header of `transform.ts`).
 
 ## The collections post (#2832)
 
 Equifax's `collections` array (collection agency placements, industry YC) goes to
 `POST /services/apexrest/credit-collections` (`CollectionParserRest`, Geoff's
-spec, being built by another team), after the answer, as the credit posts
-block's second slot (`child-1`, labelled `collections`):
+spec, being built by another team) before the answer, as a third slot of
+`parallel_1`, the block on `equifax_debt`'s `trades_present` route that already
+runs the trades chain (`trades_body`, `trades_request`,
+`pennie_debt_calculation`, slot `child-0`) and, until the `inquiry` stage, the
+inquiry relay (`child-1`). Dan decided this on 2026-10-27, because Geoff wants
+the data soon and the post after the answer would have waited for the rest of
+#1680 (#2174's readout on 3 November, then `outcome_posts`, #2834 and `inquiry`).
+The slot is `child-2`, labelled `collections`:
 
-- `collections_body_<post>`, a code node building `{ submissionId,
-  collectionsJson }`, `collectionsJson` the JSON text of `{ collections: [...] }`
-  with every field of every item as Equifax sent it, and only null valued keys
-  dropped, exactly as `trades_body` builds the trades (Geoff on #2832: the body is
-  the same as trades, and all of the information in the array comes through). It
-  returns null, which skips the call, off the `trades_present` route, with no
-  `Submission__c`, and when the report has no `collections` key (or it is null).
-  An empty list is sent; the endpoint reads it as none now. The missing key skip
-  and the empty list send are defaults pending the spec answer on #2832. A
-  `collections` value that is not a list fails the step by name.
-- `collections_apex_<post>`, the Apex call, one attempt of 4.5 s. A repeat call
-  is harmless (each call replaces the Lead's collection rows, and Geoff accepts
-  the extra file a repeat attaches, as with trades, whose call runs with two
-  retries), so the engine does not treat it as never resent and it has no
-  read-back; it gets one attempt only because a retry does not fit the 12 s.
+- `collections_body`, a code node building `{ submissionId, collectionsJSON }`,
+  spelt as Geoff's example (`EXAMPLE-post-credit-collections.json`) spells it,
+  `collectionsJSON` the JSON text of `{ collections: [...] }`. Every item goes
+  whole, `accountNumber` included, with only null valued keys dropped, exactly as
+  `trades_body` builds the trades (Dan, 2026-10-27: send everything until Geoff
+  answers the open question on #2832). When the report has no `collections` key,
+  or it is null, an empty list is sent: Equifax leaves the key out of a file with
+  no collection items (Geoff). A `collections` value that is not a list, or an
+  item that is not an object, fails the step by name. It returns null, which
+  skips the call, only when the lead has no `Submission__c`.
+- `collections_apex`, the Apex call, one attempt of 4.5 s (`retries: 0`),
+  skipped only for that null body. A repeat call is harmless (each call replaces
+  the Lead's collection rows, and Geoff accepts the extra file a repeat attaches,
+  as with trades), so the engine does not treat it as never resent and it has no
+  read-back. It gets one attempt because a retry would only lengthen the wait for
+  the answer on a slow call.
 
-Its slot is marked `on_failure: 'continue'`: a failed or timed out collections
-call does not fail the block, so the walk goes on to Achieve, and the failure is
-raised once the walk is done, through the same alert as a failed Salesforce
-write after the answer (the run is degraded, the `sf_writeback` dead letter, and
-the failed write capture, which counts an Apex call as uncapturable).
-`ported-walk.test.ts` walks this too.
+**It posts for every lead on the `trades_present` route**, since a file with no
+collections still sends an empty list: about as many calls as `trades_request`
+makes (9,771 attempts in the 3 days to 2026-10-15, about 3,250 a day). Each takes a
+slot of the pre-answer Salesforce bulkhead beside the trades call.
 
-**Turning it on**: when the endpoint is live in the Pennie org, try it on a test
-lead, then apply `collections` with the runbook below, after the `inquiry` stage
-(the port's order on #1680). The money gate answers it as
-`salesforce_credit_collections`; a failure variant for it should be added to the
-gate's fixtures with the refresh that follows the apply.
+**Its slot is marked `on_failure: 'continue'`.** A failed or timed out
+collections call never fails `parallel_1`, so it never costs the lead its answer:
+the walk goes on past the block as it does today. The failure is not silent. The
+step's row says it failed, and once the walk is done the engine raises it as the
+run's failure, as it does a failed write after the answer: the run is recorded as
+degraded, the `sf_writeback` dead letter counts it, and the failed write capture
+names it as an Apex call that cannot be replayed. A failed trades chain still
+fails the block and the run before any answer, as today. Proved by
+`ported-walk.test.ts` (the real walk over live Main Flow with the stage applied:
+success, failure, timeout, a failed trades chain) and by the engine's own test of
+a marked slot before the answer (`post-response-budget-engine.test.ts`), which
+proves the run is degraded and dead lettered.
+
+**Timing.** `parallel_1` waits for all its slots, at most its 20 s timeout. In the
+worst case its trades chain alone already runs past that (its step settings allow
+54.5 s, three attempts of `trades_request`'s 16.5 s among them), so the block's
+worst case is its 20 s timeout with the collections slot or without it: the slot
+adds nothing there. The slot itself ends within 5 s (500 ms body, 4.5 s call), on
+its own deadline, before the block stops waiting. `ported-definition.test.ts`
+computes all of this from the step settings and the engine's retry rules. The
+typical case is not free, and is not measured: the block now waits for the slower
+of the trades call (median about 2 s) and the collections call, which is built
+like it but has never been called (if it is about as fast, the two side by side
+take a little longer than either alone, not their sum). A collections call
+slower than the trades chain holds the answer for the difference, up to the 5 s
+the slot can take. The block already waits for the inquiry relay beside the
+trades chain until the `inquiry` stage.
+
+**Turning it on**, once `CollectionParserRest` is live in the PRODUCTION Pennie
+org (not a sandbox):
+
+1. Check it on a test lead first: a production test lead on the `trades_present`
+   route (the Skyfall test lead procedure), with the endpoint called by hand with
+   that lead's body as `collections_body` would build it, and the Lead's
+   collection rows read back in Salesforce.
+2. Apply the `collections` stage with the runbook below (steps 1 to 5). The
+   preview over live Main Flow must answer that it ports nothing, adds
+   `collections_body` and `collections_apex` and removes nothing, and leaves the
+   inquiry where it is. Save the apply's answer as the rollback record.
+3. In the fixture refresh pull request, add `collections` to `APPLIED_STAGES` in
+   `gate-fixture.test.ts`. The money gate answers the call as
+   `salesforce_credit_collections`; add a failure variant for it to the gate's
+   fixtures in the same refresh.
+4. Watch the first day's runs: a failed collections call shows as a degraded run
+   and in the `sf_writeback` dead letter count, never as a lost lead.
+
+Rolling it back is the runbook's rollback with that saved answer.
 
 ## When the transform refuses
 
@@ -169,7 +223,14 @@ It refuses, naming every problem at once, whenever a part it rewrites is not the
 shape it was written against: a post missing or changed (another URL, a setting
 it does not carry over, a body with no `submissionId`), a tenth post to either
 relay, `parallel_1` or the inquiry relay changed, a step that reads what a relay
-post answered, a namespace it adds already taken. Nothing is sent. Read the
+post answered or `parallel_1`'s output while a stage changes its slots, a
+namespace it adds already taken. A slot of `parallel_1` is recognised only if it
+is the trades chain, the inquiry relay, or exactly the collections slot: `child-2`
+marked `on_failure: 'continue'`, `collections_body` then `collections_apex` (a
+POST to credit-collections of what the body built) into `parallel_end_1`. Every
+stage refuses a collections slot changed on the canvas (its mark removed, a step
+added inside it, its call pointed elsewhere), so no later stage carries a changed
+one forward; a canvas change to its timeouts or script is kept. Nothing is sent. Read the
 reasons, look at the canvas edit behind them, and change the transform in a pull
 request if the edit should stand.
 
@@ -177,9 +238,9 @@ request if the edit should stand.
 
 Only a member of the production organization can save Main Flow, so this runs in
 Dan's logged in Bidspoke tab, as the Liberty1 workflow was created. Each stage is
-applied by its own phase issue. The stage live now is the one `LIVE_STAGE` names
-in `gate-fixture.test.ts`: `canary_send_salesforce`, applied on 2026-10-26 as
-version 175 (#2174), over `canary_invalid_state`, applied on 2026-10-16 as
+applied by its own phase issue. The stages live now are the ones `APPLIED_STAGES`
+names in `gate-fixture.test.ts`: `canary_send_salesforce`, applied on 2026-10-26
+as version 175 (#2174), over `canary_invalid_state`, applied on 2026-10-16 as
 version 172 (#2173) after an earlier apply (version 170) and its rollback
 (version 171).
 
@@ -206,11 +267,14 @@ version 172 (#2173) after an earlier apply (version 170) and its rollback
    (`refused_live_changed`, `applied_with_deploy_errors`, `stored_differs`).
 5. Refresh the money gate's fixtures (`npx tsx scripts/export-money-fixture-shapes.ts`
    from `apps/worker`) and require the refreshed Main Flow to be exactly the
-   version the apply answered as `after`. Set `LIVE_STAGE` in
-   `src/lib/main-flow-port/__tests__/gate-fixture.test.ts` to the stage just
-   applied, in the same pull request. That test requires running that stage's
+   version the apply answered as `after`. Add the stage just applied to the end
+   of `APPLIED_STAGES` in `src/lib/main-flow-port/__tests__/gate-fixture.test.ts`,
+   in the same pull request. That test requires running each applied stage's
    transform over the gate's Main Flow to change nothing, with exactly the
-   stage's posts native. A canvas save elsewhere in Main Flow passes (since
+   applied stages' posts native, and the inquiry and the collections slot where
+   they left them. It lists every stage, not only the last, because the
+   `collections` stage may come before or after `outcome_posts` and `inquiry`
+   (#2832). A canvas save elsewhere in Main Flow passes (since
    2026-10-21, when version 173's edits made the old "equals the transform of
    version 169" check fail on an ordinary save). If it fails, a canvas save
    undid part of the port, and that save is looked at before anything here
@@ -353,8 +417,8 @@ deployed, and the live commit confirmed): the runbook above, steps 2 to 5, with
 the stage `canary_send_salesforce`. Preview first; it must answer that it ports
 `send_salesforce` alone, adds and removes nothing, and leaves the inquiry where
 it is. Save the apply's answer as the rollback record. Then refresh the money
-gate fixtures and set `LIVE_STAGE` to `canary_send_salesforce` in the same pull
-request. Nothing needs turning on in the worker: the watch reads the live
+gate fixtures and record `canary_send_salesforce` as applied in
+`gate-fixture.test.ts` in the same pull request. Nothing needs turning on in the worker: the watch reads the live
 definition every morning and starts reporting the first day Main Flow holds the
 port.
 
@@ -409,27 +473,33 @@ heartbeat's KV keys expire on their own and need nothing.
 
 In `apps/worker/src/lib/main-flow-port/__tests__/`:
 
-- `transform.test.ts`: what the transform builds from the version 169 copy,
-  each stage, idempotence, and every refusal.
+- `transform.test.ts`: what the transform builds from the version 169 copy and
+  from live Main Flow, each stage, idempotence, the collections stage applied
+  before or after `outcome_posts` and `inquiry` to the same result, and every
+  refusal.
 - `gate-fixture.test.ts`: the money gate's Main Flow fixture is unchanged by
-  the transform at `LIVE_STAGE`, the stage last applied, with exactly that
-  stage's posts native, and an unported definition fails the same check.
+  the transform of every stage in `APPLIED_STAGES`, with exactly those stages'
+  posts native and the inquiry and collections slot where they left them, and an
+  unported definition fails the same check.
 - `ported-definition.test.ts`: walks the ported graph. Every Submission write
-  after the answer on the `trades_present` route is followed by the credit posts
-  block, the inquiry and collections pairs side by side; the worst case from
-  each answer through the block fits 12 s by the engine's own retry rules, and
-  each slot ends before the block's own timeout; the collections body sends every
-  non null field and skips a missing key; every `success_node_namespaces` entry exists; neither relay is
-  named; the save route's definition rules pass (no loop, no malformed
-  Salesforce write option). The route itself is driven by
+  after the answer on the `trades_present` route is followed by the inquiry body
+  and Apex call; the worst case from each answer through the call fits 12 s by
+  the engine's own retry rules; the collections call is the one Apex call before
+  the answer, in `parallel_1`, whose worst case it leaves at the block's 20 s
+  timeout, ending within 5 s itself; the collections body's shape, its empty list
+  for a missing key, and its refusals; every `success_node_namespaces` entry
+  exists; neither relay is named; the save route's definition rules pass (no
+  loop, no malformed Salesforce write option). The route itself is driven by
   `save-route-contract.test.ts`.
 - `relay-parity.test.ts`: for each post, the native PATCH equals what the relay
   wrote from what the webhook posted, through the engine's real executors, over
   inputs whose key sets and value types were measured from production.
 - `ported-walk.test.ts`: the real engine walk over one ported branch when the
-  inquiry call fails (the walk ends before Achieve), when the collections call
-  fails (the failure is recorded and the walk reaches Achieve), and when both
-  succeed.
+  inquiry call fails (the walk ends before Achieve) and when it succeeds; and over
+  live Main Flow's `parallel_1` with the collections stage applied, when the
+  collections call succeeds, fails and times out (the lead is answered each time,
+  the other slots run as today, a failure is left for finalize to raise), and
+  when the trades call fails (the run fails before any answer, as today).
 - `send-salesforce-canary.test.ts`: the phase 5 stage over the live Main Flow,
   and the ported `send_salesforce` walked by the real engine through every
   Salesforce answer, each failure ending as the invalid state write's does.

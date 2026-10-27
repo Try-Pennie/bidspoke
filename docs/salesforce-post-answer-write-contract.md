@@ -380,6 +380,11 @@ From the live definition (`60e2e0bc`, money gate fixture):
   are `trades_body` (slot `child-0`, the start of the `pennie_debt_calc` chain)
   and `send_salesforce_inquiry` (slot `child-1`). Its config is `wait_for:
   all`, `on_child_error: fail`, `timeout_ms: 20000`, `on_timeout: partial`.
+  (The port's `collections` stage, built and not yet applied, adds a third slot,
+  `child-2`, the credit-collections post, marked `on_failure: 'continue'` so that
+  its failure is alerted but never fails the block or the lead, #2832; see
+  main-flow-relay-port.md. What follows describes the inquiry post and is
+  unchanged by it.)
 - The parallel's only onward edge is to `parallel_end_1`. A walk of the graph
   from there (skipping the child slots) reaches all fourteen `response` nodes
   through `parallel_end_1 -> equifax_debt_end -> ...`, so every response on the
