@@ -117,7 +117,7 @@ You may also pass `name`, `description`, and `slack_channel` (per-workflow alert
 
 ### Restore a version
 
-`POST /api/workflows/:id/versions/:version_id/restore`. This does not overwrite history. It writes the old definition as a brand-new version and points the workflow at it.
+`POST /api/workflows/:id/versions/:version_id/restore`. This does not overwrite history. It writes the old definition as a brand-new version and points the workflow at it. Like a save, the new version is pushed to the GitHub backup repo in the background.
 
 ```bash
 curl -X POST https://bidspoke.trypennie.dev/api/workflows/8f3c2b10-.../versions/a1b2c3d4-.../restore \

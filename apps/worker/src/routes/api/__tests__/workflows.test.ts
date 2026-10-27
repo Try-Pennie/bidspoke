@@ -1063,7 +1063,47 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
     vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    vi.mocked(recordBackupSuccess).mockResolvedValue(undefined)
+    vi.mocked(recordBackupFailure).mockResolvedValue(false)
     app = await makeApp()
+  })
+
+  // #2868: a restore writes a new version as a save does, so it is backed up as
+  // a save is. Until then the backup held the definition the restore replaced
+  // until someone next saved the workflow on the canvas.
+  const restoredDefinition = { nodes: [{ id: 'old', type: 'code', namespace: 'old', config: {} }], edges: [] }
+  const restoreClient = () => makeSupabase(
+    {
+      users: { single: testUser },
+      workflows: { single: existingWorkflow },
+      workflow_versions: [{ single: { id: 'ver-1', definition: restoredDefinition, version_number: 1 } }, { list: [{ id: 'ver-4' }] }],
+    },
+    { write: () => ({ data: { workflow: { ...existingWorkflow, definition: restoredDefinition, version: 5 }, version_id: 'ver-4', version_number: 4, restored_from: 1 }, error: null }) },
+  )
+
+  it('pushes the restored definition to the GitHub backup and stamps the commit on the restored version row (#2868)', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-restore-1')
+    const sb = restoreClient()
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(200)
+    await mockCtx.settle()
+    expect(vi.mocked(pushWorkflowToGitHub)).toHaveBeenCalledWith('gh-tok', 'Try-Pennie/backups', 'wf-1', 'Lead Routing', restoredDefinition, 4, expect.any(String))
+    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'update')).toEqual([['update', [{ commit_sha: 'commit-restore-1' }]]])
+    expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
+  })
+
+  it('answers a restore whose backup push fails as restored, and alerts the failure as a save does (#2868)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(pushWorkflowToGitHub).mockRejectedValue(new Error('GitHub push failed (401): Bad credentials'))
+    vi.mocked(createSupabaseClient).mockReturnValue(restoreClient() as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ok: true, version_number: 4 })
+    await mockCtx.settle()
+    expect(vi.mocked(recordBackupFailure)).toHaveBeenCalledWith(expect.objectContaining({ workflowId: 'wf-1', workflowName: 'Lead Routing' }))
+    expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
   })
 
   it('returns 404 when version does not exist', async () => {
