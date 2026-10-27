@@ -208,7 +208,10 @@ describe('the shipped catalogue', () => {
     // which runs that file, so the fingerprint would miss a change to it.
     const nearestPackage = (file: string): string => {
       let dir = path.dirname(file)
-      while (!existsSync(path.join(dir, 'package.json'))) dir = path.dirname(dir)
+      while (!existsSync(path.join(dir, 'package.json'))) {
+        if (path.dirname(dir) === dir) throw new Error(`${file} has no package.json above it`)
+        dir = path.dirname(dir)
+      }
       return dir
     }
     const dirs = new Set(linkedGraph(path.join(SRC, 'runtime', 'index.ts')).map(nearestPackage))
