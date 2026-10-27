@@ -27,3 +27,28 @@ export function leadNamesAnotherSubmission(named: unknown, submissionId: string)
 export function leadNamesSubmission(named: unknown, submissionId: string): boolean {
   return typeof named === 'string' && named !== '' && named.slice(0, 15) === submissionId.slice(0, 15)
 }
+
+/** A Salesforce datetime, `2026-10-23T19:58:24.000+0000`, as milliseconds; null when it is not one. */
+function salesforceInstant(value: unknown): number | null {
+  if (typeof value !== 'string' || value === '') return null
+  const ms = Date.parse(value.replace(/([+-]\d{2})(\d{2})$/, '$1:$2'))
+  return Number.isNaN(ms) ? null : ms
+}
+
+/**
+ * Whether a Lead's exchange time (`Lead.External_Timestamp__c`) is later than
+ * the sale's own (`Submission__c.External_Timestamp__c`): a later exchange
+ * re-stamped the Lead, so the customer came back, even where that visit left
+ * `Submission_Object_ID__c` naming the sale (2026-10-23, Sub-002781149). A Lead
+ * synced from the sale carries the sale's own time (45,777 of 45,781 Tripoint
+ * sales measured 2026-10-27), and every real miss on record has a Lead stamped
+ * EARLIER than the sale. A time missing or unreadable on either side shows
+ * nothing, so it is false and the sale stays counted as waiting. Only the lead
+ * status check asks this: the invalid state canary watch asks which Submission a
+ * post followed, which the pointer alone answers (L342).
+ */
+export function leadStampedAfterSale(saleStamp: unknown, leadStamp: unknown): boolean {
+  const sale = salesforceInstant(saleStamp)
+  const lead = salesforceInstant(leadStamp)
+  return sale !== null && lead !== null && lead > sale
+}
