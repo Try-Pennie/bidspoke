@@ -50,6 +50,7 @@ import {
   type ResourceWaitCause, type SfBudgetSource, type SfLeaseOutcome, type SfLeasePurpose, type TriggerKind,
   STEP_TEST_STATUSES, type StepTestStatus,
   OPS_STEP_RECORD_OUTCOMES, OPS_STEP_RECORD_STATUSES, type OpsStepRecordOutcome, type OpsStepRecordStatus,
+  CHECKPOINT_ACK_OUTCOMES, type CheckpointAckOutcome,
 } from './run-vocabulary'
 import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
@@ -1695,6 +1696,77 @@ export async function readRunStepContext(
     payloadElsewhere: field(name, row, 'payload_elsewhere', isBool, 'true or false'),
     contextBytes: field(name, row, 'context_bytes', isIntOrNull, 'a whole number or null'),
     steps,
+  }
+}
+
+// ── a run's checkpoint (#1951, ops migration 20261027150000) ───────────────
+
+/** What a holder names when it acknowledges a checkpoint it wrote to R2 (checkpoint.ts). */
+export interface CheckpointAck {
+  executionId: string
+  /** The state version the holder's start answered, which the key carries. */
+  stateVersion: number
+  steps: number
+  key: string
+  sha256: string
+  bytes: number
+}
+
+/**
+ * Names the checkpoint on its run. stale means the run is not this holder's
+ * running attempt at this state version any more, and nothing was written;
+ * superseded that the run names a later checkpoint of this holder;
+ * already_recorded a repeat of an acknowledgement that landed.
+ */
+export async function recordRunCheckpoint(
+  client: OpsSupabaseClient, organizationId: OrganizationId, fence: { runRequestId: string; claimToken: string }, ack: CheckpointAck, options?: OpsRpcOptions,
+): Promise<CheckpointAckOutcome> {
+  const name = 'record_run_checkpoint'
+  const data = await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_run_request_id: fence.runRequestId, p_claim_token: fence.claimToken, p_execution_id: ack.executionId,
+    p_state_version: ack.stateVersion, p_steps: ack.steps, p_checkpoint_key: ack.key, p_sha256: ack.sha256, p_bytes: ack.bytes,
+  }, options)
+  if (!oneOf(CHECKPOINT_ACK_OUTCOMES)(data)) throw new OpsWriteError(`${name} returned ${JSON.stringify(data)?.slice(0, 40) ?? 'nothing'}, not a checkpoint outcome`)
+  return data
+}
+
+/** The checkpoint a run names, as the resume trusts it (checkpoint.ts CheckpointPointer). */
+export interface NamedCheckpoint {
+  key: string
+  stateVersion: number
+  steps: number
+  sha256: string
+  bytes: number
+}
+
+/** What run_checkpoint answers: the run is not this holder's (held false), or its state version and the checkpoint it names, null for none. */
+export type RunCheckpointRead = { held: false } | { held: true; stateVersion: number; checkpoint: NamedCheckpoint | null }
+
+export async function readRunCheckpoint(
+  client: OpsSupabaseClient, organizationId: OrganizationId, runRequestId: string, claimToken: string, options?: OpsRpcOptions,
+): Promise<RunCheckpointRead> {
+  const name = 'run_checkpoint'
+  const all = rows(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_run_request_id: runRequestId, p_claim_token: claimToken }, options))
+  if (all.length === 0) return { held: false }
+  if (all.length !== 1) throw new OpsWriteError(`${name} returned ${all.length} rows, expected at most 1`)
+  const row = all[0]
+  const stateVersion = field(name, row, 'state_version', isInt, 'a whole number')
+  const pointer = ['checkpoint_key', 'checkpoint_state_version', 'checkpoint_steps', 'checkpoint_sha256', 'checkpoint_bytes', 'checkpoint_execution_id', 'checkpoint_at']
+  const set = pointer.filter((k) => row[k] !== null && row[k] !== undefined).length
+  if (set === 0) return { held: true, stateVersion, checkpoint: null }
+  // The database holds the pointer whole or not at all; a half one is never read as none.
+  if (set !== pointer.length) throw new OpsWriteError(`${name} returned a checkpoint with only ${set} of its ${pointer.length} parts`)
+  const isSha = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)
+  return {
+    held: true,
+    stateVersion,
+    checkpoint: {
+      key: field(name, row, 'checkpoint_key', isString, 'a key'),
+      stateVersion: field(name, row, 'checkpoint_state_version', isInt, 'a whole number'),
+      steps: field(name, row, 'checkpoint_steps', isInt, 'a whole number'),
+      sha256: field(name, row, 'checkpoint_sha256', isSha, 'a digest'),
+      bytes: field(name, row, 'checkpoint_bytes', isInt, 'a whole number'),
+    },
   }
 }
 

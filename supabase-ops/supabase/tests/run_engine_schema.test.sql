@@ -156,6 +156,8 @@ BEGIN
     AND p.proname <> ALL (ARRAY['record_step_test', 'step_test_result', 'purge_step_test_results'])
     -- Each step of an ops run (#2703), held to the same rules by ops_step_records.test.sql.
     AND p.proname <> ALL (ARRAY['record_ops_step', 'run_step_context', 'purge_ops_step_records'])
+    -- A run's acknowledged checkpoint (#1951), held to the same rules by run_checkpoints.test.sql.
+    AND p.proname <> ALL (ARRAY['record_run_checkpoint', 'run_checkpoint'])
     AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') IS FALSE
     AND p.proowner = 'postgres'::regrole;
   IF v_count <> 0 THEN RAISE EXCEPTION '% public function(s) executable by service_role are not on the run engine list', v_count; END IF;
