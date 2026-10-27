@@ -9,7 +9,7 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { SealedEnvelope } from '@bidspoke/connection-seal'
 import { resolveRuntimeAction } from '@bidspoke/service-catalogue/runtime'
-import { connectionFetch, type ConnectionCall } from '../connection-fetch'
+import { RATE_LIMIT_DEFAULT_MS, connectionFetch, type ConnectionCall } from '../connection-fetch'
 import type { OpsConnectionsDeps, OpsServiceEntry } from '../ops-connections'
 import { verifyConnection } from '../ops-connections'
 import { openaiIdentity, openaiServiceEntry } from '../openai-service'
@@ -32,6 +32,11 @@ beforeAll(async () => {
 
 const openai = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } })
+
+/** OpenAI's 429 when the account has run out of credit or hit its spend limit, as OpenAI words it. */
+const quotaExhausted = () => openai({
+  error: { message: 'You exceeded your current quota, please check your plan and billing details.', type: 'insufficient_quota', param: null, code: 'insufficient_quota' },
+}, 429)
 
 /** The models list, with the headers OpenAI answers it with. */
 const models = (headers: Record<string, string> = { 'openai-organization': 'pennie-ops', 'openai-project': PROJECT }) =>
@@ -115,6 +120,16 @@ describe('verify of an OpenAI project key', () => {
     expect(await verify(w)).toMatchObject({ ok: false, refused: 'connection_rate_limited' })
   })
 
+  it('a key whose account has no quota left is refused naming it, never answered as a rate limit to come back from (#2673)', async () => {
+    const w = world()
+    w.d.respond(quotaExhausted())
+    const answer = await verify(w)
+    expect(answer).toMatchObject({ ok: false, refused: 'verify_identity_unreadable', retry_at: null })
+    expect(JSON.stringify(answer)).toContain('insufficient_quota')
+    expect(JSON.stringify(answer)).not.toContain('You exceeded')
+    expect(w.d.rec.sent).toHaveLength(1)
+  })
+
   it('an answer it cannot read is unreadable by name, its body never quoted', async () => {
     for (const answer of [new Response('<html>edge</html>', { status: 200 }), openai({ object: 'list' }), openai({ error: { type: 'server_error' } }, 502), openai({ error: { type: 'permission_error' } }, 403)]) {
       const w = world()
@@ -149,6 +164,23 @@ describe('the OpenAI entry', () => {
     for (const status of [200, 400, 403, 404, 429, 500]) {
       expect(await rules.expired(openai({}, status)), String(status)).toBe(false)
     }
+  })
+
+  it('reads a 429 insufficient_quota as no rate limit, by its code or its type, and any other 429 as one (#2673)', async () => {
+    const check = openaiServiceEntry().rules.notRateLimited
+    if (check === undefined) throw new Error('the OpenAI entry declares no check of which 429s are not rate limits')
+    expect(await check(quotaExhausted())).toBe(true)
+    expect(await check(openai({ error: { type: 'insufficient_quota', code: null } }, 429))).toBe(true)
+    expect(await check(openai({ error: { type: 'invalid_request_error', code: 'insufficient_quota' } }, 429))).toBe(true)
+    for (const body of [{ error: { type: 'requests', code: 'rate_limit_exceeded' } }, { error: { type: 'tokens' } }, { error: 'insufficient_quota' }, {}]) {
+      expect(await check(openai(body, 429)), JSON.stringify(body)).toBe(false)
+    }
+  })
+
+  it('throws on a 429 whose body is not JSON, so connectionFetch takes it as a rate limit and says so (#2673)', async () => {
+    const check = openaiServiceEntry().rules.notRateLimited
+    if (check === undefined) throw new Error('the OpenAI entry declares no check of which 429s are not rate limits')
+    await expect(check(new Response('<html>429 Too Many Requests</html>', { status: 429 }))).rejects.toThrow()
   })
 })
 
@@ -196,6 +228,36 @@ describe('the OpenAI actions through the real connectionFetch (#2337)', () => {
     expect((thrown as RequeueAt).notBefore.getTime()).toBe(T0 + 20_000)
     expect(w.d.rec.sent).toHaveLength(1)
     expect(w.d.rec.slept).toEqual([])
+    expect(w.d.rec.reports).toEqual([])
+  })
+
+  it('a rate limit with no Retry-After is still a requeue, after the stated default (#2673)', async () => {
+    const w = world()
+    w.d.respond(openai({ error: { type: 'tokens', code: 'rate_limit_exceeded' } }, 429))
+    const thrown: unknown = await CHAT.run(ctx(w), ARGS).catch((e: unknown) => e)
+    expect(thrown).toBeInstanceOf(RequeueAt)
+    expect((thrown as RequeueAt).notBefore.getTime()).toBe(T0 + RATE_LIMIT_DEFAULT_MS)
+    expect(w.d.rec.reports).toEqual([])
+  })
+
+  it('a 429 insufficient_quota reaches the action, which fails it by name as not applied, sent once and never requeued (#2673)', async () => {
+    const w = world()
+    w.d.respond(quotaExhausted())
+    const thrown: unknown = await CHAT.run(ctx(w), ARGS).catch((e: unknown) => e)
+    expect(thrown).not.toBeInstanceOf(RequeueAt)
+    expect(thrown).toMatchObject({ code: 'openai_insufficient_quota', outcome: 'not_applied' })
+    expect(w.d.rec.sent).toHaveLength(1)
+    expect(w.d.rec.needsReauth).toEqual([])
+    expect(w.d.rec.reports).toEqual([])
+  })
+
+  it('a 429 whose body cannot be read is taken as a rate limit: requeued, and reported as taken that way (#2673)', async () => {
+    const w = world()
+    w.d.respond(new Response('<html>429 Too Many Requests</html>', { status: 429, headers: { 'retry-after': '20' } }))
+    const thrown: unknown = await CHAT.run(ctx(w), ARGS).catch((e: unknown) => e)
+    expect(thrown).toBeInstanceOf(RequeueAt)
+    expect((thrown as RequeueAt).notBefore.getTime()).toBe(T0 + 20_000)
+    expect(w.d.rec.reports).toEqual([{ event: 'rate_limit_check_failed', connection_id: CONN, purpose: 'step', cause: 'taken_as_rate_limit' }])
   })
 
   it('a revoked key is needs_reauth after the one renewal, and its refusal names no key', async () => {

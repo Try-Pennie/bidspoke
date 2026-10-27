@@ -587,6 +587,10 @@ export async function executeWorkflow(
   // The lead_sighting_bids rows nodes write are usually still retrying after
   // the response when the database is down, so they take the same budget.
   ctx.retryTiming = writeTiming
+  // And how much of the window after the answer is left (#2834), read from the
+  // same budget the walk is raced against below. A test run waits for its whole
+  // walk, so it is given none.
+  if (!reality.isTest) ctx.continuationMsLeft = () => postResponse.msLeftInContinuationWindow()
   // A node that must never repeat a send refuses a recovery run (#1542): resume re-runs
   // every node from the entry, so it would post a click a second time.
   if (options.resumeFromExecutionId) ctx.recovery = 'resume'

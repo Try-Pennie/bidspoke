@@ -60,6 +60,7 @@ import { readDelegationEntryBody, readReconnectBody, reconnectLogin, reconnectVa
 import { writeAuditLog } from '../../lib/audit'
 import { requireRowsAffected } from '../../lib/db-retry'
 import { DELEGATION_KINDS, type DelegationKind } from '../../ops/run-vocabulary'
+import { readGoogleTarget } from '../../ops/connections/minters/google-target'
 import {
   actsAsOf, AUTH_TYPE_OF, connectionNameOf, connectionsNamingSubject, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
   listedDriveNamedAsMailbox, secretLabelOf, unlistedGoogleSubjects,
@@ -582,7 +583,10 @@ connections.post('/', async (c) => {
     }
     const drive = listedDriveNamedAsMailbox(target, list.subjects)
     if (drive !== null) return refuse('google_subject_is_drive', { ...words, names: [drive] })
-    const unlisted = unlistedGoogleSubjects(target, list.subjects)
+    // The minter's own reading (#2819): a target it would refuse at every mint is refused here.
+    const subjects = readGoogleTarget(target)
+    if (!subjects.ok) return refuse('connection_request_invalid', words, { detail: 'the mailbox or drives are not in the shape a Google login reads' })
+    const unlisted = unlistedGoogleSubjects(subjects, list.subjects)
     if (unlisted.length > 0) return refuse('google_subject_not_listed', { ...words, names: unlisted }, { subjects: unlisted })
   }
 
