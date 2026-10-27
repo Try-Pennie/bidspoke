@@ -556,7 +556,11 @@ test.describe('Accessibility (axe-core)', () => {
 
     // Working, and one with no status from ops, used only by a deleted workflow.
     await list.getByRole('button', { name: 'Pennie Salesforce', exact: true }).click()
-    await expect(page.getByRole('region', { name: 'Pennie Salesforce' }).locator('[data-part="status"]')).toHaveText('Working')
+    const working = page.getByRole('region', { name: 'Pennie Salesforce' })
+    await expect(working.locator('[data-part="status"]')).toHaveText('Working')
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+    await working.getByRole('tab', { name: 'History' }).click()
+    await expect(working.getByText('Login checked again')).toBeVisible()
     await expectNoSeriousA11yViolations(page, [], '/connections')
     await list.getByRole('button', { name: 'Partner status API', exact: true }).click()
     const unknown = page.getByRole('region', { name: 'Partner status API' })

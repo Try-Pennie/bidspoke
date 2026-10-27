@@ -260,7 +260,7 @@ afterEach(() => {
 })
 
 describe('the Connections page fixtures are what their routes answer (#2611)', () => {
-  it('GET /connections: thirteen connections, every page status, one with none, owners, use counts and a deleted user', async () => {
+  it('GET /connections: thirteen connections, every page status, one with none, an owner, use counts and a deleted workflow', async () => {
     const res = await call('GET', '/connections')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(listJson)
