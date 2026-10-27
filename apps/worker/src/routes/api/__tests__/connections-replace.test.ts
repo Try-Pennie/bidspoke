@@ -31,6 +31,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { refreshWorkflowCaches } from '../../../engine/definition-loader'
 import api from '../index'
+import { REPLACE_OUTCOMES } from '../../../lib/connection-replace'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -285,6 +286,15 @@ describe('Replace gives each ticked workflow a new version naming the replacemen
       [ORG, 'workflow', ACHIEVE, 'updated', USER, { replaced_connection: PENNIE, with_connection: TPL2, version: 5 }],
       [ORG, 'workflow', CLEANUP, 'updated', USER, { replaced_connection: PENNIE, with_connection: TPL2, version: 10 }],
     ])
+  })
+
+  it('logs one line counting every outcome, each by name, so an outcome added later is counted too', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE, OLD_IMPORT] })
+    const line = log.mock.calls.map((c) => String(c[0])).find((s) => s.includes('"connection_replaced"'))
+    const counted = (JSON.parse(line!) as { outcomes: Record<string, number> }).outcomes
+    expect(Object.keys(counted)).toEqual([...REPLACE_OUTCOMES])
+    expect(counted).toMatchObject({ replaced: 1, deleted: 1, changed: 0 })
   })
 
   it('writes only the ticked workflows: one left unticked keeps the old connection', async () => {

@@ -392,7 +392,7 @@ const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: Route
   replace_uses_unreadable: () => 'Bidspoke could not read the connections or which workflows use them. Nothing was changed. Try again in a minute.',
 }
 
-/** The page's sentence for one of the Reconnect, Remove or Google list routes' own refusals. */
+/** The page's sentence for one of the Reconnect, Remove, Replace or Google list routes' own refusals. */
 export function connectionRouteSentence(code: ConnectionRouteRefusalCode, ctx: RouteRefusalContext): string {
   return ROUTE_SENTENCES[code](ctx)
 }
