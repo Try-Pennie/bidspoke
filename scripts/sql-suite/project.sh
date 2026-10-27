@@ -31,7 +31,10 @@ case "$SQL_SUITE_PROJECT" in
     # The suites' shared SQL helpers (#2187), at /sql-suite-fixtures/tests/,
     # which a suite loads with \i: save_profile.sql saves a profile through
     # save_partner_page for the suites that used save_buyer_profile.
-    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures" "$ROOT/apps/worker/src/partner-delete/labels" "$ROOT/apps/worker/money-gate/fixtures" "$ROOT/supabase/tests/helpers")
+    # The migrations themselves (#2638), at /sql-suite-fixtures/supabase/, so a
+    # test can run a migration again against a state it must refuse, as the ops
+    # suite does.
+    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures" "$ROOT/apps/worker/src/partner-delete/labels" "$ROOT/apps/worker/money-gate/fixtures" "$ROOT/supabase/tests/helpers" "$ROOT/supabase/migrations")
     ;;
   ops)
     SUITE_MIGRATIONS="$ROOT/supabase-ops/supabase/migrations"

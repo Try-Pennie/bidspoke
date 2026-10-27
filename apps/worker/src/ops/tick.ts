@@ -866,6 +866,10 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
       const saved = await saveServedConnections(db, () => ports.gateway.fetchConnections())
       problems.push(...saved.problems)
       for (const [key, n] of Object.entries(saved.counts)) bump(counts, key, n)
+      // By id, so a create's connection_create_left_on_ops line can be matched to its removal (#2573).
+      for (const r of saved.unservedIdentitiesRemoved) {
+        log('unserved_identity_removed', { tick_id: ports.tickId, organization_id: r.organizationId, connection_id: r.connectionId, generation: r.generation, measured_at: r.measuredAt })
+      }
     } catch (err) {
       problem('connections_step_failed', `The ops tick could not save the ops connections: ${formatErr(err)}.`)
     }

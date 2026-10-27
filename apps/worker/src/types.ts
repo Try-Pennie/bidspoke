@@ -25,11 +25,6 @@ export interface WorkflowDefinition {
   edges: EdgeDefinition[]
 }
 
-// The trigger types live in @bidspoke/workflow-definition (#1947), one home for
-// both apps. Re-exported here so every existing import from './types' keeps
-// working; the imports move to the package and these lines go in #2648.
-export type { HttpWebhookConfig, HttpWebhookTrigger, MutedFailureSignal, ScheduleTrigger, TriggerConfig } from '@bidspoke/workflow-definition'
-
 export type ExecutionOutcome = 'successful' | 'completed' | 'failed'
 
 export interface NodeDefinition {
