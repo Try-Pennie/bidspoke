@@ -418,9 +418,10 @@ export type RecordDecision =
  * Decides every held write to one record from one read of it. `entries` are in
  * attempt order, oldest first. `history`, once read, is what Salesforce's field
  * history says about the fields a first decision called moved (#2264).
- * `sfObject` is the record's object, which names its later states (#2895).
+ * `sfObject` is the record's object, which names its later states (#2895), so
+ * no caller can leave that rule out.
  */
-export function decideRecord(entries: RecordEntry[], current: Record<string, unknown>, history?: FieldHistory, sfObject?: string): RecordDecision[] {
+export function decideRecord(sfObject: string, entries: RecordEntry[], current: Record<string, unknown>, history?: FieldHistory): RecordDecision[] {
   const stamp = parseWriteMarker(current[WRITE_MARKER_FIELD])
   const stampedId = stamp ? `${stamp.executionId}:${stamp.stepNamespace}` : null
   // The newest write of the run to set each field owns it.
@@ -438,7 +439,7 @@ export function decideRecord(entries: RecordEntry[], current: Record<string, unk
     // of stored writes also applies (#468): a value an earlier write of the run
     // sent is ours, and this newer write replaces it.
     // A field already at a later state of its value is never sent, and is no conflict (#2895).
-    const later = sfObject ? laterStateFields({ sfObject, fields: own, body: e.body, current }) : []
+    const later = laterStateFields({ sfObject, fields: own, body: e.body, current })
     const judged = own.filter((f) => !later.includes(f))
     const conflicts = fieldsMovedSince({ fields: judged, body: e.body, current, sinceMs: e.firstAttemptMs, earlier: entries.slice(0, i).map((x) => x.body), history })
     const conflictValues = movedFieldValues({ moved: conflicts, body: e.body, current, sinceMs: e.firstAttemptMs, history })
@@ -805,7 +806,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     }
 
     const entries = group.map((h) => ({ id: h.id, body: h.body, attempts: h.state.attempts, ownedByLater: h.state.owned_by_later ?? [], firstAttemptMs: h.firstAttemptMs }))
-    let decisions = decideRecord(entries, current, undefined, head.sf_object)
+    let decisions = decideRecord(head.sf_object, entries, current)
     // A field the record read calls moved is asked about in its own history
     // (#2264): the record being written since says nothing about WHICH field.
     const judged = decisions.flatMap((d, i) => ((d.verdict === 'resend' || d.verdict === 'conflict_only') && d.conflicts.length > 0 ? [{ d, h: group[i] }] : []))
@@ -825,7 +826,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
         return { unread: true, stop: 'salesforce_not_answering' }
       }
       if (history.kind === 'unread') console.error(`[${SF_READ_BACK_JOB}] the field history of ${head.sf_object} ${head.sf_record_id} could not be read, so ${moved.join(', ')} stay left out: ${history.why}`)
-      decisions = decideRecord(entries, current, history, head.sf_object)
+      decisions = decideRecord(head.sf_object, entries, current, history)
       const stillMoved = new Set(decisions.flatMap((d) => (d.verdict === 'resend' || d.verdict === 'conflict_only' ? d.conflicts : [])))
       s.history_cleared += moved.filter((f) => !stillMoved.has(f)).length
     }

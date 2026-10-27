@@ -738,6 +738,7 @@ describe('decideRecord', () => {
 
   it('judges each write by its own stamp, never another\'s', () => {
     const d = decideRecord(
+      'Prospect__c',
       [entry(`${EXEC_A}:one`, { A__c: 1 }), entry(`${EXEC_A}:two`, { B__c: 2 })],
       { A__c: null, B__c: 2, [WRITE_MARKER_FIELD]: `${EXEC_A}:two:0` },
     )
@@ -745,22 +746,22 @@ describe('decideRecord', () => {
   })
 
   it('calls a write whose every field a later write of the run sets superseded', () => {
-    const d = decideRecord([entry(`${EXEC_A}:one`, { A__c: 1 }), entry(`${EXEC_A}:two`, { A__c: 2 })], { A__c: null })
+    const d = decideRecord('Prospect__c', [entry(`${EXEC_A}:one`, { A__c: 1 }), entry(`${EXEC_A}:two`, { A__c: 2 })], { A__c: null })
     expect(d.map((x) => x.verdict)).toEqual(['superseded', 'resend'])
   })
 
   it('replaces a different value on a record nobody wrote since the write began, and keeps it otherwise', () => {
-    const untouched = decideRecord([{ ...entry(`${EXEC_A}:one`, { A__c: 'new' }), firstAttemptMs: T0 }], { A__c: 'old', LastModifiedDate: BEFORE_THE_RUNS })
+    const untouched = decideRecord('Prospect__c', [{ ...entry(`${EXEC_A}:one`, { A__c: 'new' }), firstAttemptMs: T0 }], { A__c: 'old', LastModifiedDate: BEFORE_THE_RUNS })
     expect(untouched[0]).toMatchObject({ verdict: 'resend', send: { A__c: 'new' }, conflicts: [] })
-    const moved = decideRecord([{ ...entry(`${EXEC_A}:one`, { A__c: 'new' }), firstAttemptMs: T0 }], { A__c: 'old', LastModifiedDate: '2026-10-15T20:00:05.000+0000' })
+    const moved = decideRecord('Prospect__c', [{ ...entry(`${EXEC_A}:one`, { A__c: 'new' }), firstAttemptMs: T0 }], { A__c: 'old', LastModifiedDate: '2026-10-15T20:00:05.000+0000' })
     expect(moved[0]).toMatchObject({ verdict: 'conflict_only', conflicts: ['A__c'] })
     // No readable stamp: judged as moved, the side that overwrites nothing.
-    const unknown = decideRecord([{ ...entry(`${EXEC_A}:one`, { A__c: 'new' }), firstAttemptMs: T0 }], { A__c: 'old' })
+    const unknown = decideRecord('Prospect__c', [{ ...entry(`${EXEC_A}:one`, { A__c: 'new' }), firstAttemptMs: T0 }], { A__c: 'old' })
     expect(unknown[0]).toMatchObject({ verdict: 'conflict_only' })
   })
 
   it('does not call a value an earlier write of the run sent a conflict', () => {
-    const d = decideRecord([entry(`${EXEC_A}:one`, { A__c: 'x', C__c: 1 }), entry(`${EXEC_A}:two`, { A__c: 'y' })], { A__c: 'x', C__c: null })
+    const d = decideRecord('Prospect__c', [entry(`${EXEC_A}:one`, { A__c: 'x', C__c: 1 }), entry(`${EXEC_A}:two`, { A__c: 'y' })], { A__c: 'x', C__c: null })
     expect(d[1]).toMatchObject({ verdict: 'resend', send: { A__c: 'y' }, conflicts: [] })
   })
 })
