@@ -44,16 +44,23 @@ describe('findDuplicateMigrationVersions', () => {
   })
 })
 
-describe('no duplicate migration versions in supabase/migrations', () => {
+// Both projects record their migrations by version: the bidding project's
+// supabase/migrations and the ops project's supabase-ops/supabase/migrations
+// (#2876, after two branches both added an ops migration at 20261027150000).
+const MIGRATION_DIRS = ['supabase/migrations', 'supabase-ops/supabase/migrations']
+
+describe.each(MIGRATION_DIRS)('no duplicate migration versions in %s', (relDir) => {
   it('every migration file has a unique version prefix', () => {
     const dir = fileURLToPath(new URL('.', import.meta.url))
-    const migrationsDir = path.resolve(dir, '../../../../..', 'supabase/migrations')
+    const migrationsDir = path.resolve(dir, '../../../../..', relDir)
     const files = readdirSync(migrationsDir)
+    // A folder that moved or emptied would pass with no duplicates to find.
+    expect(files.filter((f) => migrationVersion(f) !== null).length).toBeGreaterThan(0)
     const dups = findDuplicateMigrationVersions(files)
     expect(
       dups,
-      `Duplicate migration version prefix(es): ${dups.join(', ')}. ` +
-        `Each supabase/migrations file must have a unique version — bump the suffix.`,
+      `Duplicate migration version prefix(es) in ${relDir}: ${dups.join(', ')}. ` +
+        `Each ${relDir} file must have a unique version, so renumber the newer one.`,
     ).toEqual([])
   })
 })
