@@ -1609,3 +1609,83 @@ describe('a failed slot of a parallel block after the answer (#2832)', () => {
     expect(deadLetters('sf_writeback')).toEqual([])
   })
 })
+
+// #2832 rework (Dan, 2026-10-27): the collections post runs BEFORE the answer, as
+// a marked slot of Main Flow's parallel_1, beside the trades chain. Its failure
+// there must not cost the lead its answer, and must still be raised at finalize
+// through the same alert as a failed write after the answer: the run degraded,
+// the sf_writeback dead letter, and the capture that names the Apex call. A
+// failed unmarked slot (the trades chain) still fails the run before any answer.
+describe('a failed marked slot of a parallel block BEFORE the answer (#2832)', () => {
+  const blockBeforeAnswer = {
+    trigger: { id: 'trigger', type: 'trigger', config: {} },
+    nodes: [
+      // parallel_1's own settings, with the collections slot as child-2.
+      { id: 'fan', namespace: 'parallel_1', type: 'parallel', config: { wait_for: 'all', on_child_error: 'fail', on_timeout: 'partial', timeout_ms: 20000, children: [{ id: 'child-0', label: 'pennie_debt_calc' }, { id: 'child-2', label: 'collections', on_failure: 'continue' }] } },
+      { id: 't', namespace: 'trades_request', type: 'salesforce', config: { retries: 0, operation: 'apex', apex_path: '/services/apexrest/credit-trades' } },
+      { id: 'c', namespace: 'collections_apex', type: 'salesforce', config: { retries: 0, operation: 'apex', apex_path: '/services/apexrest/credit-collections' } },
+      { id: 'end', namespace: 'parallel_end_1', type: 'parallel_end', config: {} },
+      { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } },
+      { id: 'w', namespace: 'outcome_write', type: 'code', config: { retries: 0, timeout_ms: 100 } },
+    ],
+    edges: [
+      { id: 'e1', source: 'fan', target: 't', source_handle: 'child-0' },
+      { id: 'e2', source: 'fan', target: 'c', source_handle: 'child-2' },
+      { id: 'e3', source: 'fan', target: 'end', source_handle: 'output' },
+      { id: 'e4', source: 't', target: 'end' },
+      { id: 'e5', source: 'c', target: 'end' },
+      { id: 'e6', source: 'end', target: 'r' },
+      { id: 'e7', source: 'r', target: 'w' },
+    ],
+  } as unknown as WorkflowDefinition
+  const apexRequest = (path: string) => ({ template: {}, resolved: { operation: 'apex', method: 'POST', url: `https://sf.test${path}`, body: { submissionId: 'a0XUi00000AbCdEFGH' } } })
+
+  async function walkWith(failing: 'trades_request' | 'collections_apex' | null, how: 'refused' | 'timed_out' = 'refused') {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: blockBeforeAnswer, workflow_version_id: 'v1', workflow_name: 'Main Flow', org_id: 'org-1', slack_channel: null, lane: 'money',
+    })
+    const ran: string[] = []
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      ran.push(node.namespace)
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      if (node.namespace === failing) {
+        throw how === 'refused'
+          ? Object.assign(new Error('Salesforce API error (400): INVALID_FIELD money gate refused'), { status: 400, permanent: true, resolvedInput: apexRequest(String(node.config.apex_path)) })
+          : Object.assign(new Error('Step timed out after 4500ms'), { resolvedInput: apexRequest(String(node.config.apex_path)) })
+      }
+      return { output: { ok: node.namespace } }
+    })
+    const key = Buffer.from(new Uint8Array(32).map((_, i) => i + 9)).toString('base64')
+    const outcome = await run(() => 'up', { SECRET_ENCRYPTION_KEY: key })
+    const row = outcome.db.executions.get(outcome.result.executionId)
+    const failureDeadLetter = vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === 'sf_writeback')
+    const uncapturable = vi.mocked(recordOutcomeDeadLetter).mock.calls.filter((c) => c[0] === WRITEBACK_UNCAPTURABLE_LABEL).map((c) => (c[1] as Error).message)
+    return { ...outcome, ran, row, failureDeadLetter, uncapturable }
+  }
+
+  it.each(['refused', 'timed_out'] as const)('the collections slot %s: the lead is answered, the walk goes on, and the run is degraded and alerted with that step named', async (how) => {
+    const { result, ran, row, failureDeadLetter, deadLetters, uncapturable } = await walkWith('collections_apex', how)
+    expect(result.status).toBe(200)
+    expect(result.response).toEqual(RESPONSE.body)
+    expect(ran).toContain('outcome_write')
+    expect(row?.status).toBe('degraded')
+    expect(deadLetters('sf_writeback')).toHaveLength(1)
+    expect((failureDeadLetter?.[1] as { stepNamespace?: string }).stepNamespace).toBe('collections_apex')
+    expect(uncapturable).toEqual([expect.stringMatching(/^collections_apex: /)])
+  })
+
+  it('the trades slot failing still fails the run before any answer, as today', async () => {
+    const { result, ran, row } = await walkWith('trades_request')
+    expect(result.status).toBeGreaterThanOrEqual(500)
+    expect(ran).not.toContain('offer_response')
+    expect(row?.status).toBe('failed')
+  })
+
+  it('control: no slot failing answers and completes with no failure alert', async () => {
+    const { result, ran, row, deadLetters } = await walkWith(null)
+    expect(result.status).toBe(200)
+    expect(ran).toContain('outcome_write')
+    expect(row?.status).toBe('completed')
+    expect(deadLetters('sf_writeback')).toEqual([])
+  })
+})
