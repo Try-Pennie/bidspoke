@@ -343,6 +343,14 @@ describe('the typed wrappers', () => {
   })
 })
 
+/** One row of workflow_copies, as the function answers it since #1952: a copy never told its porting facts. */
+const copyRow = {
+  workflow_id: WF, organization_id: ORG, is_active: true, deleted_at: null, withdrawn_at: null, row_updated_at: '2026-10-17T09:00:00+00:00',
+  version_number: 1, trigger: null, schedule_known_since: null, switched_off_at: null, served_at: '2026-10-17T10:00:00+00:00',
+  received_at: '2026-10-17T10:00:00+00:00', confirmed_at: '2026-10-17T10:00:00+00:00', may_start: true, last_served: null, last_observed: null,
+  db_now: '2026-10-17T10:00:00+00:00', ported: null, cutover_at: null, replaces: null, porting_served_at: null, replaced_last_slot: null,
+}
+
 describe('the minute cron wrappers (#1949)', () => {
   it('ops_now refuses an answer that is not a time', async () => {
     const { client } = rpcFetch('soon')
@@ -360,18 +368,46 @@ describe('the minute cron wrappers (#1949)', () => {
 
   it('save_workflow_copies refuses more than one save carries, sending nothing', async () => {
     const { client, calls } = rpcFetch([])
-    const one = { workflowId: WF, organizationId: ORG, isActive: true, deletedAt: null, rowUpdatedAt: '2026-10-17T09:00:00Z', versionNumber: 1, trigger: null }
+    const one = { workflowId: WF, organizationId: ORG, isActive: true, deletedAt: null, rowUpdatedAt: '2026-10-17T09:00:00Z', versionNumber: 1, trigger: null, porting: { ported: false, cutoverAt: null, replaces: [] } }
     await expect(saveWorkflowCopies(client, '2026-10-17T10:00:00Z', true, Array.from({ length: 1001 }, () => one))).rejects.toThrow(/more than one save carries/)
     expect(calls).toEqual([])
   })
 
-  it('workflow_copies refuses a copy whose organization is not a uuid, and says when a page was full', async () => {
-    const row = {
-      workflow_id: WF, organization_id: ORG, is_active: true, deleted_at: null, withdrawn_at: null, row_updated_at: '2026-10-17T09:00:00+00:00',
-      version_number: 1, trigger: null, schedule_known_since: null, switched_off_at: null, served_at: '2026-10-17T10:00:00+00:00',
-      received_at: '2026-10-17T10:00:00+00:00', confirmed_at: '2026-10-17T10:00:00+00:00', may_start: true, last_served: null, last_observed: null,
-      db_now: '2026-10-17T10:00:00+00:00',
+  it('save_workflow_copies sends each copy\'s porting facts (#1952) in the shape the database reads', async () => {
+    const { client, calls } = rpcFetch([{ inserted: 1, updated: 0, confirmed: 0, refused_older: 0, withdrawn: 0 }])
+    await saveWorkflowCopies(client, '2026-10-27T10:00:00Z', true, [{
+      workflowId: WF, organizationId: ORG, isActive: true, deletedAt: null, rowUpdatedAt: '2026-10-27T09:00:00Z', versionNumber: 1, trigger: null,
+      porting: { ported: true, cutoverAt: '2026-10-27T09:30:00Z', replaces: [RUN] },
+    }])
+    expect((calls[0].body.p_copies as Array<Record<string, unknown>>)[0].porting).toEqual({ ported: true, cutover_at: '2026-10-27T09:30:00Z', replaces: [RUN] })
+  })
+
+  it('workflow_copies reads the porting facts and the replaced workflows\' last slot (#1952), and none for a copy never told them', async () => {
+    const told = {
+      ...copyRow, ported: true, cutover_at: '2026-10-27T09:30:00+00:00', replaces: [RUN], porting_served_at: '2026-10-27T10:00:00+00:00',
+      replaced_last_slot: '2026-10-27T09:00:00+00:00',
     }
+    const [copy] = (await readWorkflowCopies(rpcFetch([told]).client, 10)).copies
+    expect(copy.porting).toEqual({ ported: true, cutoverAt: '2026-10-27T09:30:00+00:00', replaces: [RUN], servedAt: '2026-10-27T10:00:00+00:00' })
+    expect(copy.replacedLastSlot).toBe('2026-10-27T09:00:00+00:00')
+    const [never] = (await readWorkflowCopies(rpcFetch([copyRow]).client, 10)).copies
+    expect(never.porting).toBeNull()
+    expect(never.replacedLastSlot).toBeNull()
+  })
+
+  it('workflow_copies refuses porting facts it cannot read, rather than planning a schedule on a guessed floor', async () => {
+    const told = { ...copyRow, ported: true, cutover_at: null, replaces: [], porting_served_at: '2026-10-27T10:00:00+00:00' }
+    await expect(readWorkflowCopies(rpcFetch([{ ...told, ported: 'yes' }]).client, 10)).rejects.toThrow(/ported/)
+    await expect(readWorkflowCopies(rpcFetch([{ ...told, replaces: 'none' }]).client, 10)).rejects.toThrow(/replaces/)
+    await expect(readWorkflowCopies(rpcFetch([{ ...told, cutover_at: 'soon' }]).client, 10)).rejects.toThrow(/cutover_at/)
+    await expect(readWorkflowCopies(rpcFetch([{ ...copyRow, ported: true }]).client, 10)).rejects.toThrow(/porting facts/)
+    // A function from before #1952, which has no such columns, is not read as a copy never told.
+    const { ported: _p, cutover_at: _c, replaces: _r, porting_served_at: _s, replaced_last_slot: _l, ...before } = copyRow
+    await expect(readWorkflowCopies(rpcFetch([before]).client, 10)).rejects.toThrow(/porting_served_at that is not a time or null/)
+  })
+
+  it('workflow_copies refuses a copy whose organization is not a uuid, and says when a page was full', async () => {
+    const row = copyRow
     expect((await readWorkflowCopies(rpcFetch([row]).client, 1)).reachedLimit).toBe(true)
     await expect(readWorkflowCopies(rpcFetch([{ ...row, organization_id: 'org-1' }]).client, 10)).rejects.toThrow(/organization is not a uuid/)
     await expect(readWorkflowCopies(rpcFetch([{ ...row, may_start: 'yes' }]).client, 10)).rejects.toThrow(/may_start that is not true or false/)

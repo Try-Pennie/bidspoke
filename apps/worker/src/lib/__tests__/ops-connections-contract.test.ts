@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OPS_SIGN_IN_METHODS,
-  OPS_STEP_TEST_CEILINGS_MS, OPS_STEP_TEST_METHODS, STEP_TEST_CONTEXT_MAX_BYTES, parseStepTestResultRequest, parseTestStepRequest,
+  OPS_STEP_TEST_METHODS, STEP_TEST_CONTEXT_MAX_BYTES, parseStepTestResultRequest, parseTestStepRequest,
   OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest, parseExchangeOAuthCodeRequest, parseHealthRequest,
   parseListDelegationSubjectsRequest, parseLookupRequest, parseRemoveDelegationSubjectRequest, parseRevokeRequest, parseSignInClientRequest, parseVerifyRequest,
 } from '../ops-connections-contract'
@@ -32,7 +32,8 @@ function refused(fn: () => unknown): string {
 describe('the OpsConnections contract', () => {
   it('names the methods the entrypoint answers, and a ceiling for each', () => {
     expect([...OPS_CONNECTIONS_METHODS].sort()).toEqual([
-      'addDelegationSubject', 'clearReauth', 'exchangeOAuthCode', 'health', 'listDelegationSubjects', 'lookup', 'removeDelegationSubject', 'revoke', 'signInClient', 'verify',
+      'addDelegationSubject', 'clearReauth', 'exchangeOAuthCode', 'health', 'listDelegationSubjects', 'lookup', 'removeDelegationSubject', 'revoke', 'signInClient',
+      'stepTestResult', 'testStep', 'verify',
     ])
     expect(Object.keys(OPS_CONNECTIONS_CEILINGS_MS).sort()).toEqual([...OPS_CONNECTIONS_METHODS].sort())
     for (const ms of Object.values(OPS_CONNECTIONS_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
@@ -45,11 +46,11 @@ describe('the OpsConnections contract', () => {
     for (const m of OPS_SIGN_IN_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).toContain(m)
   })
 
-  it('keeps the step test methods apart from the methods bidding calls until the ops deploy carries them (#2339)', () => {
+  it('calls the step test methods, which shipped on ops first (#2339), among the methods bidding calls, each with its ceiling (#2764)', () => {
     expect([...OPS_STEP_TEST_METHODS]).toEqual(['testStep', 'stepTestResult'])
-    for (const m of OPS_STEP_TEST_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).not.toContain(m)
-    expect(Object.keys(OPS_STEP_TEST_CEILINGS_MS)).toEqual([...OPS_STEP_TEST_METHODS])
-    for (const ms of Object.values(OPS_STEP_TEST_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
+    for (const m of OPS_STEP_TEST_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).toContain(m)
+    expect(OPS_CONNECTIONS_CEILINGS_MS.testStep).toBe(90_000)
+    expect(OPS_CONNECTIONS_CEILINGS_MS.stepTestResult).toBe(10_000)
   })
 
   describe('a step test request (#2339)', () => {

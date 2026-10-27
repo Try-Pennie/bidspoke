@@ -643,6 +643,15 @@ export interface WorkflowCopyInput {
   rowUpdatedAt: string
   versionNumber: number | null
   trigger: unknown
+  /** What its schedule's floor is taken from (#1952), as served; saved under its own order, by served_at. */
+  porting: CopyPorting
+}
+
+/** A copy's porting facts (#1952): ServedOpsWorkflowPorting, as the ops Worker names it. */
+export interface CopyPorting {
+  ported: boolean
+  cutoverAt: string | null
+  replaces: string[]
 }
 
 export interface SaveCopiesResult {
@@ -673,6 +682,7 @@ export async function saveWorkflowCopies(
       row_updated_at: c.rowUpdatedAt,
       version_number: c.versionNumber,
       trigger: c.trigger ?? null,
+      porting: { ported: c.porting.ported, cutover_at: c.porting.cutoverAt, replaces: c.porting.replaces },
     })),
   }, options))
   return {
@@ -705,6 +715,27 @@ export interface WorkflowCopy {
   lastServed: string | null
   lastObserved: string | null
   dbNow: string
+  /**
+   * The porting facts as the list that served them said (#1952), with that
+   * list's served_at; null for a copy never told them (saved by an ops release
+   * before #1952), whose floor is unknown.
+   */
+  porting: (CopyPorting & { servedAt: string }) | null
+  /** The latest slot fired or observed by any workflow it replaces, within its organization. */
+  replacedLastSlot: string | null
+}
+
+/** A copy's porting facts as workflow_copies answers them: all four columns null, or all told. */
+function copyPorting(name: string, row: Row): WorkflowCopy['porting'] {
+  const servedAt = field(name, row, 'porting_served_at', isTimeOrNull, 'a time or null')
+  const ported = field(name, row, 'ported', (v): v is boolean | null => v === null || isBool(v), 'true, false or null')
+  const replaces = field(name, row, 'replaces', (v): v is string[] | null => v === null || (Array.isArray(v) && v.every(isString)), 'a list of workflow ids or null')
+  const cutoverAt = field(name, row, 'cutover_at', isTimeOrNull, 'a time or null')
+  if (servedAt === null && ported === null && replaces === null && cutoverAt === null) return null
+  if (servedAt === null || ported === null || replaces === null) {
+    throw new OpsWriteError(`${name} returned porting facts for workflow ${String(row.workflow_id)} that are only partly told`)
+  }
+  return { ported, cutoverAt, replaces, servedAt }
 }
 
 export async function readWorkflowCopies(
@@ -736,6 +767,8 @@ export async function readWorkflowCopies(
       lastServed: field(name, row, 'last_served', isTimeOrNull, 'a time or null'),
       lastObserved: field(name, row, 'last_observed', isTimeOrNull, 'a time or null'),
       dbNow: field(name, row, 'db_now', isTime, 'a time'),
+      porting: copyPorting(name, row),
+      replacedLastSlot: field(name, row, 'replaced_last_slot', isTimeOrNull, 'a time or null'),
     }
   })
   return { copies, reachedLimit: copies.length === limit }

@@ -10,8 +10,8 @@
  * Worker holds, which the bidding Worker's sign in route
  * (POST /api/connections/google/sign-in) reads.
  * And testStep and stepTestResult (#2339, step-test.ts), the ops step test and
- * its kept result, shipped with the bidding route that calls them but kept off
- * OPS_CONNECTIONS_METHODS until the ops deploy carries them.
+ * its kept result, shipped with the bidding route that calls them (#2762) and
+ * on OPS_CONNECTIONS_METHODS since the ops deploy carried them (#2764).
  *
  * WHO MAY CALL IT. Only a Worker holding a service binding to this named
  * entrypoint of bidspoke-worker-ops: the bidding Worker, through the
@@ -47,7 +47,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { raceDeadline } from '../lib/alert-claim'
 import {
-  OPS_CONNECTIONS_CEILINGS_MS, OPS_STEP_TEST_CEILINGS_MS, OpsConnectionsContractError, parseStepTestResultRequest, parseTestStepRequest,
+  OPS_CONNECTIONS_CEILINGS_MS, OpsConnectionsContractError, parseStepTestResultRequest, parseTestStepRequest,
   type OpsStepTestMethod, type StepTestResultAnswer, type TestStepAnswer, parseAddDelegationSubjectRequest, parseClearReauthRequest,
   parseExchangeOAuthCodeRequest, parseHealthRequest, parseListDelegationSubjectsRequest, parseLookupRequest, parseRemoveDelegationSubjectRequest,
   parseRevokeRequest, parseSignInClientRequest, parseVerifyRequest, type AddDelegationSubjectAnswer, type ClearReauthAnswer, type ExchangeOAuthCodeAnswer,
@@ -93,10 +93,7 @@ export interface OpsConnectionsAnswerOptions<Req, Ans> {
 
 const refused = (code: OpsConnectionsRefused['refused'], detail: string): OpsConnectionsRefused => ({ ok: false, refused: code, detail, retry_at: null })
 
-/** Every method the entrypoint answers: the ones bidding calls, and the step test's, shipped ahead of their place on that list (#2339). */
-type EntrypointMethod = OpsConnectionsMethod | OpsStepTestMethod
-
-function logAnswer(method: EntrypointMethod, answer: { ok: boolean; refused?: string }, organizationId: string | null): void {
+function logAnswer(method: OpsConnectionsMethod, answer: { ok: boolean; refused?: string }, organizationId: string | null): void {
   console.log(JSON.stringify({ event: 'ops_connections', method, outcome: answer.ok ? 'ok' : answer.refused, organization_id: organizationId }))
 }
 
@@ -175,14 +172,14 @@ export async function stepTestAnswer(env: OpsEnv, method: 'stepTestResult', raw:
 export async function stepTestAnswer(env: OpsEnv, method: OpsStepTestMethod, raw: unknown, options: StepTestAnswerOptions = {}): Promise<TestStepAnswer | StepTestResultAnswer> {
   const makeDeps = () => options.deps ?? liveStepTestDeps(env, options.opsFetch ? { opsFetch: options.opsFetch } : {})
   if (method === 'testStep') {
-    return answerMethod(env, method, raw, parseTestStepRequest, OPS_STEP_TEST_CEILINGS_MS.testStep, makeDeps, runStepTest, options.delay)
+    return answerMethod(env, method, raw, parseTestStepRequest, OPS_CONNECTIONS_CEILINGS_MS.testStep, makeDeps, runStepTest, options.delay)
   }
-  return answerMethod(env, method, raw, parseStepTestResultRequest, OPS_STEP_TEST_CEILINGS_MS.stepTestResult, makeDeps,
+  return answerMethod(env, method, raw, parseStepTestResultRequest, OPS_CONNECTIONS_CEILINGS_MS.stepTestResult, makeDeps,
     (deps, request) => readStepTest(deps, request), options.delay)
 }
 
 async function answerMethod<D, Req extends { organization_id: string }, Ans extends { ok: boolean }>(
-  env: OpsEnv, method: EntrypointMethod, raw: unknown, parse: (raw: unknown) => Req, ceilingMs: number,
+  env: OpsEnv, method: OpsConnectionsMethod, raw: unknown, parse: (raw: unknown) => Req, ceilingMs: number,
   makeDeps: () => D, run: (deps: D, request: Req, signal: AbortSignal) => Promise<Ans>, delay: ((ms: number) => Promise<void>) | undefined,
 ): Promise<Ans | OpsConnectionsRefused> {
   if (env.LANE !== OPS_LANE) {
@@ -270,7 +267,7 @@ export class OpsConnections extends WorkerEntrypoint<OpsEnv> {
     return signInClientAnswer(this.env, request)
   }
 
-  // The step test (#2339). Not in OPS_CONNECTIONS_METHODS until the ops deploy carries them: see the contract.
+  // The step test (#2339): called by the bidding Worker's ops step test route.
   testStep(request: unknown): Promise<TestStepAnswer> {
     return stepTestAnswer(this.env, 'testStep', request)
   }

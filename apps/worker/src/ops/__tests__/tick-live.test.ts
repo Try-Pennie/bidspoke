@@ -36,6 +36,7 @@ function opsDatabase(extra: Record<string, unknown> = {}) {
       schedule_known_since: '2026-10-17T09:59:00+00:00', switched_off_at: null, served_at: '2026-10-17T10:02:31+00:00',
       received_at: '2026-10-17T09:59:00+00:00', confirmed_at: '2026-10-17T10:02:31+00:00', may_start: true,
       last_served: null, last_observed: null, db_now: '2026-10-17T10:02:30+00:00',
+      ported: false, cutover_at: null, replaces: [], porting_served_at: '2026-10-17T10:02:31+00:00', replaced_last_slot: null,
     }],
     record_schedule_observation: [{ outcome: 'recorded', observation_id: '11111111-2222-4333-8444-555555555555' }],
     due_queue_depth: [{ due_runs: 0, due_workflows: 0, oldest_due: null }],
@@ -72,7 +73,7 @@ function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: num
     jobReports: [] as unknown[],
     opsWorkflows: async () => ({
       served_at: '2026-10-17T10:02:31.000Z', complete: true,
-      workflows: [{ id: WF, organization_id: ORG, is_active: true, deleted_at: null, updated_at: '2026-10-17T09:00:00.000Z', version_number: 3, trigger: schedule }],
+      workflows: [{ id: WF, organization_id: ORG, is_active: true, deleted_at: null, updated_at: '2026-10-17T09:00:00.000Z', version_number: 3, trigger: schedule, porting: { ported: false, cutover_at: null, replaces: [] } }],
     }),
     opsTickStarted: async () => { g.started++; return { ok: true } },
     opsTickCompleted: async (r: unknown) => { g.reports.push(r as OpsTickReport); return { ok: true } },

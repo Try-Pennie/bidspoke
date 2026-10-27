@@ -94,19 +94,22 @@ The body step gets 500 ms. The longest branch, `send_salesforce`, whose
 every other branch 9.5 s. A test walks every branch and fails when one no longer
 fits.
 
-**Achieve after the inquiry post is not inside the 12 s in the worst case**, and
-was not before the port either (measured 2026-10-26 for #2832). Achieve's step
+**Achieve after the inquiry post ends inside the 12 s** (#2834). Achieve's step
 starts after the inquiry post, which is up to 9.5 s after the answer on the six
-branches that run it (the 4.5 s write, the 500 ms body step, the 4.5 s call), and
-it waits up to 9 s for Achieve's reply (`ACHIEVE_FETCH_TIMEOUT_MS`; its step
-timeouts are 15 to 18 s). So in the worst case it ends about 18.5 s after the
-answer, and the run is reported as unfinished work. Today, on five of the six, the
+branches that run it (the 4.5 s write, the 500 ms body step, the 4.5 s call). It
+used to wait up to 9 s for Achieve's reply whatever time was left
+(`ACHIEVE_FETCH_TIMEOUT_MS`; its step timeouts are 15 to 18 s), so in the worst
+case it ended about 18.5 s after the answer and the run was reported as unfinished
+work. It now waits only for what is left of the window less 500 ms
+(`achieveWait`), so at worst it ends 11.5 s after the answer, and with less than
+1.5 s left it sends nothing and records why (`answer_window_spent`). The window
+test runs the node itself on every branch from that worst case. Typically the
+write takes about 0.1 s, the inquiry post about 2 s (the median of the
+`credit-trades` call, the closest one measured) and Achieve 4.7 s (9 in 10 within
+5.8 s), so a typical run still waits the full 9 s. Today, on five of the six, the
 outcome post still goes to the relay (three attempts of 3.5 to 4.5 s each), so
-Achieve can already start 12 to 15 s after the answer in the worst case.
-Typically the write takes about 0.1 s, the inquiry post about 2 s (the median of
-the `credit-trades` call, the closest one measured) and Achieve 4.7 s (9 in 10
-within 5.8 s), which fits. No limit was raised for this; it is Dan's call
-(#2832).
+Achieve can start 12 to 15 s after the answer in the worst case; it now skips
+there rather than run past the window. No limit was raised.
 
 ## Stages
 
@@ -524,7 +527,9 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
 - `ported-definition.test.ts`: walks the ported graph. Every Submission write
   after the answer on the `trades_present` route is followed by the inquiry body
   and Apex call; the worst case from each answer through the call fits 12 s by
-  the engine's own retry rules; the collections call is the one Apex call before
+  the engine's own retry rules, and so does the Achieve step after it on the six
+  branches that run one, measured by running the node itself from that worst
+  case against a reply that never comes (#2834); the collections call is the one Apex call before
   the answer, in `parallel_1`, whose worst case it leaves at the block's 20 s
   timeout, ending within 5 s itself; the collections body's shape, its empty list
   for a missing key, and its refusals; every `success_node_namespaces` entry

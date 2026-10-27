@@ -13,7 +13,9 @@
  * are saved by), latest version and trigger, soft deleted and switched off ones
  * included, so the ops copy learns of a delete or a switch off rather than
  * keeping the last on copy for ever. Not its nodes: a run's definition at its
- * version is #1950's to fetch.
+ * version is #1950's to fetch. Since #1952, with each one the porting facts its
+ * schedule's floor is taken from (readPortingFacts): whether it stands for a
+ * Pipedream workflow, when that one was cut over, and every workflow it replaces.
  *
  * And, since #2335 (PR 6 of phase 5 of #1689), the ops connections the same
  * way (readOpsConnections): every ops_key row's sealed envelope, public config
@@ -54,7 +56,7 @@ import {
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
   servedConnectionProblem,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
-  type ServedOpsWorkflow, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
+  type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
 } from './ops-gateway-contract'
 import { formatErr } from './format-error'
 
@@ -111,7 +113,8 @@ interface Row {
  */
 export async function readOpsWorkflows(supabase: SupabaseClient, nowMs: number): Promise<ServedOpsWorkflows> {
   const servedAt = new Date(nowMs).toISOString()
-  const rows = await fetchAllPaged<Row>(
+  // The porting facts are read beside the workflows, inside the same gateway deadline.
+  const [rows, portingOf] = await Promise.all([fetchAllPaged<Row>(
     (from, to) => supabase
       .from('workflows')
       // The trigger alone, never the whole definition: every minute, for every ops workflow.
@@ -123,7 +126,7 @@ export async function readOpsWorkflows(supabase: SupabaseClient, nowMs: number):
       .range(from, to),
     'the ops workflows the minute cron plans from',
     { maxPages: MAX_PAGES },
-  )
+  ), readPortingFacts(supabase)])
   const workflows: ServedOpsWorkflow[] = []
   let dropped = 0
   for (const row of rows) {
@@ -140,10 +143,89 @@ export async function readOpsWorkflows(supabase: SupabaseClient, nowMs: number):
       updated_at: row.updated_at,
       version_number: row.workflow_versions?.[0]?.version_number ?? null,
       trigger: row.trigger ?? null,
+      porting: portingOf(row.id),
     })
   }
   // A list missing a row it read is not every ops workflow, so it withdraws nothing.
   return { served_at: servedAt, complete: dropped === 0, workflows }
+}
+
+interface MapRow {
+  workflow_id: string
+  pipedream_hashid: string
+  pipedream_inventory: { cut_over_at: string | null } | null
+}
+
+interface ReplacementRow {
+  workflow_id: string
+  replaces_workflow_id: string
+}
+
+/**
+ * The porting facts each ops workflow's schedule floor is taken from (#1952,
+ * #1698 D8), read whole from the porting schema: the workflow map with each
+ * Pipedream workflow's cutover time, and the replacements. Both are bounded by
+ * the Pipedream account (386 inventory rows on 2026-10-18), so they are read in
+ * full rather than filtered by the ops workflows' ids, paged under a full order.
+ * Throws on a failed read, so the tick plans from its saved copies and their
+ * last served facts rather than from facts that went missing (fail safe: a
+ * workflow whose facts were dropped would read as not ported).
+ *
+ * The answer for one workflow:
+ *  - ported when any map row names it; cutover_at the latest cut_over_at of the
+ *    Pipedream workflows it stands for, or null while any of them has none (a
+ *    map row whose inventory row did not come back counts as none), since
+ *    Pipedream may still run a period of the one not cut over;
+ *  - replaces every workflow reachable through the replacements from it, never
+ *    itself, so a chain of converter reruns keeps the first id's slots, and a
+ *    cycle ends.
+ */
+async function readPortingFacts(supabase: SupabaseClient): Promise<(workflowId: string) => ServedOpsWorkflowPorting> {
+  const porting = supabase.schema('porting')
+  const maps = await fetchAllPaged<MapRow>(
+    (from, to) => porting
+      .from('pipedream_workflow_map')
+      .select('workflow_id, pipedream_hashid, pipedream_inventory(cut_over_at)')
+      .order('id', { ascending: true })
+      .range(from, to),
+    'the Pipedream workflow map the ops schedule floors are taken from',
+    { maxPages: MAX_PAGES },
+  )
+  const replacements = await fetchAllPaged<ReplacementRow>(
+    (from, to) => porting
+      .from('workflow_replacements')
+      .select('workflow_id, replaces_workflow_id')
+      .order('workflow_id', { ascending: true })
+      .order('replaces_workflow_id', { ascending: true })
+      .range(from, to),
+    'the workflow replacements the ops schedule floors are taken from',
+    { maxPages: MAX_PAGES },
+  )
+  const mapped = new Map<string, MapRow[]>()
+  for (const m of maps) mapped.set(m.workflow_id, [...(mapped.get(m.workflow_id) ?? []), m])
+  const replaced = new Map<string, string[]>()
+  for (const r of replacements) replaced.set(r.workflow_id, [...(replaced.get(r.workflow_id) ?? []), r.replaces_workflow_id])
+
+  return (workflowId) => {
+    const rows = mapped.get(workflowId) ?? []
+    let cutoverAt: string | null = null
+    if (rows.length > 0) {
+      const times = rows.map((m) => m.pipedream_inventory?.cut_over_at ?? null)
+      if (times.every((t): t is string => t !== null)) {
+        cutoverAt = times.reduce((latest, t) => (Date.parse(t) > Date.parse(latest) ? t : latest))
+      }
+    }
+    const seen = new Set<string>([workflowId])
+    const queue = [...(replaced.get(workflowId) ?? [])]
+    while (queue.length > 0) {
+      const next = queue.shift() as string
+      if (seen.has(next)) continue
+      seen.add(next)
+      queue.push(...(replaced.get(next) ?? []))
+    }
+    seen.delete(workflowId)
+    return { ported: rows.length > 0, cutover_at: cutoverAt, replaces: [...seen].sort() }
+  }
 }
 
 interface ConnectionRow {
