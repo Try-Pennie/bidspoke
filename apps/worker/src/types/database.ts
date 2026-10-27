@@ -2525,8 +2525,6 @@ export type Database = {
           name: string
           organization_id: string
           person_bound: boolean
-          schema_cache: Json | null
-          schema_synced_at: string | null
           sealed_for: string | null
           service_type: string
           target: Json | null
@@ -2547,8 +2545,6 @@ export type Database = {
           name: string
           organization_id: string
           person_bound?: boolean
-          schema_cache?: Json | null
-          schema_synced_at?: string | null
           sealed_for?: string | null
           service_type: string
           target?: Json | null
@@ -2569,8 +2565,6 @@ export type Database = {
           name?: string
           organization_id?: string
           person_bound?: boolean
-          schema_cache?: Json | null
-          schema_synced_at?: string | null
           sealed_for?: string | null
           service_type?: string
           target?: Json | null
@@ -2599,44 +2593,6 @@ export type Database = {
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "users"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      service_presets: {
-        Row: {
-          auth_type: string
-          base_url: string | null
-          created_at: string
-          id: string
-          name: string
-          organization_id: string
-          slug: string
-        }
-        Insert: {
-          auth_type?: string
-          base_url?: string | null
-          created_at?: string
-          id?: string
-          name: string
-          organization_id: string
-          slug: string
-        }
-        Update: {
-          auth_type?: string
-          base_url?: string | null
-          created_at?: string
-          id?: string
-          name?: string
-          organization_id?: string
-          slug?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "service_presets_organization_id_fkey"
-            columns: ["organization_id"]
-            isOneToOne: false
-            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
         ]
