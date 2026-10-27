@@ -36,10 +36,30 @@
  * week's (a check rejecting too much): neither was reached by any window. A
  * reason the week barely saw pages when it reaches `rareMinCount` (10) leads
  * and `rareMinPoints` (3 points) above its share, which no window came near
- * (the most was 2). A window of fewer than `minRuns` (300) is not judged (the
- * first hour of each day and every night), and a baseline of fewer than
+ * (the most was 2). A common reason's move must also be beyond chance at the
+ * window's count, `maxChance` (1 in 1,000, #2851): see THE CHANCE FLOOR. A
+ * window of fewer than `minRuns` (300) is not judged (the first hour of each day and every night), and a baseline of fewer than
  * `baselineMinRuns` (3,000, about a day) is unmeasured. Re-measure after a few weeks of
  * node runs (L172).
+ *
+ * THE CHANCE FLOOR (#2851). The ratio alone was crossed on four Lead Economy
+ * mornings in the week to 2026-10-27, each ineligible state falling to about 1.3% (5 of
+ * 387 on the 27th) against 2.9% for the week. Nothing had changed: its leads
+ * from 8 to 11 AM Eastern are rejected for state less often (1.8%, 45 of 2,462
+ * that week), and at 300 to 500 runs a window, half a 2.9% share is a drop of
+ * about 11 leads to 5, a 1 in 29 chance. So a common reason pages only when its
+ * count is also at most a `maxChance` chance at the baseline's share
+ * (binomial-tail.ts). Every hourly two hour window of that week (counted
+ * through lead_validation_rejection_counts) was replayed with it: no window of
+ * GigFi (65 judged), LendSwift (167) or Lead Economy (35) paged; a common reason
+ * falling to none was still paged in every window; a common reason doubling was
+ * still paged in every window but 11 of Lead Economy's 35 for ineligible state,
+ * the thinnest, where a doubling is about 9 more leads and is paged by the next,
+ * busier window if it holds. The baseline is not matched to the window's hours:
+ * the floor absorbs the morning dip at these counts, as the replay measured,
+ * while Lead Economy's 8 to 10 AM hours hold under 1,000 runs a week, below
+ * `baselineMinRuns`, so an hour matched baseline would leave its mornings
+ * unmeasured.
  *
  * WHAT IT CANNOT SEE. A reason with no real cases (bidding not active, military
  * status ineligible and unqualified on GigFi; bidding not active, ineligible
@@ -76,6 +96,7 @@ import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
 import { withJobRun, type JobRunEnding } from './job-run-record'
 import { getSlackConnection, sendLeadValidationRejectionAlert, sendRecoveryAlert } from './slack'
 import { formatErr } from './format-error'
+import { chanceAtLeast, chanceAtMost } from './binomial-tail'
 
 /** The incident record's signal. */
 export const LEAD_VALIDATION_REJECTION_SIGNAL = 'lead-validation-rejection-rate'
@@ -98,6 +119,8 @@ export interface RejectionRule {
   commonShare: number
   dropRatio: number
   riseRatio: number
+  /** A common reason's move pages only when a count that far out has at most this chance at the window's runs (#2851). */
+  maxChance: number
   rareMinCount: number
   rareMinPoints: number
 }
@@ -108,6 +131,7 @@ export const REJECTION_RULE: RejectionRule = {
   commonShare: 0.02,
   dropRatio: 0.5,
   riseRatio: 2,
+  maxChance: 0.001,
   rareMinCount: 10,
   rareMinPoints: 0.03,
 }
@@ -222,8 +246,8 @@ export function judgeRejectionShares(current: RejectionCounts, baseline: Rejecti
     const baselineShare = baselineCount / baseline.runs
     const base = { bucket, count, share, baselineCount, baselineShare }
     if (baselineShare >= rule.commonShare) {
-      if (share <= baselineShare * rule.dropRatio) shifts.push({ ...base, direction: 'fell' })
-      else if (share >= baselineShare * rule.riseRatio) shifts.push({ ...base, direction: 'rose' })
+      if (share <= baselineShare * rule.dropRatio && chanceAtMost(count, current.runs, baselineShare) <= rule.maxChance) shifts.push({ ...base, direction: 'fell' })
+      else if (share >= baselineShare * rule.riseRatio && chanceAtLeast(count, current.runs, baselineShare) <= rule.maxChance) shifts.push({ ...base, direction: 'rose' })
     } else if (count >= rule.rareMinCount && share - baselineShare >= rule.rareMinPoints) {
       shifts.push({ ...base, direction: 'rose' })
     }
