@@ -59,6 +59,7 @@ function opsDb() {
   const copies = new Map<string, Kept>()
   const db: OpsTickDb = {
     now: async () => new Date(clock.value).toISOString(),
+    observeReseal: async () => { throw new Error('OPS_RESEAL is unset in this test, so the reseal is never observed') },
     // Every sweep stands down: this test is about the copies.
     claimSweep: async () => ({ owned: false, lastStartedAt: null, lastOwner: 'another-tick' }),
     sweepLeases: async () => { throw new Error('not claimed') },
@@ -94,6 +95,7 @@ function opsDb() {
       return r
     },
     recordConnectionTombstone: async () => ({ outcome: 'recorded', copiesRemoved: 0 }),
+    removeUnservedMeasuredIdentities: async () => [],
     // The sf_limits sweep stands down with the rest (#2336).
     sfLimitsTargets: async () => { throw new Error('not claimed') },
     recordSfLimitsReading: async () => { throw new Error('not claimed') },
@@ -129,6 +131,7 @@ function ports(db: OpsTickDb, fetchConnections: () => Promise<unknown>): OpsTick
     mode: 'observe',
     dispatchRun: async () => { throw new Error('observe mode dispatches no run') },
     tickId: `tick-${clock.value}`,
+    resealSwitch: undefined,
     scheduledTime: clock.value,
     now: () => clock.value,
     db,

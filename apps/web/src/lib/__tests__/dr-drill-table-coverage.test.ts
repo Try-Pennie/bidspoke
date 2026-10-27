@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { listFiles, REPO_ROOT } from './_scan-utils'
+import { REPO_ROOT } from './_scan-utils'
+import { migrationFiles, tablesCreatedBy } from './_migration-tables'
 
 /**
  * Every table the migrations create must be classified for the restore drill.
@@ -23,30 +24,24 @@ import { listFiles, REPO_ROOT } from './_scan-utils'
  *
  * So the lists live in scripts/dr-drill-tables.sh, and this test derives the
  * population from the migrations (L41: a list that must mirror a source of truth
- * is checked against it, never maintained by hand beside it). Every created table
- * must be in exactly one of the two lists, and every listed table must exist. The
- * drill repeats the check against the live database before it dumps anything,
- * which catches a table created outside the migrations.
+ * is checked against it, never maintained by hand beside it). Every table the
+ * migrations leave in place must be in exactly one of the two lists, and every
+ * listed table must still exist, so a table a migration drops leaves the lists
+ * in the same change (#2638). The drill repeats the check against the live
+ * database before it dumps anything, which catches a table created outside the
+ * migrations.
  */
-const MIGRATIONS = path.join(REPO_ROOT, 'supabase/migrations')
 const TABLES_FILE = path.join(REPO_ROOT, 'scripts/dr-drill-tables.sh')
 
 /**
- * Table names created by a `CREATE TABLE name (` statement.
- *
- * Requiring the opening parenthesis straight after the name excludes partition
- * children (`CREATE TABLE x_2026_09 PARTITION OF x`), which are covered by their
- * parent, and the `format('CREATE TABLE %I ...')` strings that roll partitions.
+ * The public tables a fresh database holds once every migration has run, from
+ * the derivation the pagination guard uses too (_migration-tables.ts): a table
+ * a later migration drops is no longer one the drill must classify, and listing
+ * it fails below. Partition children are covered by their parent, and tables in
+ * other schemas (porting) are outside the drill, which copies public only.
  */
 function tablesCreatedByMigrations(): Set<string> {
-  const created = new Set<string>()
-  const pattern =
-    /create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?"?([a-z_][a-z0-9_]*)"?\s*\(/gi
-  for (const file of listFiles(MIGRATIONS, { exts: ['.sql'] })) {
-    const sql = readFileSync(file, 'utf8')
-    for (const match of sql.matchAll(pattern)) created.add(match[1].toLowerCase())
-  }
-  return created
+  return new Set([...tablesCreatedBy(migrationFiles()).keys()].filter((t) => !t.includes('.')))
 }
 
 function readList(name: 'DRILL_COPY_TABLES' | 'DRILL_STRUCTURE_ONLY_TABLES'): string[] {

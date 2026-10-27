@@ -527,7 +527,7 @@ Both carry `signal` and its reader label `signal_label` (`Unrecognised signal`, 
 
 ## Service presets (retired)
 
-`/api/service-presets` is retired (#2338): HTTP Services presets are gone, and the Webhook step offers only its built in services. Every path answers 404. The `service_presets` table stays until a later release drops it (#2638).
+`/api/service-presets` is retired (#2338): HTTP Services presets are gone, and the Webhook step offers only its built in services. Every path answers 404. Their table was dropped by #2638.
 
 ## Folders
 

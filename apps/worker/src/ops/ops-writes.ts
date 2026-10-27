@@ -962,6 +962,42 @@ export async function recordConnectionTombstone(
   }
 }
 
+/** One measured identity remove_unserved_measured_identities removed (#2573). */
+export interface UnservedIdentityRemoved {
+  organizationId: string
+  connectionId: string
+  generation: number
+  measuredAt: string
+}
+
+/**
+ * The measured identities of connections bidding never stored (#2573, supabase-ops
+ * migration 20261027180000): a Salesforce verify for a new connection records
+ * one before bidding inserts the row, and a create whose insert failed and
+ * whose revoke failed too leaves it with nothing to remove it. Called only
+ * after a complete list was saved in one save, with that list's served_at and
+ * every connection id it names; the database removes a measurement more than
+ * an hour older than the list, of a connection the list does not name and ops
+ * never held a copy of, and answers each row removed. Lane wide, like
+ * save_connection_copies.
+ */
+export async function removeUnservedMeasuredIdentities(
+  client: OpsSupabaseClient, servedAt: string, named: readonly string[], options?: OpsRpcOptions,
+): Promise<UnservedIdentityRemoved[]> {
+  const name = 'remove_unserved_measured_identities'
+  if (!Number.isFinite(Date.parse(servedAt))) throw new OpsWriteError(`${name}: served_at is not a time`)
+  if (named.length > MAX_COPIES_PER_SAVE) throw new OpsWriteError(`${name}: ${named.length} named connections is more than one save carries (${MAX_COPIES_PER_SAVE})`)
+  const all = rows(name, await callOpsRpc(client, name, { p_served_at: servedAt, p_named: [...named] }, options))
+  return all.map((row) => {
+    const organizationId = field(name, row, 'organization_id', isString, 'an id')
+    const connectionId = field(name, row, 'connection_id', isString, 'an id')
+    if (!UUID_SHAPE.test(organizationId) || !UUID_SHAPE.test(connectionId)) throw new OpsWriteError(`${name} returned a connection id that is not a uuid`)
+    const generation = field(name, row, 'generation', isInt, 'a whole number')
+    if (generation < 1) throw new OpsWriteError(`${name} returned a generation below 1`)
+    return { organizationId, connectionId, generation, measuredAt: field(name, row, 'measured_at', isTime, 'a time') }
+  })
+}
+
 /** The tombstone_expiry sweep: deletes only tombstones past their expiry. */
 export async function purgeExpiredConnectionTombstones(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
   const name = 'purge_expired_connection_tombstones'
@@ -1775,4 +1811,72 @@ export async function purgeOpsStepRecords(client: OpsSupabaseClient, limit: numb
   const name = 'purge_ops_step_records'
   const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
   return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+// ── The reseal watch (#2486, ops migration 20261027160000) ──────────────────
+
+/** The modes OPS_RESEAL may name, which the state row keeps (its CHECK). */
+export const OPS_RESEAL_MODES = ['preview', 'apply'] as const
+export type OpsResealMode = (typeof OPS_RESEAL_MODES)[number]
+
+/**
+ * ops_reseal_state as either function answers it: the mode the switch was
+ * seen in and since when, the last run's result, the first of an unbroken line
+ * of runs that left nothing, whether this call started the clock afresh, and
+ * the database's clock to judge it all by.
+ */
+export interface OpsResealState {
+  mode: OpsResealMode
+  modeSince: string
+  lastRunAt: string | null
+  lastRunNothingLeft: boolean | null
+  lastRunLeft: number | null
+  nothingLeftSince: string | null
+  restarted: boolean
+  dbNow: string
+}
+
+const isResealMode = (v: unknown): v is OpsResealMode => (OPS_RESEAL_MODES as readonly unknown[]).includes(v)
+const isBoolOrNull = (v: unknown): v is boolean | null => v === null || typeof v === 'boolean'
+const isCountOrNull = (v: unknown): v is number | null => v === null || isCount(v)
+
+function resealModeArg(name: string, mode: unknown): OpsResealMode {
+  if (!isResealMode(mode)) throw new OpsWriteError(`${name}: the mode must be preview or apply`)
+  return mode
+}
+
+function resealState(name: string, data: unknown): OpsResealState {
+  const row = oneRow(name, data)
+  return {
+    mode: field(name, row, 'mode', isResealMode, 'preview or apply'),
+    modeSince: field(name, row, 'mode_since', isTime, 'a time'),
+    lastRunAt: field(name, row, 'last_run_at', isTimeOrNull, 'a time or null'),
+    lastRunNothingLeft: field(name, row, 'last_run_nothing_left', isBoolOrNull, 'true, false or null'),
+    lastRunLeft: field(name, row, 'last_run_left', isCountOrNull, 'a count or null'),
+    nothingLeftSince: field(name, row, 'nothing_left_since', isTimeOrNull, 'a time or null'),
+    restarted: field(name, row, 'restarted', isBool, 'true or false'),
+    dbNow: field(name, row, 'db_now', isTime, 'a time'),
+  }
+}
+
+/** The tick's sighting of OPS_RESEAL in `mode` (reseal-watch.ts): stamps it seen, restarting its clock on a change of mode or a gap past the window. */
+export async function observeOpsReseal(client: OpsSupabaseClient, mode: OpsResealMode, restartAfterSeconds: number, options?: OpsRpcOptions): Promise<OpsResealState> {
+  const name = 'observe_ops_reseal'
+  const p_mode = resealModeArg(name, mode)
+  return resealState(name, await callOpsRpc(client, name, { p_mode, p_restart_after_seconds: restartAfterSeconds }, options))
+}
+
+/**
+ * One reseal run's result in `mode` (reseal-live.ts): nothingLeft only when the
+ * run reported nothing_left, with left 0; a failed or refused run is
+ * nothingLeft false with left null.
+ */
+export async function recordOpsResealRun(
+  client: OpsSupabaseClient, mode: OpsResealMode, run: { nothingLeft: boolean; left: number | null }, restartAfterSeconds: number, options?: OpsRpcOptions,
+): Promise<OpsResealState> {
+  const name = 'record_ops_reseal_run'
+  const p_mode = resealModeArg(name, mode)
+  return resealState(name, await callOpsRpc(client, name, {
+    p_mode, p_nothing_left: run.nothingLeft, p_left: run.left, p_restart_after_seconds: restartAfterSeconds,
+  }, options))
 }
