@@ -50,7 +50,7 @@ import {
   salesforceTokenCacheKey,
 } from '../engine/nodes/salesforce'
 import { WRITE_MARKER_FIELD } from '../engine/write-marker'
-import { fieldsMovedSince, readFieldHistory } from './salesforce-field-conflict'
+import { fieldsMovedSince, laterStateFields, readFieldHistory } from './salesforce-field-conflict'
 
 /**
  * Every status a held write can carry: the CHECK on the table, and what each
@@ -191,10 +191,13 @@ export type DrainResult =
   | { kind: 'read_unanswered'; error: string }
   /** The read before sending was answered with a failure that is not a refusal (5xx, 401, 403, 429): nothing was spent. */
   | { kind: 'read_failed'; error: string }
-  /** Sent and landed. `moved` are the fields left out because another writer changed them; `sent` is what was sent. */
-  | { kind: 'replayed'; recorded: boolean; moved: string[]; sent: Record<string, unknown> }
-  /** Every field had moved, so nothing was sent and the row was closed as abandoned. */
-  | { kind: 'all_moved'; moved: string[]; recorded: boolean }
+  /**
+   * Sent and landed. `moved` are the fields left out because another writer changed them, `later` those left out
+   * because they already held a later state of their value (#2895), and `sent` is what was sent.
+   */
+  | { kind: 'replayed'; recorded: boolean; moved: string[]; later: string[]; sent: Record<string, unknown> }
+  /** Every field had moved or held a later state, so nothing was sent and the row was closed as abandoned. */
+  | { kind: 'all_moved'; moved: string[]; later: string[]; recorded: boolean }
   /** Salesforce rejected the write, or refused to read its record (then `resent` is false). */
   | { kind: 'refused'; error: string; recorded: boolean; resent: boolean }
   /** Failed with attempts left. `answered` is false when Salesforce never answered, so it may have landed. */
@@ -469,7 +472,10 @@ export async function drainHeldWrite(deps: ReplayDeps, orgId: string, id: string
     return { kind: 'read_failed', error: `the record read back was not readable: ${formatErr(e)}` }
   }
 
-  const fields = names.filter((f) => f !== WRITE_MARKER_FIELD)
+  const all = names.filter((f) => f !== WRITE_MARKER_FIELD)
+  // A field already at a later state of its value is never sent, and is no conflict (#2895).
+  const later = laterStateFields({ sfObject: row.sf_object, fields: all, body, current })
+  const fields = all.filter((f) => !later.includes(f))
   const sinceMs = Date.parse(row.created_at)
   let moved = fieldsMovedSince({ fields, body, current, sinceMs, earlier: opts.earlier ?? [] })
   if (moved.length > 0) {
@@ -493,19 +499,22 @@ export async function drainHeldWrite(deps: ReplayDeps, orgId: string, id: string
     if (history.kind === 'unread') console.error(`[writeback-replay] the field history of ${row.sf_object} ${row.sf_record_id} could not be read, so ${moved.join(', ')} stay left out: ${history.why}`)
     moved = fieldsMovedSince({ fields, body, current, sinceMs, earlier: opts.earlier ?? [], history })
   }
-  const note = moved.length > 0 ? `Sent without the fields changed in Salesforce since the write failed: ${moved.join(', ')}` : undefined
-  if (moved.length > 0 && moved.length === fields.length) {
+  const laterNote = later.length > 0 ? `already at a later state in Salesforce: ${later.join(', ')}` : ''
+  const movedNote = moved.length > 0 ? `changed in Salesforce since the write failed: ${moved.join(', ')}` : ''
+  const leftOut = [movedNote, laterNote].filter(Boolean).join('; ')
+  const note = leftOut ? `Sent without the fields ${leftOut}` : undefined
+  if (moved.length + later.length > 0 && moved.length === fields.length) {
     const at = now()
-    const recorded = await record(readAttempts, { status: 'abandoned', ...withError(await lock(`Not sent: every field had changed in Salesforce since the write failed: ${moved.join(', ')}`)), finished_at: at, updated_at: at })
-    return { kind: 'all_moved', moved, recorded }
+    const recorded = await record(readAttempts, { status: 'abandoned', ...withError(await lock(`Not sent: every field was ${leftOut}`)), finished_at: at, updated_at: at })
+    return { kind: 'all_moved', moved, later, recorded }
   }
-  const sent = Object.fromEntries(names.filter((f) => !moved.includes(f)).map((f) => [f, body[f]]))
+  const sent = Object.fromEntries(names.filter((f) => !moved.includes(f) && !later.includes(f)).map((f) => [f, body[f]]))
 
   if (!(await deps.store.claim(orgId, id, readAttempts))) return { kind: 'conflict' }
   const out = await sendClaimed(deps, row, readAttempts, sf, sent, { lastAttempt: readAttempts + 1 >= opts.maxAttempts, note })
   switch (out.kind) {
     case 'replayed':
-      return { kind: 'replayed', recorded: out.recorded, moved, sent }
+      return { kind: 'replayed', recorded: out.recorded, moved, later, sent }
     case 'refused':
       return { ...out, resent: true }
     default:
