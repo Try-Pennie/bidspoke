@@ -393,6 +393,17 @@ in `record_connection_refresh` (supabase-ops migration 20261018170000). A
 Reconnect starts a new streak. Nothing is recorded for a credential that is only
 being verified.
 
+A service's own 429 is a `RequeueAt` too, at its Retry-After or the default,
+unless the service's rules say that 429 is no rate limit (`notRateLimited` in
+`service-rules.ts`, #2673). OpenAI's says so of `insufficient_quota`, its 429
+for an account out of credit or at its spend limit, which no wait clears: the
+step's action gets the answer and fails as `openai_insufficient_quota`, and
+verify refuses it naming the quota. A 429 the check cannot read (a body that is
+not JSON) stays a `RequeueAt` and is reported as `rate_limit_check_failed`,
+cause `taken_as_rate_limit`. Anthropic needs no check: its 429 is only ever
+`rate_limit_error`, and an account out of credit is answered with another
+status there, never a 429.
+
 ## Google: delegation scopes and the mailbox allowlist (F129, decision 11)
 
 Domain wide delegation lets the ops service account act as any mailbox in the
