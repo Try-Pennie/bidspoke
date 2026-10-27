@@ -3417,6 +3417,7 @@ export type Database = {
         Returns: number
       }
       is_allowlisted: { Args: never; Returns: boolean }
+      is_sealed_envelope: { Args: { p_envelope: Json }; Returns: boolean }
       lead_validation_rejection_counts: {
         Args: {
           p_from: string
