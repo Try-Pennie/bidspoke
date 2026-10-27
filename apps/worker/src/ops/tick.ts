@@ -56,7 +56,11 @@
  *     asked again next tick.
  *  5. The schedules, each inside its own boundary: planFires (packages/
  *     workflow-definition) with the database clock, the floor and the last slot
- *     observed; each fire recorded in schedule_fire_observations, whose UNIQUE
+ *     observed. The floor (scheduleFloorOf, #1952) is the latest of when the
+ *     schedule was first held here, a ported workflow's cutover and the last
+ *     slot of any workflow it replaces, from the porting facts the bidding
+ *     Worker served with the copy; a port not cut over yet, or a copy never
+ *     told its facts, fires nothing. Each fire recorded in schedule_fire_observations, whose UNIQUE
  *     slot key means a doubled tick records, and dispatches, a slot once. A miss
  *     is recorded and reported: a missing expected run is a problem (#1949).
  *  6. The claim, observed: what a claim of up to TICK_CLAIM_PER_WORKFLOW runs a
@@ -505,6 +509,41 @@ async function copyDefinitionBatch(
   return true
 }
 
+/**
+ * A schedule's floor (#1952, #1698 D8): no slot at or before it fires or is
+ * reported missed. The latest of three facts, each ruling out earlier slots:
+ *  - when the ops database first held the schedule's timing (schedule_known_since);
+ *  - for a workflow ported from Pipedream, the instant Pipedream's copy was
+ *    paused at cutover, so catch up never re-fires a period Pipedream ran;
+ *  - the latest slot fired or observed by any workflow it replaces, so a new
+ *    id never re-fires a slot an old one served.
+ * Or held, firing nothing, when a fact it needs is missing, because a missing
+ * fact could only lower the floor (fail safe):
+ *  - porting_unknown: the copy was never told its porting facts (saved by an
+ *    ops release before #1952), so it cannot be told from a port Pipedream runs;
+ *  - awaiting_cutover: ported, and not cut over, so Pipedream may run any period.
+ * The facts are the copy's, as the bidding Worker last served them, so a
+ * bidding outage plans from those: a cutover or a replacement is recorded
+ * before the workflow it governs can start, and both only ever raise the floor.
+ */
+export type ScheduleFloor =
+  | { kind: 'floor'; floorMs: number }
+  | { kind: 'held'; reason: 'porting_unknown' | 'awaiting_cutover' }
+
+export function scheduleFloorOf(c: Pick<WorkflowCopy, 'scheduleKnownSince' | 'porting' | 'replacedLastSlot'>): ScheduleFloor {
+  if (c.scheduleKnownSince === null) throw new Error('its copy has a schedule but no floor')
+  if (c.porting === null) return { kind: 'held', reason: 'porting_unknown' }
+  if (c.porting.ported && c.porting.cutoverAt === null) return { kind: 'held', reason: 'awaiting_cutover' }
+  return {
+    kind: 'floor',
+    floorMs: scheduleFloorMs({
+      knownSinceMs: Date.parse(c.scheduleKnownSince),
+      ...(c.porting.cutoverAt !== null ? { cutoverAtMs: Date.parse(c.porting.cutoverAt) } : {}),
+      ...(c.replacedLastSlot !== null ? { replacedLastServedMs: Date.parse(c.replacedLastSlot) } : {}),
+    }),
+  }
+}
+
 /** The last slot a schedule served: observed (observe mode), or the later of fired and observed (live). */
 function lastServedMs(c: WorkflowCopy, live: boolean): number | null {
   const observed = c.lastObserved === null ? null : Date.parse(c.lastObserved)
@@ -778,6 +817,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     const inputs: WorkflowCopyInput[] = list.workflows.map((w) => ({
       workflowId: w.id, organizationId: w.organization_id, isActive: w.is_active, deletedAt: w.deleted_at,
       rowUpdatedAt: w.updated_at, versionNumber: w.version_number, trigger: w.trigger,
+      porting: { ported: w.porting.ported, cutoverAt: w.porting.cutover_at, replaces: w.porting.replaces },
     }))
     // A list too long for one save is saved in parts and withdraws nothing, since
     // no one part is the complete list.
@@ -900,13 +940,32 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
           problem('schedule_no_version', `Workflow ${c.workflowId} has a schedule but has no saved version, so there is nothing to run; it was not fired.`, c.workflowId)
           continue
         }
-        if (c.scheduleKnownSince === null) throw new Error('its copy has a schedule but no floor')
+        const floor = scheduleFloorOf(c)
+        if (floor.kind === 'held') {
+          if (floor.reason === 'porting_unknown') {
+            bump(counts, 'schedules_floor_unknown')
+            problem('schedule_floor_unknown', `The schedule of workflow ${c.workflowId} was not fired: its saved copy does not say whether it was ported from Pipedream or which workflows it replaces, so any slot might be one Pipedream or an earlier workflow already ran.`, c.workflowId)
+          } else {
+            // A port waiting for its cutover is a state, not a fault: counted and logged, never paged.
+            bump(counts, 'schedules_awaiting_cutover')
+            log('schedule_awaiting_cutover', { tick_id: ports.tickId, workflow_id: c.workflowId, porting_served_at: c.porting?.servedAt ?? null })
+          }
+          continue
+        }
+        if (fetchError !== null && c.porting !== null) {
+          // The bidding Worker did not serve this tick, so the floor rests on the
+          // facts the copy last served (fail safe: they only ever raise it).
+          log('schedule_floor_from_copy', {
+            tick_id: ports.tickId, workflow_id: c.workflowId, floor: new Date(floor.floorMs).toISOString(),
+            porting_served_at: c.porting.servedAt, cutover_at: c.porting.cutoverAt, replaces: c.porting.replaces.length,
+          })
+        }
         const config = sched.config as ScheduleConfig
         const plan = planFires({
           workflowId: c.workflowId,
           schedule: config,
           dbNowMs,
-          floorMs: scheduleFloorMs({ knownSinceMs: Date.parse(c.scheduleKnownSince) }),
+          floorMs: floor.floorMs,
           // Observe mode serves nothing, so what it observed is what it would have
           // served. Live mode serves from the later of its last real fire and its
           // last observed slot, so going live never re-fires a slot observe passed.

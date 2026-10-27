@@ -8,8 +8,9 @@
  *    2026-10-16, on #1949: the bidding Worker serves definitions to the ops
  *    Worker over the service binding, and the ops Worker keeps the last good
  *    copy). Only what a tick needs: each ops workflow's on or off state, its
- *    soft delete, its updated_at (the order key), its latest version and its
- *    trigger. A run's full definition at its version is #1950's to fetch;
+ *    soft delete, its updated_at (the order key), its latest version, its
+ *    trigger, and since #1952 the porting facts its schedule's floor is taken
+ *    from. A run's full definition at its version is #1950's to fetch;
  *  - the tick's report, which the bidding Worker stamps as the heartbeat and
  *    judges every minute, so the watchdog never depends on the Worker it
  *    watches (L71).
@@ -54,7 +55,34 @@ export interface ServedOpsWorkflow {
   version_number: number | null
   /** definition.trigger, unvalidated. */
   trigger: unknown
+  /** What its schedule's floor is taken from (#1952), from the porting schema. */
+  porting: ServedOpsWorkflowPorting
 }
+
+/**
+ * The facts a schedule's floor is taken from beyond when the ops database first
+ * held it (#1952, #1698 D8), read from the bidding database's porting schema
+ * (supabase/migrations/20261027120000_schedule_floor_facts_1952.sql). The ops
+ * tick never fires a slot at or before the floor, so:
+ *  - a workflow ported from Pipedream never fires a period Pipedream already
+ *    ran: its floor is the instant Pipedream's copy was paused at cutover, and
+ *    while it is not cut over (cutover_at null) it fires nothing at all;
+ *  - a workflow that replaces another never fires a slot one it replaces served.
+ */
+export interface ServedOpsWorkflowPorting {
+  /** It stands for at least one Pipedream workflow (porting.pipedream_workflow_map). */
+  ported: boolean
+  /**
+   * The latest cut_over_at of the Pipedream workflows it stands for, or null
+   * while any of them is not cut over. Always null for one not ported.
+   */
+  cutover_at: string | null
+  /** Every workflow it replaces (porting.workflow_replacements), directly or through those, in id order. */
+  replaces: string[]
+}
+
+/** The most replaced workflows one copy keeps; the ops database refuses more. */
+export const MAX_REPLACED_WORKFLOWS = 50
 
 export interface ServedOpsWorkflows {
   /** The bidding Worker's clock when it read the list. */
@@ -464,6 +492,13 @@ export const OPS_TICK_PROBLEM_RULES = {
   copies_read_failed: 'three_in_a_row',
   /** A schedule's planning or recording failed: the slot stays due and is tried again next tick. */
   schedule_plan_failed: 'three_in_a_row',
+  /**
+   * A schedule's copy was never told its porting facts (#1952), so its floor is
+   * unknown and it fires nothing. Expected for the one tick after the ops
+   * migration, until the next served list tells every copy; past three ticks
+   * the copies are not being told, and the schedule is not firing.
+   */
+  schedule_floor_unknown: 'three_in_a_row',
   claim_depth_failed: 'three_in_a_row',
   /** The probe through the dispatch path, sent every tick nothing is due. */
   probe_failed: 'three_in_a_row',
@@ -692,6 +727,28 @@ export function capProblems(problems: readonly string[]): string[] {
 }
 
 /**
+ * One workflow's porting facts (#1952), or why they cannot be read. Absent facts
+ * are refused, never read as not ported: a bidding release before #1952 cannot
+ * say whether a workflow stands for one Pipedream still runs.
+ */
+function parsePorting(workflowId: string, raw: unknown): ServedOpsWorkflowPorting | string {
+  if (raw === undefined) return 'none were served'
+  if (!isRecord(raw)) return 'not an object'
+  if (typeof raw.ported !== 'boolean') return 'ported is not true or false'
+  if (!(raw.cutover_at === null || isTime(raw.cutover_at))) return 'cutover_at is not a time or null'
+  if (raw.cutover_at !== null && !raw.ported) return 'a cutover time on a workflow not ported from Pipedream'
+  if (!Array.isArray(raw.replaces)) return 'replaces is not a list'
+  const replaces: string[] = []
+  for (const r of raw.replaces as unknown[]) {
+    if (typeof r !== 'string' || !UUID.test(r)) return 'a replaced workflow is not a workflow id'
+    if (r === workflowId) return 'it is listed as replacing itself'
+    replaces.push(r)
+  }
+  if (replaces.length > MAX_REPLACED_WORKFLOWS) return `it replaces ${replaces.length} workflows, more than the ${MAX_REPLACED_WORKFLOWS} a copy keeps`
+  return { ported: raw.ported, cutover_at: raw.cutover_at, replaces }
+}
+
+/**
  * The served list, with each row that is not a well formed ops workflow refused
  * by name rather than saved. Throws when the list itself is malformed.
  */
@@ -715,6 +772,11 @@ export function parseServedOpsWorkflows(raw: unknown): { list: ServedOpsWorkflow
       refused.push(`The bidding Worker served workflow ${id} in a shape the ops Worker does not read, so it was not saved.`)
       return
     }
+    const porting = parsePorting(row.id, row.porting)
+    if (typeof porting === 'string') {
+      refused.push(`The bidding Worker served workflow ${id} with porting facts the ops Worker does not read (${porting}), so it was not saved and its schedule keeps the floor it last had.`)
+      return
+    }
     workflows.push({
       id: row.id,
       organization_id: row.organization_id,
@@ -723,6 +785,7 @@ export function parseServedOpsWorkflows(raw: unknown): { list: ServedOpsWorkflow
       updated_at: row.updated_at,
       version_number: row.version_number,
       trigger: row.trigger ?? null,
+      porting,
     })
   })
   // A list with refused rows does not name every ops workflow it could read, so
