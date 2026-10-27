@@ -248,3 +248,24 @@ export type OpsStepRecordStatus = (typeof OPS_STEP_RECORD_STATUSES)[number]
  */
 export const OPS_STEP_RECORD_OUTCOMES = ['recorded', 'already_recorded', 'stale'] as const
 export type OpsStepRecordOutcome = (typeof OPS_STEP_RECORD_OUTCOMES)[number]
+
+// ── time sliced continuation (#1951, supabase-ops migration 20261027150000) ──
+
+/**
+ * What OPS_CONTINUATION may name in this build (checkpoint.ts): off writes
+ * nothing; observe writes, acknowledges and reads back a checkpoint at each
+ * slice boundary and carries on, changing how no run ends. Suspending and
+ * resuming a run (on) is the next slice of #1951 and is not here yet.
+ */
+export const CONTINUATION_MODES = ['off', 'observe'] as const
+export type ContinuationMode = (typeof CONTINUATION_MODES)[number]
+
+/**
+ * What record_run_checkpoint answers: recorded (the run now names this
+ * checkpoint), already_recorded (it already did: a repeat after a lost answer),
+ * superseded (the run names a later checkpoint of this holder, so nothing was
+ * written) or stale (the run is not this holder's running attempt at this state
+ * version any more, and nothing was written).
+ */
+export const CHECKPOINT_ACK_OUTCOMES = ['recorded', 'already_recorded', 'superseded', 'stale'] as const
+export type CheckpointAckOutcome = (typeof CHECKPOINT_ACK_OUTCOMES)[number]

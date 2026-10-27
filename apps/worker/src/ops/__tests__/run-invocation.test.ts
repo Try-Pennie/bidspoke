@@ -12,9 +12,12 @@
  */
 import { describe, expect, it } from 'vitest'
 import { organizationIdFrom } from '../ops-db'
-import { OpsClaimLostError, OpsWriteError, type ClaimedRun, type CompleteOutcome, type OpsStepRecord, type SendIntent, type SendIntentResult } from '../ops-writes'
-import type { OpsStepRecordOutcome } from '../run-vocabulary'
 import {
+  OpsClaimLostError, OpsWriteError, type CheckpointAck, type ClaimedRun, type CompleteOutcome, type OpsStepRecord, type RunCheckpointRead, type SendIntent, type SendIntentResult,
+} from '../ops-writes'
+import type { CheckpointAckOutcome, OpsStepRecordOutcome } from '../run-vocabulary'
+import {
+  CheckpointNotNamed,
   HEARTBEAT_EVERY_MS,
   RUN_DB_DEADLINE_MS,
   RUN_LEASE_SECONDS,
@@ -143,6 +146,31 @@ class FakeRunDb implements RunDb {
     if (run.claimToken !== this.token || this.status !== 'running') return 'stale'
     this.steps.push({ executionId, record })
     return 'recorded'
+  }
+
+  /** The checkpoint the run names (#1951), fenced as record_run_checkpoint is. */
+  named: CheckpointAck | null = null
+  checkpointAnswers: Array<() => Promise<CheckpointAckOutcome>> = []
+  readAnswers: Array<() => Promise<RunCheckpointRead>> = []
+
+  async recordCheckpoint(run: ClaimedRun, ack: CheckpointAck): Promise<CheckpointAckOutcome> {
+    this.calls.push(`checkpoint:${ack.stateVersion}-${ack.steps}`)
+    const answer = this.checkpointAnswers.shift()
+    if (answer) return answer()
+    if (run.claimToken !== this.token || this.status !== 'running' || ack.stateVersion !== this.stateVersion) return 'stale'
+    if (this.named?.key === ack.key) return 'already_recorded'
+    if (this.named && this.named.stateVersion === ack.stateVersion && this.named.steps >= ack.steps) return 'superseded'
+    this.named = ack
+    return 'recorded'
+  }
+
+  async readCheckpoint(run: ClaimedRun): Promise<RunCheckpointRead> {
+    this.calls.push('read_checkpoint')
+    const answer = this.readAnswers.shift()
+    if (answer) return answer()
+    if (run.claimToken !== this.token || this.status === 'ended') return { held: false }
+    const n = this.named
+    return { held: true, stateVersion: this.stateVersion, checkpoint: n && { key: n.key, stateVersion: n.stateVersion, steps: n.steps, sha256: n.sha256, bytes: n.bytes } }
   }
 
   async complete(run: ClaimedRun, end: CompleteOutcome) {
@@ -667,5 +695,95 @@ describe('invokeRun: recording a step (#2703)', () => {
     expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'retry' } })
     expect(await recorded).toBeInstanceOf(RunStopped)
     expect(h.db.calls.some((c) => c.startsWith('step'))).toBe(false)
+  })
+})
+
+describe('invokeRun: naming and reading a checkpoint (#1951)', () => {
+  const KEY = `checkpoints/v1/${ORG}/${RUN_ID}/4-2.json`
+  const ack = { steps: 2, key: KEY, sha256: 'a'.repeat(64), bytes: 900 }
+
+  it('names a checkpoint with the attempt\'s execution and the state version its start answered, and reads it back', async () => {
+    const h = harness()
+    let read: unknown
+    const report = await h.run(async (ctx) => {
+      expect(ctx.stateVersion).toBe(4)
+      expect(await ctx.checkpoints.name(ack)).toBe('recorded')
+      expect(await ctx.checkpoints.name(ack)).toBe('already_recorded')
+      read = await ctx.checkpoints.read()
+      return { outcome: 'done' }
+    })
+    expect(report).toEqual({ outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' })
+    expect(h.db.named).toEqual({ ...ack, executionId: '0192f4a0-0000-7000-8000-0000000000ee', stateVersion: 4 })
+    expect(read).toEqual({ key: KEY, stateVersion: 4, steps: 2, sha256: 'a'.repeat(64), bytes: 900 })
+  })
+
+  it('a stale holder (the run swept and claimed again) names nothing: its claim is lost and nothing is completed', async () => {
+    const h = harness()
+    const report = await h.run(async (ctx) => {
+      h.db.reclaim()
+      await ctx.checkpoints.name(ack)
+      return { outcome: 'done' }
+    })
+    expect(report).toEqual({ outcome: 'claim_lost', during: 'checkpoint' })
+    expect(h.db.named).toBeNull()
+    expect(h.db.calls.some((c) => c.startsWith('complete'))).toBe(false)
+  })
+
+  it('a read that finds the run no longer this holder\'s is a lost claim too', async () => {
+    const h = harness()
+    const report = await h.run(async (ctx) => {
+      h.db.reclaim()
+      await ctx.checkpoints.read()
+      return { outcome: 'done' }
+    })
+    expect(report).toEqual({ outcome: 'claim_lost', during: 'checkpoint' })
+  })
+
+  it('an acknowledgement that fails every try throws CheckpointNotNamed naming why, and the run itself goes on', async () => {
+    const h = harness()
+    h.db.checkpointAnswers.push(...[1, 2, 3].map(() => async (): Promise<CheckpointAckOutcome> => { throw new OpsWriteError('record_run_checkpoint failed (57014): canceled') }))
+    let thrown: unknown
+    const report = await h.run(async (ctx) => {
+      try {
+        await ctx.checkpoints.name(ack)
+      } catch (err) {
+        thrown = err
+      }
+      return { outcome: 'done' }
+    })
+    expect(thrown).toBeInstanceOf(CheckpointNotNamed)
+    expect((thrown as Error).message).toMatch(/57014/)
+    expect(h.db.calls.filter((c) => c.startsWith('checkpoint'))).toHaveLength(3)
+    expect(report).toEqual({ outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' })
+  })
+
+  it('an acknowledgement past its deadline is tried again, and a repeat that finds it landed is accepted (a crash between write and acknowledgement is safe to repeat)', async () => {
+    const h = harness()
+    h.db.checkpointAnswers.push(() => never(), async () => 'already_recorded')
+    let answer: unknown
+    const running = h.run(async (ctx) => {
+      answer = await ctx.checkpoints.name(ack)
+      return { outcome: 'done' }
+    })
+    await until(() => h.db.calls.includes('checkpoint:4-2'))
+    await h.clock.advance(RUN_DB_DEADLINE_MS)
+    expect(await running).toEqual({ outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' })
+    expect(answer).toBe('already_recorded')
+  })
+
+  it('once the run has stopped, neither names nor reads, writing nothing', async () => {
+    const h = harness()
+    const tried: unknown[] = []
+    await h.run(async (ctx) => {
+      try {
+        await ctx.send({ nodeId: 'get', seq: 0, method: 'GET', url: 'https://x.example.com/', idempotent: true, forward: h.forwardWith('get', async () => ({ kind: 'requeue', notBefore: new Date('2026-10-22T13:00:00Z'), status: null, cause: 'rate_limited' })) })
+      } catch {
+        tried.push(await ctx.checkpoints.name(ack).catch((err: unknown) => err), await ctx.checkpoints.read().catch((err: unknown) => err))
+      }
+      return { outcome: 'done' }
+    })
+    expect(tried[0]).toBeInstanceOf(RunStopped)
+    expect(tried[1]).toBeInstanceOf(RunStopped)
+    expect(h.db.calls.some((c) => c.startsWith('checkpoint') || c === 'read_checkpoint')).toBe(false)
   })
 })

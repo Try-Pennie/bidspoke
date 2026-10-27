@@ -149,6 +149,15 @@ export class PostResponseBudget {
     if (this.deadline === null) return Number.POSITIVE_INFINITY
     return this.deadline - reserveMs - this.clock.now()
   }
+
+  /**
+   * Milliseconds left of CONTINUATION_WINDOW_MS, the time the run waits for its
+   * walk after the answer (#2834): the cut-off the engine races the walk against.
+   * Negative once it has passed, infinite before the response.
+   */
+  msLeftInContinuationWindow(): number {
+    return this.msUntilCutoff(CONTINUATION_RESERVE_MS)
+  }
 }
 
 /**

@@ -96,6 +96,18 @@ export interface ServiceRules {
    * unread. Absent: every rate limit is a RequeueAt.
    */
   readonly answersRateLimit?: (request: { method: string; url: URL }) => boolean
+  /**
+   * Whether a 429 is a refusal no wait clears rather than a rate limit (#2673),
+   * so connectionFetch hands it to the action, which names it, instead of
+   * requeueing a step that would only be refused again for ever. OpenAI answers
+   * 429 `insufficient_quota` when the account is out of credit or at its spend
+   * limit, which only a person clears. Given a clone, so it may read the body.
+   * Asked only about a 429, never a 503. A check that throws (a body it cannot
+   * read) leaves the 429 a rate limit, the RequeueAt, and connectionFetch
+   * reports it as rate_limit_check_failed, cause taken_as_rate_limit. Absent:
+   * every 429 is a rate limit.
+   */
+  readonly notRateLimited?: (response: Response) => boolean | Promise<boolean>
 }
 
 /** What a minter supplies: the auth, the expiry signal it answers, and for Salesforce the instance host. */

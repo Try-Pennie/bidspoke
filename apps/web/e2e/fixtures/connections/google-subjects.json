@@ -1,0 +1,40 @@
+{
+  "subjects": [
+    {
+      "kind": "mailbox",
+      "subject": "ops@pennie.example",
+      "display_name": null,
+      "added_by": "Editor A",
+      "added_at": "2026-10-14T13:30:00Z"
+    },
+    {
+      "kind": "mailbox",
+      "subject": "reports@pennie.example",
+      "display_name": null,
+      "added_by": "Editor A",
+      "added_at": "2026-10-14T13:31:00Z"
+    },
+    {
+      "kind": "mailbox",
+      "subject": "partners@pennie.example",
+      "display_name": null,
+      "added_by": "Editor B",
+      "added_at": "2026-10-19T17:02:00Z"
+    },
+    {
+      "kind": "drive",
+      "subject": "0AFixtureReports",
+      "display_name": "Reports",
+      "added_by": "Editor A",
+      "added_at": "2026-10-14T13:32:00Z"
+    },
+    {
+      "kind": "drive",
+      "subject": "0AFixturePayouts",
+      "display_name": "Partner payouts",
+      "added_by": "Editor B",
+      "added_at": "2026-10-21T15:10:00Z"
+    }
+  ],
+  "reached_limit": false
+}
