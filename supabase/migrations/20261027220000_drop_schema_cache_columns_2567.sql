@@ -6,8 +6,10 @@
 -- a writer nor a reader (docs/adr/0007-expand-contract-migrations.md). Nothing
 -- in apps, packages, scripts or supabase names either column; the one database
 -- object that did is the audit trigger below, whose list of columns it leaves
--- unrecorded named schema_cache. No view, index, constraint, trigger column
--- list or publication depends on either column (measured in the SQL suite).
+-- unrecorded named schema_cache. Nothing in pg_depend references either column
+-- (no view, index, constraint or trigger column list), read on 2026-10-27 from
+-- a database replayed from these migrations; drop_schema_cache_columns.test.sql
+-- holds the function and view half of that from now on.
 --
 -- What is lost: schema_cache held a synced copy of a connected service's
 -- schema, which the service itself still holds, and schema_synced_at when that
