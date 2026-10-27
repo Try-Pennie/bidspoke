@@ -369,6 +369,50 @@ describe('checkLeadStatus', () => {
     expect(r.partners.find((p) => p.partner === 'Tripoint')).toMatchObject({ backlog: 1, backlog_returning: 0 })
   })
 
+  // Measured 2026-10-27: Sub-002781149 (a04Ui00000Lmx4vIAB), a Tripoint sale of
+  // 2026-08-30 whose Lead read Completed until the customer came back on
+  // 2026-10-23. That visit stamped the Lead's exchange time (19:58:24 UTC) and
+  // left it Pending, but did not move Submission_Object_ID__c off the sale, so the
+  // check called a returning customer left behind and paged. Of 45,781 Tripoint
+  // sales whose Lead names them and reads Completed, 45,777 carry the sale's own
+  // exchange time; the real misses on record (Sub-002977306, Sub-002983884,
+  // Sub-003008887) all have a Lead stamped EARLIER than the sale.
+  it('counts a sale whose Lead was stamped by a later exchange as a returning customer, though the Lead still names it', async () => {
+    const r = await checkLeadStatus(env, supabase, deps({}, {
+      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY, NOW()).backlog
+        ? [{
+            Id: 'a04Ui00000Lmx4vIAB', CreatedDate: '2026-08-30T20:35:46.000+0000', External_Timestamp__c: '2026-08-30T20:36:41.000+0000',
+            Tripoint_Submit_Response__c: '200',
+            Lead__r: { Submission_Object_ID__c: 'a04Ui00000Lmx4vIAB', External_Exchange_Status__c: 'Pending', External_Timestamp__c: '2026-10-23T19:58:24.000+0000' },
+          }]
+        : []),
+    }))
+
+    expect(r.partners.find((p) => p.partner === 'Tripoint')).toMatchObject({ backlog: 0, backlog_returning: 1 })
+    expect(r.alerted).toBe(false)
+  })
+
+  it('still counts a sale left behind when its Lead was stamped before the sale, or a stamp is missing or unreadable', async () => {
+    const row = (id: string, sale: unknown, lead: unknown) => ({
+      Id: id, CreatedDate: '2026-10-07T15:00:00.000+0000', External_Timestamp__c: sale,
+      Lead__r: { Submission_Object_ID__c: id, External_Exchange_Status__c: 'Pending', External_Timestamp__c: lead },
+    })
+    const r = await checkLeadStatus(env, supabase, deps({}, {
+      rows: async (soql) => (soql === leadStatusQueries('Tripoint', DAY, NOW()).backlog
+        ? [
+            // Sub-002977306's shape: Lead last stamped in May, sale in October.
+            row('a04Ui00000NVNRJIA5', '2026-10-07T15:38:43.000+0000', '2026-05-12T16:08:39.000+0000'),
+            row('a04Ui00000N00002IA', '2026-10-07T15:38:43.000+0000', '2026-10-07T15:38:43.000+0000'),
+            row('a04Ui00000N00003IA', null, '2026-10-23T19:58:24.000+0000'),
+            row('a04Ui00000N00004IA', '2026-10-07T15:38:43.000+0000', null),
+            row('a04Ui00000N00005IA', '2026-10-07T15:38:43.000+0000', 'not a time'),
+          ]
+        : []),
+    }))
+
+    expect(r.partners.find((p) => p.partner === 'Tripoint')).toMatchObject({ backlog: 5, backlog_returning: 0 })
+  })
+
   it('refuses the backlog, rather than counting part of it, when a row cannot be read', async () => {
     const r = await checkLeadStatus(env, supabase, deps({}, {
       rows: async (soql) => (soql === leadStatusQueries('AmOne', DAY, NOW()).backlog ? [{ Lead__r: { Submission_Object_ID__c: 'x' } }] : []),
@@ -407,7 +451,7 @@ describe('checkLeadStatus', () => {
   it('asks for the date, the Lead status and what Tripoint answered for each waiting sale', () => {
     const q = leadStatusQueries('Tripoint', DAY, NOW()).backlog
     expect(q).toMatch(
-      /^SELECT Id, CreatedDate, Tripoint_Response__c, Tripoint_Submit_Response__c, Lead__r\.Submission_Object_ID__c, Lead__r\.External_Exchange_Status__c FROM/,
+      /^SELECT Id, CreatedDate, External_Timestamp__c, Tripoint_Response__c, Tripoint_Submit_Response__c, Lead__r\.Submission_Object_ID__c, Lead__r\.External_Exchange_Status__c, Lead__r\.External_Timestamp__c FROM/,
     )
   })
 

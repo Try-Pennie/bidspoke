@@ -27,8 +27,13 @@
  * 56 backlog sales were that. SOQL cannot compare one field with another, so
  * the backlog is read as rows and split here: a sale whose Lead names it (or
  * names nothing) is left behind, one whose Lead names another Submission is
- * counted apart and never raises the alert on its own. Which visit's revenue
- * such a Lead should carry is a Salesforce decision (#1525).
+ * counted apart and never raises the alert on its own. A visit can also come
+ * back WITHOUT moving that pointer: on 2026-10-23 a customer sold on 08-30
+ * returned, the visit stamped the Lead's exchange time and left it Pending, and
+ * the Lead still named the 08-30 sale, so it paged as left behind. A Lead
+ * stamped later than the sale is therefore counted as returning too. Dan decided
+ * on 2026-10-15 (#2025) that a returning customer's Lead keeps the newest
+ * visit's status, so such a line is a false alarm, not a Lead to correct.
  *
  * JUDGED ONLY WHERE A HEALTHY SHARE IS ON RECORD. In the week before the break
  * the share was 100.0% for Tripoint and 97.0% for AmOne, so both are judged
@@ -93,7 +98,7 @@ import { notifyExportFailure, type TitledRemedy } from './export-alerts'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot } from './buyer-profile-loader'
 import { resolveSalesforceCredentialOrg } from './salesforce-creds'
 import { salesforceCount, salesforceGet, salesforceRows } from './salesforce-read'
-import { leadNamesAnotherSubmission } from './returning-customer'
+import { leadNamesAnotherSubmission, leadStampedAfterSale } from './returning-customer'
 import type { Env } from '../index'
 
 export const LEAD_STATUS_JOB = 'lead-status'
@@ -265,8 +270,8 @@ export function leadStatusQueries(partner: string, dayStart: Date, now: Date): {
     submissions: `SELECT COUNT() FROM Submission__c WHERE ${sale} AND ${day}`,
     leads: `SELECT COUNT() FROM Submission__c WHERE ${sale} AND Lead__r.External_Exchange_Status__c = 'Completed' AND ${day}`,
     backlog:
-      `SELECT Id, CreatedDate, Tripoint_Response__c, Tripoint_Submit_Response__c, Lead__r.Submission_Object_ID__c, ` +
-      `Lead__r.External_Exchange_Status__c FROM Submission__c WHERE ${sale} ` +
+      `SELECT Id, CreatedDate, External_Timestamp__c, Tripoint_Response__c, Tripoint_Submit_Response__c, Lead__r.Submission_Object_ID__c, ` +
+      `Lead__r.External_Exchange_Status__c, Lead__r.External_Timestamp__c FROM Submission__c WHERE ${sale} ` +
       `AND Lead__r.External_Exchange_Status__c != 'Completed' AND CreatedDate >= ${SYNC_BROKE_ON}T00:00:00Z ` +
       `AND LastModifiedDate < ${isoSecond(new Date(now.getTime() - BACKLOG_GRACE_MS))}`,
   }
@@ -303,7 +308,7 @@ export interface PartnerLeadStatus {
   leads_completed: number | null
   /** Completed sales since SYNC_BROKE_ON whose Lead does not read Completed and still names that sale; null when unread. */
   backlog: number | null
-  /** The same, where the Lead has moved on to a later Submission, so no backfill can change it; null when unread. */
+  /** The same, where the Lead has moved on to a later visit (it names a later Submission, or a later exchange re-stamped it); null when unread. */
   backlog_returning: number | null
   /** The first LOGGED_IDS_MAX of the waiting sales' ids, logged so a counted sale can be looked up afterwards (#2019). */
   waiting_ids: string[]
@@ -417,8 +422,10 @@ export function buyerAnswer(row: Record<string, unknown>): 'accepted' | 'refused
 
 /**
  * Splits backlog rows into sales whose Lead still names them (left behind) and
- * sales whose Lead names a later Submission (a returning customer). A Lead
- * naming nothing counts as left behind: nothing shows it moved on. Throws on a
+ * sales whose Lead has moved on (a returning customer): it names a later
+ * Submission, or a later exchange re-stamped it while it still names the sale
+ * (`leadStampedAfterSale`). A Lead naming nothing, and stamped no later than
+ * the sale, counts as left behind: nothing shows it moved on. Throws on a
  * row with no readable id, so a changed answer is a refusal, never a smaller
  * backlog (L90).
  */
@@ -434,9 +441,10 @@ export function splitBacklog(records: Array<Record<string, unknown>>): BacklogSp
     if (typeof r.Id !== 'string' || !SALESFORCE_ID.test(r.Id)) {
       throw new Error(`Salesforce returned a backlog row with no readable Id: ${JSON.stringify(r).slice(0, 200)}`)
     }
-    const lead = r.Lead__r
-    const current = lead !== null && typeof lead === 'object' ? (lead as Record<string, unknown>).Submission_Object_ID__c : null
-    if (!leadNamesAnotherSubmission(current, r.Id)) {
+    const lead = r.Lead__r !== null && typeof r.Lead__r === 'object' ? (r.Lead__r as Record<string, unknown>) : null
+    const movedOn = leadNamesAnotherSubmission(lead?.Submission_Object_ID__c ?? null, r.Id) ||
+      leadStampedAfterSale(r.External_Timestamp__c, lead?.External_Timestamp__c)
+    if (!movedOn) {
       own++
       if (ids.length < LOGGED_IDS_MAX) ids.push(r.Id)
       answers[buyerAnswer(r)]++
@@ -445,7 +453,7 @@ export function splitBacklog(records: Array<Record<string, unknown>>): BacklogSp
         if (ownFirst === undefined || created < ownFirst) ownFirst = created
         if (ownLast === undefined || created > ownLast) ownLast = created
       }
-      const said = lead !== null && typeof lead === 'object' ? (lead as Record<string, unknown>).External_Exchange_Status__c : null
+      const said = lead?.External_Exchange_Status__c ?? null
       if (typeof said === 'string' && said !== '' && !statuses.includes(said)) statuses.push(said)
     } else returning++
   }
