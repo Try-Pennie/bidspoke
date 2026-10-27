@@ -86,7 +86,8 @@ export type DialogState =
   | { kind: 'remove'; id: string; values: Readonly<Record<string, string>>; save: SaveState; started: number | null }
   /**
    * A change that stands, with something to say after it, until closed: a removal the workflows
-   * server could not be told of at once, or a Replace whose stored copy could not be refreshed.
+   * server could not be told of at once, or a Replace that moved every ticked workflow (how many
+   * moved where, and any stored copy warning, decision 4).
    */
   | { kind: 'notice'; name: string; notice: string }
   /**
