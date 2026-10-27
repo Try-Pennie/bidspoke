@@ -41,10 +41,15 @@ import api from '../index'
 // Workers runtime and carries no Node types.
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text; there is no ambient declaration for it here.
 import OWN_KEYS_MIGRATION from '../../../../../../supabase/migrations/20261027170000_slack_alert_config_own_keys_2643.sql?raw'
+// @ts-expect-error As above: the five argument settings save the route calls (#2870).
+import CHANGED_BY_MIGRATION from '../../../../../../supabase/migrations/20261027230000_slack_alert_settings_changed_by_2870.sql?raw'
 
 const ORG = '0a000000-0000-4000-8000-000000002643'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000002643'
 const USER = 'aa000000-0000-4000-8000-000000002643'
+const SECOND_USER = 'ab000000-0000-4000-8000-000000002870'
+/** The email the users row of each signed in person carries, as auth_user_with_allowlist answers it. */
+const EMAIL_OF: Record<string, string> = { [USER]: 'dan@pennie.com', [SECOND_USER]: 'second@pennie.com' }
 const ALERT_ROW = 'c0000000-0000-4000-8000-000000002643'
 const KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)))
 const OLD_TOKEN = 'canary-old-alert-token-2643'
@@ -71,6 +76,7 @@ async function liveTable() {
     id: ALERT_ROW, organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: 'bidding_ring',
     credential_enc: await encryptSecret(OLD_TOKEN, KEY),
     config: { default_channel: '#bidspoke-alerts', workspace_name: 'Pennie', volume_alerts_enabled: true, matrix_alerts_enabled: true },
+    updated_at: '2026-10-27T12:00:00Z', updated_by: USER, updated_by_email: EMAIL_OF[USER],
   }
   const table: Row[] = [row]
   const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = []
@@ -144,20 +150,24 @@ async function liveTable() {
 
   const rpc = async (fn: string, args: Record<string, unknown> = {}) => {
     if (fn === 'auth_user_with_allowlist') {
-      return { data: [{ id: USER, organization_id: ORG, email: 'dan@pennie.com', display_name: 'Dan Wright', allowed: true }], error: null }
+      const id = args.p_user_id as string
+      return { data: [{ id, organization_id: ORG, email: EMAIL_OF[id], display_name: 'Dan Wright', allowed: true }], error: null }
     }
     rpcCalls.push({ fn, args })
     // The two functions of migration 20261027170000: each merges its own keys into the row's config.
     if (fn === 'save_slack_alert_token') {
       const at = table.find((r) => r.organization_id === args.p_organization_id && r.service_type === 'slack' && r.name === 'slack')
       if (!at) return { data: null, error: { code: '23503', message: 'the double inserts no new row' } }
-      Object.assign(at, { config: mergeConfig(at.config, args.p_config as Config), credential_enc: args.p_credential_enc, sealed_for: 'bidding_ring', updated_by: args.p_actor })
+      Object.assign(at, { config: mergeConfig(at.config, args.p_config as Config), credential_enc: args.p_credential_enc, sealed_for: 'bidding_ring', updated_by: args.p_actor, updated_by_email: args.p_actor_email })
       return { data: [{ id: at.id, config: at.config, credential_enc: at.credential_enc }], error: null }
     }
     if (fn === 'save_slack_alert_settings') {
       const at = table.find((r) => r.id === args.p_connection_id && r.organization_id === args.p_organization_id && r.sealed_for !== 'ops_key')
       if (!at) return { data: [], error: null }
-      Object.assign(at, { config: mergeConfig(at.config, args.p_settings as Config), updated_by: args.p_actor })
+      // The four argument form (20261027170000) leaves updated_by_email as the row holds it;
+      // the five argument form (20261027230000, #2870) writes the email it is given.
+      const email = 'p_actor_email' in args ? { updated_by_email: args.p_actor_email } : {}
+      Object.assign(at, { config: mergeConfig(at.config, args.p_settings as Config), updated_by: args.p_actor, ...email })
       return { data: [{ id: at.id, config: at.config, credential_enc: at.credential_enc }], error: null }
     }
     return { data: null, error: { code: '42883', message: `no function ${fn}` } }
@@ -276,7 +286,20 @@ describe('each writer sends only the keys it owns', () => {
     const res = await call(makeEnv(), 'PATCH', '/integrations/slack/settings', { volume_alerts_enabled: false, default_channel: '#new-alerts' })
     expect(res.status).toBe(200)
     const saves = db.rpcCalls.filter((c) => c.fn === 'save_slack_alert_settings')
-    expect(saves).toEqual([{ fn: 'save_slack_alert_settings', args: { p_organization_id: ORG, p_connection_id: ALERT_ROW, p_settings: { volume_alerts_enabled: false, default_channel: '#new-alerts' }, p_actor: USER } }])
+    expect(saves).toEqual([{ fn: 'save_slack_alert_settings', args: { p_organization_id: ORG, p_connection_id: ALERT_ROW, p_settings: { volume_alerts_enabled: false, default_channel: '#new-alerts' }, p_actor: USER, p_actor_email: 'dan@pennie.com' } }])
+  })
+
+  it('a settings save by a second person changes who the alert settings answer as last changed by (#2870)', async () => {
+    const db = await liveTable()
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const env = makeEnv()
+    // The first person saved the token, so the row names them.
+    expect(await (await call(env, 'GET', '/integrations/slack')).json()).toMatchObject({ updated_by_email: 'dan@pennie.com' })
+    // A second person changes a setting.
+    vi.mocked(verifyJwt).mockResolvedValue({ sub: SECOND_USER, email: 'second@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' })
+    expect((await turnVolumeOff(env)).status).toBe(200)
+    expect(await (await call(env, 'GET', '/integrations/slack')).json()).toMatchObject({ volume_alerts_enabled: false, updated_by_email: 'second@pennie.com' })
+    expect(db.row).toMatchObject({ updated_by: SECOND_USER, updated_by_email: 'second@pennie.com' })
   })
 
   it('a settings save with a switch that is not true or false, or a body that is not an object, is refused before anything is read or written', async () => {
@@ -314,14 +337,15 @@ describe('each writer sends only the keys it owns', () => {
   })
 
   it('the keys each writer may send are the keys its database function accepts, so the two lists cannot drift', () => {
-    const migration = OWN_KEYS_MIGRATION as string
-    const arrayAfter = (marker: string) => {
+    const arrayAfter = (migration: string, marker: string) => {
       const at = migration.indexOf(marker)
       expect(at, marker).toBeGreaterThan(-1)
       const list = /ARRAY\[([^\]]*)\]/.exec(migration.slice(at))
       return (list?.[1] ?? '').split(',').map((s) => s.trim().replace(/^'|'$/g, '')).sort()
     }
-    expect(arrayAfter('-- settings keys')).toEqual([...SLACK_ALERT_SETTINGS_KEYS].sort())
-    expect(arrayAfter('-- token save keys')).toEqual([...SLACK_ALERT_TOKEN_SAVE_KEYS].sort())
+    // Both forms of the settings save, the four argument one (#2643) and the five argument one the route calls (#2870).
+    expect(arrayAfter(OWN_KEYS_MIGRATION as string, '-- settings keys')).toEqual([...SLACK_ALERT_SETTINGS_KEYS].sort())
+    expect(arrayAfter(CHANGED_BY_MIGRATION as string, '-- settings keys')).toEqual([...SLACK_ALERT_SETTINGS_KEYS].sort())
+    expect(arrayAfter(OWN_KEYS_MIGRATION as string, '-- token save keys')).toEqual([...SLACK_ALERT_TOKEN_SAVE_KEYS].sort())
   })
 })

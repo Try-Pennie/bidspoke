@@ -347,7 +347,7 @@ integrations.get('/slack/channels', async (c) => {
 // keeps the switch it changed. Writing back the whole config this request had
 // read, as it did before #2643, put back the Reconnect's old workspace name.
 integrations.patch('/slack/settings', async (c) => {
-  const { orgId, userId } = c.get('user')
+  const { orgId, userId, email } = c.get('user')
   const supabase = createSupabaseClient(c.env)
   // matrix_alerts_channel is no longer taken (#2338): the bid matrix alerts post to the default channel.
   const raw = await c.req.json<unknown>()
@@ -377,12 +377,16 @@ integrations.patch('/slack/settings', async (c) => {
   if (!existing) return c.json({ error: 'Slack is not connected' }, 404)
 
   // No row back means the alert row went between the read and the write.
+  // p_actor_email names the changer to the next GET /slack (#2870): the five
+  // argument form of migration 20261027230000, which the deploy waits for (#1829).
   const { rows: written, blocked } = await rowsTouched<WrittenAlertRow>(c, 'service_connections.slack_settings', () =>
     supabase.rpc('save_slack_alert_settings', {
       p_organization_id: orgId,
       p_connection_id: existing.id,
       p_settings: settings,
       p_actor: userId,
+      // The generated types call every argument text; a null email is passed as SQL NULL, which the nullable column takes.
+      p_actor_email: email as string,
     }),
   )
   if (blocked) return blocked
