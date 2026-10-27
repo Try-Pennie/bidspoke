@@ -30,6 +30,7 @@ import { parseSlackConnection } from '../../../lib/slack-connection'
 import { readSlackCopy, rememberSlackConnections } from '../../../lib/slack-copy'
 import { makeSupabase } from './_supabase-mock'
 import { slackPostOf } from '../../../__tests__/helpers/slack-fetch'
+import { answerSlackConfigSaves } from '../../../__tests__/helpers/sealed-slack-row'
 import api from '../index'
 
 const ORG = 'org-abc'
@@ -60,13 +61,16 @@ function recordingSupabase(opts: { row?: Record<string, unknown> | null; rpcResu
     {
       rpc: async (name, args) => {
         rpcs.push({ name, args })
-        return opts.rpcResult ?? { data: [{ id: 'sc-1' }], error: null }
+        if (opts.rpcResult) return opts.rpcResult
+        // The two config saves (#2643) return the row as written; the delete answers the row it removed.
+        return answerSlackConfigSaves({ id: 'sc-1', ...opts.row }, { delete_service_connection_by_id: [{ id: 'sc-1' }] })(name, args)
       },
     },
   )
   const written = (method: string) => (client.calls.service_connections ?? []).filter(([m]) => m === method).map(([, args]) => args[0] as Record<string, unknown>)
-  const upsertOptions = () => (client.calls.service_connections ?? []).filter(([m]) => m === 'upsert').map(([, args]) => args[1])
-  return { client, rec: { get upserts() { return written('upsert') }, get upsertOptions() { return upsertOptions() }, get updates() { return written('update') }, rpcs } }
+  /** The arguments of each call of one database function. */
+  const calls = (name: string) => rpcs.filter((r) => r.name === name).map((r) => r.args as Record<string, unknown>)
+  return { client, rec: { get upserts() { return written('upsert') }, get updates() { return written('update') }, get tokenSaves() { return calls('save_slack_alert_token') }, get settingsSaves() { return calls('save_slack_alert_settings') }, rpcs } }
 }
 
 let store: Map<string, string>
@@ -118,49 +122,44 @@ describe('POST /integrations/slack seals the token', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(client as never)
     const res = await call('POST', '/integrations/slack', { bot_token: TOKEN, default_channel: '#alerts', workspace_name: 'Pennie' })
     expect(res.status).toBe(200)
-    expect(rec.upserts).toHaveLength(1)
-    const saved = rec.upserts[0]
-    expect(saved.organization_id).toBe(ORG)
-    expect(saved.sealed_for).toBe('bidding_ring')
-    expect(saved.updated_by).toBe(USER)
-    expect(typeof saved.credential_enc).toBe('string')
-    expect(saved.credential_enc).not.toContain(TOKEN)
-    expect(await decryptSecret(saved.credential_enc as string, KEY)).toBe(TOKEN)
-    // #2331's contract release: the token lives only in credential_enc.
-    expect(saved.config).not.toHaveProperty('bot_token')
-    expect(JSON.stringify(saved.config)).not.toContain(TOKEN)
-    expect(saved.config).toMatchObject({ default_channel: '#alerts', workspace_name: 'Pennie' })
-    // #2332: the credential is in credential_enc, so no Cloudflare secret name.
-    expect(saved.cf_secret_key).toBeNull()
+    expect(rec.tokenSaves).toHaveLength(1)
+    const saved = rec.tokenSaves[0]
+    expect(saved.p_organization_id).toBe(ORG)
+    expect(saved.p_actor).toBe(USER)
+    expect(typeof saved.p_credential_enc).toBe('string')
+    expect(saved.p_credential_enc).not.toContain(TOKEN)
+    expect(await decryptSecret(saved.p_credential_enc as string, KEY)).toBe(TOKEN)
+    // #2331's contract release: the token lives only in credential_enc. #2643: config carries only the token save's own keys.
+    expect(saved.p_config).toEqual({ default_channel: '#alerts', workspace_name: 'Pennie' })
+    expect(JSON.stringify(saved.p_config)).not.toContain(TOKEN)
     expect((await copyEntry(ORG))?.bot_token).toBe(TOKEN)
   })
 
-  // #2332 (phase 2 of #1689): the alert row is named 'slack', the name
-  // migration 20261017150000 backfilled onto it and reserves from ops rows, and
-  // the upsert names the UNIQUE (organization_id, service_type, name). Release 2
-  // dropped the old UNIQUE and the trigger that named a row saved with none, so
-  // the name must be sent and must be the alert row's, or the save would land on
-  // another row or fail NOT NULL. Proven against Postgres in
-  // supabase/tests/service_connections_contract.test.sql case C.
-  it('names the alert row slack and upserts on (organization_id, service_type, name)', async () => {
+  // #2332 and #2643: the save goes through save_slack_alert_token, never a
+  // direct write of the table. The function names the alert row slack (the name
+  // migration 20261017150000 backfilled and reserves from ops rows), upserts on
+  // UNIQUE (organization_id, service_type, name), stores it as a bot_token
+  // (#2332 release 3, never the legacy oauth the narrowed auth_type CHECK
+  // refuses) with no Cloudflare secret name, and seals it for the ring: proven
+  // against Postgres in supabase/tests/slack_alert_config_own_keys.test.sql
+  // case C.
+  it('saves through save_slack_alert_token and writes the table no other way', async () => {
     const { client, rec } = recordingSupabase()
     vi.mocked(createSupabaseClient).mockReturnValue(client as never)
     const res = await call('POST', '/integrations/slack', { bot_token: TOKEN, default_channel: '#alerts' })
     expect(res.status).toBe(200)
-    expect(rec.upserts[0].name).toBe('slack')
-    expect(rec.upsertOptions).toEqual([{ onConflict: 'organization_id,service_type,name' }])
+    expect(rec.rpcs.map((r) => r.name)).toEqual(['save_slack_alert_token'])
+    expect(rec.upserts).toEqual([])
+    expect(rec.updates).toEqual([])
   })
 
-  // #2332 release 3 (from #2481): the alert row's auth_type is the catalogue's
-  // kind for a Slack bot, bot_token, never the legacy oauth the save sent until
-  // now. This must be live before the migration that narrows the auth_type
-  // CHECK, which then refuses oauth and credentials.
-  it('stores the alert row as a bot token, never the legacy oauth or credentials', async () => {
-    const { client, rec } = recordingSupabase()
+  it('answers 500, and leaves the copy, when the save function fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { client } = recordingSupabase({ rpcResult: { data: null, error: { code: '22023', message: 'slack_alert_config_refused: the token save does not own volume_alerts_enabled' } } })
     vi.mocked(createSupabaseClient).mockReturnValue(client as never)
     const res = await call('POST', '/integrations/slack', { bot_token: TOKEN, default_channel: '#alerts' })
-    expect(res.status).toBe(200)
-    expect(rec.upserts[0].auth_type).toBe('bot_token')
+    expect(res.status).toBe(500)
+    expect((await copyEntry(ORG))?.bot_token).toBe('copy-bot-token')
   })
 
   it('writes no route audit row: the table trigger records the change once', async () => {
@@ -178,9 +177,9 @@ describe('PATCH /integrations/slack/settings', () => {
     const res = await call('PATCH', '/integrations/slack/settings', { volume_alerts_enabled: false })
     expect(res.status).toBe(200)
     expect(await copyEntry(ORG)).toMatchObject({ bot_token: TOKEN, volume_alerts_enabled: false })
-    // The update never writes the token back into config.
-    expect(rec.updates[0].config).not.toHaveProperty('bot_token')
-    expect(rec.updates[0].updated_by).toBe(USER)
+    // Only the setting changed is sent (#2643), never the token, and never by a direct write of the table.
+    expect(rec.settingsSaves).toEqual([{ p_organization_id: ORG, p_connection_id: 'sc-1', p_settings: { volume_alerts_enabled: false }, p_actor: USER }])
+    expect(rec.updates).toEqual([])
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 

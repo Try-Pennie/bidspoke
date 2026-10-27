@@ -60,10 +60,13 @@ async function rows(): Promise<Row[]> {
   ]
 }
 
-/** service_connections with the filters the alert row read sends (eq, or, limit), the upsert the save sends and the update the seal sends. */
-async function storeDouble(opts: { upsertError?: { code: string; message: string }; updateError?: { code: string; message: string }; table?: Row[] } = {}) {
+/**
+ * service_connections with the filters the alert row read sends (eq, or, limit), the token save the
+ * Reconnect sends (save_slack_alert_token, which merges its config into the row's, #2643) and any update.
+ */
+async function storeDouble(opts: { saveError?: { code: string; message: string }; updateError?: { code: string; message: string }; table?: Row[] } = {}) {
   const table = opts.table ?? await rows()
-  const upserts: Array<{ row: Row; onConflict: string | undefined }> = []
+  const tokenSaves: Array<Record<string, unknown>> = []
   const updates: Row[] = []
   const from = (name: string) => {
     const filters: Array<(r: Row) => boolean> = []
@@ -81,19 +84,6 @@ async function storeDouble(opts: { upsertError?: { code: string; message: string
       limit(n: number) { cap = n; return b },
       async maybeSingle() { return { data: found()[0] ?? null, error: null } },
       then(resolve: (v: { data: Row[]; error: null }) => unknown) { return Promise.resolve({ data: found(), error: null }).then(resolve) },
-      upsert(row: Row, o?: { onConflict?: string }) {
-        upserts.push({ row, onConflict: o?.onConflict })
-        const done = {
-          select() { return done },
-          async single() {
-            if (opts.upsertError) return { data: null, error: opts.upsertError }
-            const at = table.find((r) => r.organization_id === row.organization_id && r.service_type === row.service_type && r.name === row.name)
-            if (at) Object.assign(at, row)
-            return { data: { id: at?.id ?? 'new' }, error: null }
-          },
-        }
-        return done
-      },
       // Any UPDATE (eq and is filters, then select('id') answers the rows written), recorded so a test can assert that a check writes none.
       update(patch: Row) {
         const where: Array<(r: Row) => boolean> = []
@@ -117,6 +107,17 @@ async function storeDouble(opts: { upsertError?: { code: string; message: string
     if (fn === 'auth_user_with_allowlist') {
       return Promise.resolve({ data: [{ id: USER, organization_id: ORG, email: 'dan@pennie.com', display_name: 'Dan Wright', allowed: true }], error: null })
     }
+    // save_slack_alert_token (migration 20261027120000, proven in supabase/tests/slack_alert_config_own_keys.test.sql):
+    // the organization's alert row, its config merged with the keys sent, the sealed token replaced, the row sealed.
+    if (fn === 'save_slack_alert_token') {
+      tokenSaves.push(args)
+      if (opts.saveError) return Promise.resolve({ data: null, error: opts.saveError })
+      const at = table.find((r) => r.organization_id === args.p_organization_id && r.service_type === 'slack' && r.name === 'slack')
+      if (!at) return Promise.resolve({ data: null, error: { code: '23503', message: 'the double creates no new row' } })
+      const stored = at.config && typeof at.config === 'object' ? (at.config as Row) : {}
+      Object.assign(at, { config: { ...stored, ...(args.p_config as Row) }, credential_enc: args.p_credential_enc, sealed_for: 'bidding_ring', updated_by: args.p_actor })
+      return Promise.resolve({ data: [{ id: at.id, config: at.config, credential_enc: at.credential_enc }], error: null })
+    }
     // remove_ops_connection's rule (supabase/tests/connections_page_bidding.test.sql): a row that is not an ops_key row is refused as BP422.
     if (fn === 'remove_ops_connection') {
       const row = table.find((r) => r.id === args.p_connection_id && r.organization_id === args.p_organization_id)
@@ -125,7 +126,7 @@ async function storeDouble(opts: { upsertError?: { code: string; message: string
     }
     return Promise.resolve({ data: null, error: { code: '42883', message: `no function ${fn}` } })
   }
-  return { from, rpc, table, upserts, updates }
+  return { from, rpc, table, tokenSaves, updates }
 }
 
 /** The alert row as production holds it on 2026-10-22: never sealed (sealed_for null, no credential_enc), the token in config only. */
@@ -210,17 +211,20 @@ describe('Reconnect the Slack alerts login with a new bot token', () => {
     expect(body).toMatchObject({ outcome: 'reconnected', connection: { id: ALERT_ROW, acts_as: 'bidspoke in Pennie HQ' } })
     expect(asked).toEqual([NEW_TOKEN])
 
-    // One write, onto the org's one alert row, through the same upsert the Slack save uses.
-    expect(db.upserts).toHaveLength(1)
-    const { row, onConflict } = db.upserts[0]
-    expect(onConflict).toBe('organization_id,service_type,name')
-    expect(row).toMatchObject({ organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: 'bidding_ring', updated_by: USER })
-    expect(await decryptSecret(row.credential_enc as string, KEY)).toBe(NEW_TOKEN)
-    // The channel and the switch already turned off are kept; the workspace is what Slack named.
+    // One write, onto the org's one alert row, through the same token save the Slack save uses.
+    expect(db.tokenSaves).toHaveLength(1)
+    const [sent] = db.tokenSaves
+    expect(sent).toMatchObject({ p_organization_id: ORG, p_actor: USER })
+    expect(await decryptSecret(sent.p_credential_enc as string, KEY)).toBe(NEW_TOKEN)
+    // Only the workspace Slack named is sent (#2643): the channel and the switches are not sent back as read.
+    expect(sent.p_config).toEqual({ workspace_name: 'Pennie HQ' })
+    // #2331's contract release: the token lives only in credential_enc, never in what is sent as config.
+    expect(JSON.stringify(sent.p_config)).not.toContain(NEW_TOKEN)
+    expect(JSON.stringify(sent.p_config)).not.toContain(OLD_TOKEN)
+    // So the row keeps the channel and the switch already turned off, with the workspace Slack named.
+    const [row] = db.table
+    expect(row).toMatchObject({ sealed_for: 'bidding_ring', updated_by: USER })
     expect(row.config).toMatchObject({ default_channel: '#bidspoke-alerts', volume_alerts_enabled: false, workspace_name: 'Pennie HQ' })
-    // #2331's contract release: the token lives only in credential_enc, and the old plaintext the row carried is not carried forward.
-    expect(row.config).not.toHaveProperty('bot_token')
-    expect(JSON.stringify(row.config)).not.toContain(OLD_TOKEN)
 
     // The saved Slack copy posts with the new token while the database is down (#2060).
     const copy = await readSlackCopy(env.IDEMPOTENCY as never, KEY)
@@ -240,8 +244,8 @@ describe('Reconnect the Slack alerts login with a new bot token', () => {
     const { env } = makeEnv()
     const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, { fields: { bot_token: NEW_TOKEN } })
     expect(res.status).toBe(200)
-    expect(db.upserts[0].row).toMatchObject({ sealed_for: 'bidding_ring', config: { default_channel: '#bidspoke-alerts', volume_alerts_enabled: false } })
-    expect(await decryptSecret(db.upserts[0].row.credential_enc as string, KEY)).toBe(NEW_TOKEN)
+    expect(db.table[0]).toMatchObject({ sealed_for: 'bidding_ring', config: { default_channel: '#bidspoke-alerts', volume_alerts_enabled: false } })
+    expect(await decryptSecret(db.table[0].credential_enc as string, KEY)).toBe(NEW_TOKEN)
   })
 
   it('a token Slack refuses is answered in a plain sentence with Slack\'s code, and nothing is saved', async () => {
@@ -252,7 +256,7 @@ describe('Reconnect the Slack alerts login with a new bot token', () => {
     const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, { fields: { bot_token: REFUSED_TOKEN } })
     expect(res.status).toBe(422)
     expect((await res.json()) as Answer).toMatchObject({ error: 'slack_token_refused', message: 'Slack did not accept this token (invalid_auth). Nothing was saved. Check the token in the Slack app and save again.' })
-    expect(db.upserts).toEqual([])
+    expect(db.tokenSaves).toEqual([])
   })
 
   it('Slack not answering is not called a refused token: its own sentence, and nothing is saved', async () => {
@@ -263,7 +267,7 @@ describe('Reconnect the Slack alerts login with a new bot token', () => {
     const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, { fields: { bot_token: NEW_TOKEN } })
     expect(res.status).toBe(503)
     expect((await res.json()) as Answer).toMatchObject({ error: 'slack_unanswered', message: 'Slack did not answer when Bidspoke asked about the token. Nothing was changed. Try again in a minute.' })
-    expect(db.upserts).toEqual([])
+    expect(db.tokenSaves).toEqual([])
   })
 
   it('a field the Slack alerts login does not have, or a blank token, is refused before Slack is asked', async () => {
@@ -278,11 +282,11 @@ describe('Reconnect the Slack alerts login with a new bot token', () => {
     expect(blank.status).toBe(422)
     expect((await blank.json()) as Answer).toMatchObject({ error: 'connection_fields_missing', message: 'Bot token is empty. Nothing was saved. Fill it in and save again.' })
     expect(asked).toEqual([])
-    expect(db.upserts).toEqual([])
+    expect(db.tokenSaves).toEqual([])
   })
 
   it('a save the database refuses is answered as not stored, and the copy is left as it was', async () => {
-    const db = await storeDouble({ upsertError: { code: '57014', message: 'canceling statement due to statement timeout' } })
+    const db = await storeDouble({ saveError: { code: '57014', message: 'canceling statement due to statement timeout' } })
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     slackAuthTest(slackAccepts)
     const { env } = makeEnv()
@@ -300,7 +304,7 @@ describe('Reconnect the Slack alerts login with a new bot token', () => {
     const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, { fields: { bot_token: NEW_TOKEN } })
     expect(res.status).toBe(500)
     expect(((await res.json()) as Answer).error).toBe('connection_seal_failed')
-    expect(db.upserts).toEqual([])
+    expect(db.tokenSaves).toEqual([])
   })
 })
 
@@ -314,7 +318,7 @@ describe('Reconnect the Slack alerts login with no new token: the stored one is 
     expect(res.status).toBe(200)
     expect((await res.json()) as Answer).toMatchObject({ outcome: 'checked', connection: { id: ALERT_ROW, acts_as: 'bidspoke in Pennie HQ' } })
     expect(asked).toEqual([OLD_TOKEN])
-    expect(db.upserts).toEqual([])
+    expect(db.tokenSaves).toEqual([])
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(db, ORG, 'service_connection', ALERT_ROW, 'connection_rechecked', USER, {})
   })
 
@@ -361,10 +365,13 @@ describe('a row that was never sealed, after the contract release', () => {
     expect(((await res.json()) as Answer).error).toBe('reconnect_login_unreadable')
     expect(asked).toEqual([])
     expect(db.updates).toEqual([])
-    expect(db.upserts).toEqual([])
+    expect(db.tokenSaves).toEqual([])
   })
 
-  it('is sealed by a Reconnect with a new token, which never keeps the old plaintext', async () => {
+  // The save sends no plaintext, old or new: since #2643 it sends only the workspace name, and the
+  // database's CHECK service_connections_no_plaintext_token keeps any token out of config
+  // (supabase/tests/service_connections_no_plaintext.test.sql).
+  it('is sealed by a Reconnect with a new token, which never sends a plaintext', async () => {
     const db = await storeDouble({ table: unsealedRows() })
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     slackAuthTest(slackAccepts)
@@ -374,7 +381,8 @@ describe('a row that was never sealed, after the contract release', () => {
     const [row] = db.table
     expect(row.sealed_for).toBe('bidding_ring')
     expect(await decryptSecret(row.credential_enc as string, KEY)).toBe(NEW_TOKEN)
-    expect(row.config).not.toHaveProperty('bot_token')
+    expect(db.tokenSaves).toHaveLength(1)
+    expect(db.tokenSaves[0].p_config).toEqual({ workspace_name: 'Pennie HQ' })
   })
 })
 
@@ -401,6 +409,6 @@ describe('what stays refused, and whose row it is', () => {
     expect(res.status).toBe(404)
     expect(((await res.json()) as Answer).error).toBe('connection_not_found')
     expect(asked).toEqual([])
-    expect(db.upserts).toEqual([])
+    expect(db.tokenSaves).toEqual([])
   })
 })

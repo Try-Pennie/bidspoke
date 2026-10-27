@@ -15,7 +15,9 @@
  *      trigger). Found by the state reached rather than one spelling (L247):
  *      every worker `.insert(` or `.upsert(` chained on a
  *      `.from('service_connections')`, each of whose payloads must name
- *      `name`, and no database function inserting into the table at all.
+ *      `name`, and every database function inserting into the table naming
+ *      `name` in its column list (since #2643 the Slack token save is one,
+ *      save_slack_alert_token, which inserts the alert row named 'slack').
  *      The generated database.ts makes `name` required on an insert too, so a
  *      typed writer that dropped it would not compile.
  *
@@ -77,6 +79,12 @@ export function tableInsertsIn(raw: string): TableWrite[] {
   return out
 }
 
+/** The column list of each INSERT INTO the table in `sql`: empty when the insert names none. */
+export function functionInsertsIn(sql: string): string[][] {
+  const insert = new RegExp(`INSERT\\s+INTO\\s+(?:public\\.)?"?${TABLE}"?(?:\\s+AS\\s+\\w+)?\\s*(\\(([^)]*)\\))?`, 'gi')
+  return [...sql.matchAll(insert)].map((m) => (m[2] ?? '').split(',').map((c) => c.trim().replace(/"/g, '')).filter((c) => c !== ''))
+}
+
 /** A payload names the connection when its object literal carries a `name` key. */
 export const sendsName = (w: TableWrite): boolean => /[{,]\s*name\s*:/.test(w.args)
 
@@ -89,14 +97,24 @@ describe('every writer of service_connections sends a name (#2332 release 2)', (
     expect(workerWrites.filter((w) => !sendsName(w)).map((w) => `${w.file}:${w.line} ${w.op}`)).toEqual([])
   })
 
-  it('finds the Slack save and the connection create, so an empty offender list is a measurement (L1)', () => {
+  it('finds the connection create, so an empty offender list is a measurement (L1)', () => {
     // The create (#2338, build PR 5) and the Google sign in's (build PR 13) are plain inserts of an ops_key row, never an upsert.
-    expect(workerWrites.map((w) => `${w.file} ${w.op}`)).toEqual(['routes/api/connections.ts insert', 'routes/api/connections.ts insert', 'routes/api/integrations.ts upsert'])
+    // The Slack save's upsert moved into save_slack_alert_token (#2643), held by the next test.
+    expect(workerWrites.map((w) => `${w.file} ${w.op}`)).toEqual(['routes/api/connections.ts insert', 'routes/api/connections.ts insert'])
   })
 
-  it('no database function inserts into the table, so no writer is hidden behind an rpc', () => {
-    const inserts = readMigrations().filter((m) => new RegExp(`INSERT\\s+INTO\\s+(?:public\\.)?"?${TABLE}"?[\\s(]`, 'i').test(m.sql))
-    expect(inserts.map((m) => m.name)).toEqual([])
+  it('every database function inserting into the table names name in its column list, so no writer is hidden behind an rpc', () => {
+    const inserts = readMigrations().flatMap((m) => functionInsertsIn(m.sql).map((cols) => ({ migration: m.name, cols })))
+    expect(inserts.filter((i) => !i.cols.includes('name')).map((i) => i.migration)).toEqual([])
+    // The Slack token save (#2643) is the one, so an empty offender list is a measurement (L1).
+    expect(inserts.map((i) => i.migration)).toEqual(['20261027120000_slack_alert_config_own_keys_2643.sql'])
+  })
+
+  it('reads a function insert\'s column list, and is seen to fail on one that leaves name out', () => {
+    expect(functionInsertsIn(`INSERT INTO public.service_connections AS sc\n  (organization_id, service_type, name, config) VALUES ($1)`)).toEqual([['organization_id', 'service_type', 'name', 'config']])
+    expect(functionInsertsIn(`insert into service_connections (organization_id, service_type, config) values (1)`)).toEqual([['organization_id', 'service_type', 'config']])
+    // An insert with no column list cannot be read, so it counts as leaving name out.
+    expect(functionInsertsIn(`INSERT INTO public.service_connections SELECT * FROM x`)).toEqual([[]])
   })
 
   it('is seen to fail on a payload with no name, and to pass one that names it', () => {

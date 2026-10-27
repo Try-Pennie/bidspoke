@@ -60,7 +60,7 @@
 // a minute.
 
 import { Hono, type Context } from 'hono'
-import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, rowsTouched } from '../../lib/api-error'
 import { createSlackClient, slackBodyOf } from '@bidspoke/slack-client'
 import { verifySlackToken } from '../../lib/slack-token-check'
 import type { Env } from '../../index'
@@ -76,9 +76,10 @@ import {
   slackAlertAmbiguityLine,
   slackTokenProblemLine,
   SLACK_ALERT_AMBIGUOUS,
-  SLACK_ALERT_CONNECTION_NAME,
   SLACK_ALERT_READ_LIMIT,
+  SLACK_ALERT_SETTINGS_KEYS,
   SLACK_ROW_COLUMNS,
+  type SlackAlertTokenSaveConfig,
   type SlackConnection,
   type SlackConnectionRow,
 } from '../../lib/slack-connection'
@@ -162,11 +163,11 @@ integrations.post('/slack', async (c) => {
   }
 
   // The token is sealed into credential_enc and never kept in config (#2331's
-  // contract release): saveSlackAlertConnection takes it out of the config.
+  // contract release). Only the token save's own keys go into config (#2643),
+  // so the alert switches a row already holds are kept as they stand.
   const saved = await saveSlackAlertConnection(c.env, supabase, { orgId, userId, email }, {
     bot_token: body.bot_token,
-    default_channel: body.default_channel,
-    workspace_name: body.workspace_name ?? null,
+    config: { default_channel: body.default_channel, workspace_name: body.workspace_name ?? null },
   })
   if (saved.kind === 'seal_failed') return c.json({ error: 'slack_token_seal_failed: the token could not be sealed, so nothing was saved' }, 500)
   if (saved.kind === 'store_failed') return dbError(c, saved.error)
@@ -179,17 +180,26 @@ export type SlackAlertSave =
   | { kind: 'seal_failed' }
   | { kind: 'store_failed'; error: { code?: string; message: string } }
 
+/** A row as save_slack_alert_token and save_slack_alert_settings return it: as written. */
+interface WrittenAlertRow { id: string; config: unknown; credential_enc: string | null }
+
 /**
  * The one save of the Slack alert row's bot token (#2331, #2338): seal it,
- * upsert the organization's one alert row, then edit the saved Slack copy.
- * POST /slack calls it, and so does the Connections page's Reconnect on the
- * Slack alerts login (POST /api/connections/:id/reconnect), so there is one way
- * to save that token. The token is checked with Slack (verifySlackToken)
- * before either caller gets here. `config` is the row's config with the token
- * in it: a Reconnect passes the row's own with the new token, so the channel
- * and the alert switches are kept. The token is sealed into credential_enc and
- * taken OUT of the config before the write (#2331's contract release), so no
- * plaintext is stored, a stale one included.
+ * write it onto the organization's one alert row, then edit the saved Slack
+ * copy. POST /slack calls it, and so does the Connections page's Reconnect on
+ * the Slack alerts login (POST /api/connections/:id/reconnect), so there is one
+ * way to save that token. The token is checked with Slack (verifySlackToken)
+ * before either caller gets here.
+ *
+ * `config` holds only the keys the token save owns (#2643,
+ * SLACK_ALERT_TOKEN_SAVE_KEYS): a Reconnect sends the workspace name Slack
+ * gave, the first connect the channel too. save_slack_alert_token merges them
+ * into the row's config in the one statement that writes the sealed token, so
+ * the channel and the switches stay exactly as the row holds them when it
+ * writes, even when a settings save lands at the same moment. Passing back the
+ * config the caller had read, as this did before #2643, put back a switch
+ * just turned off. The token itself is never in config (#2331's contract
+ * release): it is sealed into credential_enc.
  *
  * Who: the caller's organization's row, from the verified token; updated_by
  * names the user, so the table's trigger audits the change under them.
@@ -198,62 +208,45 @@ export async function saveSlackAlertConnection(
   env: Env,
   supabase: ReturnType<typeof createSupabaseClient>,
   who: { orgId: string; userId: string; email: string | null },
-  config: Record<string, unknown> & { bot_token: string },
+  save: { bot_token: string; config: SlackAlertTokenSaveConfig },
 ): Promise<SlackAlertSave> {
   const { orgId, userId, email } = who
-  const { bot_token: token, ...stored } = config
   let keys: SecretKeys
   let credentialEnc: string
   try {
     keys = secretKeys(env)
-    credentialEnc = await encryptSecret(token, keys)
+    credentialEnc = await encryptSecret(save.bot_token, keys)
   } catch (e) {
     console.error(`[integrations] the Slack token could not be sealed for org ${orgId}, so nothing was saved: ${formatErr(e)}`)
     return { kind: 'seal_failed' }
   }
 
-  // Upsert: the org's one alert row. The table's trigger audits it, naming
-  // updated_by.
-  //
-  // #2332 (phase 2 of #1689): the row is named 'slack' and the conflict target
-  // is UNIQUE (organization_id, service_type, name), from migration
-  // 20261017150000, which backfilled that name onto every existing row. Release
-  // 2 (20261019150000) dropped the old UNIQUE (organization_id, service_type)
-  // and the trigger that named a row saved with none, so this name is what
-  // keeps the save on the one alert row, and it must always be sent. No ops_key row
-  // may be named 'slack' (service_connections_alert_name_reserved), so this
-  // upsert can only ever land on an alert row, never on an ops connection's
-  // credential_enc. This code deploys only once that migration is applied: the
-  // deploy refuses while a merged migration is unapplied (#1829).
-  const { error } = await supabase
-    .from('service_connections')
-    .upsert(
-      {
-        organization_id: orgId,
-        service_type: 'slack',
-        name: SLACK_ALERT_CONNECTION_NAME,
-        // The catalogue's kind for a Slack bot (#2332 release 3). Never the
-        // legacy oauth, which the narrowed auth_type CHECK refuses.
-        auth_type: 'bot_token',
-        // The token is in credential_enc, not a Cloudflare secret (#2332).
-        cf_secret_key: null,
-        // A Reconnect passes the row's own config back, which was read as JSON.
-        config: stored as Json,
-        credential_enc: credentialEnc,
-        sealed_for: 'bidding_ring',
-        updated_by: userId,
-        updated_by_email: email,
-      },
-      { onConflict: 'organization_id,service_type,name' }
-    )
-    .select('id')
-    .single()
+  // The org's one alert row (#2332): save_slack_alert_token upserts on UNIQUE
+  // (organization_id, service_type, name 'slack'), as the Worker's own upsert
+  // did. No ops_key row may be named 'slack' (service_connections_alert_name_reserved),
+  // so it can only ever land on an alert row, never on an ops connection's
+  // credential_enc. It seals a legacy unsealed row (sealed_for bidding_ring,
+  // cf_secret_key cleared), and refuses a config key it does not own by name.
+  // This code deploys only once migration 20261027120000 is applied: the deploy
+  // refuses while a merged migration is unapplied (#1829).
+  const { data, error } = await supabase.rpc('save_slack_alert_token', {
+    p_organization_id: orgId,
+    p_credential_enc: credentialEnc,
+    p_config: save.config as Json,
+    p_actor: userId,
+    // The generated types call every argument text; a null email is passed as SQL NULL, which the nullable column takes.
+    p_actor_email: email as string,
+  })
+  const written = (data as WrittenAlertRow[] | null)?.[0]
+  if (error || !written) {
+    return { kind: 'store_failed', error: error ?? { message: 'save_slack_alert_token returned no row' } }
+  }
 
-  if (error) return { kind: 'store_failed', error }
-
+  // The copy entry is the row as written, so it carries the switches the row
+  // holds now, not the ones this request started from.
   const copyEdited = await copyCleared(
     async () => {
-      const entry = await copyEntryFor(keys, orgId, { config: stored, credential_enc: credentialEnc })
+      const entry = await copyEntryFor(keys, orgId, { config: written.config, credential_enc: written.credential_enc })
       if (entry !== KEEP_ENTRY) await editSlackCopyEntry(env.IDEMPOTENCY, keys, orgId, entry)
     },
     `the saved Slack copy for org ${orgId}`,
@@ -345,49 +338,66 @@ integrations.get('/slack/channels', async (c) => {
   return c.json({ channels: matches })
 })
 
-// PATCH /api/integrations/slack/settings — toggle alert preferences or change the
+// PATCH /api/integrations/slack/settings: toggle alert preferences or change the
 // default channel without re-uploading the bot token.
+//
+// Only the settings in the body are sent, and save_slack_alert_settings merges
+// them into the row's config in one statement (#2643), so a Reconnect landing
+// at the same moment keeps the workspace name and token it saved, and this save
+// keeps the switch it changed. Writing back the whole config this request had
+// read, as it did before #2643, put back the Reconnect's old workspace name.
 integrations.patch('/slack/settings', async (c) => {
   const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
   // matrix_alerts_channel is no longer taken (#2338): the bid matrix alerts post to the default channel.
-  const body = await c.req.json<{ volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_enabled?: boolean; config_alerts_enabled?: boolean; backup_alerts_enabled?: boolean }>()
+  const raw = await c.req.json<unknown>()
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return c.json({ error: 'the settings must be an object' }, 400)
+  const body = raw as Record<string, unknown>
+  const settings: Record<string, string | boolean> = {}
+  for (const key of SLACK_ALERT_SETTINGS_KEYS) {
+    const value = body[key]
+    if (value === undefined) continue
+    if (key === 'default_channel') {
+      // An empty channel leaves the saved one as it is, as it always has.
+      if (typeof value !== 'string') return c.json({ error: 'default_channel must be a channel name' }, 400)
+      if (value !== '') settings.default_channel = value
+      continue
+    }
+    if (typeof value !== 'boolean') return c.json({ error: `${key} must be true or false` }, 400)
+    settings[key] = value
+  }
 
-  const { data: rows, error: existingErr } = await alertRowQuery(supabase, orgId, `id, ${SLACK_ROW_COLUMNS}`)
+  const { data: rows, error: existingErr } = await alertRowQuery(supabase, orgId, 'id')
 
   const existingBlocked = dbErrorUnlessNotFound(c, existingErr)
   if (existingBlocked) return existingBlocked
-  const picked = pickSlackAlertRow(rows as unknown as ({ id: string } & SlackConnectionRow)[] | null)
+  const picked = pickSlackAlertRow(rows as unknown as { id: string }[] | null)
   if (picked.kind === 'ambiguous') return ambiguousAlertRow(c, orgId, 'settings change', picked.count)
   const existing = picked.row
   if (!existing) return c.json({ error: 'Slack is not connected' }, 404)
 
-  const nextConfig = {
-    ...((existing.config as Record<string, unknown> | null) ?? {}),
-    ...(body.volume_alerts_enabled !== undefined ? { volume_alerts_enabled: body.volume_alerts_enabled } : {}),
-    ...(body.default_channel ? { default_channel: body.default_channel } : {}),
-    ...(body.matrix_alerts_enabled !== undefined ? { matrix_alerts_enabled: body.matrix_alerts_enabled } : {}),
-    ...(body.config_alerts_enabled !== undefined ? { config_alerts_enabled: body.config_alerts_enabled } : {}),
-    ...(body.backup_alerts_enabled !== undefined ? { backup_alerts_enabled: body.backup_alerts_enabled } : {}),
-  }
-
-  const updateBlocked = await requireRowOr404(c, 'Slack is not connected', () =>
-    supabase
-      .from('service_connections')
-      .update({ config: nextConfig, updated_by: userId })
-      .eq('id', existing.id)
-      .eq('organization_id', orgId)
-      .select('id')
+  // No row back means the alert row went between the read and the write.
+  const { rows: written, blocked } = await rowsTouched<WrittenAlertRow>(c, 'service_connections.slack_settings', () =>
+    supabase.rpc('save_slack_alert_settings', {
+      p_organization_id: orgId,
+      p_connection_id: existing.id,
+      p_settings: settings,
+      p_actor: userId,
+    }),
   )
-  if (updateBlocked) return updateBlocked
+  if (blocked) return blocked
+  const row = written[0]
+  if (!row) return c.json({ error: 'Slack is not connected' }, 404)
 
-  // The copy entry is the new settings with the token the row holds, opened
-  // from credential_enc, its only home, so the org stays in the copy.
+  // The copy entry is the row as written (the settings with the token the row
+  // holds, opened from credential_enc, its only home), so the org stays in the
+  // copy, with a token a Reconnect saved meanwhile rather than the one this
+  // request would have read.
   const copyEdited = await copyCleared(
     async () => {
       // The ring is read in here, so a missing key can fail only the copy edit.
       const keys = secretKeys(c.env)
-      const entry = await copyEntryFor(keys, orgId, { config: nextConfig, credential_enc: existing.credential_enc })
+      const entry = await copyEntryFor(keys, orgId, { config: row.config, credential_enc: row.credential_enc })
       if (entry !== KEEP_ENTRY) await editSlackCopyEntry(c.env.IDEMPOTENCY, keys, orgId, entry)
     },
     `the saved Slack copy for org ${orgId}`,

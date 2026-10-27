@@ -72,6 +72,13 @@ function database(rows: Row[]) {
       tables.service_connections = tables.service_connections.filter((r) => !gone.includes(r))
       return { data: gone.map((r) => ({ id: r.id })) }
     },
+    // save_slack_alert_settings follows its migration (20261027120000): it merges the settings into the
+    // one alert row named, in the org named, never an ops_key row, and returns that row as written (#2643).
+    save_slack_alert_settings: (args, tables) => {
+      const hit = tables.service_connections.filter((r) => r.id === args.p_connection_id && r.organization_id === args.p_organization_id && r.service_type === 'slack' && r.name === 'slack' && r.sealed_for !== 'ops_key')
+      for (const r of hit) r.config = { ...(r.config as Row), ...(args.p_settings as Row) }
+      return { data: hit.map((r) => ({ id: r.id, config: r.config, credential_enc: r.credential_enc })) }
+    },
   })
   registerSlackKeyRing(fake.client, { encryptWith: KEY, decryptWith: [KEY] })
   vi.mocked(createSupabaseClient).mockReturnValue(fake.client as never)
@@ -165,7 +172,7 @@ describe('PATCH /integrations/slack/settings', () => {
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'Slack is not connected' })
     opsUnchanged(fake.tables.service_connections)
-    expect(fake.requests.some((r) => r.method === 'PATCH')).toBe(false)
+    expect(fake.requests.some((r) => r.method === 'PATCH' || r.path === 'rpc/save_slack_alert_settings')).toBe(false)
   })
 
   it('refuses two candidates by name and writes nothing', async () => {
@@ -173,7 +180,7 @@ describe('PATCH /integrations/slack/settings', () => {
     const res = await call('PATCH', '/integrations/slack/settings', { default_channel: '#new-alerts' })
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ error: 'slack_alert_connection_ambiguous' })
-    expect(fake.requests.some((r) => r.method === 'PATCH')).toBe(false)
+    expect(fake.requests.some((r) => r.method === 'PATCH' || r.path === 'rpc/save_slack_alert_settings')).toBe(false)
     expect((await copyEntry())?.bot_token).toBe('copy-bot-token')
   })
 })
