@@ -80,6 +80,8 @@ export const OPS_LANE_RPCS = [
   'purge_step_test_results',
   // And the records of run attempts started more than 7 days ago (#2703).
   'purge_ops_step_records',
+  // The measured identities of connections bidding never stored, removed after a complete serve (#2573): the list spans organizations.
+  'remove_unserved_measured_identities',
 ] as const
 
 /**

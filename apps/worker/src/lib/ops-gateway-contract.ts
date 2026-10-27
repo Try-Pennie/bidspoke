@@ -472,6 +472,12 @@ export const OPS_TICK_PROBLEM_RULES = {
   /** A removal is served for 7 hours, so the next tick records it again. */
   tombstone_record_failed: 'three_in_a_row',
   /**
+   * The removal of measured identities of connections bidding never stored
+   * failed (#2573). They are used by nothing, and the next complete serve asks
+   * again, so only three ticks in a row page.
+   */
+  unserved_identities_remove_failed: 'three_in_a_row',
+  /**
    * The frozen definition copies (#1950): the list of versions not held, the
    * request to the bidding Worker, or its answer's shape failed. Every version
    * not held is asked for again next tick.

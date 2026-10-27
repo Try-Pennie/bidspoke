@@ -16,6 +16,8 @@ const THREE_IN_A_ROW = [
   'start_stamp', 'db_clock', 'sweep_claim_failed', 'sweep_failed', 'workflows_fetch_failed', 'workflows_save_failed',
   'copies_read_failed', 'schedule_plan_failed', 'claim_depth_failed', 'probe_failed', 'connections_fetch_failed',
   'connections_save_failed', 'tombstone_record_failed', 'problems_left_out',
+  // The removal of measured identities bidding never stored (#2573): asked again by the next complete serve.
+  'unserved_identities_remove_failed',
   // The login states (#2340), read every tick, so the next tick asks again.
   'connection_logins_failed',
   // The sf_limits sweep's passing failure while the org's reading is still

@@ -247,6 +247,15 @@ value, a refusal naming its cause. Each method has a ceiling
 - A candidate's measured identity is replaced by the next candidate's at the same
   generation (ops migration 20261019010000); a generation ops holds is never
   overwritten (`identity_changed`).
+- A new connection's measured identity is written by verify before bidding
+  inserts its row. When the insert fails and the create route's revoke fails too
+  (`connection_create_left_on_ops`), or the Worker stops between the two, that
+  row has no copy and nothing reads it. The minute tick removes it once a
+  complete list, saved in one save and served more than an hour after the
+  measurement, does not name the connection (`remove_unserved_measured_identities`,
+  ops migration 20261027150000, #2573), logging each removal by id
+  (`unserved_identity_removed`). A removal that keeps failing pages after three
+  ticks (`unserved_identities_remove_failed`).
 - **Salesforce lease purposes** (`SF_LEASE_PURPOSES` in `run-vocabulary.ts`, and
   the CHECKs on `sf_leases` and `sf_purpose_caps`): `step`, `lookup`, `verify`,
   `connection_check` and `sf_limits`. Each but `step` needs a share of its own in
