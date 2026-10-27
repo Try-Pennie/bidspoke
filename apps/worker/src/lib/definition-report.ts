@@ -25,7 +25,7 @@ import { isWorkflowLane } from '@bidspoke/node-types'
 import { formatErr } from './format-error'
 
 /** Which write the report is about. */
-export type DefinitionWriter = 'create' | 'save' | 'restore' | 'duplicate' | 'switch_on'
+export type DefinitionWriter = 'create' | 'save' | 'restore' | 'duplicate' | 'switch_on' | 'replace_connection'
 
 export interface DefinitionReportOptions {
   writer: DefinitionWriter
