@@ -19,6 +19,7 @@ export type Database = {
       pipedream_inventory: {
         Row: {
           absent_since_export_at: string | null
+          cut_over_at: string | null
           definition_sha256: string | null
           deployment_count: number
           first_seen_export_at: string
@@ -35,6 +36,7 @@ export type Database = {
         }
         Insert: {
           absent_since_export_at?: string | null
+          cut_over_at?: string | null
           definition_sha256?: string | null
           deployment_count: number
           first_seen_export_at: string
@@ -51,6 +53,7 @@ export type Database = {
         }
         Update: {
           absent_since_export_at?: string | null
+          cut_over_at?: string | null
           definition_sha256?: string | null
           deployment_count?: number
           first_seen_export_at?: string
@@ -104,6 +107,24 @@ export type Database = {
             referencedColumns: ["pipedream_hashid"]
           },
         ]
+      }
+      workflow_replacements: {
+        Row: {
+          recorded_at: string
+          replaces_workflow_id: string
+          workflow_id: string
+        }
+        Insert: {
+          recorded_at?: string
+          replaces_workflow_id: string
+          workflow_id: string
+        }
+        Update: {
+          recorded_at?: string
+          replaces_workflow_id?: string
+          workflow_id?: string
+        }
+        Relationships: []
       }
     }
     Views: {
@@ -2576,44 +2597,6 @@ export type Database = {
           },
         ]
       }
-      service_presets: {
-        Row: {
-          auth_type: string
-          base_url: string | null
-          created_at: string
-          id: string
-          name: string
-          organization_id: string
-          slug: string
-        }
-        Insert: {
-          auth_type?: string
-          base_url?: string | null
-          created_at?: string
-          id?: string
-          name: string
-          organization_id: string
-          slug: string
-        }
-        Update: {
-          auth_type?: string
-          base_url?: string | null
-          created_at?: string
-          id?: string
-          name?: string
-          organization_id?: string
-          slug?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "service_presets_organization_id_fkey"
-            columns: ["organization_id"]
-            isOneToOne: false
-            referencedRelation: "organizations"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       sf_bid_matrix_audit: {
         Row: {
           bid_amount: number
@@ -3713,6 +3696,33 @@ export type Database = {
             }
             Returns: Json
           }
+      save_slack_alert_settings: {
+        Args: {
+          p_actor: string
+          p_connection_id: string
+          p_organization_id: string
+          p_settings: Json
+        }
+        Returns: {
+          config: Json
+          credential_enc: string
+          id: string
+        }[]
+      }
+      save_slack_alert_token: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_config: Json
+          p_credential_enc: string
+          p_organization_id: string
+        }
+        Returns: {
+          config: Json
+          credential_enc: string
+          id: string
+        }[]
+      }
       sightings_buffer_lag: {
         Args: {
           p_cap?: number

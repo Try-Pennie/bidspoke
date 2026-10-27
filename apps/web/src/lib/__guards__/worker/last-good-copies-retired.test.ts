@@ -440,9 +440,14 @@ describe('every handler writing service_connections edits the saved Slack copy (
   // neither can reach the Slack alert row and its saved copy. No route calls
   // them yet; the routes that will (build PRs 4 to 6) are enumerated through the
   // rpc like every other caller.
-  it('the only database functions writing the table are the delete by id, the two ops login write backs and the two Connections page ops writers, whose callers are held to the rule', () => {
+  // #2643 added the two Slack alert config saves, save_slack_alert_token and
+  // save_slack_alert_settings, which DO write the Slack alert row the copy
+  // holds: their callers, saveSlackAlertConnection and PATCH /slack/settings,
+  // are enumerated through the rpc above and edit the copy after the write.
+  it('the only database functions writing the table are the delete by id, the two ops login write backs, the two Connections page ops writers and the two Slack alert config saves, whose callers are held to the rule', () => {
     expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())].sort()).toEqual([
-      'delete_service_connection_by_id', 'reconnect_ops_connection', 'remove_ops_connection', 'replace_connection_envelope', 'store_rotated_envelope',
+      'delete_service_connection_by_id', 'reconnect_ops_connection', 'remove_ops_connection', 'replace_connection_envelope',
+      'save_slack_alert_settings', 'save_slack_alert_token', 'store_rotated_envelope',
     ])
     expect(found.handlers).toEqual(expect.arrayContaining(['apps/worker/src/routes/api/integrations.ts DELETE /slack']))
   })

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import TriggerConfigPanel from '../TriggerConfigPanel'
-import type { TriggerDef } from '@/types/workflow'
+import type { HttpWebhookTrigger } from '@bidspoke/workflow-definition'
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -18,12 +18,12 @@ vi.mock('@/lib/api', () => ({
 vi.mock('@/components/forms/EndpointCreateForm', () => ({ default: () => null }))
 vi.mock('@/components/forms/SourceCreateForm', () => ({ default: () => null }))
 
-const baseTrigger: TriggerDef = {
+const baseTrigger: HttpWebhookTrigger = {
   type: 'http_webhook',
   config: { method: 'POST', auth_method: 'api_key' },
 }
 
-function renderPanel(trigger: TriggerDef = baseTrigger) {
+function renderPanel(trigger: HttpWebhookTrigger = baseTrigger) {
   const onChange = vi.fn()
   render(
     <TriggerConfigPanel
@@ -46,12 +46,12 @@ describe('TriggerConfigPanel — muted failure signals (#248)', () => {
     const { onChange } = renderPanel()
     fireEvent.click(await screen.findByRole('button', { name: /add muted signal/i }))
     await waitFor(() => expect(onChange).toHaveBeenCalled())
-    const next = onChange.mock.calls.at(-1)![0] as TriggerDef
+    const next = onChange.mock.calls.at(-1)![0] as HttpWebhookTrigger
     expect(next.config.muted_failure_signals).toHaveLength(1)
   })
 
   it('edits the match string of an existing signal', async () => {
-    const trigger: TriggerDef = {
+    const trigger: HttpWebhookTrigger = {
       type: 'http_webhook',
       config: {
         method: 'POST',
@@ -63,12 +63,12 @@ describe('TriggerConfigPanel — muted failure signals (#248)', () => {
     fireEvent.change(await screen.findByPlaceholderText(/error contains/i), {
       target: { value: 'ACRO_GATEWAY' },
     })
-    const next = onChange.mock.calls.at(-1)![0] as TriggerDef
+    const next = onChange.mock.calls.at(-1)![0] as HttpWebhookTrigger
     expect(next.config.muted_failure_signals![0].match).toBe('ACRO_GATEWAY')
   })
 
   it('removes a signal', async () => {
-    const trigger: TriggerDef = {
+    const trigger: HttpWebhookTrigger = {
       type: 'http_webhook',
       config: {
         method: 'POST',
@@ -78,7 +78,7 @@ describe('TriggerConfigPanel — muted failure signals (#248)', () => {
     }
     const { onChange } = renderPanel(trigger)
     fireEvent.click(await screen.findByRole('button', { name: /remove muted signal/i }))
-    const next = onChange.mock.calls.at(-1)![0] as TriggerDef
+    const next = onChange.mock.calls.at(-1)![0] as HttpWebhookTrigger
     expect(next.config.muted_failure_signals).toHaveLength(0)
   })
 })

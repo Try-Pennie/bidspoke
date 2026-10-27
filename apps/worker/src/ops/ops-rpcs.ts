@@ -51,6 +51,8 @@ export const OPS_ORGANIZATION_RPCS = [
   'record_step_test',
   // Each step a run walks, fenced by its claim token (#2703).
   'record_ops_step',
+  // A run's checkpoint, named on its run by its holder, fenced like every run write (#1951).
+  'record_run_checkpoint',
 ] as const
 
 /**
@@ -80,6 +82,8 @@ export const OPS_LANE_RPCS = [
   'purge_step_test_results',
   // And the records of run attempts started more than 7 days ago (#2703).
   'purge_ops_step_records',
+  // The measured identities of connections bidding never stored, removed after a complete serve (#2573): the list spans organizations.
+  'remove_unserved_measured_identities',
 ] as const
 
 /**
@@ -107,6 +111,8 @@ export const OPS_ORGANIZATION_READ_ONLY_RPCS = [
   'step_test_result',
   // A past run's payload and recorded step outputs, for a step test from that run, nothing past 7 days (#2703).
   'run_step_context',
+  // The checkpoint a run names, answered to its holder alone (#1951).
+  'run_checkpoint',
 ] as const
 export const OPS_READ_ONLY_RPCS = [...OPS_LANE_READ_ONLY_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS] as const
 
