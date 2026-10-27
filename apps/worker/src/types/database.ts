@@ -2504,8 +2504,6 @@ export type Database = {
           name: string
           organization_id: string
           person_bound: boolean
-          schema_cache: Json | null
-          schema_synced_at: string | null
           sealed_for: string | null
           service_type: string
           target: Json | null
@@ -2526,8 +2524,6 @@ export type Database = {
           name: string
           organization_id: string
           person_bound?: boolean
-          schema_cache?: Json | null
-          schema_synced_at?: string | null
           sealed_for?: string | null
           service_type: string
           target?: Json | null
@@ -2548,8 +2544,6 @@ export type Database = {
           name?: string
           organization_id?: string
           person_bound?: boolean
-          schema_cache?: Json | null
-          schema_synced_at?: string | null
           sealed_for?: string | null
           service_type?: string
           target?: Json | null
