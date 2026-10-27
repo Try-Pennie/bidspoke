@@ -42,9 +42,11 @@ export const SALESFORCE_BULKHEAD_KEY = 'salesforce'
  * phase 1 of #1680). It caps post-answer work at a SHARE of the main cap: a
  * post-answer call holds a slot here and a slot of the main key, so together the
  * two keys never let more calls reach Salesforce than the main cap alone did,
- * and post-answer work can never hold more than its share of it. A pre-answer
- * call always finds the rest (at the default cap of 20, the other 14; at any cap
- * of 2 or more, one at least, see `salesforceBulkheads`).
+ * and post-answer work can never hold more than its share of it. Pre-answer
+ * calls always find the rest (at the default cap of 20, the other 14; at any cap
+ * of 2 or more, one at least, see `salesforceBulkheads`). Since #2847 the
+ * collections post may hold 3 of those 14, so the trades call and every other
+ * pre-answer call are guaranteed 11 at the default cap.
  */
 export const SALESFORCE_POST_ANSWER_BULKHEAD_KEY = 'salesforce-post-answer'
 
