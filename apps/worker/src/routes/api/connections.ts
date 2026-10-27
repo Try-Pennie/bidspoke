@@ -11,6 +11,8 @@
 //      again (build PR 6; R19, finding F116)
 // DELETE /api/connections/:id            removes one no workflow uses, then
 //      revokes it on ops (build PR 6; R9, R21)
+// POST /api/connections/:id/replace      gives each ticked workflow a new
+//      version naming another connection in its place (build PR 12; R20)
 // GET  /api/connections/:id/history  the History tab (build PR 9; R5)
 // POST /api/connections/google/sign-in, POST /api/connections/google/sign-in/finish
 //      Sign in with your own Google account (build PR 13; R17)
@@ -53,9 +55,19 @@ import { resolveSalesforceCredsFor } from '../../lib/salesforce-creds'
 import { moneyHostOf, moneyTargetIn, readMoneyHosts, readMoneyTargets, type MoneyHostReads } from '../../lib/connection-money-targets'
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import {
-  connectionRouteSentence, createRefusalSentence, isCreateRefusalCode, type ConnectionRouteRefusalCode, type CreateRefusalCode, type CreateRouteRefusalCode,
+  connectionRouteSentence, createRefusalSentence, isCreateRefusalCode, replaceIncompleteSentence, type ConnectionRouteRefusalCode, type CreateRefusalCode, type CreateRouteRefusalCode,
   type RefusalContext, type RouteRefusalContext, type VerifyRefusalCode,
 } from '../../lib/connection-create-refusals'
+import {
+  readReplaceBody, replaceComplete, replaceConnectionId, REPLACE_OUTCOMES, REPLACE_SAVE_ATTEMPTS, type ReplacedWorkflow, type ReplaceRefusal,
+} from '../../lib/connection-replace'
+import { checkDefinitionConnections, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
+import { copiedDefinitionStamp, writtenDefinitionStamp } from '../../lib/definition-stamp'
+import { reportDefinition } from '../../lib/definition-report'
+import { writeWorkflow, type WorkflowRow } from '../../lib/write-workflow'
+import { refreshWorkflowCaches } from '../../engine/definition-loader'
+import { copyCleared, copyWarning } from '../../lib/stored-copy'
+import { assertNever } from '@bidspoke/node-types'
 import { readDelegationEntryBody, readReconnectBody, reconnectLogin, reconnectValues } from '../../lib/connection-reconnect'
 import { writeAuditLog } from '../../lib/audit'
 import { requireRowsAffected } from '../../lib/db-retry'
@@ -444,6 +456,13 @@ function moneyHostReads(supabase: ReturnType<typeof createSupabaseClient>, env: 
   }
 }
 
+/**
+ * What a create that could not withdraw its verified id leaves on ops, and what
+ * removes it (#2573): for an id bidding never stored, the ops tick's first
+ * complete serve over an hour after the verify (ops/connection-serve.ts).
+ */
+const LEFT_ON_OPS = "if bidding did not store the id, a Salesforce login's measured identity left on ops is removed by the first complete serve over an hour later; no other service's verify leaves anything"
+
 /** The columns the create answers with: never credential_enc or config. */
 const CREATED_COLUMNS = 'id, name, service_type, acts_as, target, created_at'
 
@@ -481,6 +500,11 @@ const CREATED_COLUMNS = 'id, name, service_type, acts_as, target, created_at'
 //      save's error still. An error that is not the database's refusal may
 //      have landed, so the id is read back first, and a row that landed is
 //      answered as saved and never revoked.
+//      What verify records for a candidate is a Salesforce login's measured
+//      identity and nothing else (ops-connections.ts), which nothing reads for
+//      an id ops never holds a copy of. The ops tick removes it once a
+//      complete serve more than an hour later does not name the id (#2573,
+//      ops/connection-serve.ts), and logs its removal by the same id.
 //
 // Who may call it: any signed in user of the organization (jwtAuth). Whose
 // data: the caller's organization only, from the verified token; the body may
@@ -663,7 +687,7 @@ connections.post('/', async (c) => {
         .maybeSingle()
       if (readBackError) {
         // Unknown either way: nothing is revoked, and the id is named so the leftover can be found.
-        console.error(JSON.stringify({ event: 'connection_create_left_on_ops', organization_id: orgId, connection_id: connectionId, why: 'the insert failed and could not be read back, so whether it landed is unknown' }))
+        console.error(JSON.stringify({ event: 'connection_create_left_on_ops', organization_id: orgId, connection_id: connectionId, why: 'the insert failed and could not be read back, so whether it landed is unknown', left: LEFT_ON_OPS }))
         return refuse('connection_store_failed', words)
       }
       if (landed) stored = landed
@@ -674,7 +698,7 @@ connections.post('/', async (c) => {
       // behind. A failed revoke does not change the save's answer, and is named.
       const revoked = await callOpsConnections(c.env, 'revoke', { organization_id: orgId, connection_id: connectionId, generation, removed_at: new Date().toISOString() })
       if (!revoked.ok) {
-        console.error(JSON.stringify({ event: 'connection_create_left_on_ops', organization_id: orgId, connection_id: connectionId, refused: revoked.refused, why: 'verify passed, the insert failed, and the revoke of the verified id failed' }))
+        console.error(JSON.stringify({ event: 'connection_create_left_on_ops', organization_id: orgId, connection_id: connectionId, refused: revoked.refused, why: 'verify passed, the insert failed, and the revoke of the verified id failed', left: LEFT_ON_OPS }))
       }
       if (insertError.code === '23505') return refuse('connection_name_taken', words)
       if (insertError.code === '23514' && /alert_name_reserved/.test(insertError.message)) return refuse('connection_name_reserved', words)
@@ -718,6 +742,15 @@ const ROUTE_STATUS: Readonly<Record<ConnectionRouteRefusalCode, 200 | 400 | 404 
   delegation_change_failed: 503,
   delegation_list_unavailable: 503,
   delegation_change_refused: 502,
+  replace_body_invalid: 400,
+  replace_too_many: 400,
+  connection_not_replaceable: 422,
+  replace_with_not_found: 404,
+  replace_with_same: 422,
+  replace_with_other_service: 422,
+  replace_with_unusable: 422,
+  replace_with_not_yours: 422,
+  replace_uses_unreadable: 503,
 }
 
 /** The columns a Reconnect reads, of an ops_key row only: never the Slack alert row's config, which holds its token. */
@@ -782,8 +815,10 @@ type CreateRefusalAnswer = (code: CreateRefusalCode, ctx?: Partial<RefusalContex
  * what checks it, with auth.test (verifySlackToken), and nothing is asked of
  * ops. With a new bot token: checked first, then saved by the one function
  * that saves that token (saveSlackAlertConnection, which POST
- * /api/integrations/slack calls too), onto the row's own config, so the channel
- * and the four alert switches are kept. With none: the stored token is checked
+ * /api/integrations/slack calls too), which merges only the workspace name
+ * into the row's config, so the channel and the four alert switches are kept as
+ * the row holds them, even when a settings save lands at the same moment
+ * (#2643). With none: the stored token is checked
  * again and nothing is written, as for every other login. A row that was never
  * sealed is unreadable here (its plaintext is never read, #2331's contract
  * release), and a Reconnect with a new token seals it. A token Slack could not
@@ -840,9 +875,14 @@ async function reconnectSlackAlertLogin(
   if (check.kind === 'unanswered') return own('slack_unanswered')
   if (check.kind === 'refused') return own('slack_token_refused', check.slackError ? [check.slackError] : [])
 
-  const existing = row.config && typeof row.config === 'object' && !Array.isArray(row.config) ? (row.config as Record<string, unknown>) : {}
-  const config = { ...existing, bot_token: token, ...(check.team ? { workspace_name: check.team } : {}) }
-  const saved = await saveSlackAlertConnection(c.env, supabase, { orgId, userId, email }, config)
+  // Only the token and the workspace Slack named (#2643): the channel and the
+  // switches are left as the row holds them when the save writes, never put
+  // back as this request read them, which turned a switch someone had just
+  // turned off back on.
+  const saved = await saveSlackAlertConnection(c.env, supabase, { orgId, userId, email }, {
+    bot_token: token,
+    config: check.team ? { workspace_name: check.team } : {},
+  })
   if (saved.kind === 'seal_failed') return refuse.createRefusal('connection_seal_failed', words)
   if (saved.kind === 'store_failed') {
     console.error(JSON.stringify({ event: 'slack_alert_reconnect_store_failed', organization_id: orgId, connection_id: row.id, error: formatErr(saved.error) }))
@@ -1094,6 +1134,188 @@ connections.delete('/:id', async (c) => {
     return c.json({ ...removed, ops: { told: false, cause: revoked.refused, message: connectionRouteSentence(notice, { service: 'the service', secret: 'login', names: [], deleted: false }) } }, ROUTE_STATUS[notice])
   }
   return c.json({ ...removed, ops: { told: true } })
+})
+
+/** The columns Replace reads of the two connections: never credential_enc, config (the Slack row's token) or target. */
+const REPLACE_COLUMNS = 'id, name, service_type, sealed_for, person_bound, user_id'
+
+/** The columns Replace reads of a workflow it gives a new version. */
+const REPLACE_WORKFLOW_COLUMNS = 'id, name, definition, version, lane, is_active, definition_schema_version'
+
+interface ReplaceConnectionRow { id: string; name: string; service_type: string; sealed_for: string | null; person_bound: boolean; user_id: string | null }
+type ReplaceWorkflowRow = Pick<WorkflowRow, 'id' | 'name' | 'definition' | 'version' | 'lane' | 'is_active' | 'definition_schema_version'>
+
+/** Why the connection check refused a new version: the replacement itself gone, another removed connection the workflow names, or no answer. */
+function replaceRefusalOf(refusal: ConnectionCheckRefusal, replacement: string): ReplaceRefusal {
+  if (refusal.body.code !== 'workflow_connection_missing') return 'check_failed'
+  const missing = refusal.body.missing_connections ?? []
+  return missing.length === 0 || missing.some((m) => m.id.toLowerCase() === replacement) ? 'replacement_removed' : 'names_removed_connection'
+}
+
+// POST /api/connections/:id/replace (build PR 12; R20, D20)
+//   body { with: <connection id>, workflows: [<workflow id>, ...] }, the ticked ones
+//   200 { outcome: 'replaced' | 'incomplete', connection: { id }, with: { id, name },
+//         workflows: [{ id, name, outcome, version?, why? }], message?, stored_copy_warning? }
+//       replaced: every ticked workflow names the replacement now, newly or
+//       already (so a Replace run twice writes nothing the second time);
+//       incomplete: some do not, and message names each, why, and what to do
+//       (lib/connection-replace.ts has each workflow's outcomes)
+//   otherwise { error, message }, and nothing was written
+//
+// Each ticked workflow that names the connection (connection_references, the
+// one predicate the Remove refusal reads) gets a new version through
+// writeWorkflow's save, from the version read, with every string naming the
+// connection replaced by the replacement's id (replaceConnectionId, the same
+// predicate's rule). Before each write it asks the connection check, as every
+// definition writer does; the store's trigger refuses a replacement removed
+// after that check. A save that loses to someone else's (stale_version) is read
+// again and made on top of theirs, so their change is kept, up to
+// REPLACE_SAVE_ATTEMPTS times. A soft deleted workflow cannot get a new version
+// (write_workflow writes none), so it is named and left. The version keeps the
+// rules stamp it had, since only one id changed; an unstamped one takes this
+// build's, which a save must carry. Each written workflow's stored copy is
+// refreshed and its write audited as a workflow update under the person, as
+// the canvas save is; the GitHub backup is not pushed, as a version restore
+// does not push it either.
+//
+// Who may call it: any signed in user of the organization (jwtAuth). Whose
+// data: both connections and every workflow are read by the caller's
+// organization from the verified token, the body may name no organization,
+// and a ticked workflow that does not name the connection in this organization
+// is never read. The replacement must be an ops connection of the same service,
+// and not someone else's own Google account, which only its owner may use in a
+// workflow (Dan, 2026-10-23); the executor refuses a step bound by anyone else.
+connections.post('/:id/replace', async (c) => {
+  const { orgId, userId, email, name } = c.get('user')
+  const id = c.req.param('id').toLowerCase()
+  const refuse = (code: ConnectionRouteRefusalCode, ctx: Partial<RouteRefusalContext> = {}) => {
+    console.warn(JSON.stringify({ event: 'connection_replace_refused', code, organization_id: orgId, connection_id: UUID.test(id) ? id : null }))
+    return c.json({ error: code, message: connectionRouteSentence(code, { service: 'the service', secret: 'login', names: [], deleted: false, ...ctx }) }, ROUTE_STATUS[code])
+  }
+  if (!UUID.test(id)) return refuse('connection_not_found')
+  const body = readReplaceBody(await c.req.json().catch(() => null))
+  if (!body.ok) return refuse(body.code)
+  if (body.with === id) return refuse('replace_with_same')
+
+  const supabase = createSupabaseClient(c.env)
+  const { data: pair, error: pairError } = await supabase
+    .from('service_connections')
+    .select(REPLACE_COLUMNS)
+    .eq('organization_id', orgId)
+    .in('id', [id, body.with])
+    .limit(2)
+  if (pairError) {
+    console.error(JSON.stringify({ event: 'connection_replace_unreadable', organization_id: orgId, connection_id: id, what: 'connections', error: formatErr(pairError) }))
+    return refuse('replace_uses_unreadable')
+  }
+  const rows = (pair ?? []) as ReplaceConnectionRow[]
+  const source = rows.find((r) => r.id === id)
+  const replacement = rows.find((r) => r.id === body.with)
+  if (!source) return refuse('connection_not_found')
+  if (source.sealed_for !== 'ops_key') return refuse('connection_not_replaceable')
+  if (!replacement) return refuse('replace_with_not_found')
+  if (replacement.sealed_for !== 'ops_key') return refuse('replace_with_unusable', { names: [SLACK_ALERT_LOGIN_NAME] })
+  if (replacement.service_type !== source.service_type) return refuse('replace_with_other_service', { names: [replacement.name], service: serviceNameOf(source.service_type) })
+  if (replacement.person_bound && replacement.user_id !== userId) return refuse('replace_with_not_yours', { names: [replacement.name] })
+
+  const { data: refs, error: refsError } = await supabase.rpc('connection_references', { p_organization_id: orgId, p_connection_id: id })
+  if (refsError) {
+    if (refsError.code === 'P0002' && /connection_not_found/.test(refsError.message)) return refuse('connection_not_found')
+    console.error(JSON.stringify({ event: 'connection_replace_unreadable', organization_id: orgId, connection_id: id, what: 'connection_references', error: formatErr(refsError) }))
+    return refuse('replace_uses_unreadable')
+  }
+  const using = new Map((Array.isArray(refs) ? refs as Array<{ workflow_id: string; name: string; deleted: boolean }> : []).map((r) => [r.workflow_id.toLowerCase(), r]))
+
+  const actor = { id: userId, email, name }
+  const message = `Replaced ${source.name} with ${replacement.name}`
+  const results: ReplacedWorkflow[] = []
+  let copiesRefreshed = true
+  for (const workflowId of body.workflows) {
+    const ref = using.get(workflowId)
+    if (!ref) { results.push({ id: workflowId, name: null, outcome: 'not_using' }); continue }
+    if (ref.deleted) { results.push({ id: workflowId, name: ref.name, outcome: 'deleted' }); continue }
+    const named = { id: workflowId, name: ref.name }
+    let result: ReplacedWorkflow | null = null
+    for (let attempt = 1; attempt <= REPLACE_SAVE_ATTEMPTS && result === null; attempt += 1) {
+      const { data: read, error: readError } = await supabase
+        .from('workflows')
+        .select(REPLACE_WORKFLOW_COLUMNS)
+        .eq('id', workflowId)
+        .eq('organization_id', orgId)
+        .is('deleted_at', null)
+        .maybeSingle()
+      if (readError) {
+        console.error(JSON.stringify({ event: 'connection_replace_unreadable', organization_id: orgId, workflow_id: workflowId, what: 'workflow', error: formatErr(readError) }))
+        result = { ...named, outcome: 'refused', why: 'unreadable' }
+        break
+      }
+      const row: ReplaceWorkflowRow | null = read
+      if (!row) { result = { ...named, outcome: 'deleted' }; break }
+      const rewrite = replaceConnectionId(row.definition, id, body.with)
+      if (rewrite.replaced === 0) { result = { ...named, outcome: 'not_using' }; break }
+
+      const refusal = await checkDefinitionConnections(supabase, orgId, rewrite.definition)
+      if (refusal) { result = { ...named, outcome: 'refused', why: replaceRefusalOf(refusal, body.with) }; break }
+
+      const replacedStamp = copiedDefinitionStamp(row) ?? writtenDefinitionStamp()
+      const report = reportDefinition(rewrite.definition, { writer: 'replace_connection', workflowId, lane: row.lane, live: row.is_active === true, schemaVersion: replacedStamp })
+      const written = await writeWorkflow(supabase, {
+        op: 'save',
+        orgId,
+        workflowId,
+        expectedVersion: row.version,
+        fields: { definition: rewrite.definition, definition_schema_version: replacedStamp, definition_report: report, message },
+        saveId: null,
+        actor,
+        storedDefinition: row.definition,
+      })
+      switch (written.kind) {
+        case 'written': {
+          const version = written.workflow.version
+          copiesRefreshed = (await copyCleared(async () => { await refreshWorkflowCaches(workflowId, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${workflowId} caches`)) && copiesRefreshed
+          await writeAuditLog(supabase, orgId, 'workflow', workflowId, 'updated', userId, { replaced_connection: id, with_connection: body.with, version })
+          result = { ...named, outcome: 'replaced', version }
+          break
+        }
+        case 'stale':
+          // Someone else saved it after the read: read it again and make the change on top of theirs.
+          break
+        case 'not_found':
+          result = { ...named, outcome: 'deleted' }
+          break
+        case 'connection_refused':
+          result = { ...named, outcome: 'refused', why: replaceRefusalOf(written.refusal, body.with) }
+          break
+        case 'refused':
+          console.error(JSON.stringify({ event: 'connection_replace_write_refused', organization_id: orgId, workflow_id: workflowId, reason: written.reason, detail: written.detail }))
+          result = { ...named, outcome: 'refused', why: 'write_refused' }
+          break
+        case 'failed':
+          // A timeout or a dropped connection may have committed, so it is not claimed either way.
+          console.error(JSON.stringify({ event: 'connection_replace_unconfirmed', organization_id: orgId, workflow_id: workflowId, error: formatErr(written.error) }))
+          result = { ...named, outcome: 'failed' }
+          break
+        default:
+          return assertNever(written, 'write_workflow answer')
+      }
+    }
+    results.push(result ?? { ...named, outcome: 'changed' })
+  }
+
+  const complete = replaceComplete(results)
+  console.log(JSON.stringify({
+    event: 'connection_replaced', organization_id: orgId, connection_id: id, with_connection: body.with,
+    outcomes: Object.fromEntries(REPLACE_OUTCOMES.map((o) => [o, results.filter((r) => r.outcome === o).length])),
+  }))
+  const sentence = replaceIncompleteSentence(results, source.name, replacement.name)
+  return c.json({
+    outcome: complete ? 'replaced' : 'incomplete',
+    connection: { id },
+    with: { id: replacement.id, name: replacement.name },
+    workflows: results,
+    ...(sentence ? { message: sentence } : {}),
+    ...copyWarning(copiesRefreshed),
+  })
 })
 
 /** What a Google list refusal from ops is answered as: unconfirmed when the change may have been made, refused when it is Bidspoke's fault. */

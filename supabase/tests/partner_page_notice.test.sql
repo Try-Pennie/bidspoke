@@ -233,7 +233,6 @@ INSERT INTO partner_value_columns VALUES
   ('lead_sightings', 'partners_attempted', 'the sighting''s recorded outcome, history kept by design'),
   ('lead_sightings', 'partners_responded', 'the sighting''s recorded outcome, history kept by design'),
   ('organizations', 'slug', 'an organization, not a partner'),
-  ('service_presets', 'slug', 'a service preset, not a partner'),
   ('sf_bid_matrix_audit', 'partner_flags', 'a snapshot of the Salesforce bid matrix, not a partner setting'),
   ('api_sources', 'name', 'an API source''s own name, which a source partner''s slug can equal'),
   ('source_workflow_assignments', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),

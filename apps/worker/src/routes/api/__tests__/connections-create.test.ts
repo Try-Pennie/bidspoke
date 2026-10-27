@@ -27,6 +27,9 @@ import { opsServiceEntry } from '../../../ops/connections/services'
 import { supabaseServiceEntry } from '../../../ops/connections/supabase-service'
 import { rpcStub } from '../../../test-setup/rpc-stub'
 import type { AuthorizeInput } from '../../../ops/connections/service-rules'
+import { saveServedConnections, type ConnectionServeDb } from '../../../ops/connection-serve'
+import type { UnservedIdentityRemoved } from '../../../ops/ops-writes'
+import { CONNECTION_SERVE_WINDOW_MS } from '../../../lib/ops-gateway-contract'
 
 const fixtures = vi.hoisted(() => {
   // The shipped Google entry declares its drives since #2572, so the route's drive check is driven through it.
@@ -1002,6 +1005,99 @@ describe('a verify that passed, then an insert that failed: nothing is left behi
     expect(((await res.json()) as Refusal).error).toBe('connection_store_failed')
     const id = parseVerifyRequest(binding.verify.mock.calls[0][0]).connection_id
     expect(errors.some((l) => l.includes('connection_create_left_on_ops') && l.includes(id))).toBe(true)
+  })
+
+  // #2573, end to end: the route's double failure, then the ops tick's serves.
+  // What verify leaves on ops for a candidate is a Salesforce login's measured
+  // identity and nothing else (ops-connections.ts), so that is what this ops
+  // double keeps, with the ops clock injected. Its removal keeps the rule
+  // remove_unserved_measured_identities holds, proven against Postgres in
+  // supabase-ops/supabase/tests/unserved_measured_identities.test.sql.
+  it('a revoke that also fails leaves a measured identity that the first complete serve over an hour on removes, while a stored connection\'s stays (#2573)', async () => {
+    const T0 = Date.parse('2026-10-27T15:00:00.000Z')
+    let opsNow = T0
+    const measured = new Map<string, { organizationId: string; generation: number; measuredAt: number }>()
+    const copies = new Set<string>()
+    const ops: ConnectionServeDb = {
+      async saveConnectionCopies(_servedAt, _complete, list) {
+        for (const c of list) copies.add(c.connectionId)
+        return { inserted: list.length, updated: 0, confirmed: 0, refusedOlder: 0, refusedExpired: 0, refusedRemoved: 0, withdrawn: 0 }
+      },
+      recordConnectionTombstone: async () => ({ outcome: 'recorded', copiesRemoved: 0 }),
+      async removeUnservedMeasuredIdentities(servedAt, named) {
+        const before = Math.min(Date.parse(servedAt), opsNow) - 60 * 60_000
+        const removed: UnservedIdentityRemoved[] = []
+        for (const [id, m] of measured) {
+          if (m.measuredAt < before && !named.includes(id) && !copies.has(id)) {
+            measured.delete(id)
+            removed.push({ organizationId: m.organizationId, connectionId: id, generation: m.generation, measuredAt: new Date(m.measuredAt).toISOString() })
+          }
+        }
+        return removed
+      },
+    }
+
+    const storeOpts: StoreOptions = { insertError: { code: '57014', message: 'canceling statement due to statement timeout' } }
+    const store = storeDouble([], storeOpts)
+    vi.mocked(createSupabaseClient).mockReturnValue(store as never)
+    const errors: string[] = []
+    vi.mocked(console.error).mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(' ')) })
+    const { env, binding } = makeEnv({
+      verify: async (r) => {
+        measured.set(r.connection_id, { organizationId: r.organization_id, generation: r.candidate!.generation, measuredAt: opsNow })
+        return verified()(r)
+      },
+      revoke: async () => ({ ok: false, refused: 'revoke_unrecorded', detail: 'the ops tombstone could not be written', retry_at: null }),
+    })
+
+    // The double failure: verify passed, the insert failed, the revoke failed.
+    const failed = await post(env, salesforce())
+    expect(failed.status).toBe(503)
+    expect(((await failed.json()) as Refusal).error).toBe('connection_store_failed')
+    const orphan = parseVerifyRequest(binding.verify.mock.calls[0][0]).connection_id
+    expect(binding.revoke).toHaveBeenCalledTimes(1)
+    expect(store.rows).toHaveLength(0)
+    expect(measured.has(orphan)).toBe(true)
+    expect(errors.some((l) => l.includes('connection_create_left_on_ops') && l.includes(orphan) && l.includes('first complete serve'))).toBe(true)
+
+    // A second save, at the same moment, whose insert lands.
+    delete storeOpts.insertError
+    const saved = await post(env, salesforce({ name: 'Second Salesforce' }))
+    expect(saved.status).toBe(201)
+    const stored = ((await saved.json()) as { connection: { id: string } }).connection.id
+    expect(measured.has(stored)).toBe(true)
+
+    // The bidding Worker's serve: every ops row it holds, as readOpsConnections serves it.
+    const serve = (at: number) => async () => ({
+      served_at: new Date(at).toISOString(),
+      complete: true,
+      connections: store.rows.filter((r) => r.sealed_for === 'ops_key').map((r) => ({
+        id: r.id, organization_id: r.organization_id, service: r.service_type, generation: r.credential_generation,
+        envelope: JSON.parse(String(r.credential_enc)), public_config: {}, target: r.target, owner_user_id: null,
+        serve_until: new Date(at + CONNECTION_SERVE_WINDOW_MS).toISOString(),
+      })),
+      tombstones: [],
+    })
+
+    // Half an hour on, a create's insert could still be landing: nothing is removed.
+    opsNow = T0 + 30 * 60_000
+    const early = await saveServedConnections(ops, serve(opsNow))
+    expect(early.problems).toEqual([])
+    expect(early.unservedIdentitiesRemoved).toEqual([])
+    expect(measured.has(orphan)).toBe(true)
+
+    // Over an hour on, the complete list that does not name it proves bidding never stored it.
+    opsNow = T0 + 61 * 60_000
+    const later = await saveServedConnections(ops, serve(opsNow))
+    expect(later.problems).toEqual([])
+    expect(later.unservedIdentitiesRemoved).toEqual([{ organizationId: ORG, connectionId: orphan, generation: 1, measuredAt: new Date(T0).toISOString() }])
+    expect(later.counts.connection_unserved_identities_removed).toBe(1)
+    expect(measured.has(orphan)).toBe(false)
+    expect(measured.has(stored)).toBe(true)
+
+    // And nothing more on the next serve.
+    opsNow = T0 + 62 * 60_000
+    expect((await saveServedConnections(ops, serve(opsNow))).unservedIdentitiesRemoved).toEqual([])
   })
 
   it('an insert whose answer was lost but which landed is read back and answered as saved, and nothing is revoked', async () => {

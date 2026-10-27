@@ -94,6 +94,7 @@ function opsDb() {
       return r
     },
     recordConnectionTombstone: async () => ({ outcome: 'recorded', copiesRemoved: 0 }),
+    removeUnservedMeasuredIdentities: async () => [],
     // The sf_limits sweep stands down with the rest (#2336).
     sfLimitsTargets: async () => { throw new Error('not claimed') },
     recordSfLimitsReading: async () => { throw new Error('not claimed') },

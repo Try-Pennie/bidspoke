@@ -16,12 +16,12 @@
  * Every clock is injected: the worker clock is set an hour away from the
  * database clock, so a fire computed on the wrong one is visible.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MAX_DEFINITIONS_PER_REQUEST, OPS_TICK_PROBLEM_RULES } from '../../lib/ops-gateway-contract'
 import { organizationIdFrom, type OrganizationId } from '../ops-db'
 import {
   OpsWriteTimeoutError, type ConnectionCopyInput, type SaveConnectionCopiesResult, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
-  type WorkflowCopy, type WorkflowCopyInput,
+  type UnservedIdentityRemoved, type WorkflowCopy, type WorkflowCopyInput,
 } from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
 import { ConnectionRefusal, RequeueAt } from '../connections/refusals'
@@ -199,6 +199,8 @@ function fake(opts: {
   probe?: (t: ConnectionCheckTarget) => Promise<ProbeAnswer>
   /** What each connection's ConnectionTokenObject answers the write back read with; none held by default. */
   writeBack?: (t: ConnectionCheckTarget) => Promise<unknown>
+  /** The measured identities of connections bidding never stored that a complete serve removes (#2573); none by default. */
+  unservedRemoved?: UnservedIdentityRemoved[]
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
@@ -284,6 +286,7 @@ function fake(opts: {
       return { inserted: list.length, updated: 0, confirmed: 0, refusedOlder: 0, refusedExpired: 0, refusedRemoved: 0, withdrawn: 0 }
     },
     async recordConnectionTombstone() { fail('recordConnectionTombstone'); return { outcome: 'recorded' as const, copiesRemoved: 0 } },
+    async removeUnservedMeasuredIdentities() { fail('removeUnservedMeasuredIdentities'); return opts.unservedRemoved ?? [] },
   }
   const dispatched: DispatchItem[] = []
   const stamps: string[] = []
@@ -1264,6 +1267,7 @@ describe('problem keys (#2506)', () => {
       ...failsOn('recordConnectionTombstone'),
       fetchConnections: async () => ({ ...servedConnections(), tombstones: [{ connection_id: GONE, organization_id: ORG, generation: 1, removed_at: '2026-10-17T10:00:00.000Z' }] }),
     }, [`tombstone_record_failed:${GONE}`]],
+    ['a removal of unserved measured identities that fails', failsOn('removeUnservedMeasuredIdentities'), ['unserved_identities_remove_failed']],
   ]
 
   it.each(cases)('keys %s', async (_label, opts, keys) => {
@@ -1271,6 +1275,23 @@ describe('problem keys (#2506)', () => {
     expect(report.problem_keys).toEqual(keys)
     // One key per sentence, in the same order, so the bidding Worker pages the sentences it judged.
     expect(report.problems).toHaveLength(keys.length)
+  })
+
+  it('logs each measured identity of a connection bidding never stored by its id when a complete serve removes it, and counts them (#2573)', async () => {
+    const ORPHAN = '00000000-0000-4000-8000-0000000025a1'
+    const lines: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
+    try {
+      const report = await runOpsTick(fake({ unservedRemoved: [{ organizationId: ORG, connectionId: ORPHAN, generation: 1, measuredAt: '2026-10-17T09:00:00+00:00' }] }).ports)
+      expect(report.problem_keys).toEqual([])
+    } finally {
+      spy.mockRestore()
+    }
+    const logged = lines.filter((l) => l.startsWith('{')).map((l) => JSON.parse(l) as Record<string, unknown>)
+    const removed = logged.filter((l) => l.step === 'unserved_identity_removed')
+    expect(removed).toEqual([expect.objectContaining({ event: 'ops_tick', organization_id: ORG, connection_id: ORPHAN, generation: 1, measured_at: '2026-10-17T09:00:00+00:00' })])
+    const finished = logged.find((l) => l.step === 'finished')
+    expect(finished?.connection_unserved_identities_removed).toBe(1)
   })
 
   it('names no key on a healthy tick', async () => {

@@ -22,7 +22,10 @@
  *  3. invokeRun (run-invocation.ts) with the ops database's own functions,
  *     the real clock, a UUIDv7 execution id, and the body for the definition
  *     (run-body.ts), whose app_action steps send through connectionFetch with
- *     the OpsConnections live dependencies (ops-connections-live.ts, #2339).
+ *     the OpsConnections live dependencies (ops-connections-live.ts, #2339),
+ *     and whose slice boundaries follow OPS_CONTINUATION (#1951,
+ *     liveContinuation below): off, or observe, which writes each boundary's
+ *     checkpoint to OPS_CHECKPOINTS and names it on the run.
  */
 import { uuidv7 } from '@bidspoke/uuidv7'
 import { parseServedOpsDefinitions } from '../lib/ops-gateway-contract'
@@ -33,9 +36,12 @@ import type { OpsEnv } from './index'
 import { opsInternalIdentity, OpsInternalRefused } from './internal'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, organizationIdFrom, type OpsSupabaseClient } from './ops-db'
 import {
-  completeRunRequest, extendRunLease, readWorkflowDefinition, recordOpsStep, recordSendIntent, recordSendResult, saveWorkflowDefinition, startRunExecution,
+  completeRunRequest, extendRunLease, readRunCheckpoint, readWorkflowDefinition, recordOpsStep, recordRunCheckpoint, recordSendIntent, recordSendResult,
+  saveWorkflowDefinition, startRunExecution,
   type ClaimedRun,
 } from './ops-writes'
+import { CONTINUATION_BUDGET, checkpointStoreFrom, continuationModeFrom, type ContinuationBudget } from './checkpoint'
+import type { OpsWalkContinuation } from './continuation'
 import { appActionDeps } from './app-action'
 import { liveOpsConnectionsDeps } from './ops-connections-live'
 import { opsStepHandlers, runBodyFor } from './run-body'
@@ -59,6 +65,8 @@ export interface RunLiveDeps {
   clock?: RunClock
   newExecutionId?: () => string
   delay?: (ms: number) => Promise<void>
+  /** For tests: the slice budget, CONTINUATION_BUDGET otherwise. */
+  continuationBudget?: ContinuationBudget
 }
 
 /** The real clock: a timer that resolves at once when its signal aborts, so none outlives the wait it bounds. */
@@ -79,7 +87,25 @@ export function liveRunDb(client: OpsSupabaseClient): RunDb {
     recordIntent: (run, intent) => recordSendIntent(client, run.organizationId, { ...intent, runRequestId: run.runRequestId, claimToken: run.claimToken }),
     recordResult: (run, ledgerId, result) => recordSendResult(client, run.organizationId, ledgerId, result),
     recordStep: (run, executionId, record) => recordOpsStep(client, run.organizationId, { runRequestId: run.runRequestId, claimToken: run.claimToken, executionId }, record),
+    recordCheckpoint: (run, ack) => recordRunCheckpoint(client, run.organizationId, { runRequestId: run.runRequestId, claimToken: run.claimToken }, ack),
+    readCheckpoint: (run) => readRunCheckpoint(client, run.organizationId, run.runRequestId, run.claimToken),
     complete: (run, end) => completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, end),
+  }
+}
+
+/**
+ * Time sliced continuation as this deploy runs it (#1951): OPS_CONTINUATION's
+ * mode (off unless it names one this build runs), the OPS_CHECKPOINTS bucket,
+ * looked for only at a boundary so off never needs it, and one log line per
+ * event. The tick reports an unknown mode or a missing bucket by name every
+ * minute (tick-live.ts), so neither is silent.
+ */
+export function liveContinuation(env: OpsEnv, budget: ContinuationBudget = CONTINUATION_BUDGET): OpsWalkContinuation {
+  return {
+    mode: continuationModeFrom(env.OPS_CONTINUATION).mode,
+    budget,
+    store: () => checkpointStoreFrom(env),
+    log: (fields) => console.log(JSON.stringify(fields)),
   }
 }
 
@@ -156,5 +182,5 @@ export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveD
       const live = liveOpsConnectionsDeps(env, { opensLogins: true, ...(deps.opsFetch ? { opsFetch: deps.opsFetch } : {}) })
       return { ...live.connection, rulesFor: (service) => live.services(service)?.rules }
     }),
-  })))
+  }), { continuation: liveContinuation(env, deps.continuationBudget) }))
 }
