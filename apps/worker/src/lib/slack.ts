@@ -1146,9 +1146,27 @@ interface TimeoutUnderProvisionedWarning {
     configured_ms: number
     suggested_ms: number
     p99_ms: number
+    max_ms: number
     sample_size: number
+    retries: number
     severity: 'red' | 'amber'
   }>
+}
+
+/**
+ * One under-provisioned step, saying what was measured (2026-10-27). The alert
+ * carries only red steps, and red is the timeout below the slowest run when the
+ * step has no retries and below the p99 when it has some (timeoutSeverity), so
+ * the line names whichever it was. It used to say "most runs would time out" of
+ * both, which neither measures.
+ */
+export function underProvisionedLine(n: TimeoutUnderProvisionedWarning['nodes'][number], nodeUrl: string): string {
+  const ms = (v: number) => `${v.toLocaleString('en-US')}ms`
+  const runs = n.sample_size.toLocaleString('en-US')
+  const head = `• <${nodeUrl}|${n.label || n.namespace}> (${n.type}): `
+  return n.retries === 0
+    ? `${head}set to ${ms(n.configured_ms)} with no retries, and its slowest of ${runs} recent runs took ${ms(n.max_ms)}, so a run that slow fails. Try ${ms(n.suggested_ms)} (p99 ${ms(n.p99_ms)}).`
+    : `${head}set to ${ms(n.configured_ms)}, below the p99 of ${ms(n.p99_ms)} over ${runs} recent runs, so more than 1 run in 100 takes longer and is retried. Try ${ms(n.suggested_ms)}.`
 }
 
 /**
@@ -1202,16 +1220,11 @@ export async function sendTimeoutConfigAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Below the suggested value:* ${underCount} step${underCount === 1 ? '' : 's'} ${underCount === 1 ? 'has' : 'have'} a timeout below what typical run history clears: most runs at this step time out or burn a retry, not just the rare slow outlier.`,
+        text: `*Below the suggested value:* ${underCount} step${underCount === 1 ? '' : 's'} ${underCount === 1 ? 'has' : 'have'} a timeout that recent runs have taken longer than. A step with no retries fails such a run; a step with retries spends one on it.`,
       },
     })
     for (const w of underProvisioned) {
-      const lines = w.nodes
-        .slice(0, 20)
-        .map((n) => {
-          const nodeUrl = `${appUrl}/workflows/${w.workflow_id}?node=${n.node_id}`
-          return `• <${nodeUrl}|${n.label || n.namespace}> (${n.type}): set to ${n.configured_ms.toLocaleString()}ms, most runs would time out. Try ${n.suggested_ms.toLocaleString()}ms (p99 ${n.p99_ms.toLocaleString()}ms over ${n.sample_size.toLocaleString()} runs)`
-        })
+      const lines = w.nodes.slice(0, 20).map((n) => underProvisionedLine(n, `${appUrl}/workflows/${w.workflow_id}?node=${n.node_id}`))
       const more = w.nodes.length > 20 ? `\n_and ${w.nodes.length - 20} more_` : ''
       blocks.push({
         type: 'section',

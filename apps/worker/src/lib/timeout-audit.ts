@@ -78,6 +78,8 @@ export interface UnderProvisionedNode {
   sample_size: number
   /** The window (in days) this node's p99 locked at; gauges sample confidence. */
   window_days: number | null
+  /** The retries severity was judged with: red is below max with none, below p99 with some. */
+  retries: number
   severity: 'red' | 'amber'
 }
 
@@ -265,9 +267,9 @@ export function findOverProvisionedNodes(
  * Pure scan: nodes whose configured timeout is below what their run history
  * suggests. Sub-floor nodes are excluded — they're already flagged by
  * findSubFloorNodes and listing them twice would double-report. Severity
- * mirrors the config panel: red when typical runs time out in practice
- * (below p99 with retries, below max without), amber when only headroom
- * is missing.
+ * mirrors the config panel: red when the timeout is below the p99 with
+ * retries, or below the slowest run without (so more than 1 run in 100 is
+ * retried, or a run that slow fails), amber when only headroom is missing.
  */
 export function findUnderProvisionedNodes(
   definition: WorkflowDefinition | null | undefined,
@@ -297,6 +299,7 @@ export function findUnderProvisionedNodes(
       max_ms: stats.max_ms,
       sample_size: stats.sample_size,
       window_days: stats.window_days ?? null,
+      retries,
       severity: timeoutSeverity(timeout, stats.p99, stats.max_ms, retries),
     })
   }
@@ -319,7 +322,8 @@ export function findUnderProvisionedNodes(
  * but the same low-urgency tier as over-provisioned nodes, which are already
  * dashboard-only. Without this, a node sitting a few hundred ms under its
  * suggestion (configured essentially at, not meaningfully below, the
- * suggested value) paged the same as one that fails on every typical run.
+ * suggested value) paged the same as one whose timeout is below its p99 or
+ * its slowest run.
  */
 export function isAlertWorthyUnderProvision(node: UnderProvisionedNode): boolean {
   if (node.severity !== 'red') return false
