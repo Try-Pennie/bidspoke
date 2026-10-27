@@ -50,6 +50,7 @@ import {
   type ResourceWaitCause, type SfBudgetSource, type SfLeaseOutcome, type SfLeasePurpose, type TriggerKind,
   STEP_TEST_STATUSES, type StepTestStatus,
   OPS_STEP_RECORD_OUTCOMES, OPS_STEP_RECORD_STATUSES, type OpsStepRecordOutcome, type OpsStepRecordStatus,
+  CHECKPOINT_ACK_OUTCOMES, type CheckpointAckOutcome,
 } from './run-vocabulary'
 import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
@@ -642,6 +643,15 @@ export interface WorkflowCopyInput {
   rowUpdatedAt: string
   versionNumber: number | null
   trigger: unknown
+  /** What its schedule's floor is taken from (#1952), as served; saved under its own order, by served_at. */
+  porting: CopyPorting
+}
+
+/** A copy's porting facts (#1952): ServedOpsWorkflowPorting, as the ops Worker names it. */
+export interface CopyPorting {
+  ported: boolean
+  cutoverAt: string | null
+  replaces: string[]
 }
 
 export interface SaveCopiesResult {
@@ -672,6 +682,7 @@ export async function saveWorkflowCopies(
       row_updated_at: c.rowUpdatedAt,
       version_number: c.versionNumber,
       trigger: c.trigger ?? null,
+      porting: { ported: c.porting.ported, cutover_at: c.porting.cutoverAt, replaces: c.porting.replaces },
     })),
   }, options))
   return {
@@ -704,6 +715,27 @@ export interface WorkflowCopy {
   lastServed: string | null
   lastObserved: string | null
   dbNow: string
+  /**
+   * The porting facts as the list that served them said (#1952), with that
+   * list's served_at; null for a copy never told them (saved by an ops release
+   * before #1952), whose floor is unknown.
+   */
+  porting: (CopyPorting & { servedAt: string }) | null
+  /** The latest slot fired or observed by any workflow it replaces, within its organization. */
+  replacedLastSlot: string | null
+}
+
+/** A copy's porting facts as workflow_copies answers them: all four columns null, or all told. */
+function copyPorting(name: string, row: Row): WorkflowCopy['porting'] {
+  const servedAt = field(name, row, 'porting_served_at', isTimeOrNull, 'a time or null')
+  const ported = field(name, row, 'ported', (v): v is boolean | null => v === null || isBool(v), 'true, false or null')
+  const replaces = field(name, row, 'replaces', (v): v is string[] | null => v === null || (Array.isArray(v) && v.every(isString)), 'a list of workflow ids or null')
+  const cutoverAt = field(name, row, 'cutover_at', isTimeOrNull, 'a time or null')
+  if (servedAt === null && ported === null && replaces === null && cutoverAt === null) return null
+  if (servedAt === null || ported === null || replaces === null) {
+    throw new OpsWriteError(`${name} returned porting facts for workflow ${String(row.workflow_id)} that are only partly told`)
+  }
+  return { ported, cutoverAt, replaces, servedAt }
 }
 
 export async function readWorkflowCopies(
@@ -735,6 +767,8 @@ export async function readWorkflowCopies(
       lastServed: field(name, row, 'last_served', isTimeOrNull, 'a time or null'),
       lastObserved: field(name, row, 'last_observed', isTimeOrNull, 'a time or null'),
       dbNow: field(name, row, 'db_now', isTime, 'a time'),
+      porting: copyPorting(name, row),
+      replacedLastSlot: field(name, row, 'replaced_last_slot', isTimeOrNull, 'a time or null'),
     }
   })
   return { copies, reachedLimit: copies.length === limit }
@@ -1662,6 +1696,77 @@ export async function readRunStepContext(
     payloadElsewhere: field(name, row, 'payload_elsewhere', isBool, 'true or false'),
     contextBytes: field(name, row, 'context_bytes', isIntOrNull, 'a whole number or null'),
     steps,
+  }
+}
+
+// ── a run's checkpoint (#1951, ops migration 20261027150000) ───────────────
+
+/** What a holder names when it acknowledges a checkpoint it wrote to R2 (checkpoint.ts). */
+export interface CheckpointAck {
+  executionId: string
+  /** The state version the holder's start answered, which the key carries. */
+  stateVersion: number
+  steps: number
+  key: string
+  sha256: string
+  bytes: number
+}
+
+/**
+ * Names the checkpoint on its run. stale means the run is not this holder's
+ * running attempt at this state version any more, and nothing was written;
+ * superseded that the run names a later checkpoint of this holder;
+ * already_recorded a repeat of an acknowledgement that landed.
+ */
+export async function recordRunCheckpoint(
+  client: OpsSupabaseClient, organizationId: OrganizationId, fence: { runRequestId: string; claimToken: string }, ack: CheckpointAck, options?: OpsRpcOptions,
+): Promise<CheckpointAckOutcome> {
+  const name = 'record_run_checkpoint'
+  const data = await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_run_request_id: fence.runRequestId, p_claim_token: fence.claimToken, p_execution_id: ack.executionId,
+    p_state_version: ack.stateVersion, p_steps: ack.steps, p_checkpoint_key: ack.key, p_sha256: ack.sha256, p_bytes: ack.bytes,
+  }, options)
+  if (!oneOf(CHECKPOINT_ACK_OUTCOMES)(data)) throw new OpsWriteError(`${name} returned ${JSON.stringify(data)?.slice(0, 40) ?? 'nothing'}, not a checkpoint outcome`)
+  return data
+}
+
+/** The checkpoint a run names, as the resume trusts it (checkpoint.ts CheckpointPointer). */
+export interface NamedCheckpoint {
+  key: string
+  stateVersion: number
+  steps: number
+  sha256: string
+  bytes: number
+}
+
+/** What run_checkpoint answers: the run is not this holder's (held false), or its state version and the checkpoint it names, null for none. */
+export type RunCheckpointRead = { held: false } | { held: true; stateVersion: number; checkpoint: NamedCheckpoint | null }
+
+export async function readRunCheckpoint(
+  client: OpsSupabaseClient, organizationId: OrganizationId, runRequestId: string, claimToken: string, options?: OpsRpcOptions,
+): Promise<RunCheckpointRead> {
+  const name = 'run_checkpoint'
+  const all = rows(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_run_request_id: runRequestId, p_claim_token: claimToken }, options))
+  if (all.length === 0) return { held: false }
+  if (all.length !== 1) throw new OpsWriteError(`${name} returned ${all.length} rows, expected at most 1`)
+  const row = all[0]
+  const stateVersion = field(name, row, 'state_version', isInt, 'a whole number')
+  const pointer = ['checkpoint_key', 'checkpoint_state_version', 'checkpoint_steps', 'checkpoint_sha256', 'checkpoint_bytes', 'checkpoint_execution_id', 'checkpoint_at']
+  const set = pointer.filter((k) => row[k] !== null && row[k] !== undefined).length
+  if (set === 0) return { held: true, stateVersion, checkpoint: null }
+  // The database holds the pointer whole or not at all; a half one is never read as none.
+  if (set !== pointer.length) throw new OpsWriteError(`${name} returned a checkpoint with only ${set} of its ${pointer.length} parts`)
+  const isSha = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)
+  return {
+    held: true,
+    stateVersion,
+    checkpoint: {
+      key: field(name, row, 'checkpoint_key', isString, 'a key'),
+      stateVersion: field(name, row, 'checkpoint_state_version', isInt, 'a whole number'),
+      steps: field(name, row, 'checkpoint_steps', isInt, 'a whole number'),
+      sha256: field(name, row, 'checkpoint_sha256', isSha, 'a digest'),
+      bytes: field(name, row, 'checkpoint_bytes', isInt, 'a whole number'),
+    },
   }
 }
 
