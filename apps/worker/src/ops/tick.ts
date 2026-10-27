@@ -557,17 +557,23 @@ function lastServedMs(c: WorkflowCopy, live: boolean): number | null {
 /**
  * How one claimed run ended, as the tick counts it (L77): lost covers a lost
  * claim, a start or complete that failed and a dispatch that failed (each
- * leaves the run to the lease sweep); requeued a retry or a wait; ended a run
- * of a workflow switched off or deleted, ended without running.
+ * leaves the run to the lease sweep); requeued a retry or a wait; requeue_capped
+ * a rate limit wait the database ended failed at the requeue cap (#2859);
+ * failed a run that failed, including a wait the database ended (a resource
+ * wait past its 24 hours); ended a run of a workflow switched off or deleted,
+ * ended without running.
  */
-export type RunTally = 'done' | 'lost' | 'unknown' | 'requeued' | 'failed' | 'ended'
+export type RunTally = 'done' | 'lost' | 'unknown' | 'requeued' | 'requeue_capped' | 'failed' | 'ended'
 
 function tallyOf(report: RunInvocationReport): RunTally {
   if (report.outcome !== 'completed') return 'lost'
   switch (report.end.outcome) {
     case 'done': return 'done'
-    case 'retry':
-    case 'suspend': return 'requeued'
+    case 'retry': return 'requeued'
+    // A wait is what the database made of it: failed when it ended the run instead.
+    case 'suspend':
+      if (report.runStatus !== 'failed') return 'requeued'
+      return report.end.reason === 'rate_limit_wait' ? 'requeue_capped' : 'failed'
     case 'needs_human': return report.end.reason === 'send_outcome_unknown' ? 'unknown' : 'lost'
     case 'failed':
     case 'dead': return 'failed'
@@ -589,7 +595,13 @@ async function dispatchOneRun(ports: OpsTickPorts, db: OpsTickDb | null, copies:
       await db.completeRun(run, { outcome: 'dead', reason })
       return { workflowId: run.workflowId, tally: 'ended' }
     }
-    return { workflowId: run.workflowId, tally: tallyOf(await ports.dispatchRun(run)) }
+    const report = await ports.dispatchRun(run)
+    const tally = tallyOf(report)
+    // A run stopped at the requeue cap names its step, host and status, so the page says which host kept refusing.
+    if (tally === 'requeue_capped' && report.outcome === 'completed' && 'error' in report.end && report.end.error !== undefined) {
+      return { workflowId: run.workflowId, tally, error: report.end.error }
+    }
+    return { workflowId: run.workflowId, tally }
   } catch (err) {
     return { workflowId: run.workflowId, tally: 'lost', error: formatErr(err) }
   }
@@ -597,9 +609,10 @@ async function dispatchOneRun(ports: OpsTickPorts, db: OpsTickDb | null, copies:
 
 /**
  * The runs' outcomes counted against a rate, per workflow (L77, #1950). Every
- * unknown send pages at once: the run waits for a person. Lost and requeued runs
- * page, held for three ticks, once they reach RUN_OUTCOME_FAILING_RATE of at
- * least RUN_OUTCOME_MIN_RUNS runs of one workflow in the tick.
+ * unknown send pages at once: the run waits for a person. Lost, requeued and
+ * requeue capped runs (#2859) page, held for three ticks, once they reach
+ * RUN_OUTCOME_FAILING_RATE of at least RUN_OUTCOME_MIN_RUNS runs of one
+ * workflow in the tick.
  */
 function judgeRunOutcomes(
   results: ReadonlyArray<{ workflowId: string; tally: RunTally; error?: string }>,
@@ -609,7 +622,7 @@ function judgeRunOutcomes(
   const byWorkflow = new Map<string, Record<RunTally, number> & { runs: number; errors: string[] }>()
   for (const r of results) {
     bump(counts, `runs_${r.tally}`)
-    const w = byWorkflow.get(r.workflowId) ?? { runs: 0, done: 0, lost: 0, unknown: 0, requeued: 0, failed: 0, ended: 0, errors: [] }
+    const w = byWorkflow.get(r.workflowId) ?? { runs: 0, done: 0, lost: 0, unknown: 0, requeued: 0, requeue_capped: 0, failed: 0, ended: 0, errors: [] }
     w.runs++
     w[r.tally]++
     if (r.error) w.errors.push(r.error)
@@ -619,10 +632,11 @@ function judgeRunOutcomes(
     if (w.unknown > 0) {
       problem('run_outcome_unknown', `${w.unknown} ${w.unknown === 1 ? 'run' : 'runs'} of workflow ${workflowId} made a send whose outcome is unknown (no answer, a dropped connection, or a 503 to a send that cannot be repeated), so ${w.unknown === 1 ? 'it waits' : 'they wait'} for a person (needs_human, send_outcome_unknown).`, workflowId)
     }
-    const failing = w.lost + w.requeued
+    const failing = w.lost + w.requeued + w.requeue_capped
     if (w.runs >= RUN_OUTCOME_MIN_RUNS && failing / w.runs >= RUN_OUTCOME_FAILING_RATE) {
       const first = w.errors[0] ? ` The first error: ${w.errors[0]}.` : ''
-      problem('runs_failing', `${failing} of the ${w.runs} runs of workflow ${workflowId} this tick were lost (${w.lost}) or requeued (${w.requeued}).${first}`, workflowId)
+      const capped = w.requeue_capped > 0 ? `, or ${w.requeue_capped} stopped at the requeue cap, a service that kept asking them to wait` : ''
+      problem('runs_failing', `${failing} of the ${w.runs} runs of workflow ${workflowId} this tick were lost (${w.lost}) or requeued (${w.requeued})${capped}.${first}`, workflowId)
     }
   }
 }

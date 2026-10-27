@@ -926,6 +926,39 @@ describe('run outcomes counted against a rate (L77, #1950)', () => {
     expect((await runOpsTick(few.ports)).problem_keys ?? []).not.toContain(`runs_failing:${WF_A}`)
   })
 
+  // #2859: a step stopped at the requeue cap is its own tally, counted against
+  // the same rate, and its error names the step, host and status, so a host that
+  // keeps refusing is seen.
+  it('counts a run stopped at the requeue cap against the rate, naming the host that kept refusing', async () => {
+    const capped: RunInvocationReport = {
+      outcome: 'completed',
+      end: { outcome: 'suspend', reason: 'rate_limit_wait', step: 'post', status: 429, notBefore: new Date(WORKER_NOW + 60_000), error: 'step post (POST quota.example.com): rate_limited, answered 429, asked to wait until 2026-10-17T10:03:31.000Z' },
+      runStatus: 'failed',
+    }
+    const waiting: RunInvocationReport = { ...capped, runStatus: 'suspended' }
+    const done: RunInvocationReport = { outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' }
+    const reports = [capped, capped, done]
+    const f = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2), claimedRun(WF_A, 3)], runReport: async (run) => reports[Number(run.runRequestId.slice(-1)) - 1] })
+    const report = await runOpsTick(f.ports)
+    expect(report.counts).toMatchObject({ runs_requeue_capped: 2, runs_done: 1 })
+    expect(report.counts.runs_failed).toBeUndefined()
+    expect(report.problem_keys).toContain(`runs_failing:${WF_A}`)
+    expect(report.problems.join(' ')).toMatch(/2 stopped at the requeue cap/)
+    expect(report.problems.join(' ')).toContain('POST quota.example.com')
+
+    // A wait the database took is a requeue, not the cap.
+    const w = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)], runReport: async () => waiting })
+    expect((await runOpsTick(w.ports)).counts).toMatchObject({ runs_requeued: 1 })
+  })
+
+  it('a resource wait the database ended past its 24 hours is counted failed, not requeued', async () => {
+    const exceeded: RunInvocationReport = { outcome: 'completed', end: { outcome: 'suspend', reason: 'resource_wait', cause: 'pool_full', notBefore: new Date(WORKER_NOW) }, runStatus: 'failed' }
+    const f = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)], runReport: async () => exceeded })
+    const counts = (await runOpsTick(f.ports)).counts
+    expect(counts.runs_failed).toBe(1)
+    expect(counts.runs_requeued).toBeUndefined()
+  })
+
   it('counts each workflow apart: one workflow failing does not page for another', async () => {
     const f = fake({
       mode: 'live',

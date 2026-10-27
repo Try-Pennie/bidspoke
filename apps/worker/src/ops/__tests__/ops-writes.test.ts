@@ -311,6 +311,31 @@ describe('the typed wrappers', () => {
     expect(done).toEqual({ outcome: 'completed', runStatus: 'failed' })
   })
 
+  it('complete: a rate limit wait sends its step, the status that asked for it, its error and wake time (#2859)', async () => {
+    const { client, calls } = rpcFetch([{ outcome: 'completed', run_status: 'suspended', state_version: 8 }])
+    const done = await completeRunRequest(client, ORG, RUN, TOKEN, {
+      outcome: 'suspend', reason: 'rate_limit_wait', step: 'notify', status: 429, notBefore: new Date('2026-10-27T13:05:00Z'),
+      error: 'step notify (POST api.example.test): rate_limited, answered 429, asked to wait until 2026-10-27T13:05:00.000Z',
+    })
+    expect(done).toEqual({ outcome: 'completed', runStatus: 'suspended' })
+    expect(calls[0].body).toEqual({
+      p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_outcome: 'suspend', p_reason: 'rate_limit_wait',
+      p_error: 'step notify (POST api.example.test): rate_limited, answered 429, asked to wait until 2026-10-27T13:05:00.000Z',
+      p_not_before: '2026-10-27T13:05:00.000Z', p_step: 'notify', p_status: 429,
+    })
+    // No request made (a token endpoint 429): the status is sent as null, never left out.
+    const none = rpcFetch([{ outcome: 'completed', run_status: 'failed', state_version: 9 }])
+    expect(await completeRunRequest(none.client, ORG, RUN, TOKEN, {
+      outcome: 'suspend', reason: 'rate_limit_wait', step: 'notify', status: null, notBefore: new Date('2026-10-27T13:05:00Z'), error: 'x',
+    })).toEqual({ outcome: 'completed', runStatus: 'failed' })
+    expect(none.calls[0].body).toMatchObject({ p_step: 'notify', p_status: null })
+  })
+
+  it('claim: a start resumed from a rate limit wait is not charged either (#2859)', () => {
+    expect(lastChargedAttempt({ attempts: 2, unchargedAttempts: 1, maxAttempts: 2, resumeReason: 'rate_limit_wait' })).toBe(false)
+    expect(lastChargedAttempt({ attempts: 2, unchargedAttempts: 1, maxAttempts: 2, resumeReason: 'retry' })).toBe(true)
+  })
+
   it('complete: refuses a resource wait whose cause is not one the database takes, sending nothing', async () => {
     const { client, calls } = rpcFetch([])
     await expect(completeRunRequest(client, ORG, RUN, TOKEN, {
