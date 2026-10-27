@@ -133,10 +133,18 @@ function testContext(run: ClaimedRun, signal: AbortSignal, now: () => number): R
   }
 }
 
+/**
+ * A kept result as it crosses the binding. An answer over the cap is the one
+ * kept with no output and a size (record_step_test stores a size beside a null
+ * output only when given one, which only keepOutput's over the cap case does),
+ * so an action that answered nothing, kept as null with no size, is never
+ * read as dropped (#2773).
+ */
 function view(stored: StoredStepTest): StepTestView {
   return {
     node_id: stored.nodeId, namespace: stored.namespace, tested_by: stored.testedBy, tested_at: stored.testedAt, status: stored.status,
-    output: stored.output, output_bytes: stored.outputBytes, error: stored.error, requests: stored.requests, duration_ms: stored.durationMs,
+    output: stored.output, output_bytes: stored.outputBytes, output_dropped: stored.output === null && stored.outputBytes !== null,
+    error: stored.error, requests: stored.requests, duration_ms: stored.durationMs,
   }
 }
 
@@ -267,9 +275,10 @@ export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, 
     else error = formatErr(err)
   }
 
-  // Only an answer over the cap is kept by its size; a plain null answer is kept as null.
+  // Only an answer over the cap is kept by its size; an action that answered nothing is kept
+  // as null with no size, and answered so too, so it never reads as dropped (#2773).
   const kept = error === null ? keepOutput(output) : null
-  const outputBytes = kept === null ? null : kept.bytes
+  const outputBytes = kept === null || kept.output === null ? (kept?.outputBytes ?? null) : kept.bytes
   const result: StepTestRecord = {
     nodeId: request.node.id,
     namespace: request.node.namespace,
