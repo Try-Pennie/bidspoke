@@ -18,6 +18,8 @@ const THREE_IN_A_ROW = [
   'connections_save_failed', 'tombstone_record_failed', 'problems_left_out',
   // A copy never told its porting facts (#1952): told by the next served list.
   'schedule_floor_unknown',
+  // The removal of measured identities bidding never stored (#2573): asked again by the next complete serve.
+  'unserved_identities_remove_failed',
   // The login states (#2340), read every tick, so the next tick asks again.
   'connection_logins_failed',
   // The sf_limits sweep's passing failure while the org's reading is still

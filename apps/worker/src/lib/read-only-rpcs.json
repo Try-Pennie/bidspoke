@@ -53,6 +53,8 @@
     "replace_connection_envelope",
     "remove_ops_connection",
     "reconnect_ops_connection",
+    "save_slack_alert_token",
+    "save_slack_alert_settings",
     "write_workflow",
     "create_oauth_state",
     "claim_oauth_state"
