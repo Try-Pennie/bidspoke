@@ -51,7 +51,7 @@ api.route('/sources', sources)
 api.route('/partners', partners)
 api.route('/partner-bid-configs', partnerBidConfigs)
 api.route('/access', access)
-// HTTP Services presets are retired (#2338): their routes are gone, and the service_presets table stays until #2638 drops it.
+// HTTP Services presets are retired (#2338): their routes are gone, and #2638 dropped their table.
 api.route('/stats', stats)
 api.route('/connections', connections)
 api.route('/endpoints', endpointRoutes)
