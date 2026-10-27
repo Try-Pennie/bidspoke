@@ -36,7 +36,9 @@
  *     (#1950: the runner tells a 503 that may have been applied from a 429
  *     that was not), unless the service's rules say a rate limit on this
  *     request is its answer (answersRateLimit: Snowflake's status poll, whose
- *     429 means still running), when the response is handed back. The service's declared
+ *     429 means still running), or that a 429 is no rate limit at all
+ *     (notRateLimited: OpenAI's insufficient_quota, which no wait clears,
+ *     #2673), when the response is handed back. The service's declared
  *     expiry signal renews the token once and retries once; a second is
  *     needs_reauth. A body that can be read only once is never sent twice.
  *  7. The response handed back has every known secret scrubbed from its headers
@@ -149,13 +151,16 @@ export interface ConnectionCall {
 
 /** Something worth knowing that does not change the answer. Names only. */
 export interface ConnectionEvent {
-  readonly event: 'sf_lease_release_failed' | 'needs_reauth_unrecorded' | 'refresh_unrecorded' | 'sf_budget_reading_unrecorded' | 'sf_limit_info_unreadable'
+  readonly event:
+    | 'sf_lease_release_failed' | 'needs_reauth_unrecorded' | 'refresh_unrecorded' | 'sf_budget_reading_unrecorded' | 'sf_limit_info_unreadable'
+    | 'rate_limit_check_failed'
   readonly connection_id: string
   readonly purpose: SfLeasePurpose
   /**
    * A name from a closed set, never a value: the parser's refusal for
-   * sf_limit_info_unreadable, and write_failed or deadline for
-   * sf_budget_reading_unrecorded.
+   * sf_limit_info_unreadable, write_failed or deadline for
+   * sf_budget_reading_unrecorded, and taken_as_rate_limit for
+   * rate_limit_check_failed (the way the 429 was answered: a RequeueAt).
    */
   readonly cause?: string
 }
@@ -483,6 +488,22 @@ function rateLimited(response: Response, now: number): RequeueAt | null {
   return new RequeueAt(at === null ? new Date(now + RATE_LIMIT_DEFAULT_MS) : clampedRetry(now, at), 'rate_limited', response.status)
 }
 
+/**
+ * Whether the service says this 429 is no rate limit (ServiceRules.notRateLimited, #2673),
+ * judged on a clone within the deadline. A check that throws or runs late cannot tell, so
+ * the 429 stays a rate limit, the RequeueAt it always was, and the report says it was taken
+ * that way: a wrongly requeued refusal comes back next time, a wrongly failed step does not.
+ */
+async function notRateLimited(deps: ConnectionFetchDeps, call: ConnectionCall, rules: ServiceRules, response: Response, deadline: Deadline): Promise<boolean> {
+  if (response.status !== 429 || rules.notRateLimited === undefined) return false
+  try {
+    return await beforeDeadline(Promise.resolve(rules.notRateLimited(response.clone())), deadline)
+  } catch {
+    safeReport(deps, { event: 'rate_limit_check_failed', connection_id: call.connectionId, purpose: call.purpose, cause: 'taken_as_rate_limit' })
+    return false
+  }
+}
+
 /** A response nobody will read: its body is cancelled, so it does not hold the connection open. */
 function discard(response: Response): void {
   response.body?.cancel().catch(() => undefined)
@@ -710,8 +731,11 @@ async function sendWithRenewal(
     }
     observeBudget(deps, call, budget, response)
 
-    // A service may declare a rate limit on some requests to be its answer (Snowflake's statement poll, #1950).
-    const requeue = rules.answersRateLimit?.({ method, url: new URL(url) }) ? null : rateLimited(response, deps.now())
+    // A service may declare a rate limit on some requests to be its answer (Snowflake's statement poll, #1950),
+    // and some 429s to be no rate limit at all (OpenAI's insufficient_quota, #2673).
+    const requeue = rules.answersRateLimit?.({ method, url: new URL(url) }) || await notRateLimited(deps, call, rules, response, deadline)
+      ? null
+      : rateLimited(response, deps.now())
     if (requeue) {
       discard(response)
       return requeue
