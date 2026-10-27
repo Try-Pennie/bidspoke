@@ -908,16 +908,22 @@ async function renewAlertedStatusIfDue(kv: KVNamespace, id: string, record: Aler
  * `withJobRun` at all, and a failed read answers the same way, so an empty
  * result may only ever leave the original verdict standing (L98, L345). It is
  * therefore consulted ONLY to WITHDRAW an accusation, never to make one.
+ *
+ * `startedAfter` limits the answer to runs that began after that instant. The
+ * caller passes the end of the stamped run's allowance, so the finish of the
+ * very run the stale stamp records cannot be read as a later run the stamp
+ * missed (2026-10-27: it was, and "missing its heartbeat" was posted five
+ * minutes before "is dark" about one undelivered run).
  */
-export async function lastFinishedRun(supabase: SupabaseClient, jobId: string): Promise<string | null> {
+export async function lastFinishedRun(supabase: SupabaseClient, jobId: string, startedAfter: string | null = null): Promise<string | null> {
   try {
-    const query = supabase
+    let filtered = supabase
       .from('job_runs')
       .select('finished_at')
       .eq('job', jobId)
       .not('finished_at', 'is', null)
-      .order('finished_at', { ascending: false })
-      .limit(1)
+    if (startedAfter !== null) filtered = filtered.gt('started_at', startedAfter)
+    const query = filtered.order('finished_at', { ascending: false }).limit(1)
     // On the scheduled client (#2061): one read under the tick's bounded deadline,
     // and none once the tick has seen the database fail. Unbounded, a stalled
     // database held this read past the 50 s minute deadline (45 s and the
@@ -988,7 +994,13 @@ async function lookAt(supabase: SupabaseClient, kv: KVNamespace, job: CronJob, n
   // has never run" about it is simply false (L11).
   let status = verdict.status
   if (status === 'stale' || status === 'never_ran') {
-    const finished = await lastFinishedRun(supabase, job.id)
+    // With a stamp, only a run that began after the stamped run's allowance is
+    // evidence of a run the stamp missed: the stamped run's own finish lands
+    // inside staleMs for as long as that run took, and says nothing about a
+    // later one. Stale implies the stamp parsed; never_ran has no stamp.
+    const stampedMs = lastRan ? Date.parse(lastRan) : NaN
+    const startedAfter = Number.isFinite(stampedMs) ? new Date(stampedMs + job.maxRunMs).toISOString() : null
+    const finished = await lastFinishedRun(supabase, job.id, startedAfter)
     const finishedMs = finished ? Date.parse(finished) : NaN
     if (Number.isFinite(finishedMs) && nowMs - finishedMs <= job.staleMs) status = 'unstamped'
   }

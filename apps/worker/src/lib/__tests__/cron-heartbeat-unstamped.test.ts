@@ -40,12 +40,17 @@ function fakeKv(initial: Record<string, string> = {}) {
   } as unknown as KVNamespace & { store: Map<string, string>; ttls: Map<string, number | undefined> }
 }
 
+/** A completed run as job_runs holds it, when its start matters to the test. */
+type RunRow = { started: string; finished: string }
+
 /**
- * Answers the two reads this check makes. `runs` maps a job id to the ISO
- * finish time of its newest completed run; a job absent from the map has no
- * evidence either way, which is the common case and must not be read as proof.
+ * Answers the two reads this check makes. `runs` maps a job id to its newest
+ * completed run: the ISO finish time alone, or the run's start and finish. A
+ * job absent from the map has no evidence either way, which is the common case
+ * and must not be read as proof. A `started_at` filter is honoured as Postgres
+ * would: a row with no recorded start never passes it.
  */
-function fakeSupabase(runs: Record<string, string | null>, opts: { runsError?: boolean } = {}): SupabaseClient {
+function fakeSupabase(runs: Record<string, string | RunRow | null>, opts: { runsError?: boolean } = {}): SupabaseClient {
   return {
     from: (table: string) => {
       if (table === 'job_runs') {
@@ -56,16 +61,24 @@ function fakeSupabase(runs: Record<string, string | null>, opts: { runsError?: b
             return chain
           },
           not: () => chain,
+          gt: (col: string, value: string) => {
+            if (col === 'started_at') chain._startedAfter = value
+            return chain
+          },
           order: () => chain,
           limit: () => {
             if (opts.runsError) return Promise.resolve({ data: null, error: { message: 'read failed' } })
-            const finished = runs[chain._job as string]
+            const run = runs[chain._job as string]
+            const row = typeof run === 'string' ? { started: null, finished: run } : run
+            const passes =
+              row && (chain._startedAfter === null || (row.started !== null && Date.parse(row.started) > Date.parse(chain._startedAfter)))
             return Promise.resolve({
-              data: finished ? [{ finished_at: finished }] : [],
+              data: row && passes ? [{ started_at: row.started, finished_at: row.finished }] : [],
               error: null,
             })
           },
           _job: '' as string,
+          _startedAfter: null as string | null,
         }
         return chain
       }
@@ -171,6 +184,48 @@ describe('a registered job with no heartbeat stamp', () => {
     const results = await runHeartbeatChecks(supabase, kv, NOW)
 
     expect(results.find((r) => r.jobId === JOB)?.status).toBe('never_ran')
+  })
+
+  // 2026-10-27: Cloudflare never delivered the 10:37 UTC run of the sightings
+  // export. Its last run stamped its start at 08:45:49 UTC and finished at
+  // 08:46:58, recorded in job_runs. At 11:46:41 the stamp was past the three
+  // hour threshold and the finish was not, so the check posted "missing its
+  // heartbeat ... job_runs records it finishing a run within its usual
+  // interval", citing the finish of the very run whose start is the stale
+  // stamp. Five minutes later the finish aged out too and it posted "is dark".
+  // The finish of the stamped run says nothing about a later run, so only a run
+  // that began after the stamped run's allowance can withdraw the accusation.
+  it('stays dark when the only finished run in job_runs is the one the stale stamp records', async () => {
+    const SE = 'sightings-export'
+    const now = Date.parse('2026-10-27T11:46:41.000Z')
+    const kv = fakeKv({
+      ...allFreshExcept(SE, now),
+      [heartbeatKey(SE)]: '2026-10-27T08:45:49.000Z',
+      [completedKey(SE)]: '2026-10-27T08:46:58.060Z',
+    })
+    const supabase = fakeSupabase({ [SE]: { started: '2026-10-27T08:45:49.702Z', finished: '2026-10-27T08:46:58.060Z' } })
+
+    const results = await runHeartbeatChecks(supabase, kv, now)
+
+    expect(results.find((r) => r.jobId === SE)?.status).toBe('stale')
+    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[0]?.[3]).toBe('stale')
+  })
+
+  it('is unstamped when job_runs shows a run that began after the stamped run, while the stamp stayed old', async () => {
+    // The control for the test above: the stamp stuck at 08:45 while a later
+    // run, started at 10:37 and so not the stamped one, finished in job_runs.
+    const SE = 'sightings-export'
+    const now = Date.parse('2026-10-27T11:46:41.000Z')
+    const kv = fakeKv({
+      ...allFreshExcept(SE, now),
+      [heartbeatKey(SE)]: '2026-10-27T08:45:49.000Z',
+      [completedKey(SE)]: '2026-10-27T08:46:58.060Z',
+    })
+    const supabase = fakeSupabase({ [SE]: { started: '2026-10-27T10:37:45.000Z', finished: '2026-10-27T10:39:10.000Z' } })
+
+    const results = await runHeartbeatChecks(supabase, kv, now)
+
+    expect(results.find((r) => r.jobId === SE)?.status).toBe('unstamped')
   })
 
   it('does not consult job_runs for a healthy job, so the common path costs nothing', async () => {
