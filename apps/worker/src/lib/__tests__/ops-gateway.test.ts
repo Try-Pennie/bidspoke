@@ -268,6 +268,21 @@ describe('runOpsTickReportCheck', () => {
     expect(d.sent[0].fixHint).not.toMatch(/OPS_SUPABASE/)
   })
 
+  // #1951: neither is a secret, so the default "wrangler secret put" would send the reader to change nothing (L111).
+  it('names the run checkpoint bucket\'s and the continuation mode\'s own remedies, never a secret put', async () => {
+    for (const [name, remedy] of [
+      ['OPS_CHECKPOINTS', /wrangler r2 bucket create bidspoke-ops-checkpoints/],
+      ['OPS_CONTINUATION', /OPS_CONTINUATION.*wrangler\.ops\.toml/],
+    ] as const) {
+      const store = kv()
+      store.m.set(OPS_TICK_REPORT_KEY, stored({ outcome: 'not_configured', problems: ['x'], not_configured_secrets: [name] }))
+      const d = deps()
+      await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)
+      expect(d.sent[0].fixHint, name).toMatch(remedy)
+      expect(d.sent[0].fixHint, name).not.toMatch(/secret put/)
+    }
+  })
+
   it('names a secret it has no written remedy for, rather than offering another secret\'s steps', async () => {
     const store = kv()
     store.m.set(OPS_TICK_REPORT_KEY, stored({ outcome: 'not_configured', problems: ['x'], not_configured_secrets: ['OPS_SOMETHING_NEW'] }))

@@ -64,6 +64,8 @@ import {
   recordOpsStep,
   readRunStepContext,
   purgeOpsStepRecords,
+  recordRunCheckpoint,
+  readRunCheckpoint,
 } from '../ops-writes'
 import type { ResourceWaitCause } from '../run-vocabulary'
 
@@ -938,5 +940,54 @@ describe('the step record wrappers (#2703)', () => {
     const { client, calls } = rpcFetch([{ purged: 4, more: true }])
     expect(await purgeOpsStepRecords(client, 1000)).toEqual({ purged: 4, more: true })
     expect(calls[0]).toEqual({ path: '/rest/v1/rpc/purge_ops_step_records', body: { p_limit: 1000 } })
+  })
+})
+
+// A run's acknowledged checkpoint (#1951, ops migration 20261027150000).
+describe('the checkpoint wrappers (#1951)', () => {
+  const EXEC = '0199f0a0-0000-7000-8000-0000000000e1'
+  const KEY = `checkpoints/v1/${ORG}/${RUN}/4-2.json`
+  const SHA = 'a'.repeat(64)
+  const ack = { executionId: EXEC, stateVersion: 4, steps: 2, key: KEY, sha256: SHA, bytes: 900 }
+
+  it('record_run_checkpoint sends the fence and the pointer, and answers its outcome', async () => {
+    const { client, calls } = rpcFetch('recorded')
+    expect(await recordRunCheckpoint(client, ORG, { runRequestId: RUN, claimToken: TOKEN }, ack)).toBe('recorded')
+    expect(calls[0]).toEqual({
+      path: '/rest/v1/rpc/record_run_checkpoint',
+      body: {
+        p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_execution_id: EXEC, p_state_version: 4, p_steps: 2,
+        p_checkpoint_key: KEY, p_sha256: SHA, p_bytes: 900,
+      },
+    })
+    for (const outcome of ['already_recorded', 'superseded', 'stale']) {
+      expect(await recordRunCheckpoint(rpcFetch(outcome).client, ORG, { runRequestId: RUN, claimToken: TOKEN }, ack)).toBe(outcome)
+    }
+  })
+
+  it('record_run_checkpoint refuses an answer it does not know, never reading it as recorded', async () => {
+    await expect(recordRunCheckpoint(rpcFetch('maybe').client, ORG, { runRequestId: RUN, claimToken: TOKEN }, ack)).rejects.toThrow(/record_run_checkpoint returned/)
+    await expect(recordRunCheckpoint(rpcFetch(null).client, ORG, { runRequestId: RUN, claimToken: TOKEN }, ack)).rejects.toThrow(/record_run_checkpoint returned/)
+  })
+
+  it('run_checkpoint reads the run\'s state version and the checkpoint it names, nulls as none, and no row as not held', async () => {
+    const row = {
+      state_version: 6, checkpoint_key: KEY, checkpoint_state_version: 4, checkpoint_steps: 2, checkpoint_sha256: SHA, checkpoint_bytes: 900,
+      checkpoint_execution_id: EXEC, checkpoint_at: '2026-10-27T14:00:00Z',
+    }
+    const { client, calls } = rpcFetch([row])
+    expect(await readRunCheckpoint(client, ORG, RUN, TOKEN)).toEqual({
+      held: true, stateVersion: 6, checkpoint: { key: KEY, stateVersion: 4, steps: 2, sha256: SHA, bytes: 900 },
+    })
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/run_checkpoint', body: { p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN } })
+    const none = Object.fromEntries(Object.keys(row).map((k) => [k, k === 'state_version' ? 6 : null]))
+    expect(await readRunCheckpoint(rpcFetch([none]).client, ORG, RUN, TOKEN)).toEqual({ held: true, stateVersion: 6, checkpoint: null })
+    expect(await readRunCheckpoint(rpcFetch([]).client, ORG, RUN, TOKEN)).toEqual({ held: false })
+  })
+
+  it('run_checkpoint refuses a half pointer or a malformed one, never reading it as no checkpoint', async () => {
+    const half = { state_version: 6, checkpoint_key: KEY, checkpoint_state_version: null, checkpoint_steps: 2, checkpoint_sha256: SHA, checkpoint_bytes: 900, checkpoint_execution_id: EXEC, checkpoint_at: 'x' }
+    await expect(readRunCheckpoint(rpcFetch([half]).client, ORG, RUN, TOKEN)).rejects.toThrow(/run_checkpoint returned/)
+    await expect(readRunCheckpoint(rpcFetch([{ state_version: 6 }, { state_version: 6 }]).client, ORG, RUN, TOKEN)).rejects.toThrow(/run_checkpoint returned 2 rows/)
   })
 })

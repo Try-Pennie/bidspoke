@@ -226,6 +226,32 @@ describe('OPS_TICK_MODE (#1950)', () => {
   })
 })
 
+describe('OPS_CONTINUATION (#1951)', () => {
+  const bucket = {} as R2Bucket
+
+  it('unset, or observe with its bucket bound, is configured', async () => {
+    const { env } = configured()
+    for (const e of [env, { ...env, OPS_CONTINUATION: 'observe', OPS_CHECKPOINTS: bucket }, { ...env, OPS_CONTINUATION: 'off' }]) {
+      const report = await runOpsTick(liveTickPorts(e as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: opsDatabase().fetch }))
+      expect(report.not_configured_secrets ?? []).toEqual([])
+    }
+  })
+
+  it('observe without the OPS_CHECKPOINTS binding is reported not configured, by the binding\'s name, every tick', async () => {
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONTINUATION: 'observe' } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: opsDatabase().fetch }))
+    expect(report.outcome).toBe('not_configured')
+    expect(report.not_configured_secrets).toEqual(['OPS_CHECKPOINTS'])
+  })
+
+  it('a value this build does not run (on, before the next slice of #1951) is off, and reported by name', async () => {
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONTINUATION: 'on', OPS_CHECKPOINTS: bucket } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: opsDatabase().fetch }))
+    expect(report.outcome).toBe('not_configured')
+    expect(report.not_configured_secrets).toEqual(['OPS_CONTINUATION'])
+  })
+})
+
 describe('the live tick', () => {
   it('runs end to end through the ops functions, signs its dispatch, and reports to the gateway', async () => {
     const db = opsDatabase()
