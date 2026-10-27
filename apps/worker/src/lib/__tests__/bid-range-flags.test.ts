@@ -55,6 +55,18 @@ describe('fetchPartnerFlags', () => {
     expect(fetchImpl.mock.calls[0][0]).toBe('https://x.my.salesforce.com/services/data/v60.0/sobjects/OtherMatrix__c/describe')
   })
 
+  // #2394: the describe url is built by the shared salesforce-api module now, and
+  // must be byte for byte the url the hand built template sent before it.
+  it.each([
+    ['https://x.my.salesforce.com', 'BidRangeRow__c'],
+    ['https://pennie.my.salesforce.com', 'Other Matrix/Rows__c'],
+    ['https://sandbox--dev.sandbox.my.salesforce.com', 'Ünïcode&Matrix?__c'],
+  ])('asks %s for the describe of %s at exactly the url the hand built template sent', async (instanceUrl, sobject) => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify(BID_RANGE_ROW_DESCRIBE), { status: 200 }))
+    await fetchPartnerFlags(instanceUrl, 'tok', fetchImpl, sobject)
+    expect(fetchImpl.mock.calls[0][0]).toBe(`${instanceUrl}/services/data/v60.0/sobjects/${encodeURIComponent(sobject)}/describe`)
+  })
+
   it('throws with the status and body when Salesforce refuses, never falling back to a fixed list', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response('INVALID_SESSION_ID', { status: 401 }))
     await expect(fetchPartnerFlags('https://x.my.salesforce.com', 'tok', fetchImpl))

@@ -224,6 +224,22 @@ export const INCIDENT_SIGNALS = [
     windowMinutes: null,
     kinds: ['write_back_pending'],
   },
+  // #2486. An ops key reseal that has left logins on the old key for 2 hours
+  // (`logins_left`), a preview left on 2 hours with logins to move
+  // (`preview_left_on`), a switch still on 2 hours after a run left nothing
+  // (`finished_left_on`), or OPS_RESEAL naming no mode (`switch_unknown`), as
+  // the ops tick judged it. The ops key is the platform's, so one platform
+  // incident keyed on the fixed id `ops-key`. It judges a state, so it has no
+  // window. Paged by ops-key-reseal.ts from the verdict the tick's report carries.
+  {
+    signal: 'ops-key-reseal',
+    label: 'Ops key reseal',
+    scope: 'platform',
+    subject: 'name',
+    startMeans: FIRST_PAGE,
+    windowMinutes: null,
+    kinds: ['logins_left', 'preview_left_on', 'finished_left_on', 'switch_unknown'],
+  },
   // #2340. A person bound ops connection whose owner's email is no longer on
   // user_allowlist (`owner_removed`), or that records no owner at all
   // (`owner_missing`), as the daily owner check judged it. One organization's
