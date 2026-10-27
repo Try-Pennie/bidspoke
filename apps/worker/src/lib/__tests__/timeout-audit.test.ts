@@ -189,6 +189,7 @@ describe('findUnderProvisionedNodes', () => {
       max_ms: 11000,
       sample_size: 1996,
       window_days: null,
+      retries: 2,
       severity: 'amber',
     }])
   })
@@ -201,7 +202,7 @@ describe('findUnderProvisionedNodes', () => {
     expect(out[0]).toMatchObject({ window_days: 7 })
   })
 
-  it('marks red when typical runs would time out (below p99 with retries)', () => {
+  it('marks red when the timeout is below the p99 with retries', () => {
     const out = findUnderProvisionedNodes(
       def([node({ id: 'equifax', type: 'code', config: { timeout_ms: 4000 } })]),
       new Map([['equifax', stats({})]])
@@ -250,7 +251,7 @@ describe('warningsSignature with under-provisioned entries', () => {
     nodes: [{
       node_id: 'n1', namespace: 'n1', label: null, type: 'code',
       configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
-      sample_size: 1996, window_days: 1, severity: 'red' as const,
+      sample_size: 1996, window_days: 1, retries: 2, severity: 'red' as const,
     }],
   }]
 
@@ -355,7 +356,7 @@ describe('isAlertWorthyUnderProvision', () => {
   const mk = (s: Partial<UnderProvisionedNode>): UnderProvisionedNode => ({
     node_id: 'n', namespace: 'n', label: null, type: 'code',
     configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
-    sample_size: 100, window_days: null, severity: 'red', ...s,
+    sample_size: 100, window_days: null, retries: 2, severity: 'red', ...s,
   })
 
   it('is worthy when the sample is confident, even on a narrow window', () => {
@@ -380,7 +381,7 @@ describe('isAlertWorthyUnderProvision', () => {
     expect(isAlertWorthyUnderProvision(mk({ severity: 'amber', sample_size: SAMPLE_CONFIDENT }))).toBe(false)
   })
 
-  it('is worthy when red and confidently sampled — typical runs actually time out', () => {
+  it('is worthy when red and confidently sampled, below the p99 or the slowest run', () => {
     expect(isAlertWorthyUnderProvision(mk({ severity: 'red', sample_size: SAMPLE_CONFIDENT }))).toBe(true)
   })
 })
@@ -389,7 +390,7 @@ describe('alertWorthyUnderProvisioned', () => {
   const mkNode = (s: Partial<UnderProvisionedNode>): UnderProvisionedNode => ({
     node_id: 'n', namespace: 'n', label: null, type: 'code',
     configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
-    sample_size: 100, window_days: null, severity: 'red', ...s,
+    sample_size: 100, window_days: null, retries: 2, severity: 'red', ...s,
   })
 
   it('drops nodes off a thin un-widened sample and prunes emptied workflows', () => {

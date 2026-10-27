@@ -270,6 +270,21 @@ side at all, and on the direct side it is one more key sent. Every field name
 the check reads was confirmed against the live org that day with a read only
 describe and Tooling `FieldDefinition` (the list is in the file's header).
 
+**The inquiry relay sometimes writes `PDFlow_4__c` last** (2026-10-27). The
+first `send_salesforce` report said 11 of 200 sampled direct writes did not
+arrive complete. All 11 had: each Submission held the run's stamp, its run link
+and every other field sent, and only `PDFlow_4__c` held a pipedream.com
+inspector link. Pipedream answers the inquiry post in about 0.1 s and PATCHes
+afterwards, and the `send_salesforce` direct write comes only 2 to 5 s after
+that post, so Pipedream's PATCH arrives last about 1 time in 20. So a
+pipedream.com link there, on a Submission modified after the write began, with
+everything else matching, counts as arrived complete and moved on since, said
+in its own sentence and counted as `inquiry_link_replaced` in the job run
+record. Any other value there still reads as did not arrive complete. Those
+leads keep the Bidspoke link in `PDFlow_1__c`; only the second link is
+Pipedream's, as it was for every lead before the port. This ends when the
+inquiry moves too (#2175).
+
 **The relay's figure is what Salesforce saved** (#2313), not what Pipedream
 answered. Each morning a sample of 100 of the day's relay posts of the outcome
 steps no canary watches (seven since #2174 added `send_salesforce` as the second
