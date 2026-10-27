@@ -6,10 +6,10 @@ import { REPO_ROOT, WEB_SRC, WORKER_SRC, listFiles, sanitizeSource } from '../..
 /**
  * The trigger types have one home, @bidspoke/workflow-definition (#1947,
  * packages/workflow-definition/src/trigger.ts). The aliases left in
- * apps/worker/src/types.ts and apps/worker/src/lib/failure-rate.ts so old
- * imports kept compiling are deleted (#2648, L613: a shim is not left to argue
- * for itself), those in apps/web/src/types/workflow.ts are the pending list
- * below, and this fails on any other, in either app:
+ * apps/worker/src/types.ts, apps/worker/src/lib/failure-rate.ts and
+ * apps/web/src/types/workflow.ts so old imports kept compiling are deleted
+ * (#2648, L613: a shim is not left to argue for itself), and this fails on the
+ * next one, in either app:
  *
  * - a declaration of a trigger type (`type X =` or `interface X`), the old
  *   `TriggerDef` alias included;
@@ -24,20 +24,6 @@ import { REPO_ROOT, WEB_SRC, WORKER_SRC, listFiles, sanitizeSource } from '../..
 const HOME = '@bidspoke/workflow-definition'
 const TRIGGER_TYPES = ['TriggerConfig', 'HttpWebhookTrigger', 'HttpWebhookConfig', 'ScheduleTrigger', 'MutedFailureSignal', 'TriggerDef']
 const IS_TRIGGER_TYPE = new Set(TRIGGER_TYPES)
-
-/**
- * The web half of #2648, still standing because the panel's import line sits in
- * a component file, which waits on Dan's answer about a design round. When it
- * lands this list empties, and the test below fails until it does, so the list
- * cannot outlive the aliases it names.
- */
-const PENDING_WEB_HALF = [
-  'apps/web/src/components/canvas/TriggerConfigPanel.tsx: imports TriggerDef from @/types/workflow',
-  'apps/web/src/components/canvas/TriggerConfigPanel.tsx: imports MutedFailureSignal from @/types/workflow',
-  'apps/web/src/components/canvas/__tests__/TriggerConfigPanel.test.tsx: imports TriggerDef from @/types/workflow',
-  'apps/web/src/types/workflow.ts: re-exports MutedFailureSignal',
-  'apps/web/src/types/workflow.ts: declares TriggerDef',
-].sort()
 
 /** The names a `{ a, type b, c as d }` list brings in, by their original name. */
 function namesIn(list: string): string[] {
@@ -107,7 +93,7 @@ describe('the trigger types have one home', () => {
     expect(strays(WORKER_SRC)).toEqual([])
   })
 
-  it('the web app holds no trigger type alias but the pending web half of #2648', () => {
-    expect(strays(WEB_SRC)).toEqual(PENDING_WEB_HALF)
+  it('the web app declares, re-exports and imports none of them but from the package', () => {
+    expect(strays(WEB_SRC)).toEqual([])
   })
 })
