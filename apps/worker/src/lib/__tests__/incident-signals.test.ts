@@ -29,7 +29,7 @@ import { LEAD_VALIDATION_REJECTION_RECOVERY_WORDS, LEAD_VALIDATION_REJECTION_SIG
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the twenty seven signals in use, each once', () => {
+  it('names the twenty eight signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -46,6 +46,7 @@ describe('INCIDENT_SIGNALS', () => {
       'ops-connection-login',
       'ops-connection-owner',
       'ops-connection-write-back',
+      'ops-key-reseal',
       'partner-error-rate',
       'partner-page-live',
       'partner-page-live-miss',

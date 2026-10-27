@@ -54,9 +54,9 @@ describe('scheduledReseal, the minute cron\'s call', () => {
     const report = { ok: true, mode, current_kid: 'ops-2026-10', complete: true, rows: { current: 2 }, objects: { none: 2 }, left: 0, nothing_left: true, problems: [] }
     const s = self(() => report)
     const spy = logs()
-    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: mode, SELF: s.binding } as unknown as OpsEnv)).toBe('reported')
+    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: mode, SELF: s.binding } as unknown as OpsEnv, { record: async () => {} })).toBe('reported')
     expect(s.calls).toEqual([{ apply }])
-    expect(lines(spy)).toEqual([{ event: 'ops_reseal', outcome: 'reported', asked: mode, ...report }])
+    expect(lines(spy)).toEqual([{ event: 'ops_reseal', outcome: 'reported', asked: mode, ...report, recorded: true }])
     spy.mockRestore()
   })
 
@@ -71,20 +71,86 @@ describe('scheduledReseal, the minute cron\'s call', () => {
 
   it('logs a refusal the reseal answered, a missing SELF binding, a throw and a timeout by name, and never throws', async () => {
     const spy = logs()
+    const record = async () => {}
     const refused = self(() => ({ ok: false, refused: 'no_current_kid', detail: 'no kid is current on this Worker, so nothing may be sealed' }))
-    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: refused.binding } as unknown as OpsEnv)).toBe('refused')
-    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply' } as unknown as OpsEnv)).toBe('refused')
+    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: refused.binding } as unknown as OpsEnv, { record })).toBe('refused')
+    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply' } as unknown as OpsEnv, { record })).toBe('refused')
     const thrower = self(() => { throw new TypeError('the binding broke') })
-    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: thrower.binding } as unknown as OpsEnv)).toBe('failed')
+    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: thrower.binding } as unknown as OpsEnv, { record })).toBe('failed')
     const never = self(() => new Promise(() => {}))
-    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: never.binding } as unknown as OpsEnv, { delay: async () => {} })).toBe('failed')
+    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: never.binding } as unknown as OpsEnv, { delay: async () => {}, record })).toBe('failed')
     expect(lines(spy)).toEqual([
-      { event: 'ops_reseal', outcome: 'refused', asked: 'apply', refused: 'no_current_kid', detail: 'no kid is current on this Worker, so nothing may be sealed' },
-      { event: 'ops_reseal', outcome: 'self_missing', detail: 'the SELF binding is missing from this deploy' },
+      { event: 'ops_reseal', outcome: 'refused', asked: 'apply', refused: 'no_current_kid', detail: 'no kid is current on this Worker, so nothing may be sealed', recorded: true },
+      { event: 'ops_reseal', outcome: 'self_missing', asked: 'apply', detail: 'the SELF binding is missing from this deploy', recorded: true },
       // The error's kind only, never its message.
-      { event: 'ops_reseal', outcome: 'failed', asked: 'apply', error: 'TypeError' },
-      { event: 'ops_reseal', outcome: 'failed', asked: 'apply', error: `no answer within ${RESEAL_DEADLINE_MS / 1000} s` },
+      { event: 'ops_reseal', outcome: 'failed', asked: 'apply', error: 'TypeError', recorded: true },
+      { event: 'ops_reseal', outcome: 'failed', asked: 'apply', error: `no answer within ${RESEAL_DEADLINE_MS / 1000} s`, recorded: true },
     ])
+    spy.mockRestore()
+  })
+})
+
+describe('each run\'s result is kept for the tick to judge (#2486)', () => {
+  type Recorded = { mode: string; run: { nothingLeft: boolean; left: number | null } }
+  function recorder(fails?: Error) {
+    const kept: Recorded[] = []
+    return { kept, record: async (mode: 'preview' | 'apply', run: { nothingLeft: boolean; left: number | null }) => { kept.push({ mode, run }); if (fails) throw fails } }
+  }
+  const report = (left: number, nothingLeft: boolean) => ({
+    ok: true, mode: 'apply', current_kid: 'ops-2026-10-27', complete: true, rows: {}, objects: {}, left, nothing_left: nothingLeft, problems: [],
+  })
+
+  it('keeps what each reported run left, and whether it left nothing, in the mode it ran in', async () => {
+    const spy = logs()
+    const r = recorder()
+    await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: self(() => report(3, false)).binding } as unknown as OpsEnv, { record: r.record })
+    await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'preview', SELF: self(() => report(0, true)).binding } as unknown as OpsEnv, { record: r.record })
+    // A report that is not complete leaves 0 known but not nothing: it is kept as not finished.
+    await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: self(() => ({ ...report(0, false), complete: false })).binding } as unknown as OpsEnv, { record: r.record })
+    expect(r.kept).toEqual([
+      { mode: 'apply', run: { nothingLeft: false, left: 3 } },
+      { mode: 'preview', run: { nothingLeft: true, left: 0 } },
+      { mode: 'apply', run: { nothingLeft: false, left: 0 } },
+    ])
+    spy.mockRestore()
+  })
+
+  it('keeps a refused, failed, unreadable or unanswered run as one that did not finish, with no count', async () => {
+    const spy = logs()
+    const r = recorder()
+    await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: self(() => ({ ok: false, refused: 'connections_unavailable', detail: 'x' })).binding } as unknown as OpsEnv, { record: r.record })
+    await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply' } as unknown as OpsEnv, { record: r.record })
+    await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: self(() => { throw new Error('gone') }).binding } as unknown as OpsEnv, { record: r.record })
+    await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: self(() => new Promise(() => {})).binding } as unknown as OpsEnv, { delay: async () => {}, record: r.record })
+    // Says ok with a count that is no count: never kept as finished (L50).
+    await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: self(() => ({ ok: true, nothing_left: true, left: 'none' })).binding } as unknown as OpsEnv, { record: r.record })
+    expect(r.kept).toEqual(Array.from({ length: 5 }, () => ({ mode: 'apply', run: { nothingLeft: false, left: null } })))
+    spy.mockRestore()
+  })
+
+  it('keeps nothing while the switch is off or names no mode', async () => {
+    const spy = logs()
+    const r = recorder()
+    await scheduledReseal({ LANE: 'ops', SELF: self(() => report(0, true)).binding } as unknown as OpsEnv, { record: r.record })
+    await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'yes', SELF: self(() => report(0, true)).binding } as unknown as OpsEnv, { record: r.record })
+    expect(r.kept).toEqual([])
+    spy.mockRestore()
+  })
+
+  it('says in the run\'s line when its result could not be kept, and never throws, so the run itself still counts', async () => {
+    const spy = logs()
+    const r = recorder(new Error('record_ops_reseal_run did not answer within 9000 ms'))
+    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: self(() => report(2, false)).binding } as unknown as OpsEnv, { record: r.record })).toBe('reported')
+    expect(lines(spy)).toEqual([{
+      event: 'ops_reseal', outcome: 'reported', asked: 'apply', ...report(2, false), recorded: false, record_error: 'record_ops_reseal_run did not answer within 9000 ms',
+    }])
+    spy.mockRestore()
+  })
+
+  it('keeps it in the ops database by default, and says so by name when that is not configured', async () => {
+    const spy = logs()
+    expect(await scheduledReseal({ LANE: 'ops', OPS_RESEAL: 'apply', SELF: self(() => report(1, false)).binding } as unknown as OpsEnv)).toBe('reported')
+    expect(lines(spy)[0]).toMatchObject({ recorded: false, record_error: 'OPS_SUPABASE_URL and OPS_SUPABASE_SECRET_KEY are not set on bidspoke-worker-ops' })
     spy.mockRestore()
   })
 })

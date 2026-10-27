@@ -20,6 +20,7 @@ import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { requireSalesforceCreds, resolveSalesforceCredentialOrg } from './salesforce-creds'
 import { lookupSlackConnection, postMessage } from './slack'
 import { parseJson } from './json'
+import { salesforceDataUrl } from './salesforce-api'
 import { formatErr } from './format-error'
 import { fetchAllPaged } from './paginate'
 import { fetchPartnerFlags, type PartnerFlag } from './bid-range-flags'
@@ -415,14 +416,15 @@ function rowFields(flags: PartnerFlag[]): string {
   ].join(', ')
 }
 
-async function querySalesforce<T>(
+/** Every page of one SOQL read. Exported so the url it asks for can be pinned (#2394). */
+export async function querySalesforce<T>(
   instanceUrl: string,
   token: string,
   soql: string,
   endpoint: 'query' | 'queryAll' = 'query',
 ): Promise<T[]> {
   const all: T[] = []
-  let next: string | undefined = `${instanceUrl}/services/data/v60.0/${endpoint}?q=${encodeURIComponent(soql)}`
+  let next: string | undefined = salesforceDataUrl(instanceUrl, `/${endpoint}?q=${encodeURIComponent(soql)}`)
   while (next) {
     const res: Response = await fetch(next, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) {

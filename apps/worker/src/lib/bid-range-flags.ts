@@ -10,6 +10,7 @@
  */
 
 import { parseJson } from './json'
+import { salesforceDataUrl } from './salesforce-api'
 
 export interface PartnerFlag {
   /** API name, e.g. IsBorrowBetter__c. */
@@ -48,7 +49,9 @@ export async function fetchPartnerFlags(
   fetchImpl: typeof fetch = fetch,
   sobject = 'BidRangeRow__c',
 ): Promise<PartnerFlag[]> {
-  const res = await fetchImpl(`${instanceUrl}/services/data/v60.0/sobjects/${encodeURIComponent(sobject)}/describe`, {
+  // Not salesforceSobjectUrl, which puts the name in as it is: this url has
+  // always encoded it, and moving to the shared module (#2394) changes no byte.
+  const res = await fetchImpl(salesforceDataUrl(instanceUrl, `/sobjects/${encodeURIComponent(sobject)}/describe`), {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) {

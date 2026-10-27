@@ -158,6 +158,10 @@ BEGIN
     AND p.proname <> ALL (ARRAY['record_ops_step', 'run_step_context', 'purge_ops_step_records'])
     -- A run's acknowledged checkpoint (#1951), held to the same rules by run_checkpoints.test.sql.
     AND p.proname <> ALL (ARRAY['record_run_checkpoint', 'run_checkpoint'])
+    -- How long an ops key reseal has been switched on (#2486), held to the same rules by ops_reseal_watch.test.sql.
+    AND p.proname <> ALL (ARRAY['observe_ops_reseal', 'record_ops_reseal_run'])
+    -- The measured identities of connections bidding never stored (#2573), held to the same rules by unserved_measured_identities.test.sql.
+    AND p.proname <> ALL (ARRAY['remove_unserved_measured_identities'])
     AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') IS FALSE
     AND p.proowner = 'postgres'::regrole;
   IF v_count <> 0 THEN RAISE EXCEPTION '% public function(s) executable by service_role are not on the run engine list', v_count; END IF;

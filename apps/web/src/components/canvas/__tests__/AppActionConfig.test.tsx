@@ -108,7 +108,7 @@ describe('the data picker', () => {
 
   it('offers each earlier step\'s kept test result, says when a step has none, and shows a read that failed inside the list with Try again', async () => {
     vi.mocked(api.workflows.testResult)
-      .mockResolvedValueOnce({ result: { node_id: 'a', namespace: 'find_lead', tested_at: '', status: 'completed', output: { lead: { id: 7 } }, output_bytes: 10, error: null, duration_ms: 1 } })
+      .mockResolvedValueOnce({ result: { node_id: 'a', namespace: 'find_lead', tested_at: '', status: 'completed', output: { lead: { id: 7 } }, output_bytes: 10, output_dropped: false, error: null, duration_ms: 1 } })
       .mockResolvedValueOnce({ result: null })
       .mockRejectedValueOnce(new Error('503'))
     const upstream = [{ id: 'a', namespace: 'find_lead', label: 'Find lead' }, { id: 'b', namespace: 'untested' }, { id: 'c', namespace: 'broken', label: 'Broken' }]

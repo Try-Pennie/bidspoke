@@ -189,12 +189,49 @@ describe('testing an app_action step on ops', () => {
     expect((requests.at(-1) as { omitted: number }).omitted).toBe(40 - shown)
   })
 
-  it('keeps a plain null answer as null, never as an answer over the cap', async () => {
+  /**
+   * What record_step_test stores for a kept record (supabase-ops, #2339): the
+   * output as given, and its size as given when the output is null, measured
+   * by the database otherwise (here by the Worker's measure, which these tests
+   * never compare for a kept answer).
+   */
+  const storedAs = (record: StepTestRecord): StoredStepTest => ({
+    ...record,
+    testedAt: '2026-10-23T14:00:01.000Z',
+    outputBytes: record.output === null ? record.outputBytes : new TextEncoder().encode(JSON.stringify(record.output)).length,
+  })
+
+  /** The answer's three size fields now, and as read back from what was kept (#2773). */
+  async function nowAndReadBack(body: unknown) {
     const w = world()
-    w.d.respond(Response.json(null))
+    w.d.respond(Response.json(body))
     const answer = await runStepTest(w.deps, request(), new AbortController().signal)
-    expect(answer).toMatchObject({ ok: true, result: { status: 'completed', output: null, output_bytes: 4 } })
-    expect(w.kept[0].result).toMatchObject({ output: null, outputBytes: null })
+    if (!answer.ok) throw new Error(`the test was refused: ${answer.refused}`)
+    const stored = storedAs(w.kept[0].result)
+    const read = await readStepTest(world({ read: async () => stored }).deps, { organization_id: ORG, workflow_id: WF, node_id: 'node_1' })
+    if (!read.ok || read.result === null) throw new Error('the kept result was not read back')
+    const pick = (r: { output: unknown; output_bytes: number | null; output_dropped: boolean }) => ({ output: r.output, output_bytes: r.output_bytes, output_dropped: r.output_dropped })
+    return { now: pick(answer.result), readBack: pick(read.result), kept: w.kept[0].result }
+  }
+
+  it('an action that answered nothing has its own shape, never an answer dropped for size, the same now and read back', async () => {
+    const { now, readBack, kept } = await nowAndReadBack(null)
+    expect(kept).toMatchObject({ status: 'completed', output: null, outputBytes: null })
+    expect(now).toEqual({ output: null, output_bytes: null, output_dropped: false })
+    expect(readBack).toEqual(now)
+  })
+
+  it('an answer dropped for size says so and how big it was, the same now and read back', async () => {
+    const { now, readBack } = await nowAndReadBack({ big: 'x'.repeat(STEP_TEST_OUTPUT_MAX_BYTES) })
+    expect(now).toEqual({ output: null, output_bytes: expect.any(Number), output_dropped: true })
+    expect(now.output_bytes).toBeGreaterThan(STEP_TEST_OUTPUT_MAX_BYTES)
+    expect(readBack).toEqual(now)
+  })
+
+  it('a kept answer is not dropped, now or read back', async () => {
+    const { now, readBack } = await nowAndReadBack({ id: 7 })
+    expect(now).toMatchObject({ output: { id: 7 }, output_dropped: false })
+    expect(readBack).toMatchObject({ output: { id: 7 }, output_dropped: false })
   })
 
   it('answers the result even when it could not be kept, saying so', async () => {
@@ -302,7 +339,7 @@ describe('reading a step\'s kept test result', () => {
     const w = world({ read: async (...args) => { asked.push(args); return stored } })
     expect(await readStepTest(w.deps, { organization_id: ORG, workflow_id: WF, node_id: 'node_1' })).toEqual({
       ok: true,
-      result: { node_id: 'node_1', namespace: 'notify', tested_by: DAN, tested_at: '2026-10-22T10:00:00.000Z', status: 'completed', output: { id: 1 }, output_bytes: 8, error: null, requests: [], duration_ms: 120 },
+      result: { node_id: 'node_1', namespace: 'notify', tested_by: DAN, tested_at: '2026-10-22T10:00:00.000Z', status: 'completed', output: { id: 1 }, output_bytes: 8, output_dropped: false, error: null, requests: [], duration_ms: 120 },
     })
     expect(asked).toEqual([[ORG, WF, 'node_1']])
     expect(await readStepTest(world().deps, { organization_id: ORG, workflow_id: WF, node_id: 'node_1' })).toEqual({ ok: true, result: null })
