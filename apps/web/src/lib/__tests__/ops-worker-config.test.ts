@@ -65,9 +65,24 @@ describe('wrangler.ops.toml (#1709)', () => {
   const opsIndex = read('apps/worker/src/ops/index.ts')
 
   it('reads the tables it asserts on, so a renamed header fails rather than passing on nothing', () => {
-    expect(tables(toml, 'r2_buckets')).toHaveLength(1)
+    expect(tables(toml, 'r2_buckets')).toHaveLength(2)
     expect(tables(toml, 'r2_buckets')[0]).toMatch(/^binding = "PORTING_TEE"$/m)
     expect(tables(toml, 'nothing_here')).toEqual([])
+  })
+
+  /**
+   * The run checkpoints bucket (#1951): its own bucket, never the porting
+   * captures' (whose 90 day rule and redacted Pipedream contents are another
+   * thing), under the binding name the code reads (checkpoint.ts
+   * checkpointStoreFrom), and the continuation in observe mode, the only mode
+   * besides off this build runs.
+   */
+  it('binds the run checkpoints to their own bucket and runs the continuation in observe mode', () => {
+    const checkpoints = tables(toml, 'r2_buckets').filter((t) => /^binding = "OPS_CHECKPOINTS"$/m.test(t))
+    expect(checkpoints).toHaveLength(1)
+    expect(checkpoints[0]).toMatch(/^bucket_name = "bidspoke-ops-checkpoints"$/m)
+    expect(tables(toml, 'vars')[0]).toMatch(/^OPS_CONTINUATION = "observe"$/m)
+    expect(read('apps/worker/src/ops/checkpoint.ts')).toContain('env.OPS_CHECKPOINTS')
   })
 
   it('sets LANE to ops, without which the Worker serves nothing', () => {

@@ -63,6 +63,24 @@ export function parseSlackConnection(config: unknown): SlackConnection | null {
 /** The columns a Slack connection row is resolved from; every reader selects both. */
 export const SLACK_ROW_COLUMNS = 'config, credential_enc'
 
+// ── Who owns which key of the alert row's config (#2643) ────────────────────
+//
+// The alert row's config has two writers, and each sends only the keys it owns,
+// which the database merges into the row in one statement, so two saves at once
+// never put back each other's old values. Each list is the one its database
+// function accepts (save_slack_alert_token and save_slack_alert_settings,
+// migration 20261027170000), which refuses any other key by name; a test
+// compares the two.
+
+/** The keys the token save (a Reconnect, or the first connect) may write. A Reconnect sends only workspace_name. */
+export const SLACK_ALERT_TOKEN_SAVE_KEYS = ['workspace_name', 'default_channel'] as const
+
+/** The keys the alert settings save may write: the channel and the four switches. */
+export const SLACK_ALERT_SETTINGS_KEYS = ['default_channel', 'volume_alerts_enabled', 'matrix_alerts_enabled', 'config_alerts_enabled', 'backup_alerts_enabled'] as const
+
+/** What a token save writes into config: only its own keys, each only when it has a value to save. */
+export type SlackAlertTokenSaveConfig = { workspace_name?: string | null; default_channel?: string }
+
 // ── The alert row (#2332, phase 2 of #1689) ─────────────────────────────────
 //
 // An organization can hold more than one Slack row since release 2 dropped the

@@ -41,6 +41,8 @@ function opsDatabase(extra: Record<string, unknown> = {}) {
     record_schedule_observation: [{ outcome: 'recorded', observation_id: '11111111-2222-4333-8444-555555555555' }],
     due_queue_depth: [{ due_runs: 0, due_workflows: 0, oldest_due: null }],
     save_connection_copies: [{ inserted: 1, updated: 0, confirmed: 0, refused_older: 0, refused_expired: 0, refused_removed: 0, withdrawn: 0 }],
+    // The measured identities of connections bidding never stored (#2573): none, as today.
+    remove_unserved_measured_identities: [],
     purge_expired_connection_tombstones: [{ purged: 1, more: false }],
     sweep_sf_leases: [{ swept: 2, more: false }],
     // The sf_limits sweep's measured orgs (#2336): none, as today.
@@ -227,6 +229,32 @@ describe('OPS_TICK_MODE (#1950)', () => {
   })
 })
 
+describe('OPS_CONTINUATION (#1951)', () => {
+  const bucket = {} as R2Bucket
+
+  it('unset, or observe with its bucket bound, is configured', async () => {
+    const { env } = configured()
+    for (const e of [env, { ...env, OPS_CONTINUATION: 'observe', OPS_CHECKPOINTS: bucket }, { ...env, OPS_CONTINUATION: 'off' }]) {
+      const report = await runOpsTick(liveTickPorts(e as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: opsDatabase().fetch }))
+      expect(report.not_configured_secrets ?? []).toEqual([])
+    }
+  })
+
+  it('observe without the OPS_CHECKPOINTS binding is reported not configured, by the binding\'s name, every tick', async () => {
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONTINUATION: 'observe' } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: opsDatabase().fetch }))
+    expect(report.outcome).toBe('not_configured')
+    expect(report.not_configured_secrets).toEqual(['OPS_CHECKPOINTS'])
+  })
+
+  it('a value this build does not run (on, before the next slice of #1951) is off, and reported by name', async () => {
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONTINUATION: 'on', OPS_CHECKPOINTS: bucket } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: opsDatabase().fetch }))
+    expect(report.outcome).toBe('not_configured')
+    expect(report.not_configured_secrets).toEqual(['OPS_CONTINUATION'])
+  })
+})
+
 describe('the live tick', () => {
   it('runs end to end through the ops functions, signs its dispatch, and reports to the gateway', async () => {
     const db = opsDatabase()
@@ -234,7 +262,7 @@ describe('the live tick', () => {
     const report = await runOpsTick(liveTickPorts(env, NOW + 17_000, { sealRegistry, now: () => NOW, tickId: 'tick-live', fetch: db.fetch }))
     expect(report.problems).toEqual([])
     expect(report.outcome).toBe('ok')
-    expect(db.called).toEqual(expect.arrayContaining(['ops_now', 'claim_ops_sweep', 'save_workflow_copies', 'workflow_copies', 'record_schedule_observation', 'due_queue_depth', 'save_connection_copies']))
+    expect(db.called).toEqual(expect.arrayContaining(['ops_now', 'claim_ops_sweep', 'save_workflow_copies', 'workflow_copies', 'record_schedule_observation', 'due_queue_depth', 'save_connection_copies', 'remove_unserved_measured_identities']))
     expect(report.counts.connection_copies_saved).toBe(1)
     // The two connection storage sweeps (#2334), through their real ops functions.
     expect(db.called).toEqual(expect.arrayContaining(['purge_expired_connection_tombstones', 'sweep_sf_leases']))

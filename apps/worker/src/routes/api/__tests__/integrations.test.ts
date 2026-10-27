@@ -17,7 +17,7 @@ import { readSlackCopy, rememberSlackConnections, SLACK_CONNS_LASTGOOD_KEY } fro
 import { parseSlackConnection } from '../../../lib/slack-connection'
 import { COPY_NOT_CLEARED_MESSAGE } from '../../../lib/stored-copy'
 import api from '../index'
-import { sealedSlackRow } from '../../../__tests__/helpers/sealed-slack-row'
+import { answerSlackConfigSaves, sealedSlackRow } from '../../../__tests__/helpers/sealed-slack-row'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -148,13 +148,9 @@ describe('POST /integrations/slack', () => {
     expect(res.status).toBe(400)
   })
 
-  it('returns 200 and upserts the connection', async () => {
-    const upserted = { id: 'sc-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z' }
+  it('returns 200 and saves the connection', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        service_connections: { upsertResult: upserted },
-      }) as never
+      makeSupabase({ users: { single: testUser } }, { rpc: answerSlackConfigSaves() }) as never
     )
     const res = await request(app, 'POST', '/integrations/slack', {
       body: { bot_token: 'xoxb-123', default_channel: '#alerts', workspace_name: 'Pennie HQ' },
@@ -344,15 +340,10 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
   })
 
   it('switching a category off updates the org entry in the copy', async () => {
+    // The row as stored (#2331's contract release): the token sealed with KEY, no plaintext.
+    const row = { id: 'sc-1', ...(await sealedSlackRow({ bot_token: 'xoxb-mine', default_channel: '#mine' })) }
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        service_connections: {
-          // The row as stored (#2331's contract release): the token sealed with KEY, no plaintext.
-          list: [{ id: 'sc-1', ...(await sealedSlackRow({ bot_token: 'xoxb-mine', default_channel: '#mine' })) }],
-          writeRows: [{ id: 'sc-1' }],
-        },
-      }) as never
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [row] } }, { rpc: answerSlackConfigSaves(row) }) as never
     )
     const res = await request(app, 'PATCH', '/integrations/slack/settings', { body: { volume_alerts_enabled: false } })
     expect(res.status).toBe(200)
@@ -364,10 +355,7 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
 
   it('saving a new connection replaces the org entry in the copy', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        service_connections: { upsertResult: { id: 'sc-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-10-15T00:00:00Z' } },
-      }) as never
+      makeSupabase({ users: { single: testUser } }, { rpc: answerSlackConfigSaves() }) as never
     )
     const res = await request(app, 'POST', '/integrations/slack', { body: { bot_token: 'xoxb-new', default_channel: '#new' } })
     expect(res.status).toBe(200)
@@ -426,16 +414,12 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
     ['DELETE', '/integrations/slack', 'disconnecting', undefined],
   ])('%s %s (%s) writes no route audit row and still edits the copy', async (method, path, _what, body) => {
     const before = store.get(SLACK_CONNS_LASTGOOD_KEY)
+    // The row as stored (#2331's contract release): the token sealed with KEY, no plaintext.
+    const row = { id: 'sc-1', ...(await sealedSlackRow({ bot_token: 'xoxb-mine', default_channel: '#mine' })) }
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        service_connections: {
-          // The row as stored (#2331's contract release): the token sealed with KEY, no plaintext.
-          list: [{ id: 'sc-1', ...(await sealedSlackRow({ bot_token: 'xoxb-mine', default_channel: '#mine' })) }],
-          upsertResult: { id: 'sc-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-10-15T00:00:00Z' },
-          writeRows: [{ id: 'sc-1' }],
-        },
-      }, { rpcs: { delete_service_connection_by_id: [{ id: 'sc-1' }] } }) as never
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [row] } }, {
+        rpc: answerSlackConfigSaves(row, { delete_service_connection_by_id: [{ id: 'sc-1' }] }),
+      }) as never
     )
     const res = await request(app, method, path, { body })
     expect(res.status).toBe(200)
