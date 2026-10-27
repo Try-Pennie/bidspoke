@@ -128,7 +128,7 @@ export function isCreateRefusalCode(code: string): code is CreateRefusalCode {
 export interface RefusalContext {
   /** The service's name, as the catalogue gives it (Salesforce), or the key that was sent when none declares it. */
   service: string
-  /** Its secret field's label in lower case (client secret, private key), or "login". */
+  /** Its secret field's label as it reads mid sentence (client secret, API key), or "login". */
   secret: string
   /** The Salesforce org's address the connection declares, when it is a Salesforce one. */
   org: string | null
