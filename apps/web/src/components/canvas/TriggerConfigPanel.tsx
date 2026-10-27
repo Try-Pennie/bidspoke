@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useId } from 'react'
 import { X, Plus, Trash2, HelpCircle, Copy, Check, Eye, EyeOff, Search } from 'lucide-react'
-import type { TriggerDef, MutedFailureSignal } from '@/types/workflow'
+import type { HttpWebhookTrigger, MutedFailureSignal } from '@bidspoke/workflow-definition'
 import { api } from '@/lib/api'
 import type { WebhookEndpoint } from '@/lib/api'
 import EndpointCreateForm from '@/components/forms/EndpointCreateForm'
@@ -22,10 +22,10 @@ const HOOK_BASE = 'https://hook.trypennie.dev'
 interface Props {
   workflowId: string
   workflowName?: string
-  trigger: TriggerDef
+  trigger: HttpWebhookTrigger
   /** Namespaces of non-trigger nodes currently on the canvas, used for the success-node picker. */
   nodeNamespaces?: string[]
-  onChange: (trigger: TriggerDef) => void
+  onChange: (trigger: HttpWebhookTrigger) => void
   onClose: () => void
   readOnly?: boolean
   width: number
@@ -39,7 +39,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
   const cfg = trigger.config
   const idempotency = cfg.idempotency ?? { enabled: false, derive_from_fields: [], ttl_seconds: 86400 }
 
-  function update(patch: Partial<TriggerDef['config']>) {
+  function update(patch: Partial<HttpWebhookTrigger['config']>) {
     onChange({ ...trigger, config: { ...cfg, ...patch } })
   }
 
