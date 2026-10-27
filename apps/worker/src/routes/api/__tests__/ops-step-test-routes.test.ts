@@ -48,7 +48,7 @@ const definition = { nodes: [appStep, { id: 'n2', namespace: 'n2', type: 'code',
 
 const view = {
   node_id: 'node_1', namespace: 'notify', tested_by: DAN, tested_at: '2026-10-23T14:00:01.000Z', status: 'completed',
-  output: { ok: true, ts: '1729.1' }, output_bytes: 27, error: null, requests: [{ method: 'POST', url: 'https://slack.com/api/chat.postMessage' }], duration_ms: 310,
+  output: { ok: true, ts: '1729.1' }, output_bytes: 27, output_dropped: false, error: null, requests: [{ method: 'POST', url: 'https://slack.com/api/chat.postMessage' }], duration_ms: 310,
 }
 
 function opsBinding(answers: Record<string, unknown>) {
@@ -104,6 +104,22 @@ describe('POST test-node for an ops workflow\'s app_action step', () => {
       },
     }])
     expect(executeNode).not.toHaveBeenCalled()
+  })
+
+  it('passes through whether the answer was dropped for size, so an action that answered nothing never reads as one (#2773)', async () => {
+    const nothing = { ...view, output: null, output_bytes: null, output_dropped: false }
+    const dropped = { ...view, output: null, output_bytes: 200_000, output_dropped: true }
+    for (const result of [nothing, dropped]) {
+      withWorkflow({ id: WF, lane: 'ops' })
+      const ops = opsBinding({ testStep: { ok: true, recorded: true, result }, stepTestResult: { ok: true, result } })
+      const posted = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, {
+        namespace: 'notify', definition, trigger_payload: {}, steps: {}, confirm_send: true,
+      })
+      expect(await posted.json()).toMatchObject({ output: null, output_bytes: result.output_bytes, output_dropped: result.output_dropped })
+      withWorkflow({ id: WF, lane: 'ops' })
+      const read = await call('GET', `/workflows/${WF}/test-results/node_1`, { OPS_CONNECTIONS: ops.binding } as never)
+      expect((await read.json() as { result: unknown }).result).toMatchObject({ output: null, output_bytes: result.output_bytes, output_dropped: result.output_dropped })
+    }
   })
 
   it('a send the person has not confirmed is refused by name, saying nothing was sent', async () => {

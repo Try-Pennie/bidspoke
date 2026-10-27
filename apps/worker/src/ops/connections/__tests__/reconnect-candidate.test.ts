@@ -75,6 +75,7 @@ function opsCopies(clock: () => number) {
       return r
     },
     recordConnectionTombstone: async () => ({ outcome: 'recorded', copiesRemoved: 0 }),
+    removeUnservedMeasuredIdentities: async () => [],
   }
   const readCopy = async (): Promise<ConnectionCopy> => {
     if (kept === null) return { ...usableCopy(generationN), state: 'not_found', envelope: null, service: null, generation: null, dbNow: new Date(clock()).toISOString() }
