@@ -653,10 +653,11 @@
       "p_organization_id": "00000000-0000-0000-0000-000000000000",
       "p_connection_id": "00000000-0000-0000-0000-000000000000",
       "p_settings": {},
-      "p_actor": "00000000-0000-0000-0000-000000000000"
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": null
     },
     "anon": "denied",
-    "note": "The Slack alert settings save (#2643): PATCH /api/integrations/slack/settings merges only the channel and the four alert switches into the alert row through it, so a Reconnect at the same moment keeps its workspace name and token. A WRITE, service_role only, so anon must be denied. If it is missing, every settings change on the Connections page answers 500 and saves nothing. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would write nothing."
+    "note": "The Slack alert settings save (#2643), in its five argument form (#2870, migration 20261027230000) that also names the changer in updated_by_email: PATCH /api/integrations/slack/settings merges only the channel and the four alert switches into the alert row through it, so a Reconnect at the same moment keeps its workspace name and token. A WRITE, service_role only, so anon must be denied. Probed with all five argument names, because PostgREST picks the form by the names a call sends: if only the four argument form exists, every settings change on the Connections page answers 500 and saves nothing. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would write nothing."
   },
   {
     "name": "connection_history",

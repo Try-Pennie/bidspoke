@@ -179,8 +179,8 @@ describe('PATCH /integrations/slack/settings', () => {
     const res = await call('PATCH', '/integrations/slack/settings', { volume_alerts_enabled: false })
     expect(res.status).toBe(200)
     expect(await copyEntry(ORG)).toMatchObject({ bot_token: TOKEN, volume_alerts_enabled: false })
-    // Only the setting changed is sent (#2643), never the token, and never by a direct write of the table.
-    expect(rec.settingsSaves).toEqual([{ p_organization_id: ORG, p_connection_id: 'sc-1', p_settings: { volume_alerts_enabled: false }, p_actor: USER }])
+    // Only the setting changed is sent (#2643), never the token, and never by a direct write of the table, under the changer's email (#2870).
+    expect(rec.settingsSaves).toEqual([{ p_organization_id: ORG, p_connection_id: 'sc-1', p_settings: { volume_alerts_enabled: false }, p_actor: USER, p_actor_email: 'dan@pennie.com' }])
     expect(rec.updates).toEqual([])
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
