@@ -181,6 +181,52 @@ describe('judgeRejectionShares(): Lead Economy, against the spread it was measur
   })
 })
 
+/**
+ * Lead Economy's week to 2026-10-27 15:00 UTC (#2851), every run counted through
+ * lead_validation_rejection_counts: 15,464 runs before the window paged that
+ * morning, ineligible state 2.9% of them. Its leads from 8 to 11 AM Eastern are
+ * rejected for state less often (1.8%, 45 of 2,462 that week), and a two hour
+ * window holds 300 to 500 runs, so half the week's share is a drop of about 11
+ * leads to 5. The ratio alone was crossed by four morning windows that week;
+ * replayed with the chance floor, none of the 35 judged windows paged.
+ */
+const LEAD_ECONOMY_OCT_27 = counts(15_464, { 'ineligible state': 442, unqualified_lead: 4_778 })
+
+describe('judgeRejectionShares(): a shift must also be beyond chance at the window\'s count (#2851)', () => {
+  it('holds the chance floor at one in a thousand', () => {
+    expect(REJECTION_RULE.maxChance).toBe(0.001)
+  })
+
+  it('stays quiet on the morning windows the ratio alone paged on', () => {
+    // 2026-10-27 12:58 to 14:58 UTC, the page that raised #2851: a 1 in 29 chance.
+    expect(judgeRejectionShares(counts(387, { 'ineligible state': 5, unqualified_lead: 120 }), LEAD_ECONOMY_OCT_27).state).toBe('normal')
+    // The other three that week (13:00 to 15:00 UTC on Oct 23 and 26, 14:00 to 16:00 on Oct 23).
+    expect(judgeRejectionShares(counts(371, { 'ineligible state': 5, unqualified_lead: 115 }), LEAD_ECONOMY_OCT_27).state).toBe('normal')
+    expect(judgeRejectionShares(counts(503, { 'ineligible state': 5, unqualified_lead: 156 }), LEAD_ECONOMY_OCT_27).state).toBe('normal')
+    expect(judgeRejectionShares(counts(308, { 'ineligible state': 4, unqualified_lead: 95 }), LEAD_ECONOMY_OCT_27).state).toBe('normal')
+  })
+
+  it('still pages a state check that stops rejecting, even in the thinnest window it judges', () => {
+    // None of 308 at 2.9% is a 1 in 7,500 chance.
+    const v = judgeRejectionShares(counts(308, { 'ineligible state': 0, unqualified_lead: 95 }), LEAD_ECONOMY_OCT_27)
+    expect(v.state === 'shifted' && v.shifts.map((s) => `${s.bucket} ${s.direction}`)).toEqual(['ineligible state fell'])
+  })
+
+  it('pages the same share once enough leads stand behind it', () => {
+    // 1.3% of 387 is chance; 1.3% of 3,000 is not.
+    const v = judgeRejectionShares(counts(3_000, { 'ineligible state': 40, unqualified_lead: 930 }), LEAD_ECONOMY_OCT_27)
+    expect(v.state === 'shifted' && v.shifts.map((s) => `${s.bucket} ${s.direction}`)).toEqual(['ineligible state fell'])
+  })
+
+  it('pages a doubled state share in a busy window, and holds it in a thin one until it is beyond chance', () => {
+    // 29 of 503 against 2.9% is a 1 in 2,700 chance; 18 of 308 is 1 in 270, so
+    // a doubling that holds is paged by the next, busier window.
+    const busy = judgeRejectionShares(counts(503, { 'ineligible state': 29, unqualified_lead: 156 }), LEAD_ECONOMY_OCT_27)
+    expect(busy.state === 'shifted' && busy.shifts.map((s) => `${s.bucket} ${s.direction}`)).toEqual(['ineligible state rose'])
+    expect(judgeRejectionShares(counts(308, { 'ineligible state': 18, unqualified_lead: 95 }), LEAD_ECONOMY_OCT_27).state).toBe('normal')
+  })
+})
+
 describe('the watch, its signal and its heartbeat', () => {
   it('watches the validation step of GigFi, LendSwift and Lead Economy for every reason on the shared list', () => {
     expect(REJECTION_WATCHES).toEqual([
