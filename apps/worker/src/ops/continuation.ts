@@ -14,9 +14,11 @@
  * suspend and the claim of the continuation, the next slice of #1951).
  *
  * HOW IT FAILS. Loudly and harmlessly: each failure is one ops_continuation
- * observe_failed line naming its reason (store_missing, write_failed,
- * not_named, superseded, not_named_on_read, read_failed, a checkpoint refusal
- * from checkpoint.ts, or replay_differs), and the run goes on as if off. The
+ * observe_failed line naming its reason (store_missing, encode_failed,
+ * write_failed, not_named, name_failed, superseded, not_named_on_read,
+ * checkpoint_missing, read_failed, a checkpoint refusal from checkpoint.ts such
+ * as checkpoint_corrupt or checkpoint_key_taken, or replay_differs), and the
+ * run goes on as if off. The
  * one exception is a lost claim: a stale acknowledgement means the run is not
  * this holder's any more, so RunStopped is passed on and invokeRun ends the
  * holder's part there, as for any other fenced write.
