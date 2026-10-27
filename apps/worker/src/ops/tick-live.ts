@@ -29,7 +29,7 @@ import {
   claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeOpsStepRecords, purgeScheduleObservations, purgeStepTestResults, readConnectionCheckTargets,
   readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
-  saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
+  removeUnservedMeasuredIdentities, saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
 } from './ops-writes'
 import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps } from './connections/connection-fetch'
 import { boundFetch, type OpsServiceEntry } from './connections/ops-connections'
@@ -113,6 +113,7 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     dueQueueDepth: () => dueQueueDepth(client, rpc),
     saveConnectionCopies: (servedAt, complete, copies) => saveConnectionCopies(client, servedAt, complete, copies, rpc),
     recordConnectionTombstone: (org, connectionId, generation, removedAt) => recordConnectionTombstone(client, org, connectionId, generation, removedAt, rpc),
+    removeUnservedMeasuredIdentities: (servedAt, named) => removeUnservedMeasuredIdentities(client, servedAt, named, rpc),
     sfLimitsTargets: (limit) => readSfLimitsTargets(client, limit, rpc),
     recordSfLimitsReading: (sfOrgId, reading) => recordSfBudgetReading(client, sfOrgId, { ...reading, source: 'limits' }, rpc),
     connectionCheckTargets: (limit) => readConnectionCheckTargets(client, limit, rpc),

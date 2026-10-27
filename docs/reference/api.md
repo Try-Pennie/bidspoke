@@ -339,7 +339,7 @@ Response `201` (the only time the key is shown in full):
 | POST | `/api/integrations/slack` | Save or update the Slack connection, once Slack accepts the token. |
 | GET | `/api/integrations/slack` | Get the current connection: the default channel and the four alert switches (never the token). |
 | GET | `/api/integrations/slack/channels?q=` | Search the workspace's channels holding `q` (at least 3 letters). |
-| PATCH | `/api/integrations/slack/settings` | Change the default channel or one of the four alert switches (`volume_alerts_enabled`, `config_alerts_enabled`, `backup_alerts_enabled`, `matrix_alerts_enabled`). The bid matrix alerts' separate channel (`matrix_alerts_channel`) is retired: they post to the default channel. |
+| PATCH | `/api/integrations/slack/settings` | Change the default channel or one of the four alert switches (`volume_alerts_enabled`, `config_alerts_enabled`, `backup_alerts_enabled`, `matrix_alerts_enabled`). Only the settings sent are changed, so a Reconnect saving at the same moment keeps its token and workspace name (#2643); a switch that is not `true` or `false` is refused with `400`. The bid matrix alerts' separate channel (`matrix_alerts_channel`) is retired: they post to the default channel. |
 | DELETE | `/api/integrations/slack` | Disconnect Slack. |
 
 ## Connections
@@ -527,7 +527,7 @@ Both carry `signal` and its reader label `signal_label` (`Unrecognised signal`, 
 
 ## Service presets (retired)
 
-`/api/service-presets` is retired (#2338): HTTP Services presets are gone, and the Webhook step offers only its built in services. Every path answers 404. The `service_presets` table stays until a later release drops it (#2638).
+`/api/service-presets` is retired (#2338): HTTP Services presets are gone, and the Webhook step offers only its built in services. Every path answers 404. Their table was dropped by #2638.
 
 ## Folders
 

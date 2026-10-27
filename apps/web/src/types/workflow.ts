@@ -66,19 +66,14 @@ export interface EdgeDef {
   hidden?: boolean
 }
 
-// The trigger types live in @bidspoke/workflow-definition (#1947), one home the
-// worker reads too, so the two copies that stood here and in the worker cannot
-// drift. TriggerDef is the http webhook trigger every canvas workflow carries;
-// these aliases go when their imports move to the package (#2648).
-export type { MutedFailureSignal } from '@bidspoke/workflow-definition'
-export type TriggerDef = HttpWebhookTrigger
-
 export type ExecutionOutcome = 'successful' | 'completed' | 'failed'
 
 export interface WorkflowDef {
   nodes: NodeDef[]
   edges: EdgeDef[]
-  trigger: TriggerDef
+  // Every canvas workflow carries an http webhook trigger. The trigger types
+  // live in @bidspoke/workflow-definition (#1947), the one home both apps read.
+  trigger: HttpWebhookTrigger
 }
 
 export interface SavedTestPayload {

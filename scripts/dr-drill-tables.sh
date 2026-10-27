@@ -31,7 +31,7 @@ DRILL_COPY_TABLES=(
   # Settings, secrets, connections. connection_tombstones goes with
   # service_connections: a restore without it could let a removed connection's
   # last good copy on ops be served again (#2332).
-  environment_variables env_var_folders service_connections connection_tombstones service_presets
+  environment_variables env_var_folders service_connections connection_tombstones
   app_config app_settings field_presence_silences
   # History small enough to keep
   audit_log workflow_stats_daily
