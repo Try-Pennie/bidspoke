@@ -16,12 +16,12 @@
  * Every clock is injected: the worker clock is set an hour away from the
  * database clock, so a fire computed on the wrong one is visible.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MAX_DEFINITIONS_PER_REQUEST, OPS_TICK_PROBLEM_RULES } from '../../lib/ops-gateway-contract'
 import { organizationIdFrom, type OrganizationId } from '../ops-db'
 import {
   OpsWriteTimeoutError, type ConnectionCopyInput, type SaveConnectionCopiesResult, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
-  type WorkflowCopy, type WorkflowCopyInput,
+  type UnservedIdentityRemoved, type WorkflowCopy, type WorkflowCopyInput,
 } from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
 import { ConnectionRefusal, RequeueAt } from '../connections/refusals'
@@ -64,6 +64,9 @@ function copy(over: Partial<WorkflowCopy> = {}): WorkflowCopy {
     lastServed: null,
     lastObserved: null,
     dbNow: DB_NOW,
+    // Not ported and replacing none, as the last served list said (#1952).
+    porting: { ported: false, cutoverAt: null, replaces: [], servedAt: '2026-10-17T11:02:31.000Z' },
+    replacedLastSlot: null,
     ...over,
   }
 }
@@ -73,7 +76,8 @@ function served(workflows: Array<Record<string, unknown>> = [{}]) {
     served_at: '2026-10-17T11:02:31.000Z',
     complete: true,
     workflows: workflows.map((w) => ({
-      id: WF_A, organization_id: ORG, is_active: true, deleted_at: null, updated_at: '2026-10-17T09:00:00.000Z', version_number: 3, trigger: schedule(), ...w,
+      id: WF_A, organization_id: ORG, is_active: true, deleted_at: null, updated_at: '2026-10-17T09:00:00.000Z', version_number: 3, trigger: schedule(),
+      porting: { ported: false, cutover_at: null, replaces: [] }, ...w,
     })),
   }
 }
@@ -195,6 +199,8 @@ function fake(opts: {
   probe?: (t: ConnectionCheckTarget) => Promise<ProbeAnswer>
   /** What each connection's ConnectionTokenObject answers the write back read with; none held by default. */
   writeBack?: (t: ConnectionCheckTarget) => Promise<unknown>
+  /** The measured identities of connections bidding never stored that a complete serve removes (#2573); none by default. */
+  unservedRemoved?: UnservedIdentityRemoved[]
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
@@ -280,6 +286,7 @@ function fake(opts: {
       return { inserted: list.length, updated: 0, confirmed: 0, refusedOlder: 0, refusedExpired: 0, refusedRemoved: 0, withdrawn: 0 }
     },
     async recordConnectionTombstone() { fail('recordConnectionTombstone'); return { outcome: 'recorded' as const, copiesRemoved: 0 } },
+    async removeUnservedMeasuredIdentities() { fail('removeUnservedMeasuredIdentities'); return opts.unservedRemoved ?? [] },
   }
   const dispatched: DispatchItem[] = []
   const stamps: string[] = []
@@ -641,6 +648,126 @@ describe('slots', () => {
     expect(f.db.observations).toEqual([])
   })
 })
+
+describe('the floor of a ported or replacing workflow (#1952, #1698 D8)', () => {
+  /**
+   * Weekly, Saturdays 06:00 UTC, catching up the latest missed slot within 72
+   * hours. The database clock reads Saturday 2026-10-17 10:02:30, so the 06:00
+   * slot is missed and, from a floor before it, caught up.
+   */
+  const weekly = schedule({ cron: '0 6 * * SAT', timezone: 'UTC', overlap: 'skip', catch_up: 'latest', catch_up_window_seconds: 259_200, jitter_max_seconds: 0 })
+  /** Known since a week ago, observed nothing yet: on its own, the 06:00 slot is caught up. */
+  const weeklyCopy = (over: Partial<WorkflowCopy> = {}) => copy({ trigger: weekly, scheduleKnownSince: '2026-10-10T07:00:00.000Z', ...over })
+  const ported = (cutoverAt: string | null) => ({ ported: true, cutoverAt, replaces: [], servedAt: '2026-10-17T11:02:31.000Z' })
+  const slots = (f: Fake) => f.db.observations.map((o) => [o.scheduledFor.toISOString(), o.outcome, o.reason])
+
+  it('catches up the missed slot from a floor before it (the control the cases below are measured against)', async () => {
+    const f = fake({ copies: [weeklyCopy()] })
+    await runOpsTick(f.ports)
+    expect(slots(f)).toEqual([['2026-10-17T06:00:00.000Z', 'would_fire', 'catch_up']])
+  })
+
+  it('never catches up a period before the cutover, which Pipedream already ran', async () => {
+    const f = fake({ copies: [weeklyCopy({ porting: ported('2026-10-17T07:00:00.000Z') })] })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.observations).toEqual([])
+    expect(report.problems).toEqual([])
+  })
+
+  it('a slot exactly at the cutover instant is not fired either: Pipedream may have run it', async () => {
+    const f = fake({ copies: [weeklyCopy({ porting: ported('2026-10-17T06:00:00.000Z') })] })
+    await runOpsTick(f.ports)
+    expect(f.db.observations).toEqual([])
+  })
+
+  it('fires slots after the cutover', async () => {
+    const f = fake({ copies: [weeklyCopy({ porting: ported('2026-10-17T05:00:00.000Z') })] })
+    await runOpsTick(f.ports)
+    expect(slots(f)).toEqual([['2026-10-17T06:00:00.000Z', 'would_fire', 'catch_up']])
+  })
+
+  it('a ported workflow not cut over yet fires nothing and reports nothing missed, since Pipedream may still run every period, and says so in a log line', async () => {
+    const lines = captureLog()
+    try {
+      const f = fake({ copies: [copy({ porting: ported(null) })] })
+      const report = await runOpsTick(f.ports)
+      expect(f.db.observations).toEqual([])
+      expect(report.counts.schedules_awaiting_cutover).toBe(1)
+      expect(report.problems).toEqual([])
+      expect(lines().find((l) => l.step === 'schedule_awaiting_cutover')).toMatchObject({ workflow_id: WF_A })
+    } finally {
+      lines.restore()
+    }
+  })
+
+  it('never re-fires a slot the workflow it replaces already served', async () => {
+    // A converter rerun at 05:00 minted this id; the old one served 06:00.
+    const replacing = { ported: false, cutoverAt: null, replaces: [WF_B], servedAt: '2026-10-17T11:02:31.000Z' }
+    const f = fake({ copies: [weeklyCopy({ scheduleKnownSince: '2026-10-17T05:00:00.000Z', porting: replacing, replacedLastSlot: '2026-10-17T06:00:00.000Z' })] })
+    await runOpsTick(f.ports)
+    expect(f.db.observations).toEqual([])
+    // An older served slot of the old one floors nothing after it.
+    const older = fake({ copies: [weeklyCopy({ scheduleKnownSince: '2026-10-17T05:00:00.000Z', porting: replacing, replacedLastSlot: '2026-10-10T06:00:00.000Z' })] })
+    await runOpsTick(older.ports)
+    expect(slots(older)).toEqual([['2026-10-17T06:00:00.000Z', 'would_fire', 'catch_up']])
+  })
+
+  it('in live mode too: the floor holds back a real fire, not only an observation', async () => {
+    const f = fake({ mode: 'live', copies: [weeklyCopy({ porting: ported('2026-10-17T07:00:00.000Z') })] })
+    await runOpsTick(f.ports)
+    expect(f.db.fires).toEqual([])
+    const control = fake({ mode: 'live', copies: [weeklyCopy()] })
+    await runOpsTick(control.ports)
+    expect(control.db.fires.map((x) => x.fire.scheduledFor.toISOString())).toEqual(['2026-10-17T06:00:00.000Z'])
+  })
+
+  it('a copy never told its porting facts fires nothing, and pages once it lasts, since its floor is unknown', async () => {
+    const f = fake({ copies: [copy({ porting: null })] })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.observations).toEqual([])
+    expect(report.counts.schedules_floor_unknown).toBe(1)
+    expect(report.problem_keys).toEqual([`schedule_floor_unknown:${WF_A}`])
+    expect(OPS_TICK_PROBLEM_RULES.schedule_floor_unknown).toBe('three_in_a_row')
+    expect(report.problems.join(' ')).toMatch(/does not say whether it was ported from Pipedream/)
+  })
+
+  it('saves the porting facts the bidding Worker served with each copy', async () => {
+    const f = fake({ fetch: async () => served([{ porting: { ported: true, cutover_at: '2026-10-17T07:00:00.000Z', replaces: [WF_B] } }]) })
+    await runOpsTick(f.ports)
+    expect(f.db.saved[0][0].porting).toEqual({ ported: true, cutoverAt: '2026-10-17T07:00:00.000Z', replaces: [WF_B] })
+  })
+
+  it('with the bidding Worker unreachable, plans from the facts its copy last served, never firing before that cutover, and says where the floor came from', async () => {
+    const lines = captureLog()
+    try {
+      const f = fake({
+        fetch: async () => { throw new Error('the bidding database did not answer') },
+        copies: [weeklyCopy({ porting: { ...ported('2026-10-17T07:00:00.000Z'), servedAt: '2026-10-17T09:30:00.000Z' } })],
+      })
+      await runOpsTick(f.ports)
+      expect(f.db.observations).toEqual([])
+      expect(lines().find((l) => l.step === 'schedule_floor_from_copy')).toMatchObject({
+        workflow_id: WF_A, floor: '2026-10-17T07:00:00.000Z', porting_served_at: '2026-10-17T09:30:00.000Z', cutover_at: '2026-10-17T07:00:00.000Z',
+      })
+    } finally {
+      lines.restore()
+    }
+  })
+})
+
+/** The tick's own log lines (JSON on console.log), captured for one case. */
+function captureLog(): (() => Array<Record<string, unknown>>) & { restore: () => void } {
+  const seen: Array<Record<string, unknown>> = []
+  const original = console.log
+  console.log = (...args: unknown[]) => {
+    try {
+      seen.push(JSON.parse(String(args[0])) as Record<string, unknown>)
+    } catch {
+      // not one of the tick's JSON lines
+    }
+  }
+  return Object.assign(() => seen, { restore: () => { console.log = original } })
+}
 
 /** One claimed run of `workflowId`. */
 function claimedRun(workflowId: string, n: number, over: Partial<ClaimedRun> = {}): ClaimedRun {
@@ -1140,6 +1267,7 @@ describe('problem keys (#2506)', () => {
       ...failsOn('recordConnectionTombstone'),
       fetchConnections: async () => ({ ...servedConnections(), tombstones: [{ connection_id: GONE, organization_id: ORG, generation: 1, removed_at: '2026-10-17T10:00:00.000Z' }] }),
     }, [`tombstone_record_failed:${GONE}`]],
+    ['a removal of unserved measured identities that fails', failsOn('removeUnservedMeasuredIdentities'), ['unserved_identities_remove_failed']],
   ]
 
   it.each(cases)('keys %s', async (_label, opts, keys) => {
@@ -1147,6 +1275,23 @@ describe('problem keys (#2506)', () => {
     expect(report.problem_keys).toEqual(keys)
     // One key per sentence, in the same order, so the bidding Worker pages the sentences it judged.
     expect(report.problems).toHaveLength(keys.length)
+  })
+
+  it('logs each measured identity of a connection bidding never stored by its id when a complete serve removes it, and counts them (#2573)', async () => {
+    const ORPHAN = '00000000-0000-4000-8000-0000000025a1'
+    const lines: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
+    try {
+      const report = await runOpsTick(fake({ unservedRemoved: [{ organizationId: ORG, connectionId: ORPHAN, generation: 1, measuredAt: '2026-10-17T09:00:00+00:00' }] }).ports)
+      expect(report.problem_keys).toEqual([])
+    } finally {
+      spy.mockRestore()
+    }
+    const logged = lines.filter((l) => l.startsWith('{')).map((l) => JSON.parse(l) as Record<string, unknown>)
+    const removed = logged.filter((l) => l.step === 'unserved_identity_removed')
+    expect(removed).toEqual([expect.objectContaining({ event: 'ops_tick', organization_id: ORG, connection_id: ORPHAN, generation: 1, measured_at: '2026-10-17T09:00:00+00:00' })])
+    const finished = logged.find((l) => l.step === 'finished')
+    expect(finished?.connection_unserved_identities_removed).toBe(1)
   })
 
   it('names no key on a healthy tick', async () => {
