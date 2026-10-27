@@ -9,7 +9,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ConnectionList, ConnectionListRow, ConnectionReplaceAnswer } from '@/lib/api'
-import { CONNECTION_REMOVE_TIMEOUT_MS, CONNECTION_REPLACE_TIMEOUT_MS, CONNECTION_SAVE_TIMEOUT_MS } from '@/lib/api'
+import { CONNECTION_REMOVE_TIMEOUT_MS, CONNECTION_REPLACE_MOST, CONNECTION_REPLACE_TIMEOUT_MS, CONNECTION_SAVE_TIMEOUT_MS } from '@/lib/api'
 import { keptSignInsIn } from '../google-sign-in-kept'
 import { ConnectionsScreen, type ConnectionsClock, type ConnectionsSource } from '../ConnectionsScreen'
 import { CHANGE_DEADLINES } from '../connections-state'
@@ -583,6 +583,33 @@ describe('Replace (R20, D20, build PR 12)', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Replace in 2 workflows' }))
     advance(CHANGE_DEADLINES.replaceDeadlineMs)
     expect(within(dialog).getByRole('alert').textContent).toBe(`Bidspoke did not answer within ${CHANGE_DEADLINES.replaceDeadlineMs / 1000} seconds, so it cannot tell whether the workflows were moved. Reload the page to see before replacing again.`)
+  })
+
+  describe(`the cap of ${CONNECTION_REPLACE_MOST} workflows a Replace moves at a time`, () => {
+    const manyOf = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `m${i}`, name: `Workflow ${String(i + 1).padStart(2, '0')}`, deleted: false }))
+    const capLine = (dialog: HTMLElement) => dialog.querySelector('[data-part="replace-cap"]')
+
+    it('at the cap: every workflow ticked, and nothing said of a cap', async () => {
+      const { dialog } = await openReplace({}, withWorkflows(manyOf(CONNECTION_REPLACE_MOST)))
+      expect(ticks(dialog).every((t) => t.getAttribute('aria-checked') === 'true')).toBe(true)
+      expect(capLine(dialog)).toBeNull()
+      expect(within(dialog).getByRole('button', { name: `Replace in ${CONNECTION_REPLACE_MOST} workflows` })).toBeEnabled()
+    })
+
+    it('past the cap: the first ones ticked, a plain line saying so, and the button held while more are ticked', async () => {
+      const { s, dialog } = await openReplace({ replace: vi.fn(() => new Promise<ConnectionReplaceAnswer>(() => {})) }, withWorkflows(manyOf(CONNECTION_REPLACE_MOST + 2)))
+      expect(ticks(dialog).map((t) => t.getAttribute('aria-checked'))).toEqual([...Array(CONNECTION_REPLACE_MOST).fill('true'), 'false', 'false'])
+      expect(capLine(dialog)?.textContent).toBe(`Replace moves at most ${CONNECTION_REPLACE_MOST} workflows at a time, so the first ${CONNECTION_REPLACE_MOST} are ticked. Replace again to move the rest.`)
+      fireEvent.click(ticks(dialog)[CONNECTION_REPLACE_MOST])
+      const held = within(dialog).getByRole('button', { name: `Replace in ${CONNECTION_REPLACE_MOST + 1} workflows` }) as HTMLButtonElement
+      expect(held.disabled).toBe(true)
+      expect(capLine(dialog)?.textContent).toBe(`Replace moves at most ${CONNECTION_REPLACE_MOST} workflows at a time. Untick 1 first.`)
+      fireEvent.click(held)
+      expect(s.replace).not.toHaveBeenCalled()
+      fireEvent.click(ticks(dialog)[0])
+      fireEvent.click(within(dialog).getByRole('button', { name: `Replace in ${CONNECTION_REPLACE_MOST} workflows` }))
+      expect((s.replace as ReturnType<typeof vi.fn>).mock.calls[0][1].workflows).toHaveLength(CONNECTION_REPLACE_MOST)
+    })
   })
 
   it("waits as long as the request's own ceiling", () => {

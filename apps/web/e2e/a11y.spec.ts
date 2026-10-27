@@ -645,12 +645,25 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
-  // REPLACE DIALOG (#2338 build PR 12): Replace is drawn but inert on main (ConnectionsScreen.tsx
-  // gives its button no onClick), so its dialog cannot be opened yet. When the Replace action
-  // lands, add a test here that opens it from Pennie Salesforce (TPL2 Salesforce and Achieve
-  // Salesforce are its candidates, six workflows to tick), asserts
-  // getByRole('dialog', { name: 'Replace Pennie Salesforce' }), scans '[role="dialog"]', and
-  // adds the Replace route's answer to connection-fixtures.ts and its contract test.
+  // #2338 build PR 12: the Replace dialog, opened from Pennie Salesforce (six workflows, TPL2
+  // Salesforce chosen), and the same dialog once the Replace answered with all but Lead Completed
+  // sync moved (fixtures/connections/replace.json): the moved rows greyed, the red line under the buttons.
+  test('the connections page Replace dialog, before and after a Replace that moved only some, has no serious a11y violations', async ({ page }) => {
+    const { unmatched, fx } = await routeConnectionFixtures(page, workerUrl())
+    await openConnection(page, connectionId(fx, 'Pennie Salesforce'))
+    await page.getByRole('region', { name: 'Pennie Salesforce' }).locator('[data-part="actions"]').getByRole('button', { name: 'Replace' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Replace Pennie Salesforce' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByRole('checkbox', { checked: true })).toHaveCount(6)
+    await expectDialogs(page)
+    await expectNoSeriousA11yViolations(page, [], '/connections', '[role="dialog"]')
+    await dialog.getByRole('button', { name: 'Replace in 6 workflows' }).click()
+    await expect(dialog.getByRole('alert')).toHaveText(fx.replace.message ?? '')
+    await expect(dialog.getByRole('checkbox', { name: 'Achieve report import, moved' })).toBeDisabled()
+    await expect(dialog.getByRole('button', { name: 'Replace in 1 workflow' })).toBeEnabled()
+    await expectNoSeriousA11yViolations(page, [], '/connections', '[role="dialog"]')
+    expect(unmatched).toEqual([])
+  })
 
   for (const { name, path, exclude } of PAGES) {
     test(`${name} has no serious a11y violations`, async ({ page }) => {

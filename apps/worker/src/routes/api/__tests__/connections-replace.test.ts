@@ -31,7 +31,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { refreshWorkflowCaches } from '../../../engine/definition-loader'
 import api from '../index'
-import { REPLACE_OUTCOMES } from '../../../lib/connection-replace'
+import { REPLACE_OUTCOMES, REPLACE_WORKFLOWS_MAX } from '../../../lib/connection-replace'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -409,6 +409,16 @@ describe('organization scoping', () => {
     const res = await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE], organization_id: OTHER_ORG })
     expect(res.status).toBe(400)
     expect(((await res.json()) as Answer).error).toBe('replace_body_invalid')
+    expect(db.order).toEqual([])
+  })
+
+  it(`refuses more than ${REPLACE_WORKFLOWS_MAX} workflows by name, reading and writing nothing, since more could outlast the page's wait`, async () => {
+    const ids = Array.from({ length: REPLACE_WORKFLOWS_MAX + 1 }, (_, i) => `10000000-0000-4000-8000-${String(100 + i).padStart(12, '0')}`)
+    const res = await replace(PENNIE, { with: TPL2, workflows: ids })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as Answer
+    expect(body.error).toBe('replace_too_many')
+    expect(body.message).toBe(`Replace moves at most ${REPLACE_WORKFLOWS_MAX} workflows at a time. Nothing was changed. Untick some and replace again.`)
     expect(db.order).toEqual([])
   })
 })

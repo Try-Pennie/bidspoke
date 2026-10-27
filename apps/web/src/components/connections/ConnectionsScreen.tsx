@@ -32,7 +32,7 @@
  */
 import Link from 'next/link'
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
-import type { ConnectionList, ConnectionReplaceAnswer, SlackAlertSettingsAnswer, SlackAlertSettingsPatch } from '@/lib/api'
+import { CONNECTION_REPLACE_MOST, type ConnectionList, type ConnectionReplaceAnswer, type SlackAlertSettingsAnswer, type SlackAlertSettingsPatch } from '@/lib/api'
 import { errorSentence, requestFailureCause } from '@/lib/error-sentence'
 import { Button, ChoiceGroup, FieldError, Outcome, TextInput } from '@/components/ui/form'
 import { Tabs, TabPanel } from '@/components/ui/Tabs'
@@ -427,7 +427,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   const replace = useCallback(() => {
     const s = latest.current
     const d = s.dialog
-    if (d?.kind !== 'replace' || d.save.kind === 'saving' || !d.with || d.ticked.length === 0 || s.list.kind !== 'loaded') return
+    if (d?.kind !== 'replace' || d.save.kind === 'saving' || !d.with || d.ticked.length === 0 || d.ticked.length > CONNECTION_REPLACE_MOST || s.list.kind !== 'loaded') return
     const c = s.list.data.connections.find((x) => x.id === d.id)
     const replacement = s.list.data.connections.find((x) => x.id === d.with)
     if (!c || !replacement) return

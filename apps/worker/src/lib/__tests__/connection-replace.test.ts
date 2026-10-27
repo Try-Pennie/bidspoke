@@ -11,7 +11,9 @@
  * left behind.
  */
 import { describe, expect, it } from 'vitest'
-import { readReplaceBody, replaceConnectionId, REPLACE_WORKFLOWS_MAX, type ReplacedWorkflow } from '../connection-replace'
+import {
+  readReplaceBody, replaceConnectionId, replaceWorstMsPerWorkflow, REPLACE_CLIENT_WAIT_MS, REPLACE_SAVE_ATTEMPTS, REPLACE_WORKFLOWS_MAX, REPLACE_WORST_MS, type ReplacedWorkflow,
+} from '../connection-replace'
 import { replaceIncompleteSentence } from '../connection-create-refusals'
 
 const OLD = 'c0000000-0000-4000-8000-0000000000aa'
@@ -75,6 +77,16 @@ describe('readReplaceBody', () => {
     ['a key the route does not read', { with: NEW, workflows: [W1], organization_id: W2 }],
   ])('refuses %s', (_why, raw) => {
     expect(readReplaceBody(raw)).toEqual({ ok: false, code: 'replace_body_invalid' })
+  })
+
+  // The cap is the most workflows whose worst case fits inside the page's wait (Dan, 2026-10-27), so the
+  // page's stalled line cannot show while the route is still writing.
+  it('caps a Replace at the most workflows whose measured worst case fits inside the page\'s wait', () => {
+    const worst = (n: number) => REPLACE_WORST_MS.before + n * replaceWorstMsPerWorkflow() + REPLACE_WORST_MS.margin
+    expect(replaceWorstMsPerWorkflow()).toBe(REPLACE_SAVE_ATTEMPTS * (REPLACE_WORST_MS.read + REPLACE_WORST_MS.check + REPLACE_WORST_MS.write) + REPLACE_WORST_MS.copyRead + REPLACE_WORST_MS.audit + REPLACE_WORST_MS.kv)
+    expect(worst(REPLACE_WORKFLOWS_MAX)).toBeLessThanOrEqual(REPLACE_CLIENT_WAIT_MS)
+    expect(worst(REPLACE_WORKFLOWS_MAX + 1)).toBeGreaterThan(REPLACE_CLIENT_WAIT_MS)
+    expect(REPLACE_WORKFLOWS_MAX).toBe(7)
   })
 
   it(`refuses more than ${REPLACE_WORKFLOWS_MAX} workflows by its own code`, () => {

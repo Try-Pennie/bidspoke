@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ConnectionView } from '../connection-model'
 import { EMPTY_ADD_DRAFT } from '../add-form-model'
+import { CONNECTION_REPLACE_MOST } from '@/lib/api'
 import {
   chosenConnection, connectionsReducer, initialConnectionsState, unsavedWork, type ConnectionsEvent, type ConnectionsState, type LoadedList,
 } from '../connections-state'
@@ -295,6 +296,18 @@ describe('Replace (R20, build PR 12)', () => {
     expect(d).toMatchObject({ listed: live, ticked: live.map((w) => w.id), moved: [] })
     // It still counts in Used by.
     expect(listOf(withDeleted()).find((c) => c.id === 'c1')?.workflows).toHaveLength(7)
+  })
+
+  it(`ticks at most ${CONNECTION_REPLACE_MOST}, the most one Replace moves, in the order listed`, () => {
+    const many = Array.from({ length: CONNECTION_REPLACE_MOST + 2 }, (_, i) => ({ id: `m${i}`, name: `Workflow ${String(i).padStart(2, '0')}`, deleted: false }))
+    const at = (n: number) => run([
+      { type: 'list_answered', attempt: 1, data: { ...LIST, connections: LIST.connections.map((c) => (c.id === 'c1' ? { ...c, workflows: many.slice(0, n) } : c)) } },
+      { type: 'choose', chosen: { kind: 'connection', id: 'c1' } },
+      { type: 'dialog_opened', dialog: 'replace', id: 'c1' },
+    ]).dialog
+    expect(at(CONNECTION_REPLACE_MOST)).toMatchObject({ ticked: many.slice(0, CONNECTION_REPLACE_MOST).map((w) => w.id) })
+    const over = at(CONNECTION_REPLACE_MOST + 2)
+    expect(over).toMatchObject({ listed: many, ticked: many.slice(0, CONNECTION_REPLACE_MOST).map((w) => w.id) })
   })
 
   const MOVING = 'Moving 6 workflows to Spare Salesforce'

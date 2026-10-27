@@ -19,7 +19,7 @@ import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, LIST_NO_ANSWER,
 import { draftDirty, EMPTY_ADD_DRAFT, pickedList, withoutDrive, workflowsCount, type AddDraft, type GoogleWay } from './add-form-model'
 import { alertsReducer, alertsUnsaved, initialAlertsState, type AlertsEvent, type AlertsState } from './alert-settings-state'
 import { SLACK_ALERT_LOGIN_LINK_ID } from '@bidspoke/service-catalogue/schema'
-import type { ConnectionReplaceAnswer } from '@/lib/api'
+import { CONNECTION_REPLACE_MOST, type ConnectionReplaceAnswer } from '@/lib/api'
 
 /** What the could not load card says when Bidspoke's server gave no answer (D23); one copy, in connection-model. */
 export { LIST_NO_ANSWER }
@@ -393,8 +393,9 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
           .filter((x) => x.service === c.service && x.id !== c.id && !x.alertLogin)
           .sort((a, b) => Number(a.status !== 'ok') - Number(b.status !== 'ok') || a.name.localeCompare(b.name))
         // A soft deleted workflow cannot get a new version (no route writes one), so it is left out, with nothing said (decision 3).
+        // At most the cap a Replace moves at a time is ticked, the first ones listed; the rest go in a later press.
         const listed = replaceable(c)
-        return { ...s, dialog: { kind: 'replace', id: c.id, with: others[0]?.id ?? null, listed, moved: [], ticked: listed.map((w) => w.id), save: { kind: 'editing' }, started: null } }
+        return { ...s, dialog: { kind: 'replace', id: c.id, with: others[0]?.id ?? null, listed, moved: [], ticked: listed.slice(0, CONNECTION_REPLACE_MOST).map((w) => w.id), save: { kind: 'editing' }, started: null } }
       }
       return { ...s, dialog: { kind: e.dialog, id: c.id, values: {}, save: { kind: 'editing' }, started: null } }
     }
@@ -423,7 +424,7 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
     }
     case 'connection_replace_requested': {
       const d = s.dialog
-      if (d?.kind !== 'replace' || d.save.kind === 'saving' || !d.with || d.ticked.length === 0 || e.attempt <= s.lastChange.replace) return s
+      if (d?.kind !== 'replace' || d.save.kind === 'saving' || !d.with || d.ticked.length === 0 || d.ticked.length > CONNECTION_REPLACE_MOST || e.attempt <= s.lastChange.replace) return s
       return { ...s, now: e.at, lastChange: { ...s.lastChange, replace: e.attempt }, dialog: { ...d, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled, label: e.label } } }
     }
     case 'connection_replace_answered': {

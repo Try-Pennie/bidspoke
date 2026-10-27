@@ -832,12 +832,15 @@ const CONNECTION_LOOKUP_TIMEOUT_MS = 45_000
 // the check stalled only when the route can no longer answer (#2338 R13).
 export const CONNECTION_SAVE_TIMEOUT_MS = 120_000
 export const CONNECTION_REMOVE_TIMEOUT_MS = 50_000
-// A Replace saves each ticked workflow in turn: a read, the connection check,
-// the save and its stored copy, about a second each at most, and up to three
-// tries for one saved by someone else meanwhile. An organization holds 11 live
-// workflows (2026-10-19), so two minutes covers every one of them tried three
-// times with room to spare.
+// A Replace saves each ticked workflow in turn, so how long it may take is set
+// by how many it is given: the route allows only as many as its slowest
+// measured run moves inside this wait (REPLACE_WORKFLOWS_MAX in
+// apps/worker/src/lib/connection-replace.ts, Dan 2026-10-27), and the dialog
+// ticks no more than CONNECTION_REPLACE_MOST. A guard holds the three equal
+// (lib/__tests__/replace-cap-fits-the-wait.test.ts).
 export const CONNECTION_REPLACE_TIMEOUT_MS = 120_000
+/** The most workflows one Replace moves: the route's REPLACE_WORKFLOWS_MAX, which the web build cannot import. */
+export const CONNECTION_REPLACE_MOST = 7
 
 type ReqInit = RequestInit & { timeoutMs?: number }
 

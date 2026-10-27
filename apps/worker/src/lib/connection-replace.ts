@@ -18,13 +18,34 @@
  */
 
 /**
- * The most workflows one Replace may name. An organization holds 36 workflows,
- * 11 not deleted (measured 2026-10-19, CONFIG_LIST_BOUNDS), and each costs the
- * request about eight calls (its read, the connection check, the save, the
- * stored copy and the audit row), so 100 keeps a whole Replace inside the
- * Worker's limit on calls per request with room to spare.
+ * How long the page waits for a Replace before its line says it stalled: the
+ * web client's CONNECTION_REPLACE_TIMEOUT_MS (apps/web/src/lib/api.ts), which
+ * apps/web/src/lib/__tests__/replace-cap-fits-the-wait.test.ts holds equal.
  */
-export const REPLACE_WORKFLOWS_MAX = 100
+export const REPLACE_CLIENT_WAIT_MS = 120_000
+
+/**
+ * The slowest each call of a Replace has been, in ms: the largest origin time
+ * of each of these requests in the bidding project's edge logs over the 24
+ * hours to 2026-10-27 19:55 UTC (Supabase API gateway; reads of workflows 14,584,
+ * of service_connections 12,725, definition_connection_problems 22,
+ * write_workflow 22, audit_log inserts 2), rounded up. A workflow's read
+ * peaked at 2,696 and service_connections at 2,076; the check at 692, the
+ * save at 342 and the audit row at 98. The KV calls (the cache drop and the
+ * copy's write) are given 500 together. `before` is the two reads ahead of
+ * the first workflow (both connections, and connection_references at 271),
+ * and `margin` the request's own trip to and from the Worker.
+ */
+export const REPLACE_WORST_MS = {
+  before: 2_400,
+  read: 2_700,
+  check: 700,
+  write: 400,
+  copyRead: 2_700,
+  audit: 100,
+  kv: 500,
+  margin: 10_000,
+} as const
 
 /**
  * How many times one workflow's save is tried when someone else's save lands
@@ -33,6 +54,21 @@ export const REPLACE_WORKFLOWS_MAX = 100
  * that often while Replace runs is left as they saved it, and named.
  */
 export const REPLACE_SAVE_ATTEMPTS = 3
+
+/** One workflow at its slowest: every try (its read, the check, the save), then the stored copy, the audit row and the KV calls. */
+export function replaceWorstMsPerWorkflow(): number {
+  const w = REPLACE_WORST_MS
+  return REPLACE_SAVE_ATTEMPTS * (w.read + w.check + w.write) + w.copyRead + w.audit + w.kv
+}
+
+/**
+ * The most workflows one Replace may name (Dan, 2026-10-27): the most whose
+ * slowest measured run still answers inside the page's wait, so the page never
+ * says it stalled while the route is still writing. 7 at these figures; an
+ * organization holds 11 workflows not deleted (2026-10-19), so a connection
+ * used by more is moved in two presses, and the dialog ticks only this many.
+ */
+export const REPLACE_WORKFLOWS_MAX = Math.floor((REPLACE_CLIENT_WAIT_MS - REPLACE_WORST_MS.before - REPLACE_WORST_MS.margin) / replaceWorstMsPerWorkflow())
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 

@@ -311,7 +311,7 @@ export const CONNECTION_ROUTE_REFUSAL_CODES = [
   // Replace (build PR 12; R20). Each refuses the whole request before anything is written.
   /** The body is not the dialog's: no replacement, no workflow ticked, an id that is not one, or a key the route does not read. */
   'replace_body_invalid',
-  /** More workflows ticked than one Replace may write (REPLACE_WORKFLOWS_MAX). */
+  /** More workflows ticked than one Replace may write inside the page's wait (REPLACE_WORKFLOWS_MAX). */
   'replace_too_many',
   /** The Slack alerts login: no workflow can name it, so there is nothing to replace. */
   'connection_not_replaceable',
@@ -382,7 +382,7 @@ const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: Route
   delegation_list_unavailable: () => 'The company list of mailboxes and drives could not be read. Nothing was changed. Try again in a minute.',
   delegation_change_refused: () => 'The workflows server would not make the change to the list. Nothing was changed. Tell Dan, since this is a fault in Bidspoke.',
   replace_body_invalid: () => 'Choose a connection to replace it with and tick at least one workflow. Nothing was changed.',
-  replace_too_many: () => `Replace can give at most ${REPLACE_WORKFLOWS_MAX} workflows a new version at a time. Nothing was changed. Untick some and replace again.`,
+  replace_too_many: () => `Replace moves at most ${REPLACE_WORKFLOWS_MAX} workflows at a time. Nothing was changed. Untick some and replace again.`,
   connection_not_replaceable: () => 'Bidspoke\'s own alerts post through this Slack login, and no workflow can use it, so there is nothing to replace. Nothing was changed.',
   replace_with_not_found: () => 'The connection chosen to replace it with is not in your organization any more. Nothing was changed. Reload the page and choose another.',
   replace_with_same: () => 'A connection cannot replace itself. Nothing was changed. Choose another connection.',

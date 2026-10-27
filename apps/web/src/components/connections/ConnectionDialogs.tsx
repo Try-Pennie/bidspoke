@@ -35,6 +35,7 @@ import { Dialog } from '@/components/Dialog'
 import { Button, SecretBlock, SecretInput, TextInput, TickRow } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
 import type { LeaveRequest } from '@/lib/leave-guard'
+import { CONNECTION_REPLACE_MOST } from '@/lib/api'
 import { reconnectFieldsFor, replaceWorkingLabel, workflowsCount, workingLabel, type FormService } from './add-form-model'
 import { GoogleSignIn, SaveLine, SIGN_IN_WORKING_LABEL } from './AddConnectionPanel'
 import type { ConnectionView } from './connection-model'
@@ -147,6 +148,17 @@ export function NoticeDialog({ dialog, onClose }: { dialog: Open<'notice'>; onCl
   )
 }
 
+/**
+ * What the dialog says when a connection has more workflows left than one Replace moves (Dan,
+ * 2026-10-27): the route allows only as many as fit inside the page's wait. Null when they all fit.
+ */
+export function replaceCapSentence(left: number, ticked: number): string | null {
+  if (left <= CONNECTION_REPLACE_MOST) return null
+  const most = `Replace moves at most ${CONNECTION_REPLACE_MOST} workflows at a time`
+  if (ticked > CONNECTION_REPLACE_MOST) return `${most}. Untick ${ticked - CONNECTION_REPLACE_MOST} first.`
+  return `${most}, so the first ${CONNECTION_REPLACE_MOST} are ticked. Replace again to move the rest.`
+}
+
 /** Replace (R20, D20, build PR 12). */
 export function ReplaceDialog({ dialog, connection, candidates, now, onWith, onTick, onReplace, onClose }: {
   dialog: Open<'replace'>
@@ -163,6 +175,7 @@ export function ReplaceDialog({ dialog, connection, candidates, now, onWith, onT
   const replacement = candidates.find((c) => c.id === dialog.with) ?? null
   const n = dialog.ticked.length
   const saving = dialog.save.kind === 'saving'
+  const cap = replaceCapSentence(dialog.listed.filter((w) => !dialog.moved.includes(w.id)).length, n)
   return (
     <Dialog
       title={`Replace ${connection.name}`}
@@ -171,7 +184,7 @@ export function ReplaceDialog({ dialog, connection, candidates, now, onWith, onT
       onDismiss={() => { if (!saving) onClose() }}
       actions={
         <>
-          <Button variant="destructive" className="cx-btn-dangerfill" onClick={onReplace} disabled={saving || n === 0 || !replacement}>{`Replace in ${workflowsCount(n)}`}</Button>
+          <Button variant="destructive" className="cx-btn-dangerfill" onClick={onReplace} disabled={saving || n === 0 || n > CONNECTION_REPLACE_MOST || !replacement}>{`Replace in ${workflowsCount(n)}`}</Button>
           <Button variant="secondary" className="cx-btn-quiet" onClick={onClose}>Cancel</Button>
           {/* Its words were fixed at the press (the save's label), so a tick changed meanwhile does not rewrite them. */}
           <SaveLine save={dialog.save} now={now} label={replaceWorkingLabel(n, replacement?.name ?? '')} />
@@ -189,6 +202,7 @@ export function ReplaceDialog({ dialog, connection, candidates, now, onWith, onT
             ? <TickRow key={w.id} checked={false} onChange={() => {}} label={`${w.name}, moved`} disabled />
             : <TickRow key={w.id} checked={dialog.ticked.includes(w.id)} onChange={() => onTick(w.id)} label={w.name} />))}
         </div>
+        {cap && <p className="text-sm text-hint" data-part="replace-cap">{cap}</p>}
         {replacement && <p className="rp-sentence">Each ticked workflow gets a new version with {replacement.name}.</p>}
       </div>
     </Dialog>
