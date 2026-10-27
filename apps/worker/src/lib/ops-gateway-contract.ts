@@ -8,8 +8,9 @@
  *    2026-10-16, on #1949: the bidding Worker serves definitions to the ops
  *    Worker over the service binding, and the ops Worker keeps the last good
  *    copy). Only what a tick needs: each ops workflow's on or off state, its
- *    soft delete, its updated_at (the order key), its latest version and its
- *    trigger. A run's full definition at its version is #1950's to fetch;
+ *    soft delete, its updated_at (the order key), its latest version, its
+ *    trigger, and since #1952 the porting facts its schedule's floor is taken
+ *    from. A run's full definition at its version is #1950's to fetch;
  *  - the tick's report, which the bidding Worker stamps as the heartbeat and
  *    judges every minute, so the watchdog never depends on the Worker it
  *    watches (L71).
@@ -54,7 +55,34 @@ export interface ServedOpsWorkflow {
   version_number: number | null
   /** definition.trigger, unvalidated. */
   trigger: unknown
+  /** What its schedule's floor is taken from (#1952), from the porting schema. */
+  porting: ServedOpsWorkflowPorting
 }
+
+/**
+ * The facts a schedule's floor is taken from beyond when the ops database first
+ * held it (#1952, #1698 D8), read from the bidding database's porting schema
+ * (supabase/migrations/20261027120000_schedule_floor_facts_1952.sql). The ops
+ * tick never fires a slot at or before the floor, so:
+ *  - a workflow ported from Pipedream never fires a period Pipedream already
+ *    ran: its floor is the instant Pipedream's copy was paused at cutover, and
+ *    while it is not cut over (cutover_at null) it fires nothing at all;
+ *  - a workflow that replaces another never fires a slot one it replaces served.
+ */
+export interface ServedOpsWorkflowPorting {
+  /** It stands for at least one Pipedream workflow (porting.pipedream_workflow_map). */
+  ported: boolean
+  /**
+   * The latest cut_over_at of the Pipedream workflows it stands for, or null
+   * while any of them is not cut over. Always null for one not ported.
+   */
+  cutover_at: string | null
+  /** Every workflow it replaces (porting.workflow_replacements), directly or through those, in id order. */
+  replaces: string[]
+}
+
+/** The most replaced workflows one copy keeps; the ops database refuses more. */
+export const MAX_REPLACED_WORKFLOWS = 50
 
 export interface ServedOpsWorkflows {
   /** The bidding Worker's clock when it read the list. */
@@ -369,6 +397,39 @@ export interface WriteBacksReport {
 /** A report lists at most this many write backs; past it the list says it is not complete. */
 export const MAX_REPORT_WRITE_BACKS = 50
 
+/**
+ * The minute tick's verdict on an ops key reseal (#2486, ops/reseal-watch.ts
+ * says how each is reached), which the bidding Worker pages through the
+ * ops-key-reseal signal (lib/ops-key-reseal.ts).
+ *  - off: OPS_RESEAL is not set.
+ *  - running: it is set, inside its bounds.
+ *  - logins_left: apply has been on 2 hours and no run since has said every
+ *    login is on the current key.
+ *  - preview_left_on: preview has been on 2 hours and there are logins to move.
+ *  - finished_left_on: a run said every login is on the current key 2 hours
+ *    ago, and the switch is still on.
+ *  - switch_unknown: OPS_RESEAL names neither preview nor apply, so no reseal runs.
+ */
+export const OPS_RESEAL_VERDICTS = ['off', 'running', 'logins_left', 'preview_left_on', 'finished_left_on', 'switch_unknown'] as const
+export type OpsResealVerdict = (typeof OPS_RESEAL_VERDICTS)[number]
+/** The verdicts that page; the others send the all clear. */
+export const OPS_RESEAL_PAGED_VERDICTS = ['logins_left', 'preview_left_on', 'finished_left_on', 'switch_unknown'] as const satisfies readonly OpsResealVerdict[]
+
+export interface OpsResealReport {
+  verdict: OpsResealVerdict
+  /** The mode the switch is on in; null when it is off or names no mode. */
+  mode: 'preview' | 'apply' | null
+  /** When the switch was first seen in this mode, on the database clock. */
+  since: string | null
+  /** The first of an unbroken line of runs that each left nothing. */
+  nothing_left_since: string | null
+  last_run_at: string | null
+  /** How many logins the last run left; null when it failed, was refused, or none ran. */
+  last_run_left: number | null
+  /** The database clock the verdict was reached on; null when it needed none (off, switch_unknown). */
+  db_now: string | null
+}
+
 export interface OpsTickReport {
   tick_id: string
   mode: OpsTickMode
@@ -435,6 +496,15 @@ export interface OpsTickReport {
    * report from an ops release before it: not known, never read as none run.
    */
   sweeps_run: string[] | null
+  /**
+   * The tick's verdict on an ops key reseal (#2486), judged every minute. The
+   * bidding Worker pages a paged verdict through the ops-key-reseal signal and
+   * sends the all clear on any other. Null when it could not judge (no
+   * database, or the state could not be read, which is the tick problem
+   * reseal_state_failed) and on a report from an ops release before it: never
+   * read as off.
+   */
+  reseal: OpsResealReport | null
 }
 
 /**
@@ -464,6 +534,13 @@ export const OPS_TICK_PROBLEM_RULES = {
   copies_read_failed: 'three_in_a_row',
   /** A schedule's planning or recording failed: the slot stays due and is tried again next tick. */
   schedule_plan_failed: 'three_in_a_row',
+  /**
+   * A schedule's copy was never told its porting facts (#1952), so its floor is
+   * unknown and it fires nothing. Expected for the one tick after the ops
+   * migration, until the next served list tells every copy; past three ticks
+   * the copies are not being told, and the schedule is not firing.
+   */
+  schedule_floor_unknown: 'three_in_a_row',
   claim_depth_failed: 'three_in_a_row',
   /** The probe through the dispatch path, sent every tick nothing is due. */
   probe_failed: 'three_in_a_row',
@@ -471,6 +548,12 @@ export const OPS_TICK_PROBLEM_RULES = {
   connections_save_failed: 'three_in_a_row',
   /** A removal is served for 7 hours, so the next tick records it again. */
   tombstone_record_failed: 'three_in_a_row',
+  /**
+   * The removal of measured identities of connections bidding never stored
+   * failed (#2573). They are used by nothing, and the next complete serve asks
+   * again, so only three ticks in a row page.
+   */
+  unserved_identities_remove_failed: 'three_in_a_row',
   /**
    * The frozen definition copies (#1950): the list of versions not held, the
    * request to the bidding Worker, or its answer's shape failed. Every version
@@ -481,6 +564,8 @@ export const OPS_TICK_PROBLEM_RULES = {
   definition_save_failed: 'three_in_a_row',
   /** The live claim failed (#1950); every queued run waits for the next tick's claim. */
   claim_failed: 'three_in_a_row',
+  /** The reseal watch's state could not be read (#2486); it is read again next tick, and its verdict is unjudged meanwhile. */
+  reseal_state_failed: 'three_in_a_row',
   /**
    * Lost and requeued runs of one workflow reached the rate in a tick (L77,
    * #1950): held for three ticks, so three ticks in a row of the rate pages.
@@ -686,6 +771,28 @@ export function capProblems(problems: readonly string[]): string[] {
 }
 
 /**
+ * One workflow's porting facts (#1952), or why they cannot be read. Absent facts
+ * are refused, never read as not ported: a bidding release before #1952 cannot
+ * say whether a workflow stands for one Pipedream still runs.
+ */
+function parsePorting(workflowId: string, raw: unknown): ServedOpsWorkflowPorting | string {
+  if (raw === undefined) return 'none were served'
+  if (!isRecord(raw)) return 'not an object'
+  if (typeof raw.ported !== 'boolean') return 'ported is not true or false'
+  if (!(raw.cutover_at === null || isTime(raw.cutover_at))) return 'cutover_at is not a time or null'
+  if (raw.cutover_at !== null && !raw.ported) return 'a cutover time on a workflow not ported from Pipedream'
+  if (!Array.isArray(raw.replaces)) return 'replaces is not a list'
+  const replaces: string[] = []
+  for (const r of raw.replaces as unknown[]) {
+    if (typeof r !== 'string' || !UUID.test(r)) return 'a replaced workflow is not a workflow id'
+    if (r === workflowId) return 'it is listed as replacing itself'
+    replaces.push(r)
+  }
+  if (replaces.length > MAX_REPLACED_WORKFLOWS) return `it replaces ${replaces.length} workflows, more than the ${MAX_REPLACED_WORKFLOWS} a copy keeps`
+  return { ported: raw.ported, cutover_at: raw.cutover_at, replaces }
+}
+
+/**
  * The served list, with each row that is not a well formed ops workflow refused
  * by name rather than saved. Throws when the list itself is malformed.
  */
@@ -709,6 +816,11 @@ export function parseServedOpsWorkflows(raw: unknown): { list: ServedOpsWorkflow
       refused.push(`The bidding Worker served workflow ${id} in a shape the ops Worker does not read, so it was not saved.`)
       return
     }
+    const porting = parsePorting(row.id, row.porting)
+    if (typeof porting === 'string') {
+      refused.push(`The bidding Worker served workflow ${id} with porting facts the ops Worker does not read (${porting}), so it was not saved and its schedule keeps the floor it last had.`)
+      return
+    }
     workflows.push({
       id: row.id,
       organization_id: row.organization_id,
@@ -717,6 +829,7 @@ export function parseServedOpsWorkflows(raw: unknown): { list: ServedOpsWorkflow
       updated_at: row.updated_at,
       version_number: row.version_number,
       trigger: row.trigger ?? null,
+      porting,
     })
   })
   // A list with refused rows does not name every ops workflow it could read, so
@@ -800,7 +913,7 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
   if (!isRecord(raw)) throw new OpsGatewayContractError('the ops tick sent a report that is not an object')
   const {
     tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets, start_stamp_failed, problem_keys,
-    connection_logins, write_backs, sweeps_run,
+    connection_logins, write_backs, sweeps_run, reseal,
   } = raw
   if (typeof tick_id !== 'string' || tick_id === '' || tick_id.length > 200) throw new OpsGatewayContractError('the ops tick report has no tick id')
   if (!(OPS_TICK_MODES as readonly unknown[]).includes(mode)) throw new OpsGatewayContractError(`the ops tick report names a mode this Worker does not know: ${String(mode)}`)
@@ -877,6 +990,40 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     connection_logins: logins,
     write_backs: writeBacks,
     sweeps_run: sweepsRun,
+    // Absent before #2486, null on a tick that could not judge it: unjudged, never off.
+    reseal: reseal === undefined || reseal === null ? null : parseOpsReseal(reseal),
+  }
+}
+
+/**
+ * A report's reseal verdict as the bidding Worker received it (#2486). Throws
+ * on one it cannot read, so the whole report pages as unreadable rather than a
+ * stuck rotation going unsaid. Every field is a verdict, a mode, a time or a count.
+ */
+export function parseOpsReseal(raw: unknown): OpsResealReport {
+  const bad = (why: string) => new OpsGatewayContractError(`the ops tick report's reseal watch ${why}`)
+  if (!isRecord(raw)) throw bad('is not an object')
+  const { verdict, mode, since, nothing_left_since, last_run_at, last_run_left, db_now } = raw
+  if (!(OPS_RESEAL_VERDICTS as readonly unknown[]).includes(verdict)) throw bad(`names a verdict this Worker does not know: ${String(verdict)}`)
+  if (!(mode === null || mode === 'preview' || mode === 'apply')) throw bad(`names a mode this Worker does not know: ${typeof mode === 'string' ? mode : typeof mode}`)
+  for (const [name, t] of [['since', since], ['nothing_left_since', nothing_left_since], ['last_run_at', last_run_at], ['db_now', db_now]] as const) {
+    if (!(t === null || isTime(t))) throw bad(`has an unreadable ${name}`)
+  }
+  if (!(last_run_left === null || (typeof last_run_left === 'number' && Number.isInteger(last_run_left) && last_run_left >= 0))) throw bad('has an unreadable count of logins left')
+  // A verdict about a switch that is on was reached from its state, on the database clock.
+  const on = verdict !== 'off' && verdict !== 'switch_unknown'
+  if (on && (mode === null || since === null || db_now === null)) throw bad(`says ${String(verdict)} without the mode, the time it was set and the clock it was judged on`)
+  if (!on && mode !== null) throw bad(`says ${String(verdict)} and names a mode`)
+  if ((verdict === 'logins_left' && mode !== 'apply') || (verdict === 'preview_left_on' && mode !== 'preview')) throw bad(`says ${String(verdict)} in ${String(mode)}`)
+  if (verdict === 'finished_left_on' && nothing_left_since === null) throw bad('says finished_left_on without when it finished')
+  return {
+    verdict: verdict as OpsResealVerdict,
+    mode,
+    since: since as string | null,
+    nothing_left_since: nothing_left_since as string | null,
+    last_run_at: last_run_at as string | null,
+    last_run_left,
+    db_now: db_now as string | null,
   }
 }
 

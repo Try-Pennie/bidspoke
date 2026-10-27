@@ -13,7 +13,7 @@
 import { describe, expect, it } from 'vitest'
 import { CONNECTION_SERVE_WINDOW_MS } from '../../lib/ops-gateway-contract'
 import { saveServedConnections, type ConnectionServeDb } from '../connection-serve'
-import { OpsWriteTimeoutError, MAX_COPIES_PER_SAVE, type ConnectionCopyInput, type SaveConnectionCopiesResult } from '../ops-writes'
+import { OpsWriteTimeoutError, MAX_COPIES_PER_SAVE, type ConnectionCopyInput, type SaveConnectionCopiesResult, type UnservedIdentityRemoved } from '../ops-writes'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
 const CONN = '00000000-0000-4000-8000-0000000023c1'
@@ -36,6 +36,7 @@ function db(over: Partial<ConnectionServeDb> = {}) {
   const calls: string[] = []
   const saves: Array<{ servedAt: string; complete: boolean; copies: ConnectionCopyInput[] }> = []
   const removals: Array<{ org: string; connectionId: string; generation: number; removedAt: string }> = []
+  const unserved: Array<{ servedAt: string; named: string[] }> = []
   const d: ConnectionServeDb = {
     async saveConnectionCopies(servedAt, complete, copies) {
       calls.push('save')
@@ -47,9 +48,14 @@ function db(over: Partial<ConnectionServeDb> = {}) {
       removals.push({ org, connectionId, generation, removedAt: removedAt.toISOString() })
       return { outcome: 'recorded', copiesRemoved: 1 }
     },
+    async removeUnservedMeasuredIdentities(servedAt, named) {
+      calls.push('unserved')
+      unserved.push({ servedAt, named: [...named] })
+      return []
+    },
     ...over,
   }
-  return { d, calls, saves, removals }
+  return { d, calls, saves, removals, unserved }
 }
 
 describe('saveServedConnections', () => {
@@ -77,7 +83,8 @@ describe('saveServedConnections', () => {
   it('records the removals before it saves the copies', async () => {
     const f = db()
     await saveServedConnections(f.d, async () => served([connection()], [{ connection_id: GONE, organization_id: ORG, generation: 3, removed_at: '2026-10-18T21:00:00.000Z' }]))
-    expect(f.calls).toEqual(['tombstone', 'save'])
+    // Then, the list being complete, the measured identities of connections bidding never stored (#2573).
+    expect(f.calls).toEqual(['tombstone', 'save', 'unserved'])
     expect(f.removals).toEqual([{ org: ORG, connectionId: GONE, generation: 3, removedAt: '2026-10-18T21:00:00.000Z' }])
   })
 
@@ -146,5 +153,60 @@ describe('saveServedConnections', () => {
     expect(f.saves.map((s) => [s.copies.length, s.complete])).toEqual([[MAX_COPIES_PER_SAVE, false], [1, false]])
     expect(r.problems[0].text).toMatch(/more than one save carries/)
     expect(r.problems[0].key).toBe('connections_too_many')
+  })
+
+  // #2573: a Salesforce verify for a new connection records its measured
+  // identity before bidding inserts the row. When the insert fails and the
+  // revoke fails too, nothing else ever removes that record; a complete list
+  // served more than an hour later that does not name it is the proof bidding
+  // never stored it (remove_unserved_measured_identities, proven in
+  // unserved_measured_identities.test.sql).
+  describe('the measured identities of connections bidding never stored (#2573)', () => {
+    const ORPHAN = '00000000-0000-4000-8000-0000000025a1'
+    const removed: UnservedIdentityRemoved = { organizationId: ORG, connectionId: ORPHAN, generation: 1, measuredAt: '2026-10-18T20:00:00.000Z' }
+
+    it('after a complete list is saved in one save, asks ops to remove them with the list\'s time and every id it names, and counts each', async () => {
+      const f = db({
+        removeUnservedMeasuredIdentities: async (servedAt, named) => { f.calls.push('unserved'); f.unserved.push({ servedAt, named: [...named] }); return [removed] },
+      })
+      const r = await saveServedConnections(f.d, async () => served([connection(), connection({ id: GONE })]))
+      expect(f.calls).toEqual(['save', 'unserved'])
+      expect(f.unserved).toEqual([{ servedAt: SERVED_AT, named: [CONN, GONE] }])
+      expect(r.problems).toEqual([])
+      expect(r.counts.connection_unserved_identities_removed).toBe(1)
+      expect(r.unservedIdentitiesRemoved).toEqual([removed])
+    })
+
+    it('an empty complete list still asks, naming nothing', async () => {
+      const f = db()
+      await saveServedConnections(f.d, async () => served([]))
+      expect(f.unserved).toEqual([{ servedAt: SERVED_AT, named: [] }])
+    })
+
+    it.each([
+      ['a list with a refused row is not complete', (f: ReturnType<typeof db>) => saveServedConnections(f.d, async () => served([connection(), connection({ id: GONE, public_config: { client_secret: 'x' } })]))],
+      ['a list the bidding Worker marked incomplete', (f: ReturnType<typeof db>) => saveServedConnections(f.d, async () => ({ ...served(), complete: false }))],
+      ['a list too long for one save', (f: ReturnType<typeof db>) => saveServedConnections(f.d, async () => served(Array.from({ length: MAX_COPIES_PER_SAVE + 1 }, (_, i) => connection({ id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}` }))))],
+    ])('removes nothing when the list does not prove what bidding holds: %s', async (_why, run) => {
+      const f = db()
+      const r = await run(f)
+      expect(f.unserved).toEqual([])
+      expect(r.unservedIdentitiesRemoved).toEqual([])
+    })
+
+    it('removes nothing when the save itself failed, since the copies it names may not be held', async () => {
+      const f = db({ saveConnectionCopies: async () => { throw new OpsWriteTimeoutError('save_connection_copies passed its 9000 ms deadline and may still have committed') } })
+      await saveServedConnections(f.d, async () => served())
+      expect(f.unserved).toEqual([])
+    })
+
+    it('reports a removal that fails by name, as a problem the next tick clears by asking again', async () => {
+      const f = db({ removeUnservedMeasuredIdentities: async () => { throw new OpsWriteTimeoutError('remove_unserved_measured_identities passed its 9000 ms deadline and may still have committed') } })
+      const r = await saveServedConnections(f.d, async () => served())
+      expect(r.problems).toHaveLength(1)
+      expect(r.problems[0].key).toBe('unserved_identities_remove_failed')
+      expect(r.problems[0].text).toMatch(/remove_unserved_measured_identities passed its 9000 ms deadline/)
+      expect(r.counts.connection_copies_saved).toBe(1)
+    })
   })
 })

@@ -30,6 +30,7 @@ vi.mock('../../../lib/supabase')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase } from './_supabase-mock'
+import { answerSlackConfigSaves } from '../../../__tests__/helpers/sealed-slack-row'
 import api from '../index'
 
 const ORG = 'org-2331'
@@ -86,13 +87,18 @@ async function app() {
 }
 
 let supabase: ReturnType<typeof makeSupabase>
+/** The database functions each test called: the token is saved by save_slack_alert_token (#2643). */
+let saves: string[]
 let timers: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-  supabase = makeSupabase({
-    users: { single: testUser },
-    service_connections: { upsertResult: { id: 'sc-1' }, writeRows: [{ id: 'sc-1' }] },
+  saves = []
+  supabase = makeSupabase({ users: { single: testUser } }, {
+    rpc: async (name, args) => {
+      saves.push(name)
+      return answerSlackConfigSaves()(name, args)
+    },
   })
   vi.mocked(createSupabaseClient).mockReturnValue(supabase as never)
   vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -201,7 +207,7 @@ describe('POST /slack/resolve: the first conversations.list', () => {
 
 describe('POST /slack verifies the token before sealing (slack_token_invalid)', () => {
   const save = { bot_token: TOKEN, default_channel: '#alerts', workspace_name: 'Pennie' }
-  const upserts = () => (supabase.calls.service_connections ?? []).filter(([m]) => m === 'upsert')
+  const tokenSaves = () => saves.filter((name) => name === 'save_slack_alert_token')
 
   it('saves a token auth.test accepts, asking Slack once with that token', async () => {
     const { calls } = slack([{ body: { ok: true, team: 'Pennie' } }])
@@ -209,7 +215,7 @@ describe('POST /slack verifies the token before sealing (slack_token_invalid)', 
     const res = await call('POST', '/integrations/slack', save)
     expect(res.status).toBe(200)
     expect(calls.map((c) => [c.url, c.token])).toEqual([['https://slack.com/api/auth.test', TOKEN]])
-    expect(upserts()).toHaveLength(1)
+    expect(tokenSaves()).toHaveLength(1)
   })
 
   it('refuses a token Slack rejects with slack_token_invalid and writes nothing', async () => {
@@ -223,7 +229,7 @@ describe('POST /slack verifies the token before sealing (slack_token_invalid)', 
       code: 'slack_token_invalid',
       slack_error: 'token_revoked',
     })
-    expect(upserts()).toEqual([])
+    expect(tokenSaves()).toEqual([])
   })
 
   it('refuses ok:false with no code the same way', async () => {
@@ -237,7 +243,7 @@ describe('POST /slack verifies the token before sealing (slack_token_invalid)', 
       code: 'slack_token_invalid',
       slack_error: null,
     })
-    expect(upserts()).toEqual([])
+    expect(tokenSaves()).toEqual([])
   })
 
   it.each<[string, Answer]>([
@@ -250,7 +256,7 @@ describe('POST /slack verifies the token before sealing (slack_token_invalid)', 
     const res = await call('POST', '/integrations/slack', save)
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Internal server error' })
-    expect(upserts()).toEqual([])
+    expect(tokenSaves()).toEqual([])
     expect(calls).toHaveLength(1)
     expect(timers).not.toHaveBeenCalledWith(expect.anything(), 30_000)
   })

@@ -47,11 +47,13 @@ import { clearFieldProblem, OpsGatewayContractError, parseSealedEnvelope, type S
  * them here once the ops deploy carried them (Deploy Ops Worker, 2026-10-20),
  * with the bidding routes that call them. signInClient, last, followed the same
  * order: shipped on ops in build PR 13a (#2739), moved here in build PR 13b
- * with the Sign in with Google routes.
+ * with the Sign in with Google routes. The step test's two, testStep and
+ * stepTestResult, shipped on ops with their bidding route in #2762 and moved
+ * here in #2764, once the ops deploy carried them.
  */
 export const OPS_CONNECTIONS_METHODS = [
   'verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode', 'addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects',
-  'signInClient',
+  'signInClient', 'testStep', 'stepTestResult',
 ] as const
 export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
 
@@ -63,7 +65,7 @@ export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
 export const OPS_DELEGATION_METHODS = ['addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects'] as const satisfies readonly OpsConnectionsMethod[]
 export type OpsDelegationMethod = (typeof OPS_DELEGATION_METHODS)[number]
 /** The methods the entrypoint runs with the connections' dependencies (connections/ops-connections.ts). */
-export type OpsConnectionsCoreMethod = Exclude<OpsConnectionsMethod, OpsDelegationMethod | OpsSignInMethod>
+export type OpsConnectionsCoreMethod = Exclude<OpsConnectionsMethod, OpsDelegationMethod | OpsSignInMethod | OpsStepTestMethod>
 
 /** At most this many entries are answered by listDelegationSubjects; reached_limit says so. */
 export const DELEGATION_LIST_LIMIT = 1000
@@ -102,6 +104,11 @@ export type OpsSignInMethod = (typeof OPS_SIGN_IN_METHODS)[number]
  *   revoke, health       one ops database call (9 s at most)
  *   the Google list's    one ops database call each, which stops at the 8 s
  *                        statement timeout
+ *   testStep             the connection's copy, then the action's own sends,
+ *                        each under connectionFetch's deadline (an action may
+ *                        poll or send several times), then the one write of
+ *                        its result
+ *   stepTestResult       one ops database read (8 s statement timeout)
  */
 export const OPS_CONNECTIONS_CEILINGS_MS: Readonly<Record<OpsConnectionsMethod, number>> = {
   verify: 45_000,
@@ -115,6 +122,8 @@ export const OPS_CONNECTIONS_CEILINGS_MS: Readonly<Record<OpsConnectionsMethod, 
   listDelegationSubjects: 10_000,
   // Reading one secret of the ops Worker's own: no database, no network.
   signInClient: 5_000,
+  testStep: 90_000,
+  stepTestResult: 10_000,
 }
 
 /**
@@ -576,28 +585,12 @@ export function parseExchangeOAuthCodeRequest(raw: unknown): ExchangeOAuthCodeRe
  * step of an ops workflow for real, through the executor and connectionFetch,
  * and keeps its result on the ops database (Dan's decision of 2026-10-23: the
  * ops database only, the latest result per step, for 7 days); stepTestResult
- * reads that result back for the data picker.
- *
- * Kept apart from OPS_CONNECTIONS_METHODS on purpose, as the sign in method is:
- * CI's deployed ops check requires the LIVE ops Worker to export every method
- * on that list, so the pull request adding these cannot also require them of
- * the deploy it precedes. Until the ops deploy carries them, the bidding route
- * that calls them answers ops_connections_unavailable, and they move onto that
- * list in a later change.
+ * reads that result back for the data picker. Among OPS_CONNECTIONS_METHODS,
+ * with their ceilings in OPS_CONNECTIONS_CEILINGS_MS; the entrypoint runs them
+ * with the step test's own dependencies (ops/step-test.ts).
  */
-export const OPS_STEP_TEST_METHODS = ['testStep', 'stepTestResult'] as const
+export const OPS_STEP_TEST_METHODS = ['testStep', 'stepTestResult'] as const satisfies readonly OpsConnectionsMethod[]
 export type OpsStepTestMethod = (typeof OPS_STEP_TEST_METHODS)[number]
-
-/**
- *   testStep        the connection's copy, then the action's own sends, each
- *                   under connectionFetch's deadline (an action may poll or
- *                   send several times), then the one write of its result
- *   stepTestResult  one ops database read (8 s statement timeout)
- */
-export const OPS_STEP_TEST_CEILINGS_MS: Readonly<Record<OpsStepTestMethod, number>> = {
-  testStep: 90_000,
-  stepTestResult: 10_000,
-}
 
 /** The trigger payload and the earlier steps' outputs a test is given, together, at most this many bytes of JSON. */
 export const STEP_TEST_CONTEXT_MAX_BYTES = 512 * 1024
@@ -658,9 +651,16 @@ export interface StepTestView {
   tested_by: string
   tested_at: string
   status: 'completed' | 'failed'
-  /** Null for a failure, or an answer over the kept size (output_bytes then says how big it was). */
+  /** Null for a failure, an action that answered nothing, or an answer over the kept size (output_dropped). */
   output: unknown
+  /** The answer's size; null for a failure and for an action that answered nothing. */
   output_bytes: number | null
+  /**
+   * True only for an answer over the kept size, which is then known by its size
+   * alone. An action that answered nothing is completed, output null,
+   * output_bytes null and this false, so the two never read alike (#2773).
+   */
+  output_dropped: boolean
   error: string | null
   /** Each request the step made, sanitised before its login was applied. */
   requests: unknown[]

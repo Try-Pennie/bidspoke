@@ -229,6 +229,8 @@ value, a refusal naming its cause. Each method has a ceiling
 | `lookup` | One level of a connection's schema, behind 60 lookups a minute per organization (`take_lookup_allowance`). | the allowance |
 | `exchangeOAuthCode` | A person bound login's consent, to its ConnectionTokenObject, which answers the new generation and, where the provider's id_token names a verified email for this client, whom the person signed in as (`id-token-account.ts`, #2338). A consent is a person bound login's Reconnect (it is never verified as a candidate), so its success then records the clearing of needs_reauth; a clearing that cannot be written is answered `reauth_cleared: false`, never as a failed consent, since the login is already stored. | the object's storage, then `reauth_cleared_at` |
 | `signInClient` | The client id of the sign in app the ops Worker holds for a service (`connections/oauth-apps.ts`, #2338 build PR 13), for the bidding Worker's Sign in with Google link; never its secret. Refuses `sign_in_app_unset` or `sign_in_app_malformed` naming the secret, and `sign_in_not_offered` for a service with no sign in. It shipped on ops ahead of the bidding route that calls it (build PR 13a, #2739), as the Google list's methods did, and joined `OPS_CONNECTIONS_METHODS` with that route (build PR 13b). | nothing |
+| `testStep` | Runs one app_action step of an ops workflow for real, through the executor and connectionFetch (`src/ops/step-test.ts`, #2339), for the canvas's test (`routes/api/ops-step-test.ts`). An action that changes something is refused `step_test_send_unconfirmed` unless the person ticked Send for real. It shipped on ops with the bidding route that calls it (#2762) and joined `OPS_CONNECTIONS_METHODS` once the ops deploy carried it (#2764). | the step's latest result in `step_test_results`, kept 7 days |
+| `stepTestResult` | Reads a step's kept test result back for the data picker. Joined `OPS_CONNECTIONS_METHODS` with `testStep` (#2764). | nothing |
 
 - **No copy is written by any of these (F116, F126).** verify and clearReauth use
   the candidate (the bidding row's sealed envelope at its new generation) for
@@ -247,6 +249,15 @@ value, a refusal naming its cause. Each method has a ceiling
 - A candidate's measured identity is replaced by the next candidate's at the same
   generation (ops migration 20261019010000); a generation ops holds is never
   overwritten (`identity_changed`).
+- A new connection's measured identity is written by verify before bidding
+  inserts its row. When the insert fails and the create route's revoke fails too
+  (`connection_create_left_on_ops`), or the Worker stops between the two, that
+  row has no copy and nothing reads it. The minute tick removes it once a
+  complete list, saved in one save and served more than an hour after the
+  measurement, does not name the connection (`remove_unserved_measured_identities`,
+  ops migration 20261027180000, #2573), logging each removal by id
+  (`unserved_identity_removed`). A removal that keeps failing pages after three
+  ticks (`unserved_identities_remove_failed`).
 - **Salesforce lease purposes** (`SF_LEASE_PURPOSES` in `run-vocabulary.ts`, and
   the CHECKs on `sf_leases` and `sf_purpose_caps`): `step`, `lookup`, `verify`,
   `connection_check` and `sf_limits`. Each but `step` needs a share of its own in

@@ -1198,7 +1198,10 @@ up to minutes), judges "landed" by the write's own marker, merges several writes
 to one record in attempt order (newer wins, and a later stamp never stands for an
 earlier write), and resends what did not land, at most twice, under a claim that
 fails closed. A field another writer set since the write began is never
-overwritten and is named in a conflict alert. Its header has the rest.
+overwritten and is named in a conflict alert, unless it holds a later state of
+the value being sent (a Prospect's "Converted" where "Bid" was sent, #2895),
+which is left as it is and not alerted, since nobody has a choice to make. Its
+header has the rest.
 
 **Submission is covered (#2203).** Dan chose on 2026-10-15 to give
 `Submission__c` the same marker rather than borrow a field such as Liberty1's

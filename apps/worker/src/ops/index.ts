@@ -97,6 +97,19 @@ export interface OpsEnv extends OpsDbEnv {
    * Any other value runs observe and is reported not configured, by name.
    */
   OPS_TICK_MODE?: string
+  /**
+   * Time sliced continuation (#1951), in wrangler.ops.toml [vars]: "observe"
+   * writes, names and reads back a checkpoint at each slice boundary of a run
+   * and carries on; unset or "off" writes nothing. Any other value is off, and
+   * reported not configured by name (checkpoint.ts continuationModeFrom).
+   */
+  OPS_CONTINUATION?: string
+  /**
+   * The run checkpoints bucket (#1951), bidspoke-ops-checkpoints. Optional so a
+   * deploy without it says so by name (checkpointStoreFrom, and the tick's
+   * not configured report) rather than failing on the first boundary unnamed.
+   */
+  OPS_CHECKPOINTS?: R2Bucket
   PORTING_TEE: R2Bucket
   /**
    * The ops code namespace (bidspoke-code-nodes-ops). Its outbound Worker,

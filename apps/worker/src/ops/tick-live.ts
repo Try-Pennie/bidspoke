@@ -29,7 +29,7 @@ import {
   claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeOpsStepRecords, purgeScheduleObservations, purgeStepTestResults, readConnectionCheckTargets,
   readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
-  saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
+  removeUnservedMeasuredIdentities, saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions, observeOpsReseal,
 } from './ops-writes'
 import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps } from './connections/connection-fetch'
 import { boundFetch, type OpsServiceEntry } from './connections/ops-connections'
@@ -37,6 +37,7 @@ import { ConnectionRefusal } from './connections/refusals'
 import { liveOpsConnectionsDeps } from './ops-connections-live'
 import { SF_LIMITS_READ_DEADLINE_MS } from './sf-limits'
 import { CONNECTION_CHECK_PROBE_DEADLINE_MS } from './connection-check'
+import { continuationModeFrom } from './checkpoint'
 import { dispatchKey, signDispatch } from './dispatch-auth'
 import type { OpsEnv } from './index'
 import type { DispatchItem, OpsTickDb, OpsTickPorts } from './tick'
@@ -59,6 +60,23 @@ export function tickModeFrom(value: string | undefined): { mode: OpsTickMode; un
   if (value === undefined || value.trim() === '' || value.trim() === 'observe') return { mode: 'observe', unknown: null }
   if (value.trim() === 'live') return { mode: 'live', unknown: null }
   return { mode: 'observe', unknown: value }
+}
+
+/**
+ * Time sliced continuation's configuration (#1951), reported every tick so
+ * neither fault is silent: an OPS_CONTINUATION this build does not run (runs
+ * then write no checkpoint), and observe without the OPS_CHECKPOINTS bucket
+ * (each run then says store_missing once and writes none).
+ */
+export function continuationProblems(env: OpsEnv): Array<{ secret: string; problem: string }> {
+  const c = continuationModeFrom(env.OPS_CONTINUATION)
+  if (c.unknown !== null) {
+    return [{ secret: 'OPS_CONTINUATION', problem: `OPS_CONTINUATION is ${JSON.stringify(c.unknown)}, which this build does not run (it runs off or observe), so runs write no checkpoint.` }]
+  }
+  if (c.mode !== 'off' && env.OPS_CHECKPOINTS === undefined) {
+    return [{ secret: 'OPS_CHECKPOINTS', problem: `OPS_CONTINUATION is ${c.mode}, and the OPS_CHECKPOINTS R2 binding is missing from this deploy, so no run checkpoint can be written.` }]
+  }
+  return []
 }
 
 export interface LiveTickOptions {
@@ -95,10 +113,12 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     dueQueueDepth: () => dueQueueDepth(client, rpc),
     saveConnectionCopies: (servedAt, complete, copies) => saveConnectionCopies(client, servedAt, complete, copies, rpc),
     recordConnectionTombstone: (org, connectionId, generation, removedAt) => recordConnectionTombstone(client, org, connectionId, generation, removedAt, rpc),
+    removeUnservedMeasuredIdentities: (servedAt, named) => removeUnservedMeasuredIdentities(client, servedAt, named, rpc),
     sfLimitsTargets: (limit) => readSfLimitsTargets(client, limit, rpc),
     recordSfLimitsReading: (sfOrgId, reading) => recordSfBudgetReading(client, sfOrgId, { ...reading, source: 'limits' }, rpc),
     connectionCheckTargets: (limit) => readConnectionCheckTargets(client, limit, rpc),
     recordConnectionCheck: (org, connectionId, result) => recordConnectionCheck(client, org, connectionId, result, rpc),
+    observeReseal: (mode, restartAfterSeconds) => observeOpsReseal(client, mode, restartAfterSeconds, rpc),
   }
 }
 
@@ -165,18 +185,24 @@ function connectionCheckProbe(env: OpsEnv, options: LiveTickOptions): OpsTickPor
   }
 }
 
-/** The ops database, or each setting that keeps it out of reach, by name. */
-export function opsTickDatabase(env: OpsEnv, options: LiveTickOptions = {}): OpsTickPorts['db'] {
+/** The ops database client, or each setting that keeps it out of reach, by name: the tick's, and the reseal's (reseal-live.ts). */
+export function opsDatabaseClient(env: OpsEnv, options: Pick<LiveTickOptions, 'fetch'> = {}): OpsSupabaseClient | { notConfigured: string; secrets: string[] } {
   const missing = (['OPS_SUPABASE_URL', 'OPS_SUPABASE_SECRET_KEY'] as const).filter((k) => typeof env[k] !== 'string' || env[k].trim() === '')
   if (missing.length > 0) {
     return { notConfigured: `${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} not set on bidspoke-worker-ops`, secrets: [...missing] }
   }
   try {
-    return databaseFor(createOpsSupabaseClient(env, options.fetch ? { fetch: options.fetch } : {}), options.rpc)
+    return createOpsSupabaseClient(env, options.fetch ? { fetch: options.fetch } : {})
   } catch (err) {
     if (err instanceof OpsDatabaseConfigError) return { notConfigured: err.message, secrets: [err.secret] }
     throw err
   }
+}
+
+/** The ops database, or each setting that keeps it out of reach, by name. */
+export function opsTickDatabase(env: OpsEnv, options: LiveTickOptions = {}): OpsTickPorts['db'] {
+  const client = opsDatabaseClient(env, options)
+  return 'notConfigured' in client ? client : databaseFor(client, options.rpc)
 }
 
 async function bounded<T>(what: string, work: () => Promise<T>, deadlineMs: number, delay: LiveTickOptions['delay']): Promise<T> {
@@ -214,12 +240,14 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
       return answer as RunInvocationReport
     },
     tickId,
+    resealSwitch: env.OPS_RESEAL,
     scheduledTime,
     now,
     db: opsTickDatabase(env, options),
     // An OPS_TICK_MODE that names no mode is not configured, by name: the tick runs in observe mode meanwhile.
     checkSecrets: async () => [
       ...(mode.unknown === null ? [] : [{ secret: 'OPS_TICK_MODE', problem: `OPS_TICK_MODE is ${JSON.stringify(mode.unknown)}, which is neither observe nor live, so the tick ran in observe mode.` }]),
+      ...continuationProblems(env),
       ...(await opsConnectionKeyProblems(env, options.sealRegistry)),
     ],
     gateway: {

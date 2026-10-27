@@ -50,6 +50,7 @@ import {
   type ResourceWaitCause, type SfBudgetSource, type SfLeaseOutcome, type SfLeasePurpose, type TriggerKind,
   STEP_TEST_STATUSES, type StepTestStatus,
   OPS_STEP_RECORD_OUTCOMES, OPS_STEP_RECORD_STATUSES, type OpsStepRecordOutcome, type OpsStepRecordStatus,
+  CHECKPOINT_ACK_OUTCOMES, type CheckpointAckOutcome,
 } from './run-vocabulary'
 import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
@@ -642,6 +643,15 @@ export interface WorkflowCopyInput {
   rowUpdatedAt: string
   versionNumber: number | null
   trigger: unknown
+  /** What its schedule's floor is taken from (#1952), as served; saved under its own order, by served_at. */
+  porting: CopyPorting
+}
+
+/** A copy's porting facts (#1952): ServedOpsWorkflowPorting, as the ops Worker names it. */
+export interface CopyPorting {
+  ported: boolean
+  cutoverAt: string | null
+  replaces: string[]
 }
 
 export interface SaveCopiesResult {
@@ -672,6 +682,7 @@ export async function saveWorkflowCopies(
       row_updated_at: c.rowUpdatedAt,
       version_number: c.versionNumber,
       trigger: c.trigger ?? null,
+      porting: { ported: c.porting.ported, cutover_at: c.porting.cutoverAt, replaces: c.porting.replaces },
     })),
   }, options))
   return {
@@ -704,6 +715,27 @@ export interface WorkflowCopy {
   lastServed: string | null
   lastObserved: string | null
   dbNow: string
+  /**
+   * The porting facts as the list that served them said (#1952), with that
+   * list's served_at; null for a copy never told them (saved by an ops release
+   * before #1952), whose floor is unknown.
+   */
+  porting: (CopyPorting & { servedAt: string }) | null
+  /** The latest slot fired or observed by any workflow it replaces, within its organization. */
+  replacedLastSlot: string | null
+}
+
+/** A copy's porting facts as workflow_copies answers them: all four columns null, or all told. */
+function copyPorting(name: string, row: Row): WorkflowCopy['porting'] {
+  const servedAt = field(name, row, 'porting_served_at', isTimeOrNull, 'a time or null')
+  const ported = field(name, row, 'ported', (v): v is boolean | null => v === null || isBool(v), 'true, false or null')
+  const replaces = field(name, row, 'replaces', (v): v is string[] | null => v === null || (Array.isArray(v) && v.every(isString)), 'a list of workflow ids or null')
+  const cutoverAt = field(name, row, 'cutover_at', isTimeOrNull, 'a time or null')
+  if (servedAt === null && ported === null && replaces === null && cutoverAt === null) return null
+  if (servedAt === null || ported === null || replaces === null) {
+    throw new OpsWriteError(`${name} returned porting facts for workflow ${String(row.workflow_id)} that are only partly told`)
+  }
+  return { ported, cutoverAt, replaces, servedAt }
 }
 
 export async function readWorkflowCopies(
@@ -735,6 +767,8 @@ export async function readWorkflowCopies(
       lastServed: field(name, row, 'last_served', isTimeOrNull, 'a time or null'),
       lastObserved: field(name, row, 'last_observed', isTimeOrNull, 'a time or null'),
       dbNow: field(name, row, 'db_now', isTime, 'a time'),
+      porting: copyPorting(name, row),
+      replacedLastSlot: field(name, row, 'replaced_last_slot', isTimeOrNull, 'a time or null'),
     }
   })
   return { copies, reachedLimit: copies.length === limit }
@@ -926,6 +960,42 @@ export async function recordConnectionTombstone(
     outcome: field(name, row, 'outcome', oneOf(['recorded', 'already_recorded'] as const), 'a tombstone outcome'),
     copiesRemoved: field(name, row, 'copies_removed', isCount, 'a count'),
   }
+}
+
+/** One measured identity remove_unserved_measured_identities removed (#2573). */
+export interface UnservedIdentityRemoved {
+  organizationId: string
+  connectionId: string
+  generation: number
+  measuredAt: string
+}
+
+/**
+ * The measured identities of connections bidding never stored (#2573, supabase-ops
+ * migration 20261027180000): a Salesforce verify for a new connection records
+ * one before bidding inserts the row, and a create whose insert failed and
+ * whose revoke failed too leaves it with nothing to remove it. Called only
+ * after a complete list was saved in one save, with that list's served_at and
+ * every connection id it names; the database removes a measurement more than
+ * an hour older than the list, of a connection the list does not name and ops
+ * never held a copy of, and answers each row removed. Lane wide, like
+ * save_connection_copies.
+ */
+export async function removeUnservedMeasuredIdentities(
+  client: OpsSupabaseClient, servedAt: string, named: readonly string[], options?: OpsRpcOptions,
+): Promise<UnservedIdentityRemoved[]> {
+  const name = 'remove_unserved_measured_identities'
+  if (!Number.isFinite(Date.parse(servedAt))) throw new OpsWriteError(`${name}: served_at is not a time`)
+  if (named.length > MAX_COPIES_PER_SAVE) throw new OpsWriteError(`${name}: ${named.length} named connections is more than one save carries (${MAX_COPIES_PER_SAVE})`)
+  const all = rows(name, await callOpsRpc(client, name, { p_served_at: servedAt, p_named: [...named] }, options))
+  return all.map((row) => {
+    const organizationId = field(name, row, 'organization_id', isString, 'an id')
+    const connectionId = field(name, row, 'connection_id', isString, 'an id')
+    if (!UUID_SHAPE.test(organizationId) || !UUID_SHAPE.test(connectionId)) throw new OpsWriteError(`${name} returned a connection id that is not a uuid`)
+    const generation = field(name, row, 'generation', isInt, 'a whole number')
+    if (generation < 1) throw new OpsWriteError(`${name} returned a generation below 1`)
+    return { organizationId, connectionId, generation, measuredAt: field(name, row, 'measured_at', isTime, 'a time') }
+  })
 }
 
 /** The tombstone_expiry sweep: deletes only tombstones past their expiry. */
@@ -1665,9 +1735,148 @@ export async function readRunStepContext(
   }
 }
 
+// ── a run's checkpoint (#1951, ops migration 20261027150000) ───────────────
+
+/** What a holder names when it acknowledges a checkpoint it wrote to R2 (checkpoint.ts). */
+export interface CheckpointAck {
+  executionId: string
+  /** The state version the holder's start answered, which the key carries. */
+  stateVersion: number
+  steps: number
+  key: string
+  sha256: string
+  bytes: number
+}
+
+/**
+ * Names the checkpoint on its run. stale means the run is not this holder's
+ * running attempt at this state version any more, and nothing was written;
+ * superseded that the run names a later checkpoint of this holder;
+ * already_recorded a repeat of an acknowledgement that landed.
+ */
+export async function recordRunCheckpoint(
+  client: OpsSupabaseClient, organizationId: OrganizationId, fence: { runRequestId: string; claimToken: string }, ack: CheckpointAck, options?: OpsRpcOptions,
+): Promise<CheckpointAckOutcome> {
+  const name = 'record_run_checkpoint'
+  const data = await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_run_request_id: fence.runRequestId, p_claim_token: fence.claimToken, p_execution_id: ack.executionId,
+    p_state_version: ack.stateVersion, p_steps: ack.steps, p_checkpoint_key: ack.key, p_sha256: ack.sha256, p_bytes: ack.bytes,
+  }, options)
+  if (!oneOf(CHECKPOINT_ACK_OUTCOMES)(data)) throw new OpsWriteError(`${name} returned ${JSON.stringify(data)?.slice(0, 40) ?? 'nothing'}, not a checkpoint outcome`)
+  return data
+}
+
+/** The checkpoint a run names, as the resume trusts it (checkpoint.ts CheckpointPointer). */
+export interface NamedCheckpoint {
+  key: string
+  stateVersion: number
+  steps: number
+  sha256: string
+  bytes: number
+}
+
+/** What run_checkpoint answers: the run is not this holder's (held false), or its state version and the checkpoint it names, null for none. */
+export type RunCheckpointRead = { held: false } | { held: true; stateVersion: number; checkpoint: NamedCheckpoint | null }
+
+export async function readRunCheckpoint(
+  client: OpsSupabaseClient, organizationId: OrganizationId, runRequestId: string, claimToken: string, options?: OpsRpcOptions,
+): Promise<RunCheckpointRead> {
+  const name = 'run_checkpoint'
+  const all = rows(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_run_request_id: runRequestId, p_claim_token: claimToken }, options))
+  if (all.length === 0) return { held: false }
+  if (all.length !== 1) throw new OpsWriteError(`${name} returned ${all.length} rows, expected at most 1`)
+  const row = all[0]
+  const stateVersion = field(name, row, 'state_version', isInt, 'a whole number')
+  const pointer = ['checkpoint_key', 'checkpoint_state_version', 'checkpoint_steps', 'checkpoint_sha256', 'checkpoint_bytes', 'checkpoint_execution_id', 'checkpoint_at']
+  const set = pointer.filter((k) => row[k] !== null && row[k] !== undefined).length
+  if (set === 0) return { held: true, stateVersion, checkpoint: null }
+  // The database holds the pointer whole or not at all; a half one is never read as none.
+  if (set !== pointer.length) throw new OpsWriteError(`${name} returned a checkpoint with only ${set} of its ${pointer.length} parts`)
+  const isSha = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)
+  return {
+    held: true,
+    stateVersion,
+    checkpoint: {
+      key: field(name, row, 'checkpoint_key', isString, 'a key'),
+      stateVersion: field(name, row, 'checkpoint_state_version', isInt, 'a whole number'),
+      steps: field(name, row, 'checkpoint_steps', isInt, 'a whole number'),
+      sha256: field(name, row, 'checkpoint_sha256', isSha, 'a digest'),
+      bytes: field(name, row, 'checkpoint_bytes', isInt, 'a whole number'),
+    },
+  }
+}
+
 /** The nightly purge of the step records of run attempts started more than 7 days ago, by the database clock. */
 export async function purgeOpsStepRecords(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
   const name = 'purge_ops_step_records'
   const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
   return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+// ── The reseal watch (#2486, ops migration 20261027160000) ──────────────────
+
+/** The modes OPS_RESEAL may name, which the state row keeps (its CHECK). */
+export const OPS_RESEAL_MODES = ['preview', 'apply'] as const
+export type OpsResealMode = (typeof OPS_RESEAL_MODES)[number]
+
+/**
+ * ops_reseal_state as either function answers it: the mode the switch was
+ * seen in and since when, the last run's result, the first of an unbroken line
+ * of runs that left nothing, whether this call started the clock afresh, and
+ * the database's clock to judge it all by.
+ */
+export interface OpsResealState {
+  mode: OpsResealMode
+  modeSince: string
+  lastRunAt: string | null
+  lastRunNothingLeft: boolean | null
+  lastRunLeft: number | null
+  nothingLeftSince: string | null
+  restarted: boolean
+  dbNow: string
+}
+
+const isResealMode = (v: unknown): v is OpsResealMode => (OPS_RESEAL_MODES as readonly unknown[]).includes(v)
+const isBoolOrNull = (v: unknown): v is boolean | null => v === null || typeof v === 'boolean'
+const isCountOrNull = (v: unknown): v is number | null => v === null || isCount(v)
+
+function resealModeArg(name: string, mode: unknown): OpsResealMode {
+  if (!isResealMode(mode)) throw new OpsWriteError(`${name}: the mode must be preview or apply`)
+  return mode
+}
+
+function resealState(name: string, data: unknown): OpsResealState {
+  const row = oneRow(name, data)
+  return {
+    mode: field(name, row, 'mode', isResealMode, 'preview or apply'),
+    modeSince: field(name, row, 'mode_since', isTime, 'a time'),
+    lastRunAt: field(name, row, 'last_run_at', isTimeOrNull, 'a time or null'),
+    lastRunNothingLeft: field(name, row, 'last_run_nothing_left', isBoolOrNull, 'true, false or null'),
+    lastRunLeft: field(name, row, 'last_run_left', isCountOrNull, 'a count or null'),
+    nothingLeftSince: field(name, row, 'nothing_left_since', isTimeOrNull, 'a time or null'),
+    restarted: field(name, row, 'restarted', isBool, 'true or false'),
+    dbNow: field(name, row, 'db_now', isTime, 'a time'),
+  }
+}
+
+/** The tick's sighting of OPS_RESEAL in `mode` (reseal-watch.ts): stamps it seen, restarting its clock on a change of mode or a gap past the window. */
+export async function observeOpsReseal(client: OpsSupabaseClient, mode: OpsResealMode, restartAfterSeconds: number, options?: OpsRpcOptions): Promise<OpsResealState> {
+  const name = 'observe_ops_reseal'
+  const p_mode = resealModeArg(name, mode)
+  return resealState(name, await callOpsRpc(client, name, { p_mode, p_restart_after_seconds: restartAfterSeconds }, options))
+}
+
+/**
+ * One reseal run's result in `mode` (reseal-live.ts): nothingLeft only when the
+ * run reported nothing_left, with left 0; a failed or refused run is
+ * nothingLeft false with left null.
+ */
+export async function recordOpsResealRun(
+  client: OpsSupabaseClient, mode: OpsResealMode, run: { nothingLeft: boolean; left: number | null }, restartAfterSeconds: number, options?: OpsRpcOptions,
+): Promise<OpsResealState> {
+  const name = 'record_ops_reseal_run'
+  const p_mode = resealModeArg(name, mode)
+  return resealState(name, await callOpsRpc(client, name, {
+    p_mode, p_nothing_left: run.nothingLeft, p_left: run.left, p_restart_after_seconds: restartAfterSeconds,
+  }, options))
 }

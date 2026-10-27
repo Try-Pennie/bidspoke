@@ -29,7 +29,7 @@
 import type { Context } from 'hono'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
-import { callOpsStepTest, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
+import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
 import type { OpsConnectionsRefused, StepTestView } from '../../lib/ops-connections-contract'
 import { sampleRows } from '@bidspoke/references'
 import { isUuid } from '../../lib/query-validators'
@@ -82,7 +82,7 @@ export async function testOpsStep(c: Ctx, workflowId: string, body: Record<strin
   }
   const config = isRecord(node.config) ? node.config : {}
   const steps = isRecord(body.steps) ? (body.steps as Record<string, { output: unknown; status: string }>) : null
-  const answer = await callOpsStepTest(c.env, 'testStep', {
+  const answer = await callOpsConnections(c.env, 'testStep', {
     organization_id: orgId,
     workflow_id: workflowId,
     tested_by: userId,
@@ -110,6 +110,7 @@ export async function testOpsStep(c: Ctx, workflowId: string, body: Record<strin
     duration_ms: result.duration_ms,
     tested_at: result.tested_at,
     output_bytes: result.output_bytes,
+    output_dropped: result.output_dropped,
     requests: result.requests,
     recorded: answer.recorded,
     rows: result.rows,
@@ -120,7 +121,7 @@ export async function testOpsStep(c: Ctx, workflowId: string, body: Record<strin
 /** GET test-results for one step of an ops workflow: the kept result, or null once there is none under 7 days old. */
 export async function readOpsStepTest(c: Ctx, workflowId: string, nodeId: string): Promise<Response> {
   const { orgId } = c.get('user')
-  const answer = await callOpsStepTest(c.env, 'stepTestResult', { organization_id: orgId, workflow_id: workflowId, node_id: nodeId })
+  const answer = await callOpsConnections(c.env, 'stepTestResult', { organization_id: orgId, workflow_id: workflowId, node_id: nodeId })
   if (isOpsConnectionsUnavailable(answer)) {
     return c.json({ error: answer.refused, cause: answer.cause, message: answer.detail }, OPS_CONNECTIONS_UNAVAILABLE_STATUS)
   }

@@ -7,7 +7,8 @@
  * bidding Worker when not held, and a run whose definition cannot be had
  * returned to the queue without being started.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { CONTINUATION_BUDGET } from '../checkpoint'
 import { dispatchKey, signDispatch } from '../dispatch-auth'
 import type { OpsEnv } from '../index'
 import type { ClaimedRun } from '../ops-writes'
@@ -26,14 +27,16 @@ const RUN: ClaimedRun = {
   resumedFromExecutionId: null, payload: null, payloadRef: null,
 }
 
-/** The ops database: each function answered by name, every call recorded with its arguments. */
+/** The ops database: each function answered by name (or by a function of its arguments), every call recorded with its arguments. */
 function opsDb(answers: Record<string, unknown>) {
   const calls: Array<{ name: string; body: Record<string, unknown> }> = []
   const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
-    calls.push({ name, body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> })
+    const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+    calls.push({ name, body })
     if (!(name in answers)) return Response.json({ code: '42883', message: `no function ${name}` }, { status: 404 })
-    return Response.json(answers[name])
+    const answer = answers[name]
+    return Response.json(typeof answer === 'function' ? (answer as (b: Record<string, unknown>) => unknown)(body) : answer)
   }) as typeof globalThis.fetch
   return { fetch, calls, names: () => calls.map((c) => c.name) }
 }
@@ -124,5 +127,81 @@ describe('OpsInternal.run', () => {
     expect(down.names()).not.toContain('start_run_execution')
     // Not started, so the lapsed lease is swept back to the queue; the tick counts it by this answer.
     expect(report).toMatchObject({ outcome: 'complete_failed', end: { outcome: 'retry' }, error: expect.stringMatching(/definition/) })
+  })
+})
+
+describe('OpsInternal.run: time sliced continuation (#1951)', () => {
+  const three = {
+    nodes: ['a', 'b', 'c'].map((id) => ({ id, namespace: id, type: 'transform', config: { mappings: [{ source: 'trigger.payload.amount', target: 'amount' }] } })),
+    edges: [{ id: 'e0', source: 'trigger', target: 'a' }, { id: 'e1', source: 'a', target: 'b' }, { id: 'e2', source: 'b', target: 'c' }],
+  }
+  const oneStepSlices = { ...CONTINUATION_BUDGET, sliceSteps: 1 }
+
+  /** A bucket with R2's put only where nothing is, holding what was written. */
+  function bucket() {
+    const objects = new Map<string, string>()
+    return {
+      objects,
+      binding: {
+        put: async (key: string, body: string) => {
+          if (objects.has(key)) return null
+          objects.set(key, body)
+          return { key }
+        },
+        get: async (key: string) => (objects.has(key) ? { text: async () => objects.get(key)! } : null),
+      } as unknown as R2Bucket,
+    }
+  }
+
+  /** The database's named checkpoint: record_run_checkpoint stores it, run_checkpoint answers it. */
+  function namingDb() {
+    let named: Record<string, unknown> | null = null
+    return opsDb({
+      ...LIFECYCLE,
+      workflow_definition: [{ definition: three, saved_at: '2026-10-17T09:00:00Z' }],
+      record_ops_step: 'recorded',
+      record_run_checkpoint: (b: Record<string, unknown>) => { named = b; return 'recorded' },
+      run_checkpoint: () => [{
+        state_version: 3,
+        checkpoint_key: named?.p_checkpoint_key ?? null, checkpoint_state_version: named?.p_state_version ?? null, checkpoint_steps: named?.p_steps ?? null,
+        checkpoint_sha256: named?.p_sha256 ?? null, checkpoint_bytes: named?.p_bytes ?? null, checkpoint_execution_id: named?.p_execution_id ?? null,
+        checkpoint_at: named === null ? null : '2026-10-17T10:02:32Z',
+      }],
+    })
+  }
+
+  it('in observe mode writes each boundary\'s checkpoint to OPS_CHECKPOINTS and names it under the state version the start answered, and the run ends as it would', async () => {
+    const db = namingDb()
+    const b = bucket()
+    const report = await runDispatched({ ...env(), OPS_CONTINUATION: 'observe', OPS_CHECKPOINTS: b.binding } as OpsEnv,
+      await signed({ kind: 'run', run: { ...RUN, payload: { amount: 7 } } }), { ...deps(db.fetch), continuationBudget: oneStepSlices })
+    expect(report).toMatchObject({ outcome: 'completed' })
+    const names = db.calls.filter((c) => c.name === 'record_run_checkpoint')
+    expect(names.map((c) => c.body.p_steps)).toEqual([1, 2])
+    expect(names[0].body).toMatchObject({ p_organization_id: ORG, p_claim_token: RUN.claimToken, p_execution_id: '0192f4a0-0000-7000-8000-0000000000ee', p_state_version: 3 })
+    expect([...b.objects.keys()]).toEqual([`checkpoints/v1/${ORG}/${RUN.runRequestId}/3-1.json`, `checkpoints/v1/${ORG}/${RUN.runRequestId}/3-2.json`])
+    expect(db.names().filter((n) => n === 'record_ops_step')).toHaveLength(3)
+  })
+
+  it('off (unset) writes and names nothing, whatever the budget', async () => {
+    const db = namingDb()
+    const b = bucket()
+    await runDispatched({ ...env(), OPS_CHECKPOINTS: b.binding } as OpsEnv, await signed({ kind: 'run', run: RUN }), { ...deps(db.fetch), continuationBudget: oneStepSlices })
+    expect(db.names()).not.toContain('record_run_checkpoint')
+    expect(b.objects.size).toBe(0)
+  })
+
+  it('in observe mode without the OPS_CHECKPOINTS binding, logs it by name and the run still completes', async () => {
+    const db = namingDb()
+    const lines: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((line: unknown) => { lines.push(String(line)) })
+    try {
+      const report = await runDispatched({ ...env(), OPS_CONTINUATION: 'observe' } as OpsEnv, await signed({ kind: 'run', run: RUN }), { ...deps(db.fetch), continuationBudget: oneStepSlices })
+      expect(report).toMatchObject({ outcome: 'completed' })
+    } finally {
+      spy.mockRestore()
+    }
+    expect(db.names()).not.toContain('record_run_checkpoint')
+    expect(lines.filter((l) => l.includes('"observe_failed"') && l.includes('"store_missing"') && l.includes('OPS_CHECKPOINTS'))).toHaveLength(1)
   })
 })

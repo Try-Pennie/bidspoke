@@ -13,7 +13,9 @@
  * are saved by), latest version and trigger, soft deleted and switched off ones
  * included, so the ops copy learns of a delete or a switch off rather than
  * keeping the last on copy for ever. Not its nodes: a run's definition at its
- * version is #1950's to fetch.
+ * version is #1950's to fetch. Since #1952, with each one the porting facts its
+ * schedule's floor is taken from (readPortingFacts): whether it stands for a
+ * Pipedream workflow, when that one was cut over, and every workflow it replaces.
  *
  * And, since #2335 (PR 6 of phase 5 of #1689), the ops connections the same
  * way (readOpsConnections): every ops_key row's sealed envelope, public config
@@ -54,7 +56,7 @@ import {
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
   servedConnectionProblem,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
-  type ServedOpsWorkflow, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
+  type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
 } from './ops-gateway-contract'
 import { formatErr } from './format-error'
 
@@ -111,7 +113,8 @@ interface Row {
  */
 export async function readOpsWorkflows(supabase: SupabaseClient, nowMs: number): Promise<ServedOpsWorkflows> {
   const servedAt = new Date(nowMs).toISOString()
-  const rows = await fetchAllPaged<Row>(
+  // The porting facts are read beside the workflows, inside the same gateway deadline.
+  const [rows, portingOf] = await Promise.all([fetchAllPaged<Row>(
     (from, to) => supabase
       .from('workflows')
       // The trigger alone, never the whole definition: every minute, for every ops workflow.
@@ -123,7 +126,7 @@ export async function readOpsWorkflows(supabase: SupabaseClient, nowMs: number):
       .range(from, to),
     'the ops workflows the minute cron plans from',
     { maxPages: MAX_PAGES },
-  )
+  ), readPortingFacts(supabase)])
   const workflows: ServedOpsWorkflow[] = []
   let dropped = 0
   for (const row of rows) {
@@ -140,10 +143,89 @@ export async function readOpsWorkflows(supabase: SupabaseClient, nowMs: number):
       updated_at: row.updated_at,
       version_number: row.workflow_versions?.[0]?.version_number ?? null,
       trigger: row.trigger ?? null,
+      porting: portingOf(row.id),
     })
   }
   // A list missing a row it read is not every ops workflow, so it withdraws nothing.
   return { served_at: servedAt, complete: dropped === 0, workflows }
+}
+
+interface MapRow {
+  workflow_id: string
+  pipedream_hashid: string
+  pipedream_inventory: { cut_over_at: string | null } | null
+}
+
+interface ReplacementRow {
+  workflow_id: string
+  replaces_workflow_id: string
+}
+
+/**
+ * The porting facts each ops workflow's schedule floor is taken from (#1952,
+ * #1698 D8), read whole from the porting schema: the workflow map with each
+ * Pipedream workflow's cutover time, and the replacements. Both are bounded by
+ * the Pipedream account (386 inventory rows on 2026-10-18), so they are read in
+ * full rather than filtered by the ops workflows' ids, paged under a full order.
+ * Throws on a failed read, so the tick plans from its saved copies and their
+ * last served facts rather than from facts that went missing (fail safe: a
+ * workflow whose facts were dropped would read as not ported).
+ *
+ * The answer for one workflow:
+ *  - ported when any map row names it; cutover_at the latest cut_over_at of the
+ *    Pipedream workflows it stands for, or null while any of them has none (a
+ *    map row whose inventory row did not come back counts as none), since
+ *    Pipedream may still run a period of the one not cut over;
+ *  - replaces every workflow reachable through the replacements from it, never
+ *    itself, so a chain of converter reruns keeps the first id's slots, and a
+ *    cycle ends.
+ */
+async function readPortingFacts(supabase: SupabaseClient): Promise<(workflowId: string) => ServedOpsWorkflowPorting> {
+  const porting = supabase.schema('porting')
+  const maps = await fetchAllPaged<MapRow>(
+    (from, to) => porting
+      .from('pipedream_workflow_map')
+      .select('workflow_id, pipedream_hashid, pipedream_inventory(cut_over_at)')
+      .order('id', { ascending: true })
+      .range(from, to),
+    'the Pipedream workflow map the ops schedule floors are taken from',
+    { maxPages: MAX_PAGES },
+  )
+  const replacements = await fetchAllPaged<ReplacementRow>(
+    (from, to) => porting
+      .from('workflow_replacements')
+      .select('workflow_id, replaces_workflow_id')
+      .order('workflow_id', { ascending: true })
+      .order('replaces_workflow_id', { ascending: true })
+      .range(from, to),
+    'the workflow replacements the ops schedule floors are taken from',
+    { maxPages: MAX_PAGES },
+  )
+  const mapped = new Map<string, MapRow[]>()
+  for (const m of maps) mapped.set(m.workflow_id, [...(mapped.get(m.workflow_id) ?? []), m])
+  const replaced = new Map<string, string[]>()
+  for (const r of replacements) replaced.set(r.workflow_id, [...(replaced.get(r.workflow_id) ?? []), r.replaces_workflow_id])
+
+  return (workflowId) => {
+    const rows = mapped.get(workflowId) ?? []
+    let cutoverAt: string | null = null
+    if (rows.length > 0) {
+      const times = rows.map((m) => m.pipedream_inventory?.cut_over_at ?? null)
+      if (times.every((t): t is string => t !== null)) {
+        cutoverAt = times.reduce((latest, t) => (Date.parse(t) > Date.parse(latest) ? t : latest))
+      }
+    }
+    const seen = new Set<string>([workflowId])
+    const queue = [...(replaced.get(workflowId) ?? [])]
+    while (queue.length > 0) {
+      const next = queue.shift() as string
+      if (seen.has(next)) continue
+      seen.add(next)
+      queue.push(...(replaced.get(next) ?? []))
+    }
+    seen.delete(workflowId)
+    return { ported: rows.length > 0, cutover_at: cutoverAt, replaces: [...seen].sort() }
+  }
 }
 
 interface ConnectionRow {
@@ -699,7 +781,7 @@ function unreadableReport(why: string, at: string): OpsTickReport {
     tick_id: 'unreadable', mode: 'observe', scheduled_time: null, started_at: at, finished_at: at, db_now: null,
     outcome: 'problems', problems: [`The ops tick's report could not be read (${why}), so whether the tick worked is not known.`], counts: {},
     not_configured_secrets: [], start_stamp_failed: null, problem_keys: ['report_unreadable'], connection_logins: null, write_backs: null,
-    sweeps_run: null,
+    sweeps_run: null, reseal: null,
   }
 }
 
@@ -762,7 +844,10 @@ const DATABASE_FIX =
 
 /**
  * The remedy for each secret the tick can report not configured (#2333), so a
- * page names the steps for the secret that is actually missing. The ops private
+ * page names the steps for the secret that is actually missing. A setting that
+ * is not a secret, such as a [vars] entry, needs its own entry here naming
+ * wrangler.ops.toml, or the page says to put a secret, which fixes nothing
+ * (#2869, held by ops-not-configured-remedies.test.ts). The ops private
  * key is restored from its escrow, never generated afresh: every ops connection
  * is sealed to it, and a new key would leave each one unopenable.
  */
@@ -773,6 +858,14 @@ export const NOT_CONFIGURED_FIX: Readonly<Record<string, string>> = {
     'Restore the ops private key from the file ops-connections-private.pem attached to the 1Password item Bidspoke recovery keys: from apps/worker, run `op read "op://<vault>/Bidspoke recovery keys/ops-connections-private.pem" | pnpm exec wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY --config wrangler.ops.toml` with the name of the vault that holds the item, never typing the key on a command line. Do not generate a new key while that copy exists: every ops connection is sealed to it (docs/disaster-recovery.md, Secret inventory).',
   OPS_CONNECTIONS_PRIVATE_KEY_NEXT:
     'OPS_CONNECTIONS_PRIVATE_KEY_NEXT is set only during a rotation of the ops key. If one is under way, pipe the NEXT key from the file ops-connections-private-next.pem attached to the 1Password item Bidspoke recovery keys into `pnpm exec wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY_NEXT --config wrangler.ops.toml` from apps/worker, with op read as for the current key; if none is, remove it with `pnpm exec wrangler secret delete OPS_CONNECTIONS_PRIVATE_KEY_NEXT --config wrangler.ops.toml`.',
+  // Run checkpoints (#1951): a bucket binding and a var, neither a secret.
+  OPS_CHECKPOINTS:
+    'The ops Worker is running run checkpoints in observe mode without its R2 bucket binding, so no checkpoint is written (runs are not affected). If the bucket is missing, create it and its rule from apps/worker with `pnpm exec wrangler r2 bucket create bidspoke-ops-checkpoints` and `pnpm exec wrangler r2 bucket lifecycle add bidspoke-ops-checkpoints expire-30-days --expire-days 30`, then redeploy the ops Worker, whose wrangler.ops.toml binds it as OPS_CHECKPOINTS.',
+  OPS_CONTINUATION:
+    'OPS_CONTINUATION in apps/worker/wrangler.ops.toml [vars] names a mode this release does not run, so runs write no checkpoint (runs are not affected). Set it to observe or off and redeploy the ops Worker.',
+  // #2869: a [vars] entry, not a secret, so a secret put would change nothing (L111).
+  OPS_TICK_MODE:
+    'OPS_TICK_MODE in apps/worker/wrangler.ops.toml [vars] names a mode the ops tick does not run, so the tick is running in observe mode: it claims and runs nothing. Set it to observe or live there (removing it means observe) and redeploy the ops Worker.',
 }
 
 /**
