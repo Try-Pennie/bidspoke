@@ -31,6 +31,15 @@
  * only for a record whose fields the rule above called moved, and nothing on
  * the run's own path, so the reject patch's 1,500 ms budget is untouched.
  *
+ * A LATER STATE is never a conflict (#2895). Some fields only move forward, and
+ * another writer moving one past the value we send is the lead going on, not a
+ * clash: an offered Prospect's BidStatus__c goes from "Bid" to "Converted" when
+ * the person applies, which on 2026-10-27 happened 11 seconds after a bid patch
+ * timed out. LATER_STATES lists each such step. A field holding a later state of
+ * the value being sent is never sent, whatever its history says, since sending
+ * it would put the record back; and it is not a conflict, since nobody has a
+ * choice to make, so neither resender alerts it. Each counts it on its own.
+ *
  * Here rather than in either job so the drain's send path (writeback-replay.ts),
  * which the read-back itself imports, can reach it without a cycle.
  */
@@ -84,6 +93,24 @@ export function sameSalesforceValue(current: unknown, sent: unknown): boolean {
     return false
   }
   return JSON.stringify(current) === JSON.stringify(sent)
+}
+
+/**
+ * The values a field moves on to from one we send, set by whatever carries the
+ * lead on (#2895). Converted: the Prospect's person applied, which every offered
+ * Prospect that goes on reaches (all 428 offered Engine leads read on
+ * 2026-10-19 held it).
+ */
+export const LATER_STATES: ReadonlyArray<{ sfObject: string; field: string; from: string; later: readonly string[] }> = [
+  { sfObject: 'Prospect__c', field: 'BidStatus__c', from: 'Bid', later: ['Converted'] },
+]
+
+/** The fields of `fields` that `current` holds at a later state of the value `body` sends (LATER_STATES). */
+export function laterStateFields(args: { sfObject: string; fields: string[]; body: Record<string, unknown>; current: Record<string, unknown> }): string[] {
+  const { sfObject, fields, body, current } = args
+  return fields.filter((f) =>
+    LATER_STATES.some((s) => s.sfObject === sfObject && s.field === f && sameSalesforceValue(body[f], s.from) && s.later.some((l) => sameSalesforceValue(current[f], l))),
+  )
 }
 
 /**
