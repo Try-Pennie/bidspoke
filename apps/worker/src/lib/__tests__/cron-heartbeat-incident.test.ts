@@ -68,6 +68,7 @@ function fakeSupabase(orgIds: string[]): SupabaseClient {
     select: () => runs,
     eq: () => runs,
     not: () => runs,
+    gt: () => runs,
     order: () => runs,
     limit: () => Promise.resolve({ data: [], error: null }),
   }
