@@ -64,6 +64,8 @@ import {
   recordOpsStep,
   readRunStepContext,
   purgeOpsStepRecords,
+  recordRunCheckpoint,
+  readRunCheckpoint,
   observeOpsReseal,
   recordOpsResealRun,
 } from '../ops-writes'
@@ -343,6 +345,14 @@ describe('the typed wrappers', () => {
   })
 })
 
+/** One row of workflow_copies, as the function answers it since #1952: a copy never told its porting facts. */
+const copyRow = {
+  workflow_id: WF, organization_id: ORG, is_active: true, deleted_at: null, withdrawn_at: null, row_updated_at: '2026-10-17T09:00:00+00:00',
+  version_number: 1, trigger: null, schedule_known_since: null, switched_off_at: null, served_at: '2026-10-17T10:00:00+00:00',
+  received_at: '2026-10-17T10:00:00+00:00', confirmed_at: '2026-10-17T10:00:00+00:00', may_start: true, last_served: null, last_observed: null,
+  db_now: '2026-10-17T10:00:00+00:00', ported: null, cutover_at: null, replaces: null, porting_served_at: null, replaced_last_slot: null,
+}
+
 describe('the minute cron wrappers (#1949)', () => {
   it('ops_now refuses an answer that is not a time', async () => {
     const { client } = rpcFetch('soon')
@@ -360,18 +370,46 @@ describe('the minute cron wrappers (#1949)', () => {
 
   it('save_workflow_copies refuses more than one save carries, sending nothing', async () => {
     const { client, calls } = rpcFetch([])
-    const one = { workflowId: WF, organizationId: ORG, isActive: true, deletedAt: null, rowUpdatedAt: '2026-10-17T09:00:00Z', versionNumber: 1, trigger: null }
+    const one = { workflowId: WF, organizationId: ORG, isActive: true, deletedAt: null, rowUpdatedAt: '2026-10-17T09:00:00Z', versionNumber: 1, trigger: null, porting: { ported: false, cutoverAt: null, replaces: [] } }
     await expect(saveWorkflowCopies(client, '2026-10-17T10:00:00Z', true, Array.from({ length: 1001 }, () => one))).rejects.toThrow(/more than one save carries/)
     expect(calls).toEqual([])
   })
 
-  it('workflow_copies refuses a copy whose organization is not a uuid, and says when a page was full', async () => {
-    const row = {
-      workflow_id: WF, organization_id: ORG, is_active: true, deleted_at: null, withdrawn_at: null, row_updated_at: '2026-10-17T09:00:00+00:00',
-      version_number: 1, trigger: null, schedule_known_since: null, switched_off_at: null, served_at: '2026-10-17T10:00:00+00:00',
-      received_at: '2026-10-17T10:00:00+00:00', confirmed_at: '2026-10-17T10:00:00+00:00', may_start: true, last_served: null, last_observed: null,
-      db_now: '2026-10-17T10:00:00+00:00',
+  it('save_workflow_copies sends each copy\'s porting facts (#1952) in the shape the database reads', async () => {
+    const { client, calls } = rpcFetch([{ inserted: 1, updated: 0, confirmed: 0, refused_older: 0, withdrawn: 0 }])
+    await saveWorkflowCopies(client, '2026-10-27T10:00:00Z', true, [{
+      workflowId: WF, organizationId: ORG, isActive: true, deletedAt: null, rowUpdatedAt: '2026-10-27T09:00:00Z', versionNumber: 1, trigger: null,
+      porting: { ported: true, cutoverAt: '2026-10-27T09:30:00Z', replaces: [RUN] },
+    }])
+    expect((calls[0].body.p_copies as Array<Record<string, unknown>>)[0].porting).toEqual({ ported: true, cutover_at: '2026-10-27T09:30:00Z', replaces: [RUN] })
+  })
+
+  it('workflow_copies reads the porting facts and the replaced workflows\' last slot (#1952), and none for a copy never told them', async () => {
+    const told = {
+      ...copyRow, ported: true, cutover_at: '2026-10-27T09:30:00+00:00', replaces: [RUN], porting_served_at: '2026-10-27T10:00:00+00:00',
+      replaced_last_slot: '2026-10-27T09:00:00+00:00',
     }
+    const [copy] = (await readWorkflowCopies(rpcFetch([told]).client, 10)).copies
+    expect(copy.porting).toEqual({ ported: true, cutoverAt: '2026-10-27T09:30:00+00:00', replaces: [RUN], servedAt: '2026-10-27T10:00:00+00:00' })
+    expect(copy.replacedLastSlot).toBe('2026-10-27T09:00:00+00:00')
+    const [never] = (await readWorkflowCopies(rpcFetch([copyRow]).client, 10)).copies
+    expect(never.porting).toBeNull()
+    expect(never.replacedLastSlot).toBeNull()
+  })
+
+  it('workflow_copies refuses porting facts it cannot read, rather than planning a schedule on a guessed floor', async () => {
+    const told = { ...copyRow, ported: true, cutover_at: null, replaces: [], porting_served_at: '2026-10-27T10:00:00+00:00' }
+    await expect(readWorkflowCopies(rpcFetch([{ ...told, ported: 'yes' }]).client, 10)).rejects.toThrow(/ported/)
+    await expect(readWorkflowCopies(rpcFetch([{ ...told, replaces: 'none' }]).client, 10)).rejects.toThrow(/replaces/)
+    await expect(readWorkflowCopies(rpcFetch([{ ...told, cutover_at: 'soon' }]).client, 10)).rejects.toThrow(/cutover_at/)
+    await expect(readWorkflowCopies(rpcFetch([{ ...copyRow, ported: true }]).client, 10)).rejects.toThrow(/porting facts/)
+    // A function from before #1952, which has no such columns, is not read as a copy never told.
+    const { ported: _p, cutover_at: _c, replaces: _r, porting_served_at: _s, replaced_last_slot: _l, ...before } = copyRow
+    await expect(readWorkflowCopies(rpcFetch([before]).client, 10)).rejects.toThrow(/porting_served_at that is not a time or null/)
+  })
+
+  it('workflow_copies refuses a copy whose organization is not a uuid, and says when a page was full', async () => {
+    const row = copyRow
     expect((await readWorkflowCopies(rpcFetch([row]).client, 1)).reachedLimit).toBe(true)
     await expect(readWorkflowCopies(rpcFetch([{ ...row, organization_id: 'org-1' }]).client, 10)).rejects.toThrow(/organization is not a uuid/)
     await expect(readWorkflowCopies(rpcFetch([{ ...row, may_start: 'yes' }]).client, 10)).rejects.toThrow(/may_start that is not true or false/)
@@ -980,5 +1018,54 @@ describe('the reseal watch wrappers (#2486)', () => {
     await expect(observeOpsReseal(rpcFetch([{ ...row, last_run_left: -1 }]).client, 'apply', 600)).rejects.toThrow(/last_run_left/)
     await expect(observeOpsReseal(rpcFetch([{ ...row, db_now: null }]).client, 'apply', 600)).rejects.toThrow(/db_now/)
     await expect(observeOpsReseal(rpcFetch([]).client, 'apply', 600)).rejects.toThrow(/0 rows/)
+  })
+})
+
+// A run's acknowledged checkpoint (#1951, ops migration 20261027150000).
+describe('the checkpoint wrappers (#1951)', () => {
+  const EXEC = '0199f0a0-0000-7000-8000-0000000000e1'
+  const KEY = `checkpoints/v1/${ORG}/${RUN}/4-2.json`
+  const SHA = 'a'.repeat(64)
+  const ack = { executionId: EXEC, stateVersion: 4, steps: 2, key: KEY, sha256: SHA, bytes: 900 }
+
+  it('record_run_checkpoint sends the fence and the pointer, and answers its outcome', async () => {
+    const { client, calls } = rpcFetch('recorded')
+    expect(await recordRunCheckpoint(client, ORG, { runRequestId: RUN, claimToken: TOKEN }, ack)).toBe('recorded')
+    expect(calls[0]).toEqual({
+      path: '/rest/v1/rpc/record_run_checkpoint',
+      body: {
+        p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_execution_id: EXEC, p_state_version: 4, p_steps: 2,
+        p_checkpoint_key: KEY, p_sha256: SHA, p_bytes: 900,
+      },
+    })
+    for (const outcome of ['already_recorded', 'superseded', 'stale']) {
+      expect(await recordRunCheckpoint(rpcFetch(outcome).client, ORG, { runRequestId: RUN, claimToken: TOKEN }, ack)).toBe(outcome)
+    }
+  })
+
+  it('record_run_checkpoint refuses an answer it does not know, never reading it as recorded', async () => {
+    await expect(recordRunCheckpoint(rpcFetch('maybe').client, ORG, { runRequestId: RUN, claimToken: TOKEN }, ack)).rejects.toThrow(/record_run_checkpoint returned/)
+    await expect(recordRunCheckpoint(rpcFetch(null).client, ORG, { runRequestId: RUN, claimToken: TOKEN }, ack)).rejects.toThrow(/record_run_checkpoint returned/)
+  })
+
+  it('run_checkpoint reads the run\'s state version and the checkpoint it names, nulls as none, and no row as not held', async () => {
+    const row = {
+      state_version: 6, checkpoint_key: KEY, checkpoint_state_version: 4, checkpoint_steps: 2, checkpoint_sha256: SHA, checkpoint_bytes: 900,
+      checkpoint_execution_id: EXEC, checkpoint_at: '2026-10-27T14:00:00Z',
+    }
+    const { client, calls } = rpcFetch([row])
+    expect(await readRunCheckpoint(client, ORG, RUN, TOKEN)).toEqual({
+      held: true, stateVersion: 6, checkpoint: { key: KEY, stateVersion: 4, steps: 2, sha256: SHA, bytes: 900 },
+    })
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/run_checkpoint', body: { p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN } })
+    const none = Object.fromEntries(Object.keys(row).map((k) => [k, k === 'state_version' ? 6 : null]))
+    expect(await readRunCheckpoint(rpcFetch([none]).client, ORG, RUN, TOKEN)).toEqual({ held: true, stateVersion: 6, checkpoint: null })
+    expect(await readRunCheckpoint(rpcFetch([]).client, ORG, RUN, TOKEN)).toEqual({ held: false })
+  })
+
+  it('run_checkpoint refuses a half pointer or a malformed one, never reading it as no checkpoint', async () => {
+    const half = { state_version: 6, checkpoint_key: KEY, checkpoint_state_version: null, checkpoint_steps: 2, checkpoint_sha256: SHA, checkpoint_bytes: 900, checkpoint_execution_id: EXEC, checkpoint_at: 'x' }
+    await expect(readRunCheckpoint(rpcFetch([half]).client, ORG, RUN, TOKEN)).rejects.toThrow(/run_checkpoint returned/)
+    await expect(readRunCheckpoint(rpcFetch([{ state_version: 6 }, { state_version: 6 }]).client, ORG, RUN, TOKEN)).rejects.toThrow(/run_checkpoint returned 2 rows/)
   })
 })

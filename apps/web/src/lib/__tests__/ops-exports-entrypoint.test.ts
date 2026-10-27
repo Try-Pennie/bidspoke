@@ -26,6 +26,12 @@
  * the passing case reads is that #2569 class with the method #2739 shipped,
  * written in the bundler's shape (CLASS_SIGN_IN), not a read of the deploy;
  * the #2569 class, which lacks it, is a red case.
+ *
+ * Since #2764 it requires testStep and stepTestResult (#2339, shipped on ops by
+ * #2762). The passing case is the class the API answered on 2026-10-27 for the
+ * 16:00 UTC deploy (version a1dd1ce2), read before this change moved the two
+ * into the required list, so its comment above them is the deployed bundle's
+ * own text, kept as read; the signInClient class, which lacks them, is a red case.
  */
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
@@ -84,6 +90,52 @@ const CLASS_SIGN_IN = CLASS.replace(/\};\n$/, `  // Sign in with Google (#2338, 
   }
 };
 `)
+/** The class as the API answered it on 2026-10-27 (version a1dd1ce2), carrying the step test's two methods. */
+const CLASS_STEP_TEST = `var OpsConnections = class extends WorkerEntrypoint2 {
+  static {
+    __name(this, "OpsConnections");
+  }
+  verify(request) {
+    return opsConnectionsAnswer(this.env, "verify", request, parseVerifyRequest);
+  }
+  clearReauth(request) {
+    return opsConnectionsAnswer(this.env, "clearReauth", request, parseClearReauthRequest);
+  }
+  revoke(request) {
+    return opsConnectionsAnswer(this.env, "revoke", request, parseRevokeRequest);
+  }
+  health(request) {
+    return opsConnectionsAnswer(this.env, "health", request, parseHealthRequest);
+  }
+  lookup(request) {
+    return opsConnectionsAnswer(this.env, "lookup", request, parseLookupRequest);
+  }
+  exchangeOAuthCode(request) {
+    return opsConnectionsAnswer(this.env, "exchangeOAuthCode", request, parseExchangeOAuthCodeRequest);
+  }
+  // The Google mailboxes and drives list (#2338): called by the bidding Worker's Connections routes since build PR 6.
+  addDelegationSubject(request) {
+    return delegationListAnswer(this.env, "addDelegationSubject", request);
+  }
+  removeDelegationSubject(request) {
+    return delegationListAnswer(this.env, "removeDelegationSubject", request);
+  }
+  listDelegationSubjects(request) {
+    return delegationListAnswer(this.env, "listDelegationSubjects", request);
+  }
+  // Sign in with Google (#2338, build PR 13): called by the bidding Worker's sign in route.
+  signInClient(request) {
+    return signInClientAnswer(this.env, request);
+  }
+  // The step test (#2339). Not in OPS_CONNECTIONS_METHODS until the ops deploy carries them: see the contract.
+  testStep(request) {
+    return stepTestAnswer(this.env, "testStep", request);
+  }
+  stepTestResult(request) {
+    return stepTestAnswer(this.env, "stepTestResult", request);
+  }
+};
+`
 const EXPORTS_WITH = `export {
   ConnectionTokenObject,
   MAX_BODY_BYTES,
@@ -109,7 +161,8 @@ var OpsInternal = class extends WorkerEntrypoint {
   }
 };
 `
-const DEPLOYED = `${PRELUDE}${CLASS_SIGN_IN}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
+const DEPLOYED = `${PRELUDE}${CLASS_STEP_TEST}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
+const DEPLOYED_2739 = `${PRELUDE}${CLASS_SIGN_IN}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
 const DEPLOYED_2569 = `${PRELUDE}${CLASS}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
 const DEPLOYED_2456 = `${PRELUDE}${CLASS_2456}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
 const BEFORE_2456 = `${PRELUDE}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITHOUT}`
@@ -135,24 +188,31 @@ describe('mainModuleOf', () => {
 })
 
 describe('entrypointVerdict', () => {
-  it('passes the script as deployed by #2739, which carries signInClient beside the Google list\'s methods', () => {
-    expect(CLASS_SIGN_IN).toContain('signInClient(request)')
+  it('passes the script as deployed by #2762, which carries the step test\'s methods beside signInClient', () => {
+    expect(CLASS_STEP_TEST).toContain('testStep(request)')
+    expect(CLASS_STEP_TEST).toContain('stepTestResult(request)')
     expect(entrypointVerdict(DEPLOYED)).toEqual({ ok: true, lines: [expect.stringContaining(
-      'exports OpsConnections, a WorkerEntrypoint, with verify, clearReauth, revoke, health, lookup, exchangeOAuthCode, addDelegationSubject, removeDelegationSubject, listDelegationSubjects, signInClient',
+      'exports OpsConnections, a WorkerEntrypoint, with verify, clearReauth, revoke, health, lookup, exchangeOAuthCode, addDelegationSubject, removeDelegationSubject, listDelegationSubjects, signInClient, testStep, stepTestResult',
     )] })
+  })
+
+  it('fails the script as deployed by #2739, naming the step test\'s methods, which it lacks (#2764)', () => {
+    const verdict = entrypointVerdict(DEPLOYED_2739)
+    expect(verdict.ok).toBe(false)
+    expect(verdict.lines.join('\n')).toMatch(/lacks testStep, stepTestResult,/)
   })
 
   it('fails the script as deployed by #2569, naming signInClient, which it lacks (#2338 build PR 13)', () => {
     const verdict = entrypointVerdict(DEPLOYED_2569)
     expect(verdict.ok).toBe(false)
-    expect(verdict.lines.join('\n')).toMatch(/lacks signInClient/)
+    expect(verdict.lines.join('\n')).toMatch(/lacks signInClient, testStep, stepTestResult,/)
   })
 
   it('fails the script as deployed by #2456, naming the Google list\'s methods it lacks (#2338 build PR 6)', () => {
     expect(CLASS_2456).not.toContain('Delegation')
     const verdict = entrypointVerdict(DEPLOYED_2456)
     expect(verdict.ok).toBe(false)
-    expect(verdict.lines.join('\n')).toMatch(/lacks addDelegationSubject, removeDelegationSubject, listDelegationSubjects, signInClient/)
+    expect(verdict.lines.join('\n')).toMatch(/lacks addDelegationSubject, removeDelegationSubject, listDelegationSubjects, signInClient, testStep, stepTestResult,/)
   })
 
   it('fails the script as deployed before #2456, which exported no OpsConnections', () => {

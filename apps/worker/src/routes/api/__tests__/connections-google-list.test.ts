@@ -269,13 +269,23 @@ describe('removing an entry a saved connection names is refused, naming each suc
   it('a shared drive a connection names, by its id, names every such connection', async () => {
     connectionRows = [
       { id: 'c2', organization_id: ORG, name: 'Reports drive', service_type: 'google', target: { subject: 'reports@trypennie.com', drives: ['0AbCdEf'] } },
-      { id: 'c3', organization_id: ORG, name: 'Partner drive', service_type: 'google', target: { subject: 'ops@trypennie.com', drives: '0AbCdEf' } },
+      { id: 'c3', organization_id: ORG, name: 'Partner drive', service_type: 'google', target: { subject: 'ops@trypennie.com', drives: ['0AbCdEf', '0AOther'] } },
     ]
     const res = await del(makeEnv(ops().handlers), 'drive', '0AbCdEf')
     expect(res.status).toBe(409)
     const body = (await res.json()) as Answer
     expect(body.connections).toEqual([{ id: 'c3', name: 'Partner drive', service: 'google' }, { id: 'c2', name: 'Reports drive', service: 'google' }])
     expect(body.message).toBe('Partner drive and Reports drive act as 0AbCdEf, so it cannot be taken off the list. Nothing was removed. Remove those connections first.')
+  })
+
+  it('a connection whose drives the minter refuses (text, not a list) acts as nobody, so names no drive (#2819)', async () => {
+    connectionRows = [
+      { id: 'c2', organization_id: ORG, name: 'Reports drive', service_type: 'google', target: { subject: 'reports@trypennie.com', drives: ['0AbCdEf'] } },
+      { id: 'c3', organization_id: ORG, name: 'Partner drive', service_type: 'google', target: { subject: 'ops@trypennie.com', drives: '0AbCdEf' } },
+    ]
+    const res = await del(makeEnv(ops().handlers), 'drive', '0AbCdEf')
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as Answer).connections).toEqual([{ id: 'c2', name: 'Reports drive', service: 'google' }])
   })
 
   it('is allowed once no connection names it: another mailbox, another kind, or another organization\'s connection', async () => {

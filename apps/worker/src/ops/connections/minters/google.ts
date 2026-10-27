@@ -41,7 +41,7 @@
  * delegation_key_unset or delegation_key_malformed), nothing sent and nothing
  * recorded against the connection, which is not at fault.
  *
- * The target is `{ subject: "<mailbox>", drives?: ["<shared drive id>", ...] }`. Memoised per connection, generation,
+ * The target is `{ subject: "<mailbox>", drives?: ["<shared drive id>", ...] }`, read by google-target.ts. Memoised per connection, generation,
  * mailbox and scope list (two mailboxes never share a token), until Google's
  * expires_in less GOOGLE_REUSE_MARGIN_MS.
  */
@@ -53,16 +53,12 @@ import type { DelegationCheckOutcome } from '../../run-vocabulary'
 import { LoginMintError } from '../refusals'
 import type { Authorization, AuthorizeInput, MinterRules } from '../service-rules'
 import { authorizeThroughMemo } from './memo-authorize'
-import { targetFields, targetString } from './login-fields'
+import { readGoogleTarget } from './google-target'
 import { readAccessToken, requestToken, type MinterClockDeps } from './token-endpoint'
 
 export const GOOGLE_TOKEN_URI = 'https://oauth2.googleapis.com/token'
 export const GOOGLE_ASSERTION_LIFETIME_SECONDS = 3600
 export const GOOGLE_REUSE_MARGIN_MS = 5 * 60_000
-/** google_delegation_check takes at most this many drives. */
-export const MAX_DECLARED_DRIVES = 100
-
-const MAILBOX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export interface GoogleDelegationDeps extends MinterClockDeps {
   /** google_delegation_check (ops-writes.ts googleDelegationCheck), bound to the ops client. */
@@ -98,19 +94,14 @@ function keyOf(raw: string | undefined): { clientEmail: string; pem: string } {
 
 /**
  * The declared mailbox, lower case, and drives, or target_invalid: the one
- * reading of a Google target the mint checks, which the catalogue contract
- * test reads the form's target through (catalogue-connection-fields.test.ts).
+ * reading of a Google target (readGoogleTarget, which the save reads through
+ * too, #2819) as the mint refuses it. The catalogue contract test reads the
+ * form's target through it (catalogue-connection-fields.test.ts).
  */
 export function googleSubjectsOf(target: unknown): { mailbox: string; drives: string[] } {
-  const fields = targetFields(target)
-  const mailbox = targetString(fields, 'subject').trim().toLowerCase()
-  if (!MAILBOX.test(mailbox)) throw new LoginMintError('not_allowed', 'target_invalid')
-  const raw = Object.hasOwn(fields, 'drives') ? fields.drives : undefined
-  if (raw === undefined) return { mailbox, drives: [] }
-  if (!Array.isArray(raw) || raw.length > MAX_DECLARED_DRIVES || !raw.every((d): d is string => typeof d === 'string' && d !== '')) {
-    throw new LoginMintError('not_allowed', 'target_invalid')
-  }
-  return { mailbox, drives: [...raw] }
+  const read = readGoogleTarget(target)
+  if (!read.ok) throw new LoginMintError('not_allowed', 'target_invalid')
+  return { mailbox: read.mailbox, drives: read.drives }
 }
 
 /** A token memo for Google, for the registry to keep for the isolate's life. */
