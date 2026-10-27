@@ -128,6 +128,32 @@ describe('the Salesforce read', () => {
     expect(soql).toContain(`LIMIT ${RECONCILE_MAX_RECORDS + 1}`)
   })
 
+  // #2394: the query url is built by the shared salesforce-api module now, and must
+  // be byte for byte the url the hand built template sent. The expected value is
+  // that template written out over the query each read sends.
+  it('asks for both reads at exactly the url the hand built template sent', async () => {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      return new Response(JSON.stringify({ records: [], done: true }), { status: 200 })
+    }))
+    const { supabase } = recordingSupabase()
+    const deps = productionClickPathDeps(supabase, env)
+    await deps.readCompletedProspects(ORG, 4, Date.UTC(2027, 8, 20, 6, 45), Date.UTC(2027, 8, 21, 7, 15))
+    await deps.readCompletedSubmissionsWithoutProspect(ORG, 17, Date.UTC(2027, 8, 20, 6, 45), Date.UTC(2027, 8, 21, 7, 15))
+    const limit = RECONCILE_MAX_RECORDS + 1
+    const prospects = 'SELECT Id, ExternalTimestamp__c FROM Prospect__c WHERE ExternalRoutingCode__c = 4 AND ExternalExchangeStatus__c = \'Completed\' ' +
+      `AND ExternalTimestamp__c >= 2027-09-20T06:45:00Z AND ExternalTimestamp__c < 2027-09-21T07:15:00Z ORDER BY ExternalTimestamp__c LIMIT ${limit}`
+    const submissions = 'SELECT Id, External_Timestamp__c FROM Submission__c WHERE SystemModstamp >= 2027-09-20T06:45:00Z ' +
+      'AND External_Routing_Code__c = \'17\' AND External_Exchange_Status__c = \'Completed\' ' +
+      'AND Prospect__c = null AND External_Timestamp__c >= 2027-09-20T06:45:00Z AND External_Timestamp__c < 2027-09-21T07:15:00Z ' +
+      `ORDER BY External_Timestamp__c LIMIT ${limit}`
+    expect(urls).toEqual([
+      `https://sf.test/services/data/v60.0/query?q=${encodeURIComponent(prospects)}`,
+      `https://sf.test/services/data/v60.0/query?q=${encodeURIComponent(submissions)}`,
+    ])
+  })
+
   it('a submission row without its stamp is refused by name rather than dropped', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ records: [{ Id: 'a04000000000001', External_Timestamp__c: null }], done: true }), { status: 200 })))
     const { supabase } = recordingSupabase()

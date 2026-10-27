@@ -121,6 +121,8 @@ describe('every workflow definition writer asks the connection check first (#233
       'routes/api/workflows.ts POST /:id/duplicate',
       'routes/api/workflows.ts PUT /:id',
       'routes/api/workflows.ts POST /:id/versions/:version_id/restore',
+      // Replace gives each ticked workflow a new version (#2338, build PR 12).
+      'routes/api/connections.ts POST /:id/replace',
     ]))
   })
 
