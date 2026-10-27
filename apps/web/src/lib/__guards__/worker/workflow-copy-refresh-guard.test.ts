@@ -118,6 +118,8 @@ describe('every write to an existing workflows row refreshes the last-good copy 
       'routes/api/workflows.ts DELETE /:id',
       'routes/api/workflows.ts POST /:id/versions/:version_id/restore',
       'routes/api/workflows.ts PATCH /:id/test-payloads',
+      // Replace gives each ticked workflow a new version (#2338, build PR 12).
+      'routes/api/connections.ts POST /:id/replace',
     ]) {
       expect(labels).toContain(expected)
     }

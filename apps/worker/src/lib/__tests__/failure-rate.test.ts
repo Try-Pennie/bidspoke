@@ -6,7 +6,7 @@ vi.mock('../slack', () => ({
   sendRecoveryAlert: vi.fn(),
 }))
 import { signalMatches, matchesMutedSignal, detectFailureSpike, countWindowMatches, runFailureRateCheck, hasSucceedingRuns } from '../failure-rate'
-import type { MutedFailureSignal } from '../failure-rate'
+import type { MutedFailureSignal } from '@bidspoke/workflow-definition'
 import { getSlackConnection, sendFailureSpikeAlert, sendRecoveryAlert } from '../slack'
 import { claimLedger, gate, overlap } from './_claims-double'
 

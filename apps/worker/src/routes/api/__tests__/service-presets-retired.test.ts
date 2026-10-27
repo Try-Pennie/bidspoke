@@ -1,12 +1,10 @@
 /**
  * HTTP Services presets are retired (#2338, build PR 14; Dan's decision 2 of
- * 2026-10-21). Production held none (service_presets had 0 rows, measured
- * 2026-10-21) and no workflow named one; the Webhook step keeps its built in
- * services, which live in code. So /api/service-presets answers as any path
- * the Worker does not serve, and nothing reads or writes the table.
- *
- * The table itself is left in place (expand/contract, docs/adr/0007): it is
- * dropped in a later release, #2638.
+ * 2026-10-21). Production held none (0 rows, measured 2026-10-21) and no
+ * workflow named one; the Webhook step keeps its built in services, which live
+ * in code. So /api/service-presets answers as any path the Worker does not
+ * serve. The presets table was left for one release (expand/contract,
+ * docs/adr/0007) and #2638 dropped it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
@@ -30,8 +28,8 @@ beforeEach(() => {
 })
 
 describe('/api/service-presets is retired (#2338)', () => {
-  it('every method answers 404, and the service_presets table is never touched', async () => {
-    const client = makeSupabase({ users: { single: testUser }, service_presets: { list: [{ id: 'sp-1' }], single: { id: 'sp-1' } } })
+  it('every method answers 404', async () => {
+    const client = makeSupabase({ users: { single: testUser } })
     vi.mocked(createSupabaseClient).mockReturnValue(client as unknown as ReturnType<typeof createSupabaseClient>)
     for (const [method, route] of [['GET', '/service-presets'], ['POST', '/service-presets'], ['PUT', '/service-presets/sp-1'], ['DELETE', '/service-presets/sp-1']] as const) {
       const res = await api.request(route, {
@@ -41,7 +39,5 @@ describe('/api/service-presets is retired (#2338)', () => {
       }, testEnv, recordingContext())
       expect(res.status, `${method} ${route}`).toBe(404)
     }
-    expect(client.calls.service_presets ?? []).toEqual([])
   })
-
 })

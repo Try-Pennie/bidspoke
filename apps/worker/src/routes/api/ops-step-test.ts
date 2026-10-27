@@ -110,6 +110,7 @@ export async function testOpsStep(c: Ctx, workflowId: string, body: Record<strin
     duration_ms: result.duration_ms,
     tested_at: result.tested_at,
     output_bytes: result.output_bytes,
+    output_dropped: result.output_dropped,
     requests: result.requests,
     recorded: answer.recorded,
     rows: result.rows,
