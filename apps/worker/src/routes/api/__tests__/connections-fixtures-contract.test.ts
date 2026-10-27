@@ -9,8 +9,10 @@
  * a shape the Worker never sends: the list at the settled design's count (13
  * connections across eight services, every page status among them, and one
  * ops gives no status), two connections' History, the Google mailboxes and
- * drives, the Slack alerts login's settings, and a Remove whose ops revoke did
- * not answer (which is what opens the page's removal notice).
+ * drives, the Slack alerts login's settings, a Remove whose ops revoke did
+ * not answer (which is what opens the page's removal notice), and the list
+ * read again once ops stops answering health, which shows the last known
+ * statuses under the page's out of date strip (#2864).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
@@ -38,9 +40,12 @@ import historyJson from '../../../../../web/e2e/fixtures/connections/history.jso
 import subjectsJson from '../../../../../web/e2e/fixtures/connections/google-subjects.json'
 import slackJson from '../../../../../web/e2e/fixtures/connections/slack-alerts.json'
 import removeJson from '../../../../../web/e2e/fixtures/connections/remove.json'
+import listStaleJson from '../../../../../web/e2e/fixtures/connections/list-stale.json'
 
 /** The moment the list was read: 12:00 PM ET on 2026-10-27. */
 const NOW = '2026-10-27T16:00:00.000Z'
+/** The moment the list was read again with ops not answering: twenty minutes later. */
+const STALE_AT = '2026-10-27T16:20:00.000Z'
 const ORG = '0e2e0000-0000-4000-8000-000000000001'
 const USER = '0e2e0000-0000-4000-8000-0000000000a1'
 const OWNER = '0e2e0000-0000-4000-8000-0000000000a2'
@@ -236,9 +241,9 @@ function makeEnv() {
 
 const ctx = recordingContext()
 
-async function call(method: string, path: string) {
+async function call(method: string, path: string, env: Env = makeEnv()) {
   vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(await rows()) as never)
-  return api.request(path, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' } }, makeEnv(), ctx)
+  return api.request(path, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' } }, env, ctx)
 }
 
 beforeEach(() => {
@@ -301,5 +306,31 @@ describe('the Connections page fixtures are what their routes answer (#2611)', (
     const res = await call('DELETE', `/connections/${id(11)}`)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(removeJson)
+  })
+
+  // #2864: the out of date strip. One Worker reads the list while ops answers
+  // (which keeps its statuses as the last known copy), then again twenty
+  // minutes later with ops's health call throwing, as it does when the ops
+  // Worker is down, while Slack still answers for the alerts login.
+  it('GET /connections with ops not answering: the last known statuses, as of the earlier read, out of date', async () => {
+    const env = makeEnv()
+    const fresh = await call('GET', '/connections', env)
+    expect(fresh.status).toBe(200)
+    expect(await fresh.json()).toEqual(listJson)
+
+    vi.setSystemTime(new Date(STALE_AT))
+    const ops = (env as unknown as { OPS_CONNECTIONS: { health: ReturnType<typeof vi.fn> } }).OPS_CONNECTIONS
+    ops.health.mockRejectedValue(new Error('ops is not answering'))
+    const res = await call('GET', '/connections', env)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(listStaleJson)
+  })
+
+  it('the out of date list is the list the scan opens, its statuses as of the earlier read', () => {
+    const list = listJson as { connections: Array<{ id: string; status: string | null }> }
+    const stale = listStaleJson as { connections: Array<{ id: string; status: string | null }>; statuses: { as_of: string | null; stale: boolean; unavailable: unknown } }
+    expect(stale.statuses).toMatchObject({ as_of: NOW, stale: true })
+    expect(stale.statuses.unavailable).not.toBeNull()
+    expect(stale.connections.map((c) => [c.id, c.status])).toEqual(list.connections.map((c) => [c.id, c.status]))
   })
 })

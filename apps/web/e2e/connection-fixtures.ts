@@ -8,7 +8,9 @@
  * connections-fixtures-contract.test.ts holds to what the routes answer: the
  * list at the settled design's count, two connections' History, the Google
  * mailboxes and drives, the Slack alerts login's settings, and the answer to
- * removing Lead notes (ops not told, which opens the page's removal notice).
+ * removing Lead notes (ops not told, which opens the page's removal notice),
+ * and the list read again with ops not answering health, which opens the
+ * page's out of date strip (#2864, asked for with staleStatuses).
  * Nothing reaches production: a call with no answer here is unmatched, and the
  * spec fails on it (worker-fixtures.ts).
  */
@@ -23,6 +25,8 @@ const read = <T>(file: string): T => JSON.parse(readFileSync(path.join(DIR, file
 
 export interface ConnectionFixtures {
   list: ConnectionList
+  /** The same list read twenty minutes later with ops not answering: the last known statuses, out of date. */
+  listStale: ConnectionList
   /** GET /api/connections/:id/history by connection id. */
   history: Record<string, unknown>
   googleSubjects: unknown
@@ -34,6 +38,7 @@ export interface ConnectionFixtures {
 export function loadConnectionFixtures(): ConnectionFixtures {
   return {
     list: read('list.json'),
+    listStale: read('list-stale.json'),
     history: read('history.json'),
     googleSubjects: read('google-subjects.json'),
     slackAlerts: read('slack-alerts.json'),
@@ -41,8 +46,13 @@ export function loadConnectionFixtures(): ConnectionFixtures {
   }
 }
 
+export interface ConnectionFixtureOptions {
+  /** Answer the list with its out of date read, so the page draws its out of date strip. */
+  staleStatuses?: boolean
+}
+
 /** The answer to one Worker request, or null when the fixtures hold none. Pure, so it is unit tested. */
-export function answerConnectionsFor(method: string, url: string, fx: ConnectionFixtures): Answer | null {
+export function answerConnectionsFor(method: string, url: string, fx: ConnectionFixtures, opts: ConnectionFixtureOptions = {}): Answer | null {
   const p = new URL(url).pathname
   const ok = (body: unknown): Answer => ({ status: 200, body })
   let m: RegExpExecArray | null
@@ -50,7 +60,7 @@ export function answerConnectionsFor(method: string, url: string, fx: Connection
     return decodeURIComponent(m[1]) === fx.remove.connection.id ? ok(fx.remove) : null
   }
   if (method !== 'GET') return null
-  if (p === '/api/connections') return ok(fx.list)
+  if (p === '/api/connections') return ok(opts.staleStatuses ? fx.listStale : fx.list)
   if (p === '/api/connections/google/subjects') return ok(fx.googleSubjects)
   if (p === '/api/integrations/slack') return ok(fx.slackAlerts)
   if ((m = /^\/api\/connections\/([^/]+)\/history$/.exec(p))) {
@@ -61,8 +71,10 @@ export function answerConnectionsFor(method: string, url: string, fx: Connection
 }
 
 /** Answer every Worker request the Connections page makes from the fixtures. Returns the requests that had no answer. */
-export async function routeConnectionFixtures(page: Page, workerUrl: string): Promise<{ unmatched: string[]; fx: ConnectionFixtures }> {
+export async function routeConnectionFixtures(
+  page: Page, workerUrl: string, opts: ConnectionFixtureOptions = {},
+): Promise<{ unmatched: string[]; fx: ConnectionFixtures }> {
   const fx = loadConnectionFixtures()
-  const { unmatched } = await routeWorkerAnswers(page, workerUrl, (method, url) => answerConnectionsFor(method, url, fx))
+  const { unmatched } = await routeWorkerAnswers(page, workerUrl, (method, url) => answerConnectionsFor(method, url, fx, opts))
   return { unmatched, fx }
 }

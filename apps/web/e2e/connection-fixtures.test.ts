@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest'
 import { answerConnectionsFor, loadConnectionFixtures } from './connection-fixtures'
 import { listGroups, viewOf } from '../src/components/connections/connection-model'
+import { loadedOf } from '../src/components/connections/ConnectionsScreen'
 
 const fx = loadConnectionFixtures()
 const W = 'https://worker.example'
@@ -44,11 +45,19 @@ describe('the connections fixtures', () => {
   })
 
   it('carry no real identity: every address is an example one', () => {
-    const all = stringsIn([fx.list, fx.history, fx.googleSubjects, fx.slackAlerts, fx.remove])
+    const all = stringsIn([fx.list, fx.listStale, fx.history, fx.googleSubjects, fx.slackAlerts, fx.remove])
     const addresses = all.filter((s) => /@/.test(s))
     expect(addresses.length).toBeGreaterThan(0)
     expect(addresses.filter((s) => !/@[a-z0-9.-]*example(\.com)?$/i.test(s))).toEqual([])
     expect(all.filter((s) => /trypennie/i.test(s))).toEqual([])
+  })
+
+  it('hold an out of date list: the same connections and statuses, drawn under the strip with the time they are from (#2864)', () => {
+    const stale = loadedOf(fx.listStale)
+    expect(stale.statuses).toEqual({ stale: true, asOf: fx.list.statuses.as_of })
+    expect(stale.statuses.asOf).not.toBeNull()
+    expect(loadedOf(fx.list).statuses.stale).toBe(false)
+    expect(stale.connections.map((c) => [c.name, c.status])).toEqual(loadedOf(fx.list).connections.map((c) => [c.name, c.status]))
   })
 
   it('give History only for connections the list holds', () => {
@@ -64,6 +73,13 @@ describe('answerConnectionsFor', () => {
     expect(answerConnectionsFor('GET', `${W}/api/integrations/slack`, fx)).toEqual({ status: 200, body: fx.slackAlerts })
     const achieve = idOf('Achieve Salesforce')
     expect(answerConnectionsFor('GET', `${W}/api/connections/${achieve}/history`, fx)).toEqual({ status: 200, body: fx.history[achieve] })
+  })
+
+  it('answers the list out of date only when asked to', () => {
+    expect(answerConnectionsFor('GET', `${W}/api/connections`, fx, { staleStatuses: true })).toEqual({ status: 200, body: fx.listStale })
+    expect(answerConnectionsFor('GET', `${W}/api/connections`, fx, { staleStatuses: false })).toEqual({ status: 200, body: fx.list })
+    // Every other read is answered the same either way.
+    expect(answerConnectionsFor('GET', `${W}/api/connections/google/subjects`, fx, { staleStatuses: true })).toEqual({ status: 200, body: fx.googleSubjects })
   })
 
   it('answers no History it does not hold, and no inherited name', () => {
