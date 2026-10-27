@@ -636,6 +636,29 @@
     "note": "The compare and set on the generation that commits an ops connection's new login (#2338, R19, finding F116): writes nothing and answers stale_generation when the row has moved. A WRITE, service_role only, so anon must be denied. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would write nothing."
   },
   {
+    "name": "save_slack_alert_token",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_credential_enc": "probe",
+      "p_config": {},
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": null
+    },
+    "anon": "denied",
+    "note": "The Slack alert token save (#2643): the Connections page's Reconnect on the Slack alerts login and POST /api/integrations/slack seal the token and merge only their own config keys into the alert row through it, so a settings save at the same moment keeps its switches. A WRITE, service_role only, so anon must be denied. If it is missing, a Reconnect answers connection_store_failed and saves nothing. Probed as anon only, which is refused before it runs; were it run, the all zero organization no row of organizations carries would fail its foreign key and write nothing."
+  },
+  {
+    "name": "save_slack_alert_settings",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_connection_id": "00000000-0000-0000-0000-000000000000",
+      "p_settings": {},
+      "p_actor": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "The Slack alert settings save (#2643): PATCH /api/integrations/slack/settings merges only the channel and the four alert switches into the alert row through it, so a Reconnect at the same moment keeps its workspace name and token. A WRITE, service_role only, so anon must be denied. If it is missing, every settings change on the Connections page answers 500 and saves nothing. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would write nothing."
+  },
+  {
     "name": "connection_history",
     "args": {
       "p_organization_id": "00000000-0000-0000-0000-000000000000",

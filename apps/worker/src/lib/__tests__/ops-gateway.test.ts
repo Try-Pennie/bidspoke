@@ -12,6 +12,7 @@ import {
   OPS_TICK_JOB, OPS_TICK_REPORT_KEY, OPS_TICK_REPORT_FRESH_MS, OPS_TICK_STREAKS_KEY, OPS_TICK_STREAK_TTL_SECONDS, OPS_TICK_TICKS_IN_A_ROW_TO_PAGE,
   OPS_TICK_WRITE_BACKS_KEY, readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, runOpsTickReportCheck,
 } from '../ops-gateway'
+import { MAX_REPLACED_WORKFLOWS, parseServedOpsWorkflows } from '../ops-gateway-contract'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
 const WF = '00000000-0000-4000-8000-0000000019a1'
@@ -27,18 +28,30 @@ function kv() {
   }
 }
 
-/** PostgREST for the workflows read, answering `rows` and recording each query. */
-function workflowsDb(rows: unknown[], opts: { status?: number } = {}) {
+/**
+ * PostgREST for the workflows read, answering `rows` for the workflows, `map`
+ * and `replacements` for the two porting reads (#1952), and recording each
+ * query with the schema it named.
+ */
+function workflowsDb(rows: unknown[], opts: { status?: number; map?: unknown[]; replacements?: unknown[]; failTable?: string } = {}) {
   const queries: URL[] = []
-  const fakeFetch: typeof globalThis.fetch = (async (input: string | URL | Request) => {
+  const profiles: Array<string | null> = []
+  const fakeFetch: typeof globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input.toString())
     queries.push(url)
-    if (opts.status) return Response.json({ code: 'PGRST000', message: 'the database is not answering' }, { status: opts.status })
+    profiles.push(new Headers(init?.headers).get('Accept-Profile'))
+    const table = url.pathname.replace('/rest/v1/', '')
+    if (opts.status || opts.failTable === table) return Response.json({ code: 'PGRST000', message: 'the database is not answering' }, { status: opts.status ?? 503 })
+    if (table === 'pipedream_workflow_map') return Response.json(opts.map ?? [])
+    if (table === 'workflow_replacements') return Response.json(opts.replacements ?? [])
     return Response.json(rows)
   }) as typeof globalThis.fetch
   // retry off, as the gateway's own client has it (ops-gateway-entrypoint.ts): the tick is waiting.
-  return { client: createClient('https://xvrmivmpfykwwtriqwpg.supabase.co', 'sb_secret_test', { global: { fetch: fakeFetch }, auth: { persistSession: false }, db: { retry: false } } as never), queries }
+  return { client: createClient('https://xvrmivmpfykwwtriqwpg.supabase.co', 'sb_secret_test', { global: { fetch: fakeFetch }, auth: { persistSession: false }, db: { retry: false } } as never), queries, profiles }
 }
+
+/** A workflow not ported from Pipedream and replacing none: what every ops workflow is served with today. */
+const NOT_PORTED = { ported: false, cutover_at: null, replaces: [] }
 
 const row = (over: Record<string, unknown> = {}) => ({
   id: WF, organization_id: ORG, is_active: true, deleted_at: null, updated_at: '2026-10-17T09:00:00.123456+00:00', lane: 'ops',
@@ -53,11 +66,12 @@ describe('readOpsWorkflows', () => {
       served_at: new Date(NOW).toISOString(),
       complete: true,
       workflows: [
-        { id: WF, organization_id: ORG, is_active: true, deleted_at: null, updated_at: '2026-10-17T09:00:00.123456+00:00', version_number: 4, trigger: { type: 'schedule', config: { interval_seconds: 300 } } },
-        { id: '00000000-0000-4000-8000-0000000019a2', organization_id: ORG, is_active: false, deleted_at: '2026-10-16T00:00:00+00:00', updated_at: '2026-10-17T09:00:00.123456+00:00', version_number: null, trigger: { type: 'schedule', config: { interval_seconds: 300 } } },
+        { id: WF, organization_id: ORG, is_active: true, deleted_at: null, updated_at: '2026-10-17T09:00:00.123456+00:00', version_number: 4, trigger: { type: 'schedule', config: { interval_seconds: 300 } }, porting: NOT_PORTED },
+        { id: '00000000-0000-4000-8000-0000000019a2', organization_id: ORG, is_active: false, deleted_at: '2026-10-16T00:00:00+00:00', updated_at: '2026-10-17T09:00:00.123456+00:00', version_number: null, trigger: { type: 'schedule', config: { interval_seconds: 300 } }, porting: NOT_PORTED },
       ],
     })
-    const q = queries[0]
+    // The porting reads go beside it (#1952), so it is found by its table, not its place.
+    const q = queries.find((x) => x.pathname === '/rest/v1/workflows') as URL
     expect(q.pathname).toBe('/rest/v1/workflows')
     expect(q.searchParams.get('lane')).toBe('eq.ops')
     expect(q.searchParams.get('select')).toMatch(/trigger:definition->trigger/)
@@ -76,6 +90,108 @@ describe('readOpsWorkflows', () => {
   it('throws on a failed read rather than serving an empty list, which would withdraw every ops workflow', async () => {
     const { client } = workflowsDb([], { status: 503 })
     await expect(readOpsWorkflows(client, NOW)).rejects.toThrow(/ops workflows/)
+  })
+})
+
+describe('the porting facts each ops workflow is served with (#1952, #1698 D8)', () => {
+  const OLD = '00000000-0000-4000-8000-0000000019b1'
+  const OLDER = '00000000-0000-4000-8000-0000000019b2'
+  const SPLIT = '00000000-0000-4000-8000-0000000019b3'
+  const portingOf = async (opts: Parameters<typeof workflowsDb>[1], rows: unknown[] = [row()]) => {
+    const list = await readOpsWorkflows(workflowsDb(rows, opts).client, NOW)
+    return Object.fromEntries(list.workflows.map((w) => [w.id, w.porting]))
+  }
+
+  it('reads the map and the replacements from the porting schema, every row in a stable order', async () => {
+    const { client, queries, profiles } = workflowsDb([row()])
+    await readOpsWorkflows(client, NOW)
+    const map = queries.findIndex((q) => q.pathname === '/rest/v1/pipedream_workflow_map')
+    const repl = queries.findIndex((q) => q.pathname === '/rest/v1/workflow_replacements')
+    expect(profiles[map]).toBe('porting')
+    expect(profiles[repl]).toBe('porting')
+    expect(queries[map].searchParams.get('select')).toMatch(/pipedream_inventory\(cut_over_at\)/)
+    expect(queries[map].searchParams.get('order')).toBe('id.asc')
+    expect(queries[repl].searchParams.get('order')).toBe('workflow_id.asc,replaces_workflow_id.asc')
+  })
+
+  it('a workflow in no map row and replacing none is not ported', async () => {
+    expect(await portingOf({})).toEqual({ [WF]: NOT_PORTED })
+  })
+
+  it('a ported workflow whose Pipedream workflow is not cut over is served with no cutover time, which the tick fires nothing from', async () => {
+    const map = [{ workflow_id: WF, pipedream_hashid: 'p_floor001', pipedream_inventory: { cut_over_at: null } }]
+    expect(await portingOf({ map })).toEqual({ [WF]: { ported: true, cutover_at: null, replaces: [] } })
+  })
+
+  it('a ported workflow cut over is served with the instant Pipedream was paused', async () => {
+    const map = [{ workflow_id: WF, pipedream_hashid: 'p_floor001', pipedream_inventory: { cut_over_at: '2026-10-27T14:00:00.123456+00:00' } }]
+    expect(await portingOf({ map })).toEqual({ [WF]: { ported: true, cutover_at: '2026-10-27T14:00:00.123456+00:00', replaces: [] } })
+  })
+
+  it('a workflow standing for two Pipedream workflows takes the later cutover, and none while either is not cut over', async () => {
+    const both = [
+      { workflow_id: WF, pipedream_hashid: 'p_floor001', pipedream_inventory: { cut_over_at: '2026-10-27T14:00:00+00:00' } },
+      { workflow_id: WF, pipedream_hashid: 'p_floor002', pipedream_inventory: { cut_over_at: '2026-10-28T09:30:00+00:00' } },
+    ]
+    expect((await portingOf({ map: both }))[WF]).toEqual({ ported: true, cutover_at: '2026-10-28T09:30:00+00:00', replaces: [] })
+    const oneLeft = [both[0], { ...both[1], pipedream_inventory: { cut_over_at: null } }]
+    expect((await portingOf({ map: oneLeft }))[WF]).toEqual({ ported: true, cutover_at: null, replaces: [] })
+    // A map row whose inventory row did not come back is read as not cut over, never as no Pipedream workflow.
+    expect((await portingOf({ map: [{ ...both[0], pipedream_inventory: null }] }))[WF]).toEqual({ ported: true, cutover_at: null, replaces: [] })
+  })
+
+  it('serves every workflow replaced, through the ones it replaced, so a second converter rerun still never re-fires the first id\'s slots', async () => {
+    const replacements = [
+      { workflow_id: WF, replaces_workflow_id: OLD },
+      { workflow_id: OLD, replaces_workflow_id: OLDER },
+      // A split: another workflow replaced the oldest too, which says nothing about WF.
+      { workflow_id: SPLIT, replaces_workflow_id: OLDER },
+    ]
+    expect((await portingOf({ replacements }))[WF]).toEqual({ ported: false, cutover_at: null, replaces: [OLD, OLDER] })
+  })
+
+  it('a cycle of replacements ends, and never lists a workflow as replacing itself', async () => {
+    const replacements = [{ workflow_id: WF, replaces_workflow_id: OLD }, { workflow_id: OLD, replaces_workflow_id: WF }]
+    expect((await portingOf({ replacements }))[WF]).toEqual({ ported: false, cutover_at: null, replaces: [OLD] })
+  })
+
+  it('throws when a porting read fails, so the tick plans from its saved copies rather than from facts that are missing', async () => {
+    await expect(readOpsWorkflows(workflowsDb([row()], { failTable: 'pipedream_workflow_map' }).client, NOW)).rejects.toThrow(/Pipedream workflow map/)
+    await expect(readOpsWorkflows(workflowsDb([row()], { failTable: 'workflow_replacements' }).client, NOW)).rejects.toThrow(/replacements/)
+  })
+})
+
+describe('parseServedOpsWorkflows: the porting facts (#1952)', () => {
+  const servedRow = (porting: unknown) => ({
+    id: WF, organization_id: ORG, is_active: true, deleted_at: null, updated_at: '2026-10-17T09:00:00+00:00', version_number: 4, trigger: null,
+    ...(porting === undefined ? {} : { porting }),
+  })
+  const parse = (porting: unknown) => parseServedOpsWorkflows({ served_at: '2026-10-17T10:02:31.000Z', complete: true, workflows: [servedRow(porting)] })
+
+  it('reads well formed facts', () => {
+    const cut = { ported: true, cutover_at: '2026-10-27T14:00:00+00:00', replaces: ['00000000-0000-4000-8000-0000000019b1'] }
+    const { list, refused } = parse(cut)
+    expect(refused).toEqual([])
+    expect(list.workflows[0].porting).toEqual(cut)
+    expect(list.complete).toBe(true)
+  })
+
+  it.each([
+    ['no facts at all, from a bidding release before #1952', undefined],
+    ['facts that are not an object', 'ported'],
+    ['ported that is not true or false', { ported: 'yes', cutover_at: null, replaces: [] }],
+    ['a cutover that is not a time', { ported: true, cutover_at: 'Monday', replaces: [] }],
+    ['a cutover on a workflow not ported', { ported: false, cutover_at: '2026-10-27T14:00:00+00:00', replaces: [] }],
+    ['replaces that is not a list', { ported: false, cutover_at: null, replaces: '00000000-0000-4000-8000-0000000019b1' }],
+    ['a replaced workflow that is not a uuid', { ported: false, cutover_at: null, replaces: ['old'] }],
+    ['the workflow replacing itself', { ported: false, cutover_at: null, replaces: [WF] }],
+    ['more replaced workflows than a copy keeps', { ported: false, cutover_at: null, replaces: Array.from({ length: MAX_REPLACED_WORKFLOWS + 1 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`) }],
+  ])('refuses the workflow by name, and the list then withdraws nothing: %s', (_why, porting) => {
+    const { list, refused } = parse(porting)
+    expect(list.workflows).toEqual([])
+    expect(list.complete).toBe(false)
+    expect(refused).toEqual([expect.stringContaining(`workflow ${WF}`)])
+    expect(refused[0]).toMatch(/porting facts|shape the ops Worker does not read/)
   })
 })
 
@@ -266,6 +382,21 @@ describe('runOpsTickReportCheck', () => {
     await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)
     expect(d.sent[0].fixHint).toMatch(/wrangler secret delete OPS_CONNECTIONS_PRIVATE_KEY_NEXT --config wrangler\.ops\.toml/)
     expect(d.sent[0].fixHint).not.toMatch(/OPS_SUPABASE/)
+  })
+
+  // #1951: neither is a secret, so the default "wrangler secret put" would send the reader to change nothing (L111).
+  it('names the run checkpoint bucket\'s and the continuation mode\'s own remedies, never a secret put', async () => {
+    for (const [name, remedy] of [
+      ['OPS_CHECKPOINTS', /wrangler r2 bucket create bidspoke-ops-checkpoints/],
+      ['OPS_CONTINUATION', /OPS_CONTINUATION.*wrangler\.ops\.toml/],
+    ] as const) {
+      const store = kv()
+      store.m.set(OPS_TICK_REPORT_KEY, stored({ outcome: 'not_configured', problems: ['x'], not_configured_secrets: [name] }))
+      const d = deps()
+      await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)
+      expect(d.sent[0].fixHint, name).toMatch(remedy)
+      expect(d.sent[0].fixHint, name).not.toMatch(/secret put/)
+    }
   })
 
   it('names a secret it has no written remedy for, rather than offering another secret\'s steps', async () => {

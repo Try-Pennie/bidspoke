@@ -32,3 +32,27 @@ export function withSlackKeyRing<T extends object>(client: T): T {
   registerSlackKeyRing(client, SLACK_TEST_RING)
   return client
 }
+
+/**
+ * A route double's answer to the two Slack alert config saves of migration
+ * 20261027170000 (#2643): save_slack_alert_token and save_slack_alert_settings
+ * each merge what they were sent into `row`'s config (the token save also
+ * replacing its sealed token) and return the row as written, which is what the
+ * routes rebuild the saved Slack copy from. The real functions are proven in
+ * supabase/tests/slack_alert_config_own_keys.test.sql. Any other function
+ * answers its rows from `others`, or null. Hand it to makeSupabase as `rpc`.
+ */
+export function answerSlackConfigSaves(row: Record<string, unknown> = {}, others: Record<string, unknown[]> = {}) {
+  return async (name: string, args: unknown): Promise<{ data: unknown; error: unknown }> => {
+    const sent = args as Record<string, unknown>
+    const stored = row.config && typeof row.config === 'object' ? (row.config as Record<string, unknown>) : {}
+    if (name === 'save_slack_alert_token') {
+      Object.assign(row, { config: { ...stored, ...(sent.p_config as object) }, credential_enc: sent.p_credential_enc })
+    } else if (name === 'save_slack_alert_settings') {
+      Object.assign(row, { config: { ...stored, ...(sent.p_settings as object) } })
+    } else {
+      return { data: others[name] ?? null, error: null }
+    }
+    return { data: [{ id: row.id ?? 'sc-1', config: row.config, credential_enc: row.credential_enc ?? null }], error: null }
+  }
+}

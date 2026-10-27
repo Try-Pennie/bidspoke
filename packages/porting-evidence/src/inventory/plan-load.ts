@@ -23,7 +23,7 @@ import type { ExportedProject, ExportedWorkflow } from './read-export.ts'
 
 export type PipedreamState = 'on' | 'off' | 'never_deployed'
 
-/** One inventory row as the loader writes it: every column except porting_stage and updated_at. */
+/** One inventory row as the loader writes it: every column except porting_stage and cut_over_at (#1952), which only Bidspoke writes, and updated_at. */
 export interface InventoryRow {
   organization_id: string
   pipedream_hashid: string

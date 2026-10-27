@@ -18,6 +18,15 @@
  *  3. The copies, through save_connection_copies, which refuses a lower
  *     generation, a copy already past its serve_until and one a tombstone
  *     covers, and, for a complete list, withdraws every copy it does not name.
+ *  4. Only after a complete list was saved in one save: the measured
+ *     identities of connections bidding never stored, through
+ *     remove_unserved_measured_identities (#2573). A Salesforce verify of a new
+ *     connection records one before bidding inserts the row; when the insert
+ *     fails and its revoke fails too, nothing else ever removes it. The list
+ *     not naming the connection, served more than an hour after the
+ *     measurement, is the proof bidding never stored it. The record is used by
+ *     nothing, so its removal is counted and logged, and pages only if the
+ *     removal itself keeps failing.
  *
  * What is saved is ciphertext and public config only: the ops Worker opens an
  * envelope only inside connectionFetch, under the organization it is filed under.
@@ -25,23 +34,27 @@
 import { formatErr } from '../lib/format-error'
 import { parseServedOpsConnections, tickProblem, type TickProblem } from '../lib/ops-gateway-contract'
 import { organizationIdFrom, type OrganizationId } from './ops-db'
-import { MAX_COPIES_PER_SAVE, type ConnectionCopyInput, type SaveConnectionCopiesResult } from './ops-writes'
+import { MAX_COPIES_PER_SAVE, type ConnectionCopyInput, type SaveConnectionCopiesResult, type UnservedIdentityRemoved } from './ops-writes'
 
 /** The ops database, as this step uses it. The live one is ops-writes.ts through tick-live.ts. */
 export interface ConnectionServeDb {
   saveConnectionCopies(servedAt: string, complete: boolean, copies: readonly ConnectionCopyInput[]): Promise<SaveConnectionCopiesResult>
   recordConnectionTombstone(organizationId: OrganizationId, connectionId: string, generation: number, removedAt: Date): Promise<{ outcome: 'recorded' | 'already_recorded'; copiesRemoved: number }>
+  removeUnservedMeasuredIdentities(servedAt: string, named: readonly string[]): Promise<UnservedIdentityRemoved[]>
 }
 
 export interface ConnectionServeOutcome {
   /** Each a sentence a person can act on, keyed by its kind (#2506). */
   problems: TickProblem[]
   counts: Record<string, number>
+  /** Each measured identity of a connection bidding never stored that this serve removed (#2573), for the tick to log by id. */
+  unservedIdentitiesRemoved: UnservedIdentityRemoved[]
 }
 
 export async function saveServedConnections(db: ConnectionServeDb, fetchConnections: () => Promise<unknown>): Promise<ConnectionServeOutcome> {
   const problems: TickProblem[] = []
   const counts: Record<string, number> = {}
+  const unservedIdentitiesRemoved: UnservedIdentityRemoved[] = []
   const bump = (key: string, by = 1) => { counts[key] = (counts[key] ?? 0) + by }
 
   let raw: unknown
@@ -49,14 +62,14 @@ export async function saveServedConnections(db: ConnectionServeDb, fetchConnecti
     raw = await fetchConnections()
   } catch (err) {
     problems.push(tickProblem('connections_fetch_failed', `The ops tick could not fetch the ops connections from the bidding Worker (${formatErr(err)}), so it saved none: each saved copy stays usable until its serve_until, at most 6 hours after it was last served.`))
-    return { problems, counts }
+    return { problems, counts, unservedIdentitiesRemoved }
   }
   let parsed: ReturnType<typeof parseServedOpsConnections>
   try {
     parsed = parseServedOpsConnections(raw)
   } catch (err) {
     problems.push(tickProblem('connections_list_unreadable', `The bidding Worker's connection list could not be read (${formatErr(err)}), so no connection copy was saved.`))
-    return { problems, counts }
+    return { problems, counts, unservedIdentitiesRemoved }
   }
   const { list, refused } = parsed
   problems.push(...refused.map((text) => tickProblem('connection_refused', text)))
@@ -79,6 +92,7 @@ export async function saveServedConnections(db: ConnectionServeDb, fetchConnecti
   // A list too long for one save is saved in parts and withdraws nothing, since no one part is the whole list.
   const oneSave = copies.length <= MAX_COPIES_PER_SAVE
   if (!oneSave) problems.push(tickProblem('connections_too_many', `The bidding Worker served ${copies.length} ops connections, more than one save carries, so connections it no longer names were not withdrawn.`))
+  let savedWhole = false
   for (let at = 0; at < copies.length || at === 0; at += MAX_COPIES_PER_SAVE) {
     try {
       const saved = await db.saveConnectionCopies(list.served_at, list.complete && oneSave, copies.slice(at, at + MAX_COPIES_PER_SAVE))
@@ -86,6 +100,7 @@ export async function saveServedConnections(db: ConnectionServeDb, fetchConnecti
       bump('connection_copies_refused_older', saved.refusedOlder)
       bump('connection_copies_refused_removed', saved.refusedRemoved)
       bump('connection_copies_withdrawn', saved.withdrawn)
+      savedWhole = list.complete && oneSave
       if (saved.refusedExpired > 0) {
         bump('connection_copies_refused_expired', saved.refusedExpired)
         problems.push(tickProblem('connection_copies_expired', saved.refusedExpired === 1
@@ -96,5 +111,16 @@ export async function saveServedConnections(db: ConnectionServeDb, fetchConnecti
       problems.push(tickProblem('connections_save_failed', `The ops tick could not save the connections it fetched (${formatErr(err)}); the saved copies stay as they were, each until its serve_until.`))
     }
   }
-  return { problems, counts }
+
+  // 4. Only a complete list saved whole proves which connections bidding holds.
+  if (savedWhole) {
+    try {
+      const removed = await db.removeUnservedMeasuredIdentities(list.served_at, copies.map((c) => c.connectionId))
+      unservedIdentitiesRemoved.push(...removed)
+      if (removed.length > 0) bump('connection_unserved_identities_removed', removed.length)
+    } catch (err) {
+      problems.push(tickProblem('unserved_identities_remove_failed', `The ops tick could not remove the Salesforce identities measured for connections Bidspoke never saved (${formatErr(err)}). Nothing uses them, and the next tick tries again.`))
+    }
+  }
+  return { problems, counts, unservedIdentitiesRemoved }
 }

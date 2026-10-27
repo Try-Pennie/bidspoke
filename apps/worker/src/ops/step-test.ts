@@ -116,6 +116,12 @@ function testContext(run: ClaimedRun, signal: AbortSignal, now: () => number): R
     now,
     // A test keeps its result as a test (record_step_test), never as a run's step; the executor never records.
     recordStep: () => Promise.reject(new Error('a step test keeps its result as a test result, not as a run step')),
+    // A test is one step, never sliced (#1951): it has no state version and no checkpoint.
+    stateVersion: 0,
+    checkpoints: {
+      name: () => Promise.reject(new Error('a step test has no run to name a checkpoint on')),
+      read: () => Promise.reject(new Error('a step test has no run to read a checkpoint of')),
+    },
     async send<T>(step: StepSend<T>) {
       if (signal.aborted) throw new RunStopped()
       let answer
