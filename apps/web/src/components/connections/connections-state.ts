@@ -271,7 +271,7 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       if (l.kind === 'loaded' && l.refresh.kind === 'loading' && e.at - l.refresh.startedAt >= s.deadlineMs) {
         next = { ...next, list: { ...l, refresh: { kind: 'failed', cause: LIST_NO_ANSWER } } }
       }
-      // A save, a Reconnect or a Remove that has not answered by its deadline stalls: its outcome is not known (R13).
+      // A save, a Reconnect, a Remove or a Replace that has not answered by its deadline stalls: its outcome is not known (R13).
       if (s.add && stalls(s.add.save, e.at, s.deadlines.saveDeadlineMs)) next = { ...next, add: { ...s.add, save: stalledOf(s.add.save) } }
       const d = s.dialog
       if (d && (d.kind === 'reconnect' || d.kind === 'remove' || d.kind === 'replace')) {
@@ -573,7 +573,7 @@ export type UnsavedWork = 'form' | 'form_checking' | 'login' | 'login_checking' 
 /**
  * What leaving now would lose (L608): the form with something typed or its
  * save running, a Reconnect with a login typed or its check running, or a
- * Remove running; null when nothing. The leave guard asks first while it is
+ * Remove or a Replace running; null when nothing. The leave guard asks first while it is
  * not null, and the question names which.
  */
 export function unsavedWork(s: ConnectionsState): UnsavedWork | null {
