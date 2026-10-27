@@ -5,6 +5,8 @@
  * R21), in the same module.
  */
 import { describe, expect, it } from 'vitest'
+import { CATALOGUE, type ServiceSchema } from '@bidspoke/service-catalogue/schema'
+import { keyScopeOf } from '../connection-create'
 import { OPS_CONNECTIONS_REFUSAL_CODES } from '../ops-connections-contract'
 import { CONNECTION_REFUSAL_CODES } from '../../ops/connections/refusals'
 import {
@@ -60,6 +62,34 @@ describe('the create refusals', () => {
     expect(createRefusalSentence('connection_needs_reauth', CTX)).toBe('Salesforce refused the client secret. Nothing was saved. Check the secret and save again.')
     expect(createRefusalSentence('connection_needs_reauth', { ...CTX, service: 'Snowflake', secret: 'private key' })).toBe('Snowflake refused the private key. Nothing was saved. Check the secret and save again.')
     expect(createRefusalSentence('connection_needs_reauth', { ...CTX, service: 'Lender API', secret: 'login' })).toBe('Lender API refused the login. Nothing was saved. Check the login and save again.')
+  })
+
+  // OpenAI answers a key used with a Project ID it cannot act in with the same 401 as a bad key: its error
+  // reference documents no code that tells them apart (#2715), so the sentence names both and which to check first.
+  it('says a refused key on a connection that names a project means the key or the Project ID is wrong, Project ID first (#2715)', () => {
+    const openai: RefusalContext = { ...CTX, service: 'OpenAI', secret: 'api key', org: null, names: [], keyScope: { key: 'API key', scope: 'Project ID' } }
+    expect(createRefusalSentence('connection_needs_reauth', openai)).toBe(
+      'OpenAI refused the API key with this Project ID, so either the key or the Project ID is wrong. Nothing was saved. Check the Project ID first, then the key, and save again.',
+    )
+    // A service whose key names no scope keeps the design's sentence (D14).
+    expect(createRefusalSentence('connection_needs_reauth', { ...openai, keyScope: null })).toBe('OpenAI refused the api key. Nothing was saved. Check the secret and save again.')
+  })
+
+  it('reads the key and its scope from the OpenAI form\'s own labels, and names no scope for any other service (#2715)', () => {
+    const service = (key: string) => {
+      const found = CATALOGUE.find((s) => s.key === key)
+      if (found === undefined) throw new Error(`the catalogue declares no ${key}`)
+      return found
+    }
+    expect(keyScopeOf(service('openai'))).toEqual({ key: 'API key', scope: 'Project ID' })
+    for (const s of CATALOGUE.filter((s) => s.key !== 'openai')) expect(keyScopeOf(s), s.key).toBeNull()
+  })
+
+  it('refuses loudly when the OpenAI form no longer has the field its key is scoped to, rather than dropping the scope (#2715)', () => {
+    const openai = CATALOGUE.find((s) => s.key === 'openai')
+    if (openai === undefined) throw new Error('the catalogue declares no openai')
+    const renamed: ServiceSchema = { ...openai, connection: { ...openai.connection, fields: openai.connection.fields.filter((f) => f.key !== 'project_id') } }
+    expect(() => keyScopeOf(renamed)).toThrow(/project_id/)
   })
 
   // Word for word as Dan settled it in design round 33 (2026-10-21), the org's address filled in.

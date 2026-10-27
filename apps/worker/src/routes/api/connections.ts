@@ -63,7 +63,7 @@ import { DELEGATION_KINDS, type DelegationKind } from '../../ops/run-vocabulary'
 import { readGoogleTarget } from '../../ops/connections/minters/google-target'
 import {
   actsAsOf, AUTH_TYPE_OF, connectionNameOf, connectionsNamingSubject, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
-  listedDriveNamedAsMailbox, secretLabelOf, unlistedGoogleSubjects,
+  keyScopeOf, listedDriveNamedAsMailbox, secretLabelOf, unlistedGoogleSubjects,
 } from '../../lib/connection-create'
 import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
 import {
@@ -515,7 +515,7 @@ connections.post('/', async (c) => {
   if (!body.ok) return refuse('connection_request_invalid', { service: 'the service' }, { detail: body.problem })
   const service = declaredService(catalogue, body.service)
   if (!service) return refuse('connection_service_undeclared', { service: /^[a-z][a-z0-9_]{0,63}$/.test(body.service) ? body.service : 'that service' })
-  const words: Pick<RefusalContext, 'service' | 'secret'> = { service: service.name, secret: secretLabelOf(service) }
+  const words: Pick<RefusalContext, 'service' | 'secret' | 'keyScope'> = { service: service.name, secret: secretLabelOf(service), keyScope: keyScopeOf(service) }
 
   // 2. The name, the login and the target.
   const named = connectionNameOf(body.name)
@@ -886,7 +886,7 @@ async function reconnectSlackAlertLogin(
 connections.post('/:id/reconnect', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id')
-  const words = { service: 'the service', secret: 'login' }
+  const words: Pick<RefusalContext, 'service' | 'secret' | 'keyScope'> = { service: 'the service', secret: 'login', keyScope: null }
   const ownRefusal = (code: ConnectionRouteRefusalCode, ctx: Partial<RouteRefusalContext> = {}, extra: Record<string, unknown> = {}) => {
     console.warn(JSON.stringify({ event: 'connection_reconnect_refused', code, organization_id: orgId, connection_id: UUID.test(id) ? id : null }))
     return c.json({ error: code, message: connectionRouteSentence(code, { ...words, names: [], deleted: false, ...ctx }), ...extra }, ROUTE_STATUS[code])
@@ -927,7 +927,7 @@ connections.post('/:id/reconnect', async (c) => {
   const row = data as ReconnectRow
   const service = declaredService(CATALOGUE, row.service_type)
   if (!service) return createRefusal('connection_service_undeclared', { service: row.service_type })
-  Object.assign(words, { service: service.name, secret: secretLabelOf(service) })
+  Object.assign(words, { service: service.name, secret: secretLabelOf(service), keyScope: keyScopeOf(service) })
   const target = isRecordValue(row.target) ? row.target : null
   const publicConfig = isRecordValue(row.config) ? row.config : {}
 

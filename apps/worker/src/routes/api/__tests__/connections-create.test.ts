@@ -564,6 +564,27 @@ describe('an ops OpenAI connection: a project\'s API key (#2337)', () => {
     })
   })
 
+  // A wrong Project ID with a valid key is answered by OpenAI with a 401 its error reference does not tell
+  // apart from a bad key's (#2715), so verify answers connection_needs_reauth for both, and the sentence names both.
+  it('says a refused key may be the key or the Project ID, and to check the Project ID first (#2715)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env } = makeEnv({ verify: async () => ({ ok: false, refused: 'connection_needs_reauth', detail: 'the login was refused', retry_at: null }) })
+    const body = (await (await post(env, openai)).json()) as { error: string; message: string }
+    expect(body).toMatchObject({
+      error: 'connection_needs_reauth',
+      message: 'OpenAI refused the API key with this Project ID, so either the key or the Project ID is wrong. Nothing was saved. Check the Project ID first, then the key, and save again.',
+    })
+  })
+
+  it('a service whose key names no project keeps the plain refused key sentence (#2715)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env } = makeEnv({ verify: async () => ({ ok: false, refused: 'connection_needs_reauth', detail: 'the login was refused', retry_at: null }) })
+    const body = (await (await post(env, { service: 'anthropic', name: 'Lead notes 2', fields: { workspace_id: 'wrkspc_0PS2337', api_key: 'canary-ant-key-2337' } })).json()) as { error: string; message: string }
+    expect(body.error).toBe('connection_needs_reauth')
+    expect(body.message).not.toContain('Workspace ID')
+    expect(body.message).toMatch(/^Anthropic refused the /)
+  })
+
   it('says a key of another project in its own sentence', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
     const { env } = makeEnv({ verify: async () => ({ ok: false, refused: 'verify_openai_project_mismatch', detail: 'named on ops' }) })

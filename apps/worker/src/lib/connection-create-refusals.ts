@@ -135,6 +135,18 @@ export interface RefusalContext {
   names: readonly string[]
   /** The money identity found, for connection_money_identity. */
   money: MoneyTargetKind | null
+  /**
+   * For a service whose refusal of the key can as well mean a field the key is
+   * scoped to is wrong (OpenAI's Project ID, #2715), the two fields' labels as the
+   * form shows them; null or absent for every other service (connection-create.ts, keyScopeOf).
+   */
+  keyScope?: KeyScope | null
+}
+
+/** A key's label and the label of the field it only works within, as the form shows them (#2715). */
+export interface KeyScope {
+  key: string
+  scope: string
 }
 
 /** "A", "A and B", "A, B and C". */
@@ -228,7 +240,11 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   sf_lease_unavailable: () => 'The workflows server could not reserve a Salesforce call for the check. Nothing was saved. Save again in a minute.',
   connection_record_failed: () => 'The workflows server could not record the check before sending it. Nothing was saved. Save again.',
   // The design's sentence (D14): the secret is named once, then "the secret" (L605); a service with no secret says its login.
-  connection_needs_reauth: (c) => `${c.service} refused the ${c.secret}. Nothing was saved. Check the ${c.secret === 'login' ? 'login' : 'secret'} and save again.`,
+  // OpenAI answers a valid key sent with a wrong Project ID with the same 401 as a bad key, and its error reference
+  // documents no code that tells the two apart (#2715), so a key scoped to a field names both, and which to check first.
+  connection_needs_reauth: (c) => c.keyScope
+    ? `${c.service} refused the ${c.keyScope.key} with this ${c.keyScope.scope}, so either the key or the ${c.keyScope.scope} is wrong. Nothing was saved. Check the ${c.keyScope.scope} first, then the key, and save again.`
+    : `${c.service} refused the ${c.secret}. Nothing was saved. Check the ${c.secret === 'login' ? 'login' : 'secret'} and save again.`,
   connection_auth_unavailable: (c) => `${c.service} did not answer the sign in. Nothing was saved. Save again in a minute.`,
   connection_not_allowed: (c) => `A Bidspoke rule refused this ${c.service} login before it was tried. Nothing was saved. Check what the connection names and save again.`,
   connection_auth_check_unavailable: () => 'The workflows server could not read the list it checks this login against. Nothing was saved. Save again in a minute.',

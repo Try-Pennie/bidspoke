@@ -375,6 +375,39 @@ describe('Reconnect of an ops Slack bot never takes the alerts bot (Dan\'s decis
   })
 })
 
+describe('Reconnect of an OpenAI project key (#2715)', () => {
+  const OPENAI_CONN = 'c0000000-0000-4000-8000-000000000005'
+  const REFUSED = 'OpenAI refused the API key with this Project ID, so either the key or the Project ID is wrong. Nothing was saved. Check the Project ID first, then the key, and save again.'
+  function openaiWorld(order: string[]) {
+    const db = storeDouble(order)
+    db.table.push({
+      id: OPENAI_CONN, organization_id: ORG, service_type: 'openai', name: 'Summaries', sealed_for: 'ops_key', credential_generation: 1,
+      credential_enc: JSON.stringify(STORED_ENVELOPE), config: {}, target: { project_id: 'proj_0PS2715' }, acts_as: 'Project proj_0PS2715', person_bound: false,
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    return db
+  }
+  const refused = async () => ({ ok: false, refused: 'connection_needs_reauth', detail: 'refused', retry_at: null })
+
+  it('a new key OpenAI refuses is answered as the key or the Project ID, and nothing is committed', async () => {
+    const order: string[] = []
+    const db = openaiWorld(order)
+    const { env } = makeEnv(order, { verify: refused })
+    const res = await reconnect(env, OPENAI_CONN, { fields: { api_key: 'canary-openai-key-2715' } })
+    expect(res.status).toBe(422)
+    expect(await res.json()).toMatchObject({ error: 'connection_needs_reauth', message: REFUSED })
+    expect(db.rpcs).toEqual([])
+  })
+
+  it('a check of the stored key OpenAI refuses says the same', async () => {
+    const order: string[] = []
+    openaiWorld(order)
+    const { env } = makeEnv(order, { clearReauth: refused })
+    const res = await reconnect(env, OPENAI_CONN)
+    expect(await res.json()).toMatchObject({ error: 'connection_needs_reauth', message: REFUSED })
+  })
+})
+
 describe('Reconnect without a new login: clearReauth alone', () => {
   it('checks the row\'s own envelope at its own generation, commits nothing, and audits who asked', async () => {
     const order: string[] = []
