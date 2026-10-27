@@ -33,16 +33,19 @@
  *   ACHIEVE_UTM_SOURCE                   optional utm_source fallback
  *   ACHIEVE_UTM_CAMPAIGN                 optional utm_campaign fallback (default '_achieve_pl')
  *
- * The fetch is aborted internally at 9 s (ACHIEVE_FETCH_TIMEOUT_MS) so a hung
- * Achieve API can never trip the engine-level node timeout (which WOULD fail the
- * step), and so the node finishes inside the 12 s a run waits for its work after
- * the answer (#1882). Recommended node settings: timeout 10000ms, retries 0 (a
+ * The fetch is aborted internally at 9 s (ACHIEVE_FETCH_TIMEOUT_MS) at most so a
+ * hung Achieve API can never trip the engine-level node timeout (which WOULD fail
+ * the step), and so the node finishes inside the 12 s a run waits for its work
+ * after the answer (#1882): when less than that is left of the 12 s, it waits
+ * only for what is left, and with too little left it sends nothing (#2834,
+ * `achieveWait`). Recommended node settings: timeout 10000ms, retries 0 (a
  * retry on a transport failure risks double-submitting the lead).
  */
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
 import type { Env } from '../../index'
 import { formatErr } from '../../lib/format-error'
+import { CONTINUATION_WINDOW_MS } from '../../lib/post-response-budget'
 import { resolveValue } from '../context'
 import { linkAbort } from '../retry'
 import { shadowAchieveStub } from '../shadow'
@@ -79,10 +82,53 @@ export interface AchieveOffersConfig {
  * 4.7 s and nine in ten within 5.8 s. Eleven hit the old 12 s limit (a hang: with
  * wait_for_offers Achieve holds a request for at most 10 s) and two more answered
  * between 9 s and 10.2 s. So about two replies a week now time out on our side.
- * Achieve still receives those leads; only its answer goes unrecorded. The node
- * started at most 2.6 s after the answer, so 9 s ends it inside the window.
+ * Achieve still receives those leads; only its answer goes unrecorded.
+ *
+ * 9 s is the most the node waits, not what it always waits (#2834). It used to
+ * assume it started at most 2.6 s after the answer, but a slow outcome write and
+ * the inquiry post before it can start it 9.5 s after (the 4.5 s write, the 500 ms
+ * body step and the 4.5 s Apex call of the inquiry stage, #2176), and a fixed 9 s
+ * then ended it 18.5 s after the answer. So the wait is also held to the time left
+ * of the window, less ACHIEVE_WINDOW_MARGIN_MS (`achieveWait`). A typical run
+ * starts about 2.1 s after the answer and still waits the full 9 s.
  */
 export const ACHIEVE_FETCH_TIMEOUT_MS = 9_000
+
+/**
+ * How long before the window's cut-off the node's wait ends (#2834), so the step
+ * returns and the walk (only branch ends follow Achieve in Main Flow) settles
+ * before the engine stops waiting for it, and the evaluation is recorded. Those
+ * steps do no I/O; the margin is for the two timers firing close together.
+ */
+export const ACHIEVE_WINDOW_MARGIN_MS = 500
+
+/**
+ * The shortest wait worth sending for (#2834). With less time than this left the
+ * node sends nothing and says why, rather than hand Achieve the lead's details for
+ * an answer that cannot arrive in time. Replies were measured at 4.7 s median and
+ * 5.8 s for nine in ten (above); how fast the fastest are is not measured here, so
+ * 1 s is a judgment: a floor under the replies, not a fitted figure.
+ */
+export const ACHIEVE_MIN_WAIT_MS = 1_000
+
+/** What the node does with the time left: send and wait `waitMs`, or skip. */
+export type AchieveWait = { send: true; waitMs: number; shortened: boolean } | { send: false; waitMs: number }
+
+/**
+ * The rule the node waits by (#2834). `msLeftInWindow` is the time left of the
+ * window after the answer: absent or infinite before the answer and in a test
+ * run, which is no limit but the node's own 9 s. A value that is not a number
+ * is read the same way, the behaviour before #2834, rather than as a skip.
+ */
+export function achieveWait(msLeftInWindow: number | undefined): AchieveWait {
+  if (msLeftInWindow === undefined || Number.isNaN(msLeftInWindow)) {
+    return { send: true, waitMs: ACHIEVE_FETCH_TIMEOUT_MS, shortened: false }
+  }
+  const fits = msLeftInWindow - ACHIEVE_WINDOW_MARGIN_MS
+  if (fits >= ACHIEVE_FETCH_TIMEOUT_MS) return { send: true, waitMs: ACHIEVE_FETCH_TIMEOUT_MS, shortened: false }
+  if (fits >= ACHIEVE_MIN_WAIT_MS) return { send: true, waitMs: fits, shortened: true }
+  return { send: false, waitMs: fits }
+}
 
 // Achieve's sandbox only returns offers for its own seeded showroom profiles; it declines
 // every real lead (28/28 on 2026-07-13, including two at ~$18k with poor credit). Achieve
@@ -296,10 +342,32 @@ export async function executeAchieveOffersNode(
     console.error(`[achieve-offers] credit metrics derivation failed: ${formatErr(err)}`)
   }
 
-  // Own controller so the internal 9 s timeout AND the step-level timeout (#66)
+  // Read last, just before the call, so the time the steps above took is counted (#2834).
+  const msLeft = ctx.continuationMsLeft?.()
+  const wait = achieveWait(msLeft)
+  if (!wait.send) {
+    // Same contract as a screened lead: nothing sent, no _achieve_evaluation marker (so no
+    // achieve_evaluations row for a lead Achieve never received), the flow carries on, and the
+    // step's own output says why. Logged too, so how often it happens can be counted.
+    console.warn(`[achieve-offers] skipped trace=${ctx.trigger.trace_id} step=${node.namespace}: ${msLeft} ms left of the window after the answer, under the ${ACHIEVE_WINDOW_MARGIN_MS + ACHIEVE_MIN_WAIT_MS} ms a send needs`)
+    return {
+      output: {
+        _achieve_skipped: true as const,
+        reason: 'answer_window_spent',
+        window: { ms_left: msLeft, margin_ms: ACHIEVE_WINDOW_MARGIN_MS, min_wait_ms: ACHIEVE_MIN_WAIT_MS },
+        ok: false,
+        response_status: 'skipped',
+        offer_count: 0,
+        offers: [],
+      },
+      resolvedInput,
+    }
+  }
+
+  // Own controller so the node's own wait AND the step-level timeout (#66)
   // can both cancel the call.
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), ACHIEVE_FETCH_TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), wait.waitMs)
   linkAbort(controller, signal)
   try {
     const res = await fetch(`${baseUrl}/evaluations`, {
@@ -362,7 +430,7 @@ export async function executeAchieveOffersNode(
     const name = (err as { name?: string })?.name
     const message = formatErr(err)
     const reason = message.includes('timed out') || name === 'TimeoutError' || name === 'AbortError'
-      ? `Achieve API timed out after ${ACHIEVE_FETCH_TIMEOUT_MS}ms`
+      ? `Achieve API timed out after ${wait.waitMs}ms${wait.shortened ? `, all that was left of the ${CONTINUATION_WINDOW_MS / 1000} s a run waits after the answer` : ''}`
       : message
     return { output: result(false, 0, 'error', reason, request, null, !production, NO_RESPONSE_IDS, metrics), resolvedInput }
   } finally {

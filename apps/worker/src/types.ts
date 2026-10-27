@@ -232,6 +232,15 @@ export interface ExecutionContext {
    */
   retryTiming?: RetryTiming
   /**
+   * Milliseconds left before the run stops waiting for its walk after the answer
+   * (CONTINUATION_WINDOW_MS, #2834): infinite before the answer, negative once the
+   * window has closed. A step after the answer that waits on a call of its own
+   * (Achieve) ends its wait inside it, so it is recorded as what it did rather than
+   * as unfinished work. Stamped by executeWorkflow on a live run only; a test run
+   * waits for its whole walk, so it has no window and this is absent.
+   */
+  continuationMsLeft?: () => number
+  /**
    * Shadow execution mode. 'dry_run' runs the workflow logic but every outbound
    * node returns a stub instead of firing (no Salesforce/Equifax/partner/HTTP/KV
    * side effects). 'stand_in' is the same, except Partner Bid resolves a
