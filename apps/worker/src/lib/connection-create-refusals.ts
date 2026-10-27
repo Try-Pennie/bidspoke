@@ -22,6 +22,7 @@ import type { ConnectionRefusalCode } from '../ops/connections/refusals'
 import { CONNECTION_REFUSAL_CODES } from '../ops/connections/refusals'
 import type { MoneyTargetKind } from './connection-money-targets'
 import { OPS_CONNECTIONS_REFUSAL_CODES, type OpsConnectionsOwnRefusal } from './ops-connections-contract'
+import { replaceComplete, REPLACE_WORKFLOWS_MAX, type ReplacedWorkflow } from './connection-replace'
 
 /** The longest name a connection may have. */
 export const CONNECTION_NAME_MAX = 100
@@ -252,8 +253,9 @@ export function createRefusalSentence(code: CreateRefusalCode, ctx: RefusalConte
 // ── the Reconnect, Remove and Google list routes (#2338, build PR 6) ──────────
 
 /**
- * The refusals, and the one notice, of POST /:id/reconnect, DELETE /:id and the
- * Google mailboxes and drives list routes (R9, R10, R19, R21), in this same
+ * The refusals, and the one notice, of POST /:id/reconnect, DELETE /:id,
+ * POST /:id/replace and the Google mailboxes and drives list routes (R9, R10,
+ * R19, R20, R21), in this same
  * module so every sentence the Connections page shows has one home. A
  * Reconnect that sends a new login is checked by verify exactly as a save is,
  * so its verify refusals are the create's and read through
@@ -306,6 +308,25 @@ export const CONNECTION_ROUTE_REFUSAL_CODES = [
   'delegation_list_unavailable',
   /** Ops refused the change for a reason that is a fault in Bidspoke (its lane, its settings, the request's shape). */
   'delegation_change_refused',
+  // Replace (build PR 12; R20). Each refuses the whole request before anything is written.
+  /** The body is not the dialog's: no replacement, no workflow ticked, an id that is not one, or a key the route does not read. */
+  'replace_body_invalid',
+  /** More workflows ticked than one Replace may write (REPLACE_WORKFLOWS_MAX). */
+  'replace_too_many',
+  /** The Slack alerts login: no workflow can name it, so there is nothing to replace. */
+  'connection_not_replaceable',
+  /** The replacement is not a connection of the caller's organization (removed, or never one). */
+  'replace_with_not_found',
+  /** The replacement is the connection itself. */
+  'replace_with_same',
+  /** The replacement is a connection of another service, its name in names[0]. */
+  'replace_with_other_service',
+  /** The replacement is the Slack alerts login, which no workflow can use. */
+  'replace_with_unusable',
+  /** The replacement is someone else's own Google account, which only they may use in a workflow (Dan, 2026-10-23). */
+  'replace_with_not_yours',
+  /** The two connections, or which workflows name the one replaced, could not be read, so nothing was written. */
+  'replace_uses_unreadable',
 ] as const
 export type ConnectionRouteRefusalCode = (typeof CONNECTION_ROUTE_REFUSAL_CODES)[number]
 
@@ -360,9 +381,63 @@ const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: Route
   delegation_change_failed: () => 'Bidspoke could not confirm the change to the list. Reload the list to see whether it was made.',
   delegation_list_unavailable: () => 'The company list of mailboxes and drives could not be read. Nothing was changed. Try again in a minute.',
   delegation_change_refused: () => 'The workflows server would not make the change to the list. Nothing was changed. Tell Dan, since this is a fault in Bidspoke.',
+  replace_body_invalid: () => 'Choose a connection to replace it with and tick at least one workflow. Nothing was changed.',
+  replace_too_many: () => `Replace can give at most ${REPLACE_WORKFLOWS_MAX} workflows a new version at a time. Nothing was changed. Untick some and replace again.`,
+  connection_not_replaceable: () => 'Bidspoke\'s own alerts post through this Slack login, and no workflow can use it, so there is nothing to replace. Nothing was changed.',
+  replace_with_not_found: () => 'The connection chosen to replace it with is not in your organization any more. Nothing was changed. Reload the page and choose another.',
+  replace_with_same: () => 'A connection cannot replace itself. Nothing was changed. Choose another connection.',
+  replace_with_other_service: (c) => `${one(c, 'That connection')} is not a ${c.service} connection, so it cannot replace this one. Nothing was changed. Choose a ${c.service} connection.`,
+  replace_with_unusable: (c) => `${one(c, 'That connection')} is the Slack login Bidspoke's own alerts post through, and no workflow can use it. Nothing was changed. Choose another connection.`,
+  replace_with_not_yours: (c) => `${one(c, 'That connection')} signs in to someone else's own Google account, which only they may use in a workflow. Nothing was changed. Choose another connection.`,
+  replace_uses_unreadable: () => 'Bidspoke could not read the connections or which workflows use them. Nothing was changed. Try again in a minute.',
 }
 
-/** The page's sentence for one of the Reconnect, Remove or Google list routes' own refusals. */
+/** The page's sentence for one of the Reconnect, Remove, Replace or Google list routes' own refusals. */
 export function connectionRouteSentence(code: ConnectionRouteRefusalCode, ctx: RouteRefusalContext): string {
   return ROUTE_SENTENCES[code](ctx)
+}
+
+const wasWere = (names: readonly string[]) => (names.length === 1 ? 'was' : 'were')
+const itThey = (names: readonly string[]) => (names.length === 1 ? 'it' : 'they')
+const useUses = (names: readonly string[]) => (names.length === 1 ? 'uses' : 'use')
+const nameNames = (names: readonly string[]) => (names.length === 1 ? 'names' : 'name')
+const workflowsWord = (n: number) => (n === 1 ? 'workflow' : 'workflows')
+
+/**
+ * What an incomplete Replace says (build PR 12; R20), or null when every
+ * ticked workflow names the replacement now. Said in the dialog's line as a
+ * refusal is (R14): how many were given a new version (or that nothing was
+ * changed), each workflow left on the old connection by name with why, and
+ * what to do. A save it could not confirm is never claimed either way (L11).
+ */
+export function replaceIncompleteSentence(workflows: readonly ReplacedWorkflow[], source: string, replacement: string): string | null {
+  const named = (pick: (w: ReplacedWorkflow) => boolean) => workflows.filter(pick).map((w) => w.name ?? 'A workflow')
+  const refused = (why: ReplacedWorkflow['why']) => named((w) => w.outcome === 'refused' && w.why === why)
+  const replaced = workflows.filter((w) => w.outcome === 'replaced').length
+  const changed = named((w) => w.outcome === 'changed')
+  const deleted = named((w) => w.outcome === 'deleted')
+  const failed = named((w) => w.outcome === 'failed')
+  const gone = refused('replacement_removed')
+  const stale = refused('names_removed_connection')
+  const unchecked = refused('check_failed')
+  const unread = refused('unreadable')
+  const malformed = refused('write_refused')
+  if (replaceComplete(workflows)) return null
+
+  const parts: string[] = [replaced > 0 ? `Replaced in ${replaced} ${workflowsWord(replaced)}.` : 'Nothing was changed.']
+  if (gone.length) parts.push(`${replacement} was removed while this ran, so ${listed(gone)} still ${useUses(gone)} ${source}.`)
+  if (changed.length) parts.push(`${listed(changed)} ${wasWere(changed)} saved by someone else while this ran, so ${itThey(changed)} still ${useUses(changed)} ${source}.`)
+  if (unchecked.length) parts.push(`Bidspoke could not check the connections ${listed(unchecked)} ${nameNames(unchecked)}, so ${itThey(unchecked)} still ${useUses(unchecked)} ${source}.`)
+  if (unread.length) parts.push(`Bidspoke could not read ${listed(unread)}, so ${itThey(unread)} still ${useUses(unread)} ${source}.`)
+  if (stale.length) parts.push(`${listed(stale)} also ${nameNames(stale)} a connection that was removed. Open ${stale.length === 1 ? 'it' : 'each'}, give that step a connection and save, then replace again.`)
+  if (malformed.length) parts.push(`The database would not take a new version of ${listed(malformed)}, so ${itThey(malformed)} still ${useUses(malformed)} ${source}. Tell Dan, since this is a fault in Bidspoke.`)
+  if (deleted.length) parts.push(`${listed(deleted)} ${wasWere(deleted)} deleted, so ${itThey(deleted)} cannot get a new version.`)
+  if (failed.length) parts.push(`Bidspoke could not confirm whether ${listed(failed)} got a new version.`)
+
+  // What to do, said once. A save not known comes first: replacing again before reloading would be done blind.
+  const again = [...changed, ...unchecked, ...unread]
+  if (failed.length) parts.push(`Reload the page to see, then replace again for any still on ${source}.`)
+  else if (gone.length) parts.push('Choose another connection and replace again.')
+  else if (again.length) parts.push(`Replace again to move ${again.length === 1 ? 'it' : 'them'}.`)
+  return parts.join(' ')
 }

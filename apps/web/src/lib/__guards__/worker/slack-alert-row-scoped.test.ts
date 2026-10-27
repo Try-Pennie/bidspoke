@@ -21,12 +21,12 @@ import { WORKER_SRC, sanitizeSource } from '../../__tests__/_scan-utils'
  * routes/api/slack-token-seal.ts was one until #2331's contract release retired
  * it) that is not inside onlySlackAlertRow(...), except the ones that are not
  * unscoped alert row reads, each with its reason (NOT_ALERT_ROW_READS):
- * - the save's upsert in integrations.ts POST /slack, which writes the alert
- *   row by its conflict target (organization_id, service_type, name 'slack');
- * - the settings change's update in integrations.ts PATCH /slack/settings,
- *   which writes the row by the id its narrowed read returned;
  * - probeSlackConnectionsTable in alert-fanout.ts, the volume check's proof
  *   that the database answers: one organization_id from any row, no token.
+ * The token save and the settings change in integrations.ts were excused here
+ * too until #2643, when both moved into database functions
+ * (save_slack_alert_token, save_slack_alert_settings) that name the alert row
+ * themselves, proven in supabase/tests/slack_alert_config_own_keys.test.sql.
  *
  * The other readers of the table (lib/secret-reencrypt.ts, routes/api/
  * connections.ts and admin.ts) are not alert paths and are held by
@@ -39,8 +39,6 @@ const FROM = /\.from\((['"`])service_connections\1\)/g
 
 /** Why a `.from` that is not narrowed is still not an alert row read, by what follows it. */
 const NOT_ALERT_ROW_READS: Array<{ follows: RegExp; why: string }> = [
-  { follows: /^\s*\.upsert\(/, why: 'the save writes the alert row by its conflict target (organization_id, service_type, name)' },
-  { follows: /^\s*\.update\([^)]*\)\s*\.eq\((['"`])id\1/, why: 'the settings change updates the row by the id the narrowed read returned' },
   { follows: /^\s*\.select\((['"`])organization_id\1\)\s*\.limit\(1\)/, why: 'the volume check probes that the database answers, reading no token' },
 ]
 
@@ -97,10 +95,9 @@ describe('Slack alert reads are narrowed to the alert row (#2332)', () => {
     expect(unscopedReads(`const f = onlySlackAlertRow(x)\nconst q = supabase.from('service_connections').select('config')`)).toHaveLength(1)
     expect(unscopedReads(`return onlySlackAlertRow(supabase.from('service_connections').select(columns))`)).toEqual([])
     expect(unscopedReads(`return onlySlackAlertRow(\n    supabase\n      .from('service_connections')\n      .select(SLACK_ROW_COLUMNS)\n      .eq('organization_id', orgId),\n  ).limit(2)`)).toEqual([])
-    expect(unscopedReads(`await supabase\n    .from('service_connections')\n    .upsert({ name: 'slack' }, { onConflict: 'organization_id,service_type,name' })`)).toEqual([])
+    // The token save's upsert and the settings change's update are no longer excused (#2643): written here, each is found.
+    expect(unscopedReads(`await supabase\n    .from('service_connections')\n    .upsert({ name: 'slack' }, { onConflict: 'organization_id,service_type,name' })`)).toHaveLength(1)
     expect(unscopedReads(`return supabase.from('service_connections').select('organization_id').limit(1).abortSignal(signal)`)).toEqual([])
-    expect(unscopedReads(`supabase\n      .from('service_connections')\n      .update({ config: nextConfig, updated_by: userId })\n      .eq('id', existing.id)`)).toEqual([])
-    // An update scoped by service type alone is not the excused one.
-    expect(unscopedReads(`supabase.from('service_connections').update({ config }).eq('service_type', 'slack')`)).toHaveLength(1)
+    expect(unscopedReads(`supabase\n      .from('service_connections')\n      .update({ config: nextConfig, updated_by: userId })\n      .eq('id', existing.id)`)).toHaveLength(1)
   })
 })

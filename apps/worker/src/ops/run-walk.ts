@@ -25,6 +25,14 @@
  * needs_human), naming the step. RunStopped from ctx.send is passed on, so
  * invokeRun ends the run by the answer that stopped it.
  *
+ * TIME SLICES (#1951). With a continuation in a mode other than off, the walk
+ * keeps every completed step with the edge it left by, and counts what the
+ * slice has spent (its wall clock, steps and a handler's sends). Between two
+ * steps, once the slice has spent its budget, it hands that to the boundary
+ * (continuation.ts): in observe mode a checkpoint is written, named, read back
+ * and replayed, and the walk carries on. Off, it reads the clock no more than
+ * before and keeps nothing.
+ *
  * WHAT IT RECORDS (#2703). Each step, as it finishes and before the next one
  * runs, through run.recordStep: its place in the attempt, node, step id, type,
  * status, start, duration, its output (kept under the step output cap,
@@ -51,6 +59,8 @@ import { executeResponseNode } from '../engine/nodes/response'
 import { executeTransformNode } from '../engine/nodes/transform'
 import { formatErr } from '../lib/format-error'
 import type { EdgeDefinition, ExecutionContext, NodeDefinition, StepExecutionResult } from '../types'
+import type { CheckpointStep } from './checkpoint'
+import { observeBoundary, overBudget, type OpsWalkContinuation, type SliceSpend } from './continuation'
 import { RunStopped, StepUnrecorded, type RunBodyEnd, type RunContext } from './run-invocation'
 import type { OpsStepRecordStatus } from './run-vocabulary'
 import { clipError, keepOutput } from './step-output'
@@ -102,8 +112,13 @@ function envReferences(value: unknown, found = new Set<string>()): Set<string> {
 
 const failed = (error: string): Extract<RunBodyEnd, { outcome: 'failed' }> => ({ outcome: 'failed', error })
 
+export interface OpsWalkOptions {
+  /** Time sliced continuation (#1951): absent or off, the walk never stops at a boundary. */
+  continuation?: OpsWalkContinuation
+}
+
 export async function walkOpsDefinition(
-  definition: unknown, run: RunContext, handlers: Readonly<Record<string, OpsStepHandler>>,
+  definition: unknown, run: RunContext, handlers: Readonly<Record<string, OpsStepHandler>>, options: OpsWalkOptions = {},
 ): Promise<RunBodyEnd> {
   if (!isRecord(definition) || !Array.isArray(definition.nodes) || !Array.isArray(definition.edges)) {
     return failed('the definition is not nodes and edges, so nothing was run')
@@ -130,6 +145,15 @@ export async function walkOpsDefinition(
   }
 
   const ctx = buildContext(run.run.payload, run.run.triggerKind, run.run.workflowId, run.executionId, {}, run.run.organizationId, run.executionId)
+  // Time sliced continuation (#1951): what this slice has spent, and every completed step with the edge it left by.
+  const continuation = options.continuation !== undefined && options.continuation.mode !== 'off' ? options.continuation : null
+  // The clock is read only when slicing, so a walk with continuation off reads it exactly as before.
+  const walkStartedAt = continuation === null ? 0 : run.now()
+  const spend: SliceSpend = { startedAt: walkStartedAt, steps: 0, sends: 0 }
+  const path: CheckpointStep[] = []
+  const said = { storeMissing: false }
+  // A handler's sends are counted against the slice; otherwise they are the run's own.
+  const counted: RunContext = continuation === null ? run : { ...run, send: (s) => { spend.sends++; return run.send(s) } }
   let steps = 0
   while (current !== undefined) {
     if (steps >= OPS_WALK_MAX_STEPS) {
@@ -164,7 +188,7 @@ export async function walkOpsDefinition(
     // Own keys only, as the up front check reads them: a type named like an inherited property is a handler's.
     const inMemory = Object.hasOwn(IN_MEMORY, step.type)
     try {
-      result = inMemory ? IN_MEMORY[step.type](step, ctx) : await handlers[step.type]({ node: step, ctx, run })
+      result = inMemory ? IN_MEMORY[step.type](step, ctx) : await handlers[step.type]({ node: step, ctx, run: counted })
     } catch (err) {
       if (err instanceof RunStopped) throw err
       if (err instanceof StepEndsRun) return endedBy({ ...err.end, error: `${name}: ${err.end.error ?? err.end.outcome}` })
@@ -185,6 +209,16 @@ export async function walkOpsDefinition(
     // A routing step goes where its route says, and nowhere when that handle is not wired (a filter's exit).
     const next = route !== null ? out.find((e) => e.source_handle === route) : out.find((e) => evaluateEdge(e, ctx))
     current = next === undefined ? undefined : findNode(next.target, nodes)
+
+    // A slice boundary (#1951) falls between two steps: this one recorded, the next not begun.
+    if (continuation !== null && next !== undefined && current !== undefined) {
+      path.push({ seq, nodeId: step.id, namespace: step.namespace, output: result.output, edgeId: next.id })
+      spend.steps++
+      if (overBudget(continuation.budget, spend, run.now())) {
+        await observeBoundary({ continuation, run, nodes, edges, path, next: current, ctx, spend, walkStartedAt, said })
+        Object.assign(spend, { startedAt: run.now(), steps: 0, sends: 0 })
+      }
+    }
   }
   return { outcome: 'done' }
 }

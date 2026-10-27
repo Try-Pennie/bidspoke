@@ -50,6 +50,16 @@
  * answered already_recorded; after the last, StepUnrecorded names the step and
  * the walk ends the run there (run-walk.ts).
  *
+ * THE RUN'S CHECKPOINT (#1951). ctx.checkpoints.name names a checkpoint this
+ * attempt wrote to R2 (checkpoint.ts) on the run (record_run_checkpoint), with
+ * this attempt's execution and the state version its start answered; read
+ * answers the one the run names (run_checkpoint). Both are fenced by the claim
+ * token like a step's record: a stale answer, or a run no longer held, is a
+ * lost claim; each try has the database deadline and is repeated up to three
+ * times, a repeat of a name that landed being answered already_recorded; after
+ * the last, CheckpointNotNamed says why, and nothing about the run's end
+ * follows from it.
+ *
  * HOW THE RUN ENDS. The first answer that decides the run (a lost claim, an
  * unknown send, a requeue) holds, whatever the body returns after it: a body
  * that catches the error and says done is still needs_human. A run that has
@@ -67,10 +77,11 @@ import { formatErr } from '../lib/format-error'
 import type { RequeueCause } from './connections/refusals'
 import {
   OPS_RPC_DEADLINE_MS, OpsClaimLostError,
-  type ClaimedRun, type CompleteOutcome, type CompletedRun, type OpsStepRecord, type SendIntent, type SendIntentResult, type StartedRun,
+  type CheckpointAck, type ClaimedRun, type CompleteOutcome, type CompletedRun, type NamedCheckpoint, type OpsStepRecord, type RunCheckpointRead,
+  type SendIntent, type SendIntentResult, type StartedRun,
 } from './ops-writes'
 import {
-  LEDGER_METHODS, RESOURCE_WAIT_CAUSES, type HolderFailedReason, type LedgerMethod, type OpsStepRecordOutcome, type ResourceWaitCause,
+  LEDGER_METHODS, RESOURCE_WAIT_CAUSES, type CheckpointAckOutcome, type HolderFailedReason, type LedgerMethod, type OpsStepRecordOutcome, type ResourceWaitCause,
 } from './run-vocabulary'
 
 /** The lease a claim gives and each renewal extends (#1698 D3, about 60 s from spike 0). */
@@ -92,6 +103,10 @@ export interface RunDb {
   recordResult(run: ClaimedRun, ledgerId: string, result: { status: 'forwarded' | 'failed'; responseStatus?: number }): Promise<'recorded' | 'already_recorded' | 'not_found'>
   /** record_ops_step (#2703): one step of the attempt executionId, fenced by the run's claim token. */
   recordStep(run: ClaimedRun, executionId: string, record: OpsStepRecord): Promise<OpsStepRecordOutcome>
+  /** record_run_checkpoint (#1951): names a checkpoint the attempt wrote, fenced by the claim token and the state version. */
+  recordCheckpoint(run: ClaimedRun, ack: CheckpointAck): Promise<CheckpointAckOutcome>
+  /** run_checkpoint (#1951): the checkpoint the run names, answered to its holder alone. */
+  readCheckpoint(run: ClaimedRun): Promise<RunCheckpointRead>
   complete(run: ClaimedRun, end: CompleteOutcome): Promise<CompletedRun>
 }
 
@@ -151,6 +166,23 @@ export interface RunContext {
    * not be written after WRITE_TRIES tries, each under its deadline.
    */
   recordStep(record: OpsStepRecord): Promise<void>
+  /** The state version this attempt's start answered: every fenced write of the attempt carries it, and a checkpoint's key too (#1951). */
+  readonly stateVersion: number
+  /** The run's checkpoint on its row (#1951), fenced like every run write. */
+  readonly checkpoints: RunCheckpoints
+}
+
+/** What a body names and reads of its run's checkpoint (#1951, checkpoint.ts writes the checkpoint itself). */
+export interface RunCheckpoints {
+  /**
+   * Names a checkpoint this attempt wrote, at its state version. Throws
+   * RunStopped when the run has stopped or its claim is lost (a stale answer
+   * is a lost claim, and nothing is written), and CheckpointNotNamed when no
+   * try was confirmed. superseded: the run names a later one of this attempt.
+   */
+  name(ack: Omit<CheckpointAck, 'executionId' | 'stateVersion'>): Promise<Exclude<CheckpointAckOutcome, 'stale'>>
+  /** The checkpoint the run names, or null. Throws RunStopped as name does, and CheckpointNotNamed when no try was answered. */
+  read(): Promise<NamedCheckpoint | null>
 }
 
 /**
@@ -169,7 +201,7 @@ export type RunBody = (ctx: RunContext) => Promise<RunBodyEnd>
 export type RunInvocationReport =
   | { outcome: 'completed'; end: CompleteOutcome; runStatus: string | null }
   /** Not this holder's any more: nothing was completed, and the lease sweep owns the run. */
-  | { outcome: 'claim_lost'; during: 'start' | 'heartbeat' | 'send' | 'record' | 'complete' }
+  | { outcome: 'claim_lost'; during: 'start' | 'heartbeat' | 'send' | 'record' | 'checkpoint' | 'complete' }
   /** The start failed or passed its deadline, so nothing ran; if it landed, the lease lapses and is swept. */
   | { outcome: 'start_failed'; error: string }
   /** Every complete failed; the lease lapses and the sweep ends the run by its ledger rows. */
@@ -200,6 +232,18 @@ export class StepUnrecorded extends Error {
   constructor(readonly nodeId: string, readonly reason: string) {
     super(`step ${nodeId}'s record was not kept: ${reason}`)
     this.name = 'StepUnrecorded'
+  }
+}
+
+/**
+ * A checkpoint could not be named on its run, or the run's checkpoint could
+ * not be read (#1951): every try failed or passed its deadline. Nothing about
+ * the run's own end follows from it; the caller decides.
+ */
+export class CheckpointNotNamed extends Error {
+  constructor(readonly reason: string) {
+    super(`the run's checkpoint was not confirmed: ${reason}`)
+    this.name = 'CheckpointNotNamed'
   }
 }
 
@@ -294,7 +338,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
   const lost = new AbortController()
   /** Aborted when the run must stop for any reason: the body's signal. */
   const halt = new AbortController()
-  let lostDuring: 'heartbeat' | 'send' | 'record' | null = null
+  let lostDuring: 'heartbeat' | 'send' | 'record' | 'checkpoint' | null = null
   let ending: CompleteOutcome | null = null
   /** A non idempotent send has been forwarded, or is in flight: the run may not start again. */
   let unrepeatable = false
@@ -303,7 +347,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
   let confirmedUntil = 0
   const inFlight = new Set<Promise<unknown>>()
 
-  const lose = (during: 'heartbeat' | 'send' | 'record') => {
+  const lose = (during: 'heartbeat' | 'send' | 'record' | 'checkpoint') => {
     if (lostDuring === null) {
       lostDuring = during
       log('claim_lost', { during })
@@ -508,8 +552,41 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
     throw new StepUnrecorded(record.nodeId, lastError)
   }
 
+  // ── the run's checkpoint (#1951) ──
+  // Named and read like a step's record: fenced by the claim token (and, for
+  // the name, the state version this start answered), each try under the
+  // database deadline, repeated up to WRITE_TRIES times since a repeat of a
+  // name that landed is answered already_recorded. stale, a run not held, or a
+  // refusal as lost is a lost claim. After the last try the caller is told by
+  // name, never that it landed.
+  const checkpointCall = async <T>(what: string, call: () => Promise<T>, isLost: (value: T) => boolean): Promise<T> => {
+    if (halt.signal.aborted) throw new RunStopped()
+    let lastError = ''
+    for (let n = 1; n <= WRITE_TRIES; n++) {
+      const r = await within(clock, RUN_DB_DEADLINE_MS, call)
+      if ((r.kind === 'ok' && isLost(r.value)) || (r.kind === 'threw' && r.error instanceof OpsClaimLostError)) {
+        lose('checkpoint')
+        throw new RunStopped()
+      }
+      if (r.kind === 'ok') return r.value
+      lastError = r.kind === 'threw' ? formatErr(r.error) : `${what} passed its ${RUN_DB_DEADLINE_MS} ms deadline`
+    }
+    log('checkpoint_unconfirmed', { call: what, error: lastError })
+    throw new CheckpointNotNamed(`${what}: ${lastError}`)
+  }
+  const checkpoints: RunCheckpoints = {
+    name: async (ack) => {
+      const outcome = await checkpointCall('record_run_checkpoint', () => db.recordCheckpoint(run, { ...ack, executionId, stateVersion }), (o) => o === 'stale')
+      return outcome as Exclude<CheckpointAckOutcome, 'stale'>
+    },
+    read: async () => {
+      const r = await checkpointCall('run_checkpoint', () => db.readCheckpoint(run), (o) => !o.held)
+      return r.held ? r.checkpoint : null
+    },
+  }
+
   // ── the body ──
-  const ctx: RunContext = { run, executionId, attempt, signal: halt.signal, send, now: () => clock.now(), recordStep }
+  const ctx: RunContext = { run, executionId, attempt, signal: halt.signal, send, now: () => clock.now(), recordStep, stateVersion, checkpoints }
   type BodyResult = { kind: 'returned'; end: RunBodyEnd } | { kind: 'threw'; error: unknown } | { kind: 'halted' }
   const bodyDone: Promise<BodyResult> = (async () => {
     try {
