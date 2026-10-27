@@ -71,9 +71,10 @@ const NAME = String.raw`(?:"?[A-Za-z_][\w$]*"?\.)?"?[A-Za-z_][\w$]*"?`
  * The tables a fresh database holds after every migration in `files` is applied
  * in order: each CREATE TABLE adds its table, a DROP TABLE or a RENAME removes
  * or renames it. Partitions are left out (a `PARTITION OF` child, or a table a
- * later ATTACH PARTITION makes one), because the completeness test above already
- * holds every partitioned parent to BIG_TABLES. Temporary tables are left out
- * because they do not outlive the session that made them.
+ * later ATTACH PARTITION makes one): each is covered by its parent, which the
+ * pagination guard's partition completeness test holds to BIG_TABLES and the
+ * restore drill classifies. Temporary tables are left out because they do not
+ * outlive the session that made them.
  */
 export function tablesCreatedBy(files: Array<{ name: string; sql: string }>): Map<string, string> {
   const live = new Map<string, string>() // table key -> the migration that created it

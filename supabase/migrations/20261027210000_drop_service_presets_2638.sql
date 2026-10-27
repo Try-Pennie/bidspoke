@@ -24,7 +24,8 @@ BEGIN
   END IF;
   EXECUTE 'SELECT count(*) FROM public.service_presets' INTO v_rows;
   IF v_rows > 0 THEN
-    RAISE EXCEPTION 'service_presets holds % row(s); copy them out before dropping the table (#2638)', v_rows;
+    RAISE EXCEPTION 'drop service_presets (#2638): it holds % row(s), so nothing was dropped; copy them out, then run this again', v_rows
+      USING ERRCODE = 'object_not_in_prerequisite_state';
   END IF;
 END
 $$;
