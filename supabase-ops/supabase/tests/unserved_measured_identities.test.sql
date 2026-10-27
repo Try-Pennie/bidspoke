@@ -1,5 +1,5 @@
 -- The measured identities of connections bidding never stored (#2573).
--- Migration 20261027150000_unserved_measured_identities_2573.sql.
+-- Migration 20261027180000_unserved_measured_identities_2573.sql.
 --
 -- WHAT IT PROVES.
 --   A. The function is SECURITY DEFINER with a fixed search_path, a write

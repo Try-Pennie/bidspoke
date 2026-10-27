@@ -253,7 +253,7 @@ value, a refusal naming its cause. Each method has a ceiling
   row has no copy and nothing reads it. The minute tick removes it once a
   complete list, saved in one save and served more than an hour after the
   measurement, does not name the connection (`remove_unserved_measured_identities`,
-  ops migration 20261027150000, #2573), logging each removal by id
+  ops migration 20261027180000, #2573), logging each removal by id
   (`unserved_identity_removed`). A removal that keeps failing pages after three
   ticks (`unserved_identities_remove_failed`).
 - **Salesforce lease purposes** (`SF_LEASE_PURPOSES` in `run-vocabulary.ts`, and

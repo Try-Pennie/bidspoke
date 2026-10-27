@@ -938,7 +938,7 @@ export interface UnservedIdentityRemoved {
 
 /**
  * The measured identities of connections bidding never stored (#2573, supabase-ops
- * migration 20261027150000): a Salesforce verify for a new connection records
+ * migration 20261027180000): a Salesforce verify for a new connection records
  * one before bidding inserts the row, and a create whose insert failed and
  * whose revoke failed too leaves it with nothing to remove it. Called only
  * after a complete list was saved in one save, with that list's served_at and
