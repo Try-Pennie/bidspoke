@@ -527,7 +527,9 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
 - `ported-definition.test.ts`: walks the ported graph. Every Submission write
   after the answer on the `trades_present` route is followed by the inquiry body
   and Apex call; the worst case from each answer through the call fits 12 s by
-  the engine's own retry rules; the collections call is the one Apex call before
+  the engine's own retry rules, and so does the Achieve step after it on the six
+  branches that run one, measured by running the node itself from that worst
+  case against a reply that never comes (#2834); the collections call is the one Apex call before
   the answer, in `parallel_1`, whose worst case it leaves at the block's 20 s
   timeout, ending within 5 s itself; the collections body's shape, its empty list
   for a missing key, and its refusals; every `success_node_namespaces` entry
