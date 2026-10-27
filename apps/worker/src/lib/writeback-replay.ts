@@ -436,7 +436,11 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
  *  - a read with no usable answer spends nothing; a read Salesforce refuses
  *    (the record is gone, a field it does not know) closes the row as refused,
  *    since the write would be refused too;
- *  - every field moved: nothing is sent, and the row is closed as abandoned;
+ *  - a field holding a later state of the value being sent (LATER_STATES, #2895)
+ *    is never sent, whatever the stamp or history say, and is returned as
+ *    `later`, apart from `moved`, since nobody has a choice to make about it;
+ *  - every field moved or at a later state: nothing is sent, and the row is
+ *    closed as abandoned;
  *  - a failure on the last attempt allowed closes the row as abandoned.
  */
 export async function drainHeldWrite(deps: ReplayDeps, orgId: string, id: string, opts: DrainOptions): Promise<DrainResult> {

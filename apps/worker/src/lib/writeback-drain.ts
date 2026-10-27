@@ -23,7 +23,9 @@
  *    never lands over a newer one; a value an earlier row sent this tick counts
  *    as ours, so the newer row replaces it;
  *  - a field another writer changed since the row was written is left out and
- *    named in an alert (the read-back's one rule, salesforce-field-conflict.ts);
+ *    named in an alert (the read-back's one rule, salesforce-field-conflict.ts),
+ *    except one holding a later state of its value (LATER_STATES, #2895), which
+ *    is left out, counted as later_states and never alerted;
  *  - at most DRAIN_MAX_ATTEMPTS attempts per row, the second no sooner than
  *    DRAIN_BACKOFF_MS after the first ended. A rejection closes the row refused
  *    (salesforceRejectedTheWrite), and a failed last attempt closes it abandoned;

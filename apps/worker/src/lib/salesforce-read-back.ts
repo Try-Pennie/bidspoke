@@ -52,6 +52,11 @@
  *    with no answer stops the tick like any other call, deciding nothing. The
  *    conflict alert names each left out field's two values, from this tick's
  *    read, never stored.
+ *  - A field holding a later state of the value being sent (LATER_STATES in
+ *    salesforce-field-conflict.ts, #2895: a Prospect's "Converted" where "Bid"
+ *    was sent) is never sent, whatever the record's stamp or history, and is no
+ *    conflict: it is counted as later_states and logged, never alerted. A write
+ *    whose every field is at a later state is settled without a send.
  *  - Nothing is sent while Salesforce's bulkhead is full or cannot be asked
  *    (fail closed), and the first call that gets no answer stops the tick's
  *    Salesforce traffic, which is this job's circuit: no Salesforce circuit
