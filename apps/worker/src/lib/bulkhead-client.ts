@@ -78,27 +78,98 @@ export function salesforcePostAnswerBulkheadWaitMs(env: Env): number {
 }
 
 /**
+ * The key the Main Flow collections post takes as well, before the answer (#2847).
+ * The post (`POST /services/apexrest/credit-collections`, #2832) runs in
+ * `parallel_1` beside `trades_request`, the call the lead's answer waits on, for
+ * every lead on the trades present route. Like the post-answer share it is taken
+ * first and a main slot second, so the collections post can hold at most its
+ * share of the main cap and never holds a main slot while waiting on its share.
+ * It is recognised by the endpoint it calls (`isCreditCollectionsPost`).
+ */
+export const SALESFORCE_COLLECTIONS_BULKHEAD_KEY = 'salesforce-collections'
+
+/**
+ * How many of the main cap's slots collections posts may hold at once (#2847).
+ *
+ * Collections is about 3,250 calls a day (as many as `trades_request`: 9,771
+ * attempts in the 3 days to 2026-10-15) against 142,000 to 191,000 Salesforce
+ * steps, about 2%, so its proportional part of the 20 slots is under half of one.
+ * Each call is one attempt of at most 4.5 s. By Little's law, with the whole
+ * day's calls packed into 8 hours (a pessimistic spread) and every one running
+ * its full 4.5 s, about 0.5 are in flight on average; at the trades call's 2 s
+ * median, about 0.23. The endpoint has never been called, so these are estimates,
+ * not measurements. At 0.23 in flight a call finds three already running about
+ * 0.2% of the time (Poisson), so three sheds almost nothing on an ordinary day,
+ * where two would make about 2% of calls wait and some of those shed. Three is
+ * at most 15% of the main cap: with the post-answer share (6) full as well, 11
+ * of the 20 slots stay out of both shares' reach. The measured peak of
+ * pre-answer calls is about 13 (the 20 of 20 on 2026-10-11,
+ * docs/salesforce-post-answer-write-contract.md), so on a day like that the cap
+ * alone does not keep every slot the money path wants; the short wait below
+ * does the rest, by shedding the collections post first.
+ */
+export const SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT = 3
+
+/**
+ * The longest a collections post waits for its slots (#2847). Its step has one
+ * attempt of 4.5 s (COLLECTIONS_APEX_TIMEOUT_MS), and the wait is inside it.
+ * At 400 ms a call granted at the very end of its wait still has 4.1 s, above
+ * the trades call's measured p99 (4,001 ms), so it does not take a main slot it
+ * then cannot use before its step timeout cuts it off (the token read and the
+ * bulkhead object's own round trip are inside the attempt too, so this is the
+ * most the wait can be, not a margin). It polls three times (at 0, 250 and
+ * 400 ms). A shed ends at about 0.4 s, far inside the attempt, and the slot
+ * still ends within its 5 s (500 ms body step and the 4.5 s call), so the
+ * answer's worst case does not grow. On a full main bulkhead
+ * the trades call waits 15 s and the collections post gives up after 0.4 s, so on
+ * a slowdown day the money path sheds collections first. A shed fails the step
+ * like any shed; the slot's `on_failure: 'continue'` mark turns it into the run's
+ * degraded alert, never a failed run.
+ */
+export const SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS = 400
+
+/** The collections wait: the constant above, or less when the operator set the main wait lower. */
+export function salesforceCollectionsBulkheadWaitMs(env: Env): number {
+  return Math.min(salesforceBulkheadWaitMs(env), SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS)
+}
+
+/**
+ * A share of the main cap, held below it so the calls outside the share find one
+ * slot at least whenever the main cap is 2 or more. A cap of 1 has nothing to
+ * split: the share is then that one slot too, rather than 0, which would shed
+ * every call that takes the share.
+ */
+function shareOf(limit: number, mainLimit: number): number {
+  return Math.max(1, Math.min(limit, mainLimit - 1))
+}
+
+/**
  * The bulkheads a Salesforce call takes, in the order it takes them, and how long
  * it may wait for them all. `afterAnswer` is the walk's own fact (`ctx.afterAnswer`),
- * the one the at-risk watch reads, never a second test of it. A post-answer call
- * takes its share first, so it never holds a main slot while waiting on its share.
- * No binding, no bulkhead.
+ * the one the at-risk watch reads, never a second test of it. `collectionsPost` is
+ * `isCreditCollectionsPost` of the step's config (#2847). A call with a share
+ * takes it first, so it never holds a main slot while waiting on its share.
+ * After the answer the post-answer share governs every call, a collections post
+ * included: it already keeps the call off the slots an answer waits on, and its
+ * wait is the one sized for the 12 s window. No binding, no bulkhead.
  */
-export function salesforceBulkheads(env: Env, afterAnswer: boolean): { gates: BulkheadClient[]; waitMs: number } {
+export function salesforceBulkheads(env: Env, afterAnswer: boolean, collectionsPost = false): { gates: BulkheadClient[]; waitMs: number } {
   if (!env.SALESFORCE_BULKHEAD) return { gates: [], waitMs: 0 }
   const mainLimit = salesforceBulkheadLimit(env)
   const main = new BulkheadClient(env, SALESFORCE_BULKHEAD_KEY, mainLimit)
-  if (!afterAnswer) return { gates: [main], waitMs: salesforceBulkheadWaitMs(env) }
-  // A main cap set at or below the share would let post-answer work fill it, so
-  // the share is held below the main cap, leaving pre-answer calls one slot at
-  // least, whenever the main cap is 2 or more. A cap of 1 has nothing to split:
-  // the share is then that one slot too, rather than 0, which would shed every
-  // post-answer call.
-  const shareLimit = Math.max(1, Math.min(SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT, mainLimit - 1))
-  return {
-    gates: [new BulkheadClient(env, SALESFORCE_POST_ANSWER_BULKHEAD_KEY, shareLimit), main],
-    waitMs: salesforcePostAnswerBulkheadWaitMs(env),
+  if (afterAnswer) {
+    return {
+      gates: [new BulkheadClient(env, SALESFORCE_POST_ANSWER_BULKHEAD_KEY, shareOf(SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT, mainLimit)), main],
+      waitMs: salesforcePostAnswerBulkheadWaitMs(env),
+    }
   }
+  if (collectionsPost) {
+    return {
+      gates: [new BulkheadClient(env, SALESFORCE_COLLECTIONS_BULKHEAD_KEY, shareOf(SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT, mainLimit)), main],
+      waitMs: salesforceCollectionsBulkheadWaitMs(env),
+    }
+  }
+  return { gates: [main], waitMs: salesforceBulkheadWaitMs(env) }
 }
 
 export interface AcquireWaitOptions {

@@ -29,6 +29,7 @@ import {
   type PortStage,
 } from '../transform'
 import { nextOf, nodeByNamespace, productionMainFlow, relayUrls } from './production-fixture'
+import { isCreditCollectionsPost } from '../../../engine/inquiry-post'
 
 /** Everything the port does at once: every post, the inquiry moved, and the collections slot (#2832). */
 const FULL: PortOptions = { posts: 'all', moveInquiry: true, collections: true }
@@ -184,6 +185,16 @@ describe('the collections stage (#2832): a slot of parallel_1, before the answer
     })
     expect(nodeByNamespace(after, COLLECTIONS_APEX).type).toBe('salesforce')
     expect(nodeByNamespace(after, COLLECTIONS_BODY)).toMatchObject({ type: 'code', config: { retries: 0, timeout_ms: 500 } })
+  })
+
+  // #2847: the engine gives this call, and only this call, the collections
+  // share of the Salesforce bulkhead, by the endpoint it posts to.
+  it('builds the one step the engine recognises as the collections post', () => {
+    for (const def of [portMainFlow(live(), PORT_STAGES.collections), portMainFlow(productionMainFlow(), FULL)]) {
+      const recognised = def.nodes.filter((n) => n.type === 'salesforce' && isCreditCollectionsPost(n.config as Record<string, unknown>)).map((n) => n.namespace)
+      expect(recognised).toEqual([COLLECTIONS_APEX])
+    }
+    expect(live().nodes.filter((n) => isCreditCollectionsPost(n.config as Record<string, unknown>))).toEqual([])
   })
 
   it('outcome_posts and inquiry applied later keep the collections slot exactly as it is', () => {

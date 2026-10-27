@@ -11,14 +11,16 @@
 import { describe, it, expect } from 'vitest'
 import {
   CREDIT_INQUIRY_APEX_PATH,
+  CREDIT_COLLECTIONS_APEX_PATH,
   isCreditInquiryPost,
+  isCreditCollectionsPost,
   inquiryPostOf,
   stepRetries,
   inquiryMarkerQuery,
   lookupInquiryMarker,
   type SalesforceRead,
 } from '../inquiry-post'
-import { INQUIRY_APEX_PATH } from '../../lib/main-flow-port/transform'
+import { COLLECTIONS_APEX_PATH, INQUIRY_APEX_PATH } from '../../lib/main-flow-port/transform'
 
 const SUB = 'a0XUi00000AbCdEFGH'
 const LEAD = '00QUi00000XyZaBCDE'
@@ -39,6 +41,39 @@ describe('isCreditInquiryPost', () => {
 
   it('names the same endpoint the Main Flow port builds its Apex call with', () => {
     expect(CREDIT_INQUIRY_APEX_PATH).toBe(INQUIRY_APEX_PATH)
+  })
+})
+
+// #2847: the collections post takes its own share of the Salesforce bulkhead,
+// recognised by the endpoint it calls, never by the step's namespace.
+describe('isCreditCollectionsPost', () => {
+  it('is the Apex POST to the credit-collections endpoint, however its path is spelled', () => {
+    expect(isCreditCollectionsPost({ operation: 'apex', apex_path: CREDIT_COLLECTIONS_APEX_PATH })).toBe(true)
+    expect(isCreditCollectionsPost({ operation: 'apex', apex_path: 'services/apexrest/credit-collections' })).toBe(true)
+    expect(isCreditCollectionsPost({ operation: 'apex', apex_path: ' //services/apexrest/credit-collections/ ', apex_method: 'POST' })).toBe(true)
+  })
+
+  it('is not a GET, another Apex endpoint, another operation, or no config', () => {
+    expect(isCreditCollectionsPost({ operation: 'apex', apex_path: CREDIT_COLLECTIONS_APEX_PATH, apex_method: 'GET' })).toBe(false)
+    expect(isCreditCollectionsPost({ operation: 'apex', apex_path: '/services/apexrest/credit-trades' })).toBe(false)
+    expect(isCreditCollectionsPost({ operation: 'apex', apex_path: CREDIT_INQUIRY_APEX_PATH })).toBe(false)
+    expect(isCreditCollectionsPost({ operation: 'apex', apex_path: '/services/apexrest/credit-collections-v2' })).toBe(false)
+    expect(isCreditCollectionsPost({ operation: 'update', apex_path: CREDIT_COLLECTIONS_APEX_PATH })).toBe(false)
+    expect(isCreditCollectionsPost(null)).toBe(false)
+  })
+
+  it('is not keyed on the step namespace', () => {
+    expect(isCreditCollectionsPost({ operation: 'apex', apex_path: '/services/apexrest/credit-trades', namespace: 'collections_apex' })).toBe(false)
+  })
+
+  it('is never also the inquiry post, so the never-resend rule does not reach it', () => {
+    expect(isCreditInquiryPost({ operation: 'apex', apex_path: CREDIT_COLLECTIONS_APEX_PATH })).toBe(false)
+    expect(stepRetries({ type: 'salesforce', config: { operation: 'apex', apex_path: CREDIT_COLLECTIONS_APEX_PATH, retries: 0 } })).toBe(0)
+    expect(stepRetries({ type: 'salesforce', config: { operation: 'apex', apex_path: CREDIT_COLLECTIONS_APEX_PATH, retries: 1 } })).toBe(1)
+  })
+
+  it('names the same endpoint the Main Flow port builds its collections call with', () => {
+    expect(CREDIT_COLLECTIONS_APEX_PATH).toBe(COLLECTIONS_APEX_PATH)
   })
 })
 

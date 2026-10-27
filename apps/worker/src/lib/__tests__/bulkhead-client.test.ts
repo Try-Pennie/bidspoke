@@ -12,13 +12,19 @@ import {
   BulkheadClient,
   salesforceBulkheadWaitMs,
   salesforcePostAnswerBulkheadWaitMs,
+  salesforceBulkheadLimit,
   salesforceBulkheads,
   acquireSlots,
   SALESFORCE_BULKHEAD_KEY,
   SALESFORCE_POST_ANSWER_BULKHEAD_KEY,
   SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT,
   SALESFORCE_POST_ANSWER_BULKHEAD_WAIT_MS,
+  SALESFORCE_COLLECTIONS_BULKHEAD_KEY,
+  SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT,
+  SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS,
+  salesforceCollectionsBulkheadWaitMs,
 } from '../bulkhead-client'
+import { COLLECTIONS_APEX_TIMEOUT_MS } from '../main-flow-port/transform'
 import { CONTINUATION_WINDOW_MS } from '../post-response-budget'
 import { AT_RISK_AFTER_MS } from '../../engine/at-risk-writes'
 import { fakeBulkheads } from '../../__tests__/helpers/fake-bulkheads'
@@ -187,6 +193,75 @@ describe('the post-answer share (#2170)', () => {
   })
 })
 
+// #2847: the Main Flow collections post, before the answer beside the trades
+// call, takes its own small share, so it can never hold more than that of the
+// main cap and on a slowdown gives up long before the trades call does.
+describe('the collections share (#2847)', () => {
+  const env = (extra: Record<string, string> = {}) => ({ SALESFORCE_BULKHEAD: fakeBulkheads().namespace, ...extra }) as unknown as Env
+  const shape = (b: ReturnType<typeof salesforceBulkheads>) => ({ gates: b.gates.map((g) => [g.name, g.limit]), waitMs: b.waitMs })
+
+  it('a collections post takes its share then the main key, and waits the short collections wait', () => {
+    expect(shape(salesforceBulkheads(env(), false, true))).toEqual({
+      gates: [[SALESFORCE_COLLECTIONS_BULKHEAD_KEY, SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT], [SALESFORCE_BULKHEAD_KEY, 20]],
+      waitMs: SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS,
+    })
+  })
+
+  it('every other pre-answer call keeps the main key alone and its 15 s wait; post-answer calls keep their share', () => {
+    expect(shape(salesforceBulkheads(env(), false))).toEqual({ gates: [[SALESFORCE_BULKHEAD_KEY, 20]], waitMs: 15_000 })
+    expect(shape(salesforceBulkheads(env(), false, false))).toEqual({ gates: [[SALESFORCE_BULKHEAD_KEY, 20]], waitMs: 15_000 })
+    expect(shape(salesforceBulkheads(env(), true))).toEqual({
+      gates: [[SALESFORCE_POST_ANSWER_BULKHEAD_KEY, SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT], [SALESFORCE_BULKHEAD_KEY, 20]],
+      waitMs: SALESFORCE_POST_ANSWER_BULKHEAD_WAIT_MS,
+    })
+  })
+
+  // After the answer the post-answer share already keeps a call off the slots
+  // the answer waits on, and the 12 s window is what its wait is sized for.
+  it('a collections post made after the answer takes the post-answer share, not the collections one', () => {
+    expect(shape(salesforceBulkheads(env(), true, true))).toEqual(shape(salesforceBulkheads(env(), true)))
+  })
+
+  it('waits at most SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS, and less only when the operator asked for less', () => {
+    expect(salesforceCollectionsBulkheadWaitMs({} as Env)).toBe(SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS)
+    expect(salesforceCollectionsBulkheadWaitMs({ SALESFORCE_BULKHEAD_WAIT_MS: '60000' } as unknown as Env)).toBe(SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS)
+    expect(salesforceCollectionsBulkheadWaitMs({ SALESFORCE_BULKHEAD_WAIT_MS: '200' } as unknown as Env)).toBe(200)
+    expect(salesforceCollectionsBulkheadWaitMs({ SALESFORCE_BULKHEAD_WAIT_MS: '0' } as unknown as Env)).toBe(0)
+    expect(salesforceBulkheads(env({ SALESFORCE_BULKHEAD_WAIT_MS: '0' }), false, true).waitMs).toBe(0)
+  })
+
+  // L804: a call granted its slots at the very end of the wait must still have
+  // the time its call takes, or it holds a main slot only to be cut off. The
+  // trades call, built the same way on the same org, measured p99 4,001 ms.
+  it('leaves a call granted at the end of its wait the trades call\'s p99 inside its one 4.5 s attempt', () => {
+    const TRADES_CALL_P99_MS = 4_001
+    expect(SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS + TRADES_CALL_P99_MS).toBeLessThanOrEqual(COLLECTIONS_APEX_TIMEOUT_MS)
+    // And it gives up long before the trades call beside it would.
+    expect(SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS).toBeLessThan(salesforceBulkheadWaitMs({} as Env))
+  })
+
+  // The post-answer share's edge rules: held below the main cap so other calls
+  // always find one slot, and never 0 (which would shed every collections post).
+  it.each([
+    ['20', [SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT, 20]],
+    ['4', [3, 4]],
+    ['3', [2, 3]],
+    ['2', [1, 2]],
+    ['1', [1, 1]],
+  ] as const)('at a main cap of %s the share and main limits are %j', (main, limits) => {
+    expect(salesforceBulkheads(env({ SALESFORCE_BULKHEAD_LIMIT: main }), false, true).gates.map((g) => g.limit)).toEqual(limits)
+  })
+
+  it('is small: with both shares full, most of the main cap is still out of their reach', () => {
+    expect(SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT).toBeLessThanOrEqual(3)
+    expect(salesforceBulkheadLimit({} as Env) - SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT - SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT).toBeGreaterThanOrEqual(11)
+  })
+
+  it('no binding, no bulkhead', () => {
+    expect(salesforceBulkheads({} as Env, false, true)).toEqual({ gates: [], waitMs: 0 })
+  })
+})
+
 describe('acquireSlots', () => {
   const virtualTime = () => {
     let now = 0
@@ -214,6 +289,34 @@ describe('acquireSlots', () => {
     expect(now).toBe(3000)
     // The share slot it got at 2 s is handed back, leaving the share as it found it.
     expect(fake.inflight(SALESFORCE_POST_ANSWER_BULKHEAD_KEY)).toBe(SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT - 1)
+  })
+
+  it('a full collections share refuses the collections post without ever asking the main key for a slot', async () => {
+    const fake = fakeBulkheads({ seed: { [SALESFORCE_COLLECTIONS_BULKHEAD_KEY]: SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT } })
+    const env = { SALESFORCE_BULKHEAD: fake.namespace } as unknown as Env
+    const time = virtualTime()
+    const { gates, waitMs } = salesforceBulkheads(env, false, true)
+    const held = await acquireSlots(gates, waitMs, time)
+    expect(held.allowed).toBe(false)
+    expect(held.refusedBy).toEqual({ key: SALESFORCE_COLLECTIONS_BULKHEAD_KEY, inflight: SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT, limit: SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT })
+    expect(fake.acquires.filter((k) => k === SALESFORCE_BULKHEAD_KEY)).toEqual([])
+    expect(time.clock()).toBe(SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS)
+    // A trades call at the same moment still gets a main slot.
+    const trades = salesforceBulkheads(env, false)
+    const tradesHeld = await acquireSlots(trades.gates, trades.waitMs, virtualTime())
+    expect(tradesHeld.allowed).toBe(true)
+    expect(fake.inflight(SALESFORCE_BULKHEAD_KEY)).toBe(1)
+  })
+
+  it('a full main bulkhead sheds the collections post at its short wait and hands its share slot back', async () => {
+    const fake = fakeBulkheads({ seed: { [SALESFORCE_BULKHEAD_KEY]: 20 } })
+    const env = { SALESFORCE_BULKHEAD: fake.namespace } as unknown as Env
+    const time = virtualTime()
+    const { gates, waitMs } = salesforceBulkheads(env, false, true)
+    const held = await acquireSlots(gates, waitMs, time)
+    expect(held.refusedBy).toEqual({ key: SALESFORCE_BULKHEAD_KEY, inflight: 20, limit: 20 })
+    expect(time.clock()).toBe(SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS)
+    expect(fake.inflight(SALESFORCE_COLLECTIONS_BULKHEAD_KEY)).toBe(0)
   })
 
   it('fails open on a key whose object errors, names it, and still takes the other', async () => {
