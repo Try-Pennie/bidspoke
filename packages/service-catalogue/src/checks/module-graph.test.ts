@@ -246,6 +246,49 @@ describe('computeFingerprint', () => {
     expect(computeFingerprint(action, runFile, root, NO_DEPS)).not.toBe(before)
   })
 
+  describe('over the code of a reached file, not its comments (#2732)', () => {
+    const files = () =>
+      tree({
+        'run.ts': "import type { T } from './types'\nimport { help } from './helper'\nexport const run = (x: T) => help(x)\n",
+        'helper.ts': '/** Adds one. */\nexport const help = (x: number) => `n ${x + 1}`\n',
+        'types.ts': 'export type T = number\n',
+      })
+    const fingerprintAfter = (edit: (root: string) => void) => {
+      const root = files()
+      const runFile = path.join(root, 'run.ts')
+      const before = computeFingerprint(action, runFile, root, NO_DEPS)
+      edit(root)
+      return { before, after: computeFingerprint(action, runFile, root, NO_DEPS) }
+    }
+    const rewrite = (root: string, file: string, text: string) => writeFileSync(path.join(root, file), text)
+
+    it('does not change when a reached file only gains, loses or rewords comments, or is reindented', () => {
+      const { before, after } = fingerprintAfter((root) =>
+        rewrite(root, 'helper.ts', '// The helper every run shares.\n/** Adds one, then labels it. */\n  export const help = (x: number) =>   `n ${x + 1}` // why\n'),
+      )
+      expect(after).toBe(before)
+    })
+
+    it('changes when one token of a reached file changes', () => {
+      const { before, after } = fingerprintAfter((root) =>
+        rewrite(root, 'helper.ts', '/** Adds one. */\nexport const help = (x: number) => `n ${x + 2}`\n'),
+      )
+      expect(after).not.toBe(before)
+    })
+
+    it('changes when only the whitespace inside a template literal of a reached file changes', () => {
+      const { before, after } = fingerprintAfter((root) =>
+        rewrite(root, 'helper.ts', '/** Adds one. */\nexport const help = (x: number) => `n  ${x + 1}`\n'),
+      )
+      expect(after).not.toBe(before)
+    })
+
+    it('does not change when a file reached only through a type only import changes its code', () => {
+      const { before, after } = fingerprintAfter((root) => rewrite(root, 'types.ts', 'export type T = string\n'))
+      expect(after).toBe(before)
+    })
+  })
+
   it('changes when the resolved version of a package a helper imports changes, and not for a package nothing imports', () => {
     const root = tree({
       'run.ts': "import { help } from './helper'\nexport const run = () => help()\n",

@@ -41,10 +41,31 @@ workers_dev = false
 binding = "PORTING_TEE"
 bucket_name = "bidspoke-porting-tee"
 
+# Run checkpoints (#1951, B4 of the #1698 run engine): where a slice of an ops
+# run writes where it got to (src/ops/checkpoint.ts). Its own bucket, never the
+# captures': only the checkpoint a run names on its row is ever read. The bucket
+# and its lifecycle rule (expire-30-days, as long as a run row is kept after it
+# ends) are created by hand BEFORE the deploy that adds this binding, because a
+# deploy that binds a bucket that does not exist fails:
+#   npx wrangler r2 bucket create bidspoke-ops-checkpoints
+#   npx wrangler r2 bucket lifecycle add bidspoke-ops-checkpoints expire-30-days --expire-days 30
+# from apps/worker (docs/disaster-recovery.md). A deploy without the binding is
+# reported every minute by the tick, by name (tick-live.ts continuationProblems).
+[[r2_buckets]]
+binding = "OPS_CHECKPOINTS"
+bucket_name = "bidspoke-ops-checkpoints"
+
 # The lane this Worker serves. src/ops/index.ts refuses every request, by name,
 # when this is unset or names another lane (#1709).
+#
+# OPS_CONTINUATION (#1951): observe writes, names and reads back a checkpoint at
+# each slice boundary of a run and carries on in the same invocation, changing
+# how no run ends; off writes nothing. Suspending a run and resuming it later is
+# the next slice of #1951 and not in this build. No run is dispatched while
+# OPS_TICK_MODE is unset (observe), so this does nothing until the tick is live.
 [vars]
 LANE = "ops"
+OPS_CONTINUATION = "observe"
 
 # The ops code namespace (#1709, plan 0.E): where ops workflows' code nodes will
 # run, apart from the bidding namespace (bidspoke-code-nodes) and the compare

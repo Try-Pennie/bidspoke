@@ -651,9 +651,16 @@ export interface StepTestView {
   tested_by: string
   tested_at: string
   status: 'completed' | 'failed'
-  /** Null for a failure, or an answer over the kept size (output_bytes then says how big it was). */
+  /** Null for a failure, an action that answered nothing, or an answer over the kept size (output_dropped). */
   output: unknown
+  /** The answer's size; null for a failure and for an action that answered nothing. */
   output_bytes: number | null
+  /**
+   * True only for an answer over the kept size, which is then known by its size
+   * alone. An action that answered nothing is completed, output null,
+   * output_bytes null and this false, so the two never read alike (#2773).
+   */
+  output_dropped: boolean
   error: string | null
   /** Each request the step made, sanitised before its login was applied. */
   requests: unknown[]

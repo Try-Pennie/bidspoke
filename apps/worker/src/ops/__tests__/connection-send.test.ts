@@ -121,6 +121,9 @@ class LedgerDb implements RunDb {
     return 'recorded' as const
   }
   async recordStep() { return 'recorded' as const }
+  // One send and no walk (#1951): nothing is named or read.
+  async recordCheckpoint(): Promise<never> { throw new Error('no checkpoint is named here') }
+  async readCheckpoint(): Promise<never> { throw new Error('no checkpoint is read here') }
   async complete(_run: ClaimedRun, end: CompleteOutcome) {
     this.completes.push(end)
     return { outcome: 'completed' as const, runStatus: end.outcome }
