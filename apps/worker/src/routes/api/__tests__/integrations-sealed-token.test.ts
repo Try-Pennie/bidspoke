@@ -5,10 +5,12 @@
  * each reads and writes only the caller's organization's Slack row.
  *
  * - POST /slack seals the token into credential_enc, its only home since the
- *   contract release: config never carries the plaintext, and a config passed
- *   back from the row (a Reconnect) has any old bot_token dropped.
- * - PATCH merges the token the row holds (opened from credential_enc) into the
- *   saved copy, so a row in the contract release's shape stays in the copy.
+ *   contract release, and sends save_slack_alert_token only the token save's
+ *   own config keys (#2643), so config never carries the plaintext.
+ * - PATCH sends save_slack_alert_settings only the settings changed (#2643),
+ *   and rebuilds the saved copy from the row as written, with the token the
+ *   row holds (opened from credential_enc), so a row in the contract
+ *   release's shape stays in the copy.
  * - GET /slack/channels reads the token through the same resolver.
  * - DELETE goes through delete_service_connection_by_id with the alert row's
  *   id (#2332), so the store's audit row names the user; no route writes an audit row of its own any more, since the
