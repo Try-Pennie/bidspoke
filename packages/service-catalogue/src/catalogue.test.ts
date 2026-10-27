@@ -203,7 +203,8 @@ describe('the shipped catalogue', () => {
   it('is compiled with verbatimModuleSyntax off everywhere an action reaches, so a list of type names alone loads nothing (#2878)', () => {
     // The fingerprint leaves out `import { type A } from './x'` because the
     // compiler and the Worker bundler erase it whole. With verbatimModuleSyntax
-    // (or the older preserveValueImports) on, they keep it as `import './x'`,
+    // (or the older preserveValueImports, or importsNotUsedAsValues set to
+    // preserve or error) on, they keep it as `import './x'`,
     // which runs that file, so the fingerprint would miss a change to it.
     const nearestPackage = (file: string): string => {
       let dir = path.dirname(file)
@@ -223,7 +224,11 @@ describe('the shipped catalogue', () => {
       const raw = ts.readConfigFile(config, (file) => ts.sys.readFile(file))
       if (raw.error) throw new Error(`${config} cannot be read`)
       const { options } = ts.parseJsonConfigFileContent(raw.config, ts.sys, path.dirname(config))
-      return options.verbatimModuleSyntax === true || options.preserveValueImports === true
+      return (
+        options.verbatimModuleSyntax === true ||
+        options.preserveValueImports === true ||
+        (options.importsNotUsedAsValues !== undefined && options.importsNotUsedAsValues !== ts.ImportsNotUsedAsValues.Remove)
+      )
     })
     expect(keepsTypeImports.map((config) => path.relative(REPO_ROOT, config))).toEqual([])
   })
