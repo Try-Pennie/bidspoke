@@ -2582,44 +2582,6 @@ export type Database = {
           },
         ]
       }
-      service_presets: {
-        Row: {
-          auth_type: string
-          base_url: string | null
-          created_at: string
-          id: string
-          name: string
-          organization_id: string
-          slug: string
-        }
-        Insert: {
-          auth_type?: string
-          base_url?: string | null
-          created_at?: string
-          id?: string
-          name: string
-          organization_id: string
-          slug: string
-        }
-        Update: {
-          auth_type?: string
-          base_url?: string | null
-          created_at?: string
-          id?: string
-          name?: string
-          organization_id?: string
-          slug?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "service_presets_organization_id_fkey"
-            columns: ["organization_id"]
-            isOneToOne: false
-            referencedRelation: "organizations"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       sf_bid_matrix_audit: {
         Row: {
           bid_amount: number
