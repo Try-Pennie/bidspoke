@@ -12,7 +12,8 @@
  *
  * WHO CALLS IT. Bidding code serving a signed in person: the deploy probe
  * (routes/api/ops-connections-probe.ts) and the Connections routes
- * (routes/api/connections.ts, #2338). Each
+ * (routes/api/connections.ts, #2338), and the ops step test
+ * (routes/api/ops-step-test.ts, #2339). Each
  * request names the caller's organization, derived from the verified JWT, and
  * ops acts on that organization's connections alone (ops-connections-contract.ts).
  *
@@ -35,7 +36,7 @@ import { raceDeadline } from './alert-claim'
 import type {
   AddDelegationSubjectAnswer, AddDelegationSubjectRequest, ClearReauthAnswer, ClearReauthRequest, ExchangeOAuthCodeAnswer, ExchangeOAuthCodeRequest,
   HealthAnswer, HealthRequest, ListDelegationSubjectsAnswer, ListDelegationSubjectsRequest, LookupAnswer, LookupRequest, OpsConnectionsBinding,
-  OpsConnectionsMethod, OpsStepTestMethod, RemoveDelegationSubjectAnswer, RemoveDelegationSubjectRequest, RevokeAnswer, RevokeRequest, SignInClientAnswer,
+  OpsConnectionsMethod, RemoveDelegationSubjectAnswer, RemoveDelegationSubjectRequest, RevokeAnswer, RevokeRequest, SignInClientAnswer,
   SignInClientRequest, StepTestResultAnswer, StepTestResultRequest, TestStepAnswer, TestStepCall, VerifyAnswer, VerifyRequest,
 } from './ops-connections-contract'
 
@@ -58,25 +59,9 @@ export const OPS_CONNECTIONS_DEADLINES_MS: Readonly<Record<OpsConnectionsMethod,
   removeDelegationSubject: 15_000,
   listDelegationSubjects: 15_000,
   signInClient: 10_000,
-}
-
-/**
- * The step test's (#2339), on the same rule: each its OPS_STEP_TEST_CEILINGS_MS
- * ceiling plus 5 s. They are called through the same binding and kept off
- * OPS_CONNECTIONS_METHODS until the ops deploy carries them (the contract says
- * why); until then a call throws and is answered ops_connections_unavailable.
- */
-export const OPS_STEP_TEST_DEADLINES_MS: Readonly<Record<OpsStepTestMethod, number>> = {
   testStep: 95_000,
   stepTestResult: 15_000,
 }
-
-type CalledMethod = OpsConnectionsMethod | OpsStepTestMethod
-
-/** Every method's deadline in one table, so a method missing from either fails to compile. */
-const DEADLINES_MS: Readonly<Record<CalledMethod, number>> = { ...OPS_CONNECTIONS_DEADLINES_MS, ...OPS_STEP_TEST_DEADLINES_MS }
-
-const deadlineOf = (method: CalledMethod): number => DEADLINES_MS[method]
 
 interface Requests {
   verify: VerifyRequest
@@ -89,6 +74,8 @@ interface Requests {
   removeDelegationSubject: RemoveDelegationSubjectRequest
   listDelegationSubjects: ListDelegationSubjectsRequest
   signInClient: SignInClientRequest
+  testStep: TestStepCall
+  stepTestResult: StepTestResultRequest
 }
 
 interface Answers {
@@ -102,6 +89,8 @@ interface Answers {
   removeDelegationSubject: RemoveDelegationSubjectAnswer
   listDelegationSubjects: ListDelegationSubjectsAnswer
   signInClient: SignInClientAnswer
+  testStep: TestStepAnswer
+  stepTestResult: StepTestResultAnswer
 }
 
 /** Why the call gave no answer this contract reads. */
@@ -140,12 +129,12 @@ function referenceOf(error: unknown): string | null {
   return REFERENCE.exec(message)?.[1] ?? null
 }
 
-function causeSentence(method: CalledMethod, cause: OpsConnectionsUnavailableCause, reference: string | null, errorKind: string | null): string {
+function causeSentence(method: OpsConnectionsMethod, cause: OpsConnectionsUnavailableCause, reference: string | null, errorKind: string | null): string {
   switch (cause) {
     case 'binding_absent':
       return 'this deploy of the bidding Worker has no OPS_CONNECTIONS binding'
     case 'deadline':
-      return `the OpsConnections ${method} call did not answer within ${deadlineOf(method) / 1000} s`
+      return `the OpsConnections ${method} call did not answer within ${OPS_CONNECTIONS_DEADLINES_MS[method] / 1000} s`
     case 'unreadable':
       return `the OpsConnections ${method} call answered something this contract does not read`
     case 'threw':
@@ -154,11 +143,11 @@ function causeSentence(method: CalledMethod, cause: OpsConnectionsUnavailableCau
 }
 
 function unavailable(
-  method: CalledMethod, organizationId: string | null, cause: OpsConnectionsUnavailableCause, reference: string | null = null, errorKind: string | null = null,
+  method: OpsConnectionsMethod, organizationId: string | null, cause: OpsConnectionsUnavailableCause, reference: string | null = null, errorKind: string | null = null,
 ): OpsConnectionsUnavailable {
   // One line of names: never the request, never the error's message.
   console.warn(JSON.stringify({
-    event: 'ops_connections_unavailable', method, cause, reference, error_kind: errorKind, organization_id: organizationId, deadline_ms: deadlineOf(method),
+    event: 'ops_connections_unavailable', method, cause, reference, error_kind: errorKind, organization_id: organizationId, deadline_ms: OPS_CONNECTIONS_DEADLINES_MS[method],
   }))
   return { ok: false, refused: 'ops_connections_unavailable', cause, reference, detail: causeSentence(method, cause, reference, errorKind), retry_at: null }
 }
@@ -176,7 +165,7 @@ function organizationOf(request: unknown): string | null {
   return typeof org === 'string' ? org : null
 }
 
-async function callMethod(env: OpsConnectionsEnv, method: CalledMethod, request: unknown, options: OpsConnectionsCallOptions): Promise<unknown> {
+async function callMethod(env: OpsConnectionsEnv, method: OpsConnectionsMethod, request: unknown, options: OpsConnectionsCallOptions): Promise<unknown> {
   const organizationId = organizationOf(request)
   const bound = env.OPS_CONNECTIONS
   if (!bound) return unavailable(method, organizationId, 'binding_absent')
@@ -186,8 +175,8 @@ async function callMethod(env: OpsConnectionsEnv, method: CalledMethod, request:
   // through .call or .apply: on a real RPC stub every property read is another
   // remote method, so `.call` names a method ops does not export and every call
   // throws (shipped that way in #2569, caught only by the post deploy probe).
-  const methods = bound as unknown as Record<CalledMethod, (request: unknown) => Promise<unknown>>
-  const raced = await raceDeadline(() => methods[method](request), deadlineOf(method), options.delay)
+  const methods = bound as unknown as Record<OpsConnectionsMethod, (request: unknown) => Promise<unknown>>
+  const raced = await raceDeadline(() => methods[method](request), OPS_CONNECTIONS_DEADLINES_MS[method], options.delay)
   if (raced.kind === 'timed_out') return unavailable(method, organizationId, 'deadline')
   if (raced.kind === 'threw') {
     return unavailable(method, organizationId, 'threw', referenceOf(raced.error), raced.error instanceof Error ? raced.error.name : null)
@@ -201,23 +190,6 @@ export async function callOpsConnections<M extends OpsConnectionsMethod>(
   env: OpsConnectionsEnv, method: M, request: Requests[M], options: OpsConnectionsCallOptions = {},
 ): Promise<Answers[M] | OpsConnectionsUnavailable> {
   return (await callMethod(env, method, request, options)) as Answers[M] | OpsConnectionsUnavailable
-}
-
-interface StepTestRequests {
-  testStep: TestStepCall
-  stepTestResult: StepTestResultRequest
-}
-
-interface StepTestAnswers {
-  testStep: TestStepAnswer
-  stepTestResult: StepTestResultAnswer
-}
-
-/** One step test call (#2339): ops's answer (a refusal included), or ops_connections_unavailable. Never throws. */
-export async function callOpsStepTest<M extends OpsStepTestMethod>(
-  env: OpsConnectionsEnv, method: M, request: StepTestRequests[M], options: OpsConnectionsCallOptions = {},
-): Promise<StepTestAnswers[M] | OpsConnectionsUnavailable> {
-  return (await callMethod(env, method, request, options)) as StepTestAnswers[M] | OpsConnectionsUnavailable
 }
 
 export function isOpsConnectionsUnavailable(answer: unknown): answer is OpsConnectionsUnavailable {
