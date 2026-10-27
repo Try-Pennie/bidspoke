@@ -6,10 +6,10 @@ import { REPO_ROOT, WEB_SRC, WORKER_SRC, listFiles, sanitizeSource } from '../..
 /**
  * The trigger types have one home, @bidspoke/workflow-definition (#1947,
  * packages/workflow-definition/src/trigger.ts). The aliases left in
- * apps/worker/src/types.ts, apps/worker/src/lib/failure-rate.ts and
- * apps/web/src/types/workflow.ts so old imports kept compiling are deleted
- * (#2648, L613: a shim is not left to argue for itself), and this fails on the
- * next one, in either app:
+ * apps/worker/src/types.ts and apps/worker/src/lib/failure-rate.ts so old
+ * imports kept compiling are deleted (#2648, L613: a shim is not left to argue
+ * for itself), those in apps/web/src/types/workflow.ts are the pending list
+ * below, and this fails on any other, in either app:
  *
  * - a declaration of a trigger type (`type X =` or `interface X`), the old
  *   `TriggerDef` alias included;
