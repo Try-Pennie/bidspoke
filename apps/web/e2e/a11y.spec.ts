@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { expectNoSeriousA11yViolations } from './axe'
 import { routePartnerFixtures } from './partner-fixtures'
+import { routeConnectionFixtures, type ConnectionFixtures } from './connection-fixtures'
 
 /**
  * Automated accessibility checks (#288). Runs axe-core against the key
@@ -16,6 +17,9 @@ import { routePartnerFixtures } from './partner-fixtures'
  * it makes is answered from e2e/fixtures/partners/ (partner-fixtures.ts), so its
  * dialogs, which need a save or a delete, are scanned without anything reaching
  * production, and a call with no fixture fails the test rather than going out.
+ * The Connections page is answered the same way (#2611), from
+ * e2e/fixtures/connections/ (connection-fixtures.ts), so its Remove is answered
+ * there and never sent.
  *
  * Coverage note (#674): this originally watched 5 of the app's page areas, so
  * #671 fixed contrast only where the scanner happened to look while 64 uses of
@@ -35,8 +39,8 @@ const PAGES: { name: string; path: string; exclude?: string[] }[] = [
   { name: 'workflows list', path: '/workflows', exclude: ['.react-flow'] },
   // Added in #674. /access and /settings are only redirects to /settings/access,
   // so the two real settings pages are listed instead.
-  // The Integrations page is retired (#2338): /integrations redirects to the Connections page.
-  { name: 'connections page', path: '/connections' },
+  // The Integrations page is retired (#2338): /integrations redirects to the Connections page,
+  // which is scanned below from fixtures (#2611) rather than here against the Worker.
   { name: 'endpoints page', path: '/endpoints' },
   { name: 'settings access page', path: '/settings/access' },
   { name: 'settings api keys page', path: '/settings/api-keys' },
@@ -524,6 +528,126 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // #2611: the Connections page, answered from fixtures/connections/ (connection-fixtures.ts),
+  // which the Worker's connections-fixtures-contract.test.ts holds to what the routes answer:
+  // thirteen connections across eight services, every status the page draws among them
+  // (Working, Needs reconnecting, Check failing, and one ops gives no status). As on the
+  // partners page, each test asserts the surface it is about is on screen before it scans,
+  // and that no Worker call went unanswered.
+  test('connections page: every status, a problem notice and each tab, at the real count, has no serious a11y violations', async ({ page }) => {
+    const { unmatched, fx } = await routeConnectionFixtures(page, workerUrl())
+    await openConnection(page, connectionId(fx, 'Achieve Salesforce'))
+    const list = page.getByRole('navigation', { name: 'Connections' })
+    // The whole list, its problems grouped first with their status in words.
+    await expect(list.getByRole('button')).toHaveCount(fx.list.connections.length + 1)
+    await expect(list.getByRole('button', { name: /^Achieve Salesforce.*needs reconnecting/i })).toBeVisible()
+    await expect(list.getByRole('button', { name: /^Reporting warehouse.*check failing/i })).toBeVisible()
+    await expect(list.getByRole('button', { name: /^Reports drive.*check failing/i })).toBeVisible()
+    await expect(page.locator('[data-part="problem-notice"]')).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+
+    const detail = page.getByRole('region', { name: 'Achieve Salesforce' })
+    await detail.getByRole('tab', { name: 'Used by (1)' }).click()
+    await expect(detail.getByRole('link', { name: 'Achieve report import' })).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+    await detail.getByRole('tab', { name: 'History' }).click()
+    await expect(detail.getByText('Reconnected with a new client secret')).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+
+    // Working, and one with no status from ops, used only by a deleted workflow.
+    await list.getByRole('button', { name: 'Pennie Salesforce', exact: true }).click()
+    await expect(page.getByRole('region', { name: 'Pennie Salesforce' }).locator('[data-part="status"]')).toHaveText('Working')
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+    await list.getByRole('button', { name: 'Partner status API', exact: true }).click()
+    const unknown = page.getByRole('region', { name: 'Partner status API' })
+    await expect(unknown.locator('[data-part="status"]')).toHaveText('Status not known')
+    await expect(unknown.locator('[data-part="used-by"]').getByText('Old partner status check (deleted)')).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+    expect(unmatched).toEqual([])
+  })
+
+  test('connections page: the Slack alerts login\'s settings and the Google mailboxes and drives have no serious a11y violations', async ({ page }) => {
+    const { unmatched, fx } = await routeConnectionFixtures(page, workerUrl())
+    await openConnection(page, connectionId(fx, 'Bidspoke Alerts'))
+    await expect(page.getByRole('region', { name: 'Bidspoke Alerts' }).getByRole('switch').first()).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+    await page.getByRole('navigation', { name: 'Connections' }).getByRole('button', { name: 'Mailboxes and drives', exact: true }).click()
+    const google = page.getByRole('region', { name: 'Google mailboxes and drives' })
+    await expect(google.getByText('partners@pennie.example')).toBeVisible()
+    await expect(google.getByText('Partner payouts')).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+    expect(unmatched).toEqual([])
+  })
+
+  test('connections page: the add form, before and after a service is chosen, has no serious a11y violations', async ({ page }) => {
+    const { unmatched, fx } = await routeConnectionFixtures(page, workerUrl())
+    await openConnection(page, connectionId(fx, 'Pennie Salesforce'))
+    await page.getByRole('button', { name: 'Add connection' }).click()
+    const form = page.getByRole('region', { name: 'Add a connection' })
+    await expect(form.getByRole('button', { name: /^Salesforce/ })).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+    await form.getByRole('button', { name: /^Salesforce/ }).click()
+    await expect(form.getByLabel('Name', { exact: true })).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+    expect(unmatched).toEqual([])
+  })
+
+  test('the connections page Reconnect dialog has no serious a11y violations', async ({ page }) => {
+    const { unmatched, fx } = await routeConnectionFixtures(page, workerUrl())
+    await openConnection(page, connectionId(fx, 'Achieve Salesforce'))
+    await page.locator('[data-part="problem-notice"]').getByRole('button', { name: 'Reconnect' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Reconnect Achieve Salesforce' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByLabel('Client secret')).toBeVisible()
+    await expectDialogs(page)
+    await expectNoSeriousA11yViolations(page, [], '/connections', '[role="dialog"]')
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+
+    // A person's own Google account reconnects by signing in again, with Google's own button.
+    await page.getByRole('navigation', { name: 'Connections' }).getByRole('button', { name: "Editor A's calendar", exact: true }).click()
+    await page.getByRole('region', { name: "Editor A's calendar" }).getByRole('button', { name: 'Reconnect' }).click()
+    await expect(page.getByRole('dialog', { name: "Reconnect Editor A's calendar" })).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections', '[role="dialog"]')
+    expect(unmatched).toEqual([])
+  })
+
+  test('the connections page Remove dialog, and the notice its removal opens, have no serious a11y violations', async ({ page }) => {
+    const { unmatched, fx } = await routeConnectionFixtures(page, workerUrl())
+    await openConnection(page, connectionId(fx, 'Lead notes'))
+    await page.getByRole('region', { name: 'Lead notes' }).getByRole('button', { name: 'Remove' }).click()
+    const ask = page.getByRole('alertdialog', { name: 'Remove Lead notes?' })
+    await expect(ask).toBeVisible()
+    await expectDialogs(page)
+    await expectNoSeriousA11yViolations(page, [], '/connections', '[role="alertdialog"]')
+    // Removed, answered from the fixture as the route answers when ops was not told at once.
+    await ask.getByRole('button', { name: 'Remove' }).click()
+    const notice = page.getByRole('dialog', { name: 'Lead notes' })
+    await expect(notice.getByText(/stops using the login at its next minute check/)).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections', '[role="dialog"]')
+    expect(unmatched).toEqual([])
+  })
+
+  test('the connections page leave dialog has no serious a11y violations', async ({ page }) => {
+    const { unmatched, fx } = await routeConnectionFixtures(page, workerUrl())
+    await openConnection(page, connectionId(fx, 'Pennie Salesforce'))
+    await page.getByRole('button', { name: 'Add connection' }).click()
+    const form = page.getByRole('region', { name: 'Add a connection' })
+    await form.getByRole('button', { name: /^Salesforce/ }).click()
+    await form.getByLabel('Name', { exact: true }).fill('Sandbox Salesforce')
+    await page.getByRole('navigation', { name: 'Connections' }).getByRole('button', { name: 'Summaries', exact: true }).click()
+    await expect(page.getByRole('alertdialog', { name: 'The new connection is not saved' })).toBeVisible()
+    await expectDialogs(page)
+    await expectNoSeriousA11yViolations(page, [], '/connections', '[role="alertdialog"]')
+    expect(unmatched).toEqual([])
+  })
+
+  // REPLACE DIALOG (#2338 build PR 12): Replace is drawn but inert on main (ConnectionsScreen.tsx
+  // gives its button no onClick), so its dialog cannot be opened yet. When the Replace action
+  // lands, add a test here that opens it from Pennie Salesforce (TPL2 Salesforce and Achieve
+  // Salesforce are its candidates, six workflows to tick), asserts
+  // getByRole('dialog', { name: 'Replace Pennie Salesforce' }), scans '[role="dialog"]', and
+  // adds the Replace route's answer to connection-fixtures.ts and its contract test.
+
   for (const { name, path, exclude } of PAGES) {
     test(`${name} has no serious a11y violations`, async ({ page }) => {
       await page.goto(path)
@@ -547,6 +671,21 @@ async function openTripoint(page: Page) {
   await expect(page.getByRole('heading', { name: 'Tripoint', exact: true })).toBeVisible()
   // The live channel (#2135) joins through the routed socket, so each scan sees the header as it settles.
   await expect(page.getByRole('status').filter({ hasText: /^Live$/ })).toBeVisible()
+  await page.waitForLoadState('networkidle')
+}
+
+/** A fixture connection's id, by name: a name the list does not hold fails here rather than opening the first. */
+function connectionId(fx: ConnectionFixtures, name: string): string {
+  const found = fx.list.connections.find((c) => c.name === name)
+  if (!found) throw new Error(`fixtures/connections/list.json holds no connection named ${name}`)
+  return found.id
+}
+
+/** The Connections page with one connection open, as a problem line's link opens it. */
+async function openConnection(page: Page, id: string) {
+  await page.goto(`/connections?connection=${encodeURIComponent(id)}`)
+  await expect(page.getByRole('navigation', { name: 'Connections' })).toBeVisible()
+  await expect(page.locator('[data-part="detail"]')).toBeVisible()
   await page.waitForLoadState('networkidle')
 }
 

@@ -36,6 +36,13 @@ export async function expectNoSeriousA11yViolations(
   })
   expect(verdict.ok, verdict.ok ? '' : verdict.message).toBe(true)
 
+  // Measure the page at rest (#2611). A scan run straight after a click reads a
+  // colour transition mid way: a list row just deselected keeps its white text
+  // for the length of .btn's transition-colors while its navy background is
+  // already gone, and axe reports white on white. Only transitions are awaited;
+  // a spinner's endless animation would never finish.
+  await page.evaluate(() => Promise.all(document.getAnimations().filter((a) => a instanceof CSSTransition).map((a) => a.finished.catch(() => undefined))))
+
   let builder = new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
   for (const sel of exclude) builder = builder.exclude(sel)
   if (include) builder = builder.include(include)
