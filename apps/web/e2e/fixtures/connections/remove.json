@@ -1,0 +1,12 @@
+{
+  "outcome": "removed",
+  "connection": {
+    "id": "0e2e0c00-0000-4000-8000-000000000011",
+    "generation": 2
+  },
+  "ops": {
+    "told": false,
+    "cause": "ops_connections_unavailable",
+    "message": "The connection is removed. The workflows server could not be told straight away, so it stops using the login at its next minute check, and within 6 hours at the latest if it cannot reach Bidspoke."
+  }
+}

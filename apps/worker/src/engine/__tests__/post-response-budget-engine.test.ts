@@ -1740,3 +1740,48 @@ describe('a failed marked slot of a parallel block BEFORE the answer (#2832)', (
     expect(deadLetters('sf_writeback')).toEqual([])
   })
 })
+
+// #2834: a step after the answer is told how much of the 12 s window is left, so
+// Achieve can end its own wait inside it rather than be reported as unfinished
+// work. Before the answer there is no window yet, and a test run waits for its
+// whole walk, so it is given none.
+describe('the time left after the answer, handed to the steps that run after it (#2834)', () => {
+  const probes = {
+    trigger: { id: 'trigger', type: 'trigger', config: {} },
+    nodes: [
+      { id: 'b', namespace: 'before_answer', type: 'code', config: { retries: 0 } },
+      { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } },
+      { id: 'a', namespace: 'after_answer', type: 'code', config: { retries: 0 } },
+    ],
+    edges: [
+      { id: 'e0', source: 'b', target: 'r' },
+      { id: 'e1', source: 'r', target: 'a' },
+    ],
+  } as unknown as WorkflowDefinition
+
+  async function readings(input?: Record<string, unknown>) {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: probes, workflow_version_id: 'v1', workflow_name: 'Main Flow', org_id: 'org-1', slack_channel: null, lane: 'money',
+    })
+    let clock: VirtualClock | null = null
+    const seen: Record<string, number | 'none'> = {}
+    vi.mocked(executeNode).mockImplementation(async (node, ctx) => {
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      // The step after the answer starts 3 s after it, as a slow outcome write would leave it.
+      // Not in a test run, whose engine waits for the whole walk before the clock is driven.
+      if (node.namespace === 'after_answer' && !input?.isTest) await clock!.delay(3_000)
+      seen[node.namespace] = ctx.continuationMsLeft ? ctx.continuationMsLeft() : 'none'
+      return { output: { ok: true } }
+    })
+    await run((c) => { clock = c; return 'up' }, {}, input ? { input } : {})
+    return seen
+  }
+
+  it('a live run: no limit before the answer, and the window less the 3 s already spent after it', async () => {
+    expect(await readings()).toEqual({ before_answer: Number.POSITIVE_INFINITY, after_answer: CONTINUATION_WINDOW_MS - 3_000 })
+  })
+
+  it('a test run is given no window, so its steps wait as long as they did before', async () => {
+    expect(await readings({ isTest: true })).toEqual({ before_answer: 'none', after_answer: 'none' })
+  })
+})
