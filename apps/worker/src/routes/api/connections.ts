@@ -59,7 +59,7 @@ import {
   type RefusalContext, type RouteRefusalContext, type VerifyRefusalCode,
 } from '../../lib/connection-create-refusals'
 import {
-  readReplaceBody, replaceComplete, replaceConnectionId, REPLACE_SAVE_ATTEMPTS, type ReplacedWorkflow, type ReplaceRefusal,
+  readReplaceBody, replaceComplete, replaceConnectionId, REPLACE_OUTCOMES, REPLACE_SAVE_ATTEMPTS, type ReplacedWorkflow, type ReplaceRefusal,
 } from '../../lib/connection-replace'
 import { checkDefinitionConnections, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
 import { copiedDefinitionStamp, writtenDefinitionStamp } from '../../lib/definition-stamp'
@@ -1282,7 +1282,7 @@ connections.post('/:id/replace', async (c) => {
   const complete = replaceComplete(results)
   console.log(JSON.stringify({
     event: 'connection_replaced', organization_id: orgId, connection_id: id, with_connection: body.with,
-    outcomes: Object.fromEntries(['replaced', 'not_using', 'deleted', 'changed', 'refused', 'failed'].map((o) => [o, results.filter((r) => r.outcome === o).length])),
+    outcomes: Object.fromEntries(REPLACE_OUTCOMES.map((o) => [o, results.filter((r) => r.outcome === o).length])),
   }))
   const sentence = replaceIncompleteSentence(results, source.name, replacement.name)
   return c.json({

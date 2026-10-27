@@ -92,7 +92,8 @@ export function replaceConnectionId(definition: unknown, from: string, to: strin
  * - refused: nothing was written, `why` saying why;
  * - failed: the save did not answer in a way that says whether it was written.
  */
-export type ReplaceOutcome = 'replaced' | 'not_using' | 'deleted' | 'changed' | 'refused' | 'failed'
+export const REPLACE_OUTCOMES = ['replaced', 'not_using', 'deleted', 'changed', 'refused', 'failed'] as const
+export type ReplaceOutcome = (typeof REPLACE_OUTCOMES)[number]
 
 /**
  * Why a workflow was not given a new version, nothing written:

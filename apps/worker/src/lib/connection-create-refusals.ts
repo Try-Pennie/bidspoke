@@ -253,8 +253,9 @@ export function createRefusalSentence(code: CreateRefusalCode, ctx: RefusalConte
 // ── the Reconnect, Remove and Google list routes (#2338, build PR 6) ──────────
 
 /**
- * The refusals, and the one notice, of POST /:id/reconnect, DELETE /:id and the
- * Google mailboxes and drives list routes (R9, R10, R19, R21), in this same
+ * The refusals, and the one notice, of POST /:id/reconnect, DELETE /:id,
+ * POST /:id/replace and the Google mailboxes and drives list routes (R9, R10,
+ * R19, R20, R21), in this same
  * module so every sentence the Connections page shows has one home. A
  * Reconnect that sends a new login is checked by verify exactly as a save is,
  * so its verify refusals are the create's and read through
