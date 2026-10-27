@@ -23,6 +23,15 @@
  * which is a new generation, so nothing is kept about it.
  *
  * Bidding holds no OpenAI key, so there is no money identity to compare with.
+ *
+ * A 429 IS NOT ALWAYS A RATE LIMIT (#2673). OpenAI also answers 429 with the
+ * error code or type `insufficient_quota` when the account is out of credit or
+ * at its spend limit, which no wait clears: only a person adding credit or
+ * raising the limit does. The entry's notRateLimited says so, so connectionFetch
+ * hands that 429 to the action, which fails it as openai_insufficient_quota,
+ * instead of requeueing the step for ever; and verify refuses it naming the
+ * quota. Any other 429 stays a rate limit, and so does one whose body is not
+ * JSON (connectionFetch reports that it took it that way).
  */
 import { IdentityMismatch, IdentityUnreadable, type IdentityProbe } from './identity'
 import { targetFields, targetString } from './minters/login-fields'
@@ -47,6 +56,28 @@ export function openaiProjectOf(target: unknown): string {
   return project
 }
 
+/** OpenAI's error code or type for an account with no credit left. */
+const INSUFFICIENT_QUOTA = 'insufficient_quota'
+
+/** An error code or type, named as the catalogue's OpenAI actions name it (runtime/openai/call.ts). */
+const errorName = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() !== '' ? value.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 64) : null
+
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/**
+ * Whether an OpenAI answer is insufficient_quota, by its error code or its type, read as
+ * the catalogue's OpenAI actions read it (packages/service-catalogue runtime/openai/call.ts),
+ * so the 429 connectionFetch hands back is the one the action names openai_insufficient_quota.
+ * Throws on a body that is not JSON: it cannot tell.
+ */
+export async function openaiQuotaExhausted(response: Response): Promise<boolean> {
+  const body: unknown = await response.json()
+  const error = isObject(body) && isObject(body.error) ? body.error : null
+  if (error === null) return false
+  return errorName(error.code) === INSUFFICIENT_QUOTA || errorName(error.type) === INSUFFICIENT_QUOTA
+}
+
 const header = (response: Response, name: string): string | null => {
   const value = response.headers.get(name)
   return value !== null && value.trim() !== '' ? value.trim() : null
@@ -57,15 +88,20 @@ export const openaiIdentity: IdentityProbe = {
   async measure(fetch, target) {
     const project = openaiProjectOf(target)
     const response = await fetch(OPENAI_VERIFY_URL, { method: 'GET' })
-    // Its status only: never OpenAI's body.
-    if (!response.ok) throw new IdentityUnreadable(`the models list answered HTTP ${response.status}`)
+    // Its status, and whether it is insufficient_quota: never OpenAI's body.
+    if (!response.ok) {
+      if (response.status === 429 && await openaiQuotaExhausted(response).catch(() => false)) {
+        throw new IdentityUnreadable('the models list answered HTTP 429 insufficient_quota: the OpenAI account is out of credit or at its spend limit, which waiting does not clear')
+      }
+      throw new IdentityUnreadable(`the models list answered HTTP ${response.status}`)
+    }
     let body: unknown
     try {
       body = await response.json()
     } catch {
       throw new IdentityUnreadable('the models list answered a body that is not JSON')
     }
-    const list = typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : null
+    const list = isObject(body) ? body : null
     if (list === null || !Array.isArray(list.data)) throw new IdentityUnreadable('the models list answered no data list')
     const answeredProject = header(response, 'openai-project')
     if (answeredProject !== null && answeredProject !== project) {
@@ -85,6 +121,7 @@ export function openaiServiceEntry(): OpsServiceEntry {
         return [OPENAI_HOST]
       },
       expired: key.expired,
+      notRateLimited: openaiQuotaExhausted,
       // The target is read first, so a connection declaring no project is refused by rule before its key is read.
       authorize: async (input: AuthorizeInput) => {
         const project = openaiProjectOf(input.target)
