@@ -759,6 +759,25 @@ describe('Google: a mailbox or drive must be on the organization\'s list before 
     expect(binding.verify).not.toHaveBeenCalled()
   })
 
+  it('refuses more drives than the minter reads, though every one is listed, and asks verify nothing (#2819)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const drives = Array.from({ length: 101 }, (_, i) => `0ADrive${i}`)
+    const { env, binding } = makeEnv({ list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }, ...drives.map((subject) => ({ kind: 'drive' as const, subject }))]) })
+    const res = await post(env, google({ subject: 'ops@trypennie.com', drives }))
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as Refusal).error).toBe('connection_request_invalid')
+    expect(binding.verify).not.toHaveBeenCalled()
+  })
+
+  it('compares a drive as the minter sends it, so one with spaces around it is not the listed drive (#2819)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env, binding } = makeEnv({ list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }, { kind: 'drive', subject: '0AFinanceDrive' }]) })
+    const res = await post(env, google({ subject: 'ops@trypennie.com', drives: [' 0AFinanceDrive'] }))
+    expect(res.status).toBe(422)
+    expect(((await res.json()) as Refusal).error).toBe('google_subject_not_listed')
+    expect(binding.verify).not.toHaveBeenCalled()
+  })
+
   it('refuses a list holding anything but text, by the field\'s name', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
     const { env } = makeEnv({ list: listed([{ kind: 'mailbox', subject: 'ops@trypennie.com' }]) })

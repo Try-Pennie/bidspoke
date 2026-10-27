@@ -271,6 +271,59 @@ describe('a 429 or Retry-After is a RequeueAt, never a sleep', () => {
     d.respond(new Response('down', { status: 503 }))
     expect(((await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')) as Response).status).toBe(503)
   })
+
+  /** A service whose 429 naming `no_credit` is a refusal no wait clears (#2673), its checks counted. */
+  function creditRules(rec: Recorder, checked: string[]) {
+    return [{
+      ...exampleRules(rec),
+      notRateLimited: async (response: Response) => {
+        const text = await response.text()
+        checked.push(text)
+        if (text === 'unreadable') throw new Error('not a body this check reads')
+        return text === 'no_credit'
+      },
+    }]
+  }
+
+  it('a 429 the service says is no rate limit is handed back whole, its body still readable, and not requeued (#2673)', async () => {
+    const checked: string[] = []
+    const d = makeDoubles(keys, usableCopy(envelope), (rec) => creditRules(rec, checked))
+    d.respond(new Response('no_credit', { status: 429, headers: { 'retry-after': '30' } }))
+    const res = await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')
+    expect(res).toBeInstanceOf(Response)
+    expect((res as Response).status).toBe(429)
+    expect(await (res as Response).text()).toBe('no_credit')
+    expect(checked).toEqual(['no_credit'])
+    expect(d.rec.sent).toHaveLength(1)
+    expect(d.rec.reports).toEqual([])
+  })
+
+  it('a 429 the service calls a rate limit is still a RequeueAt at its Retry-After (#2673)', async () => {
+    const checked: string[] = []
+    const d = makeDoubles(keys, usableCopy(envelope), (rec) => creditRules(rec, checked))
+    d.respond(new Response('slow down', { status: 429, headers: { 'retry-after': '30' } }))
+    const res = await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')
+    expect(res).toBeInstanceOf(RequeueAt)
+    expect((res as RequeueAt).notBefore.getTime()).toBe(T0 + 30_000)
+    expect(checked).toEqual(['slow down'])
+  })
+
+  it('a check that cannot judge a 429 leaves it a RequeueAt, and reports which way it was taken (#2673)', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), (rec) => creditRules(rec, []))
+    d.respond(new Response('unreadable', { status: 429 }))
+    const res = await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')
+    expect(res).toBeInstanceOf(RequeueAt)
+    expect((res as RequeueAt).notBefore.getTime()).toBe(T0 + RATE_LIMIT_DEFAULT_MS)
+    expect(d.rec.reports).toEqual([{ event: 'rate_limit_check_failed', connection_id: CONN, purpose: 'lookup', cause: 'taken_as_rate_limit' }])
+  })
+
+  it('the check is asked about a 429 only: a 503 with Retry-After is a RequeueAt without it (#2673)', async () => {
+    const checked: string[] = []
+    const d = makeDoubles(keys, usableCopy(envelope), (rec) => creditRules(rec, checked))
+    d.respond(new Response('no_credit', { status: 503, headers: { 'retry-after': '30' } }))
+    expect(await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')).toBeInstanceOf(RequeueAt)
+    expect(checked).toEqual([])
+  })
 })
 
 describe('the login: a refused mint is needs_reauth at once; a failing token endpoint is refresh_failing first (decision 2)', () => {
