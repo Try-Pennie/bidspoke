@@ -333,7 +333,7 @@ export type ConnectionRouteRefusalCode = (typeof CONNECTION_ROUTE_REFUSAL_CODES)
 export interface RouteRefusalContext {
   /** The service's name, as the catalogue gives it, or "the service". */
   service: string
-  /** Its secret field's label in lower case, or "login". */
+  /** Its secret field's label as it reads mid sentence (client secret, API key), or "login". */
   secret: string
   /** The workflows, field labels or list entries the sentence is about. */
   names: readonly string[]
