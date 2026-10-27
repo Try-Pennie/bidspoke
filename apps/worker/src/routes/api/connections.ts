@@ -444,6 +444,13 @@ function moneyHostReads(supabase: ReturnType<typeof createSupabaseClient>, env: 
   }
 }
 
+/**
+ * What a create that could not withdraw its verified id leaves on ops, and what
+ * removes it (#2573): for an id bidding never stored, the ops tick's first
+ * complete serve over an hour after the verify (ops/connection-serve.ts).
+ */
+const LEFT_ON_OPS = "if bidding did not store the id, a Salesforce login's measured identity left on ops is removed by the first complete serve over an hour later; no other service's verify leaves anything"
+
 /** The columns the create answers with: never credential_enc or config. */
 const CREATED_COLUMNS = 'id, name, service_type, acts_as, target, created_at'
 
@@ -481,6 +488,11 @@ const CREATED_COLUMNS = 'id, name, service_type, acts_as, target, created_at'
 //      save's error still. An error that is not the database's refusal may
 //      have landed, so the id is read back first, and a row that landed is
 //      answered as saved and never revoked.
+//      What verify records for a candidate is a Salesforce login's measured
+//      identity and nothing else (ops-connections.ts), which nothing reads for
+//      an id ops never holds a copy of. The ops tick removes it once a
+//      complete serve more than an hour later does not name the id (#2573,
+//      ops/connection-serve.ts), and logs its removal by the same id.
 //
 // Who may call it: any signed in user of the organization (jwtAuth). Whose
 // data: the caller's organization only, from the verified token; the body may
@@ -663,7 +675,7 @@ connections.post('/', async (c) => {
         .maybeSingle()
       if (readBackError) {
         // Unknown either way: nothing is revoked, and the id is named so the leftover can be found.
-        console.error(JSON.stringify({ event: 'connection_create_left_on_ops', organization_id: orgId, connection_id: connectionId, why: 'the insert failed and could not be read back, so whether it landed is unknown' }))
+        console.error(JSON.stringify({ event: 'connection_create_left_on_ops', organization_id: orgId, connection_id: connectionId, why: 'the insert failed and could not be read back, so whether it landed is unknown', left: LEFT_ON_OPS }))
         return refuse('connection_store_failed', words)
       }
       if (landed) stored = landed
@@ -674,7 +686,7 @@ connections.post('/', async (c) => {
       // behind. A failed revoke does not change the save's answer, and is named.
       const revoked = await callOpsConnections(c.env, 'revoke', { organization_id: orgId, connection_id: connectionId, generation, removed_at: new Date().toISOString() })
       if (!revoked.ok) {
-        console.error(JSON.stringify({ event: 'connection_create_left_on_ops', organization_id: orgId, connection_id: connectionId, refused: revoked.refused, why: 'verify passed, the insert failed, and the revoke of the verified id failed' }))
+        console.error(JSON.stringify({ event: 'connection_create_left_on_ops', organization_id: orgId, connection_id: connectionId, refused: revoked.refused, why: 'verify passed, the insert failed, and the revoke of the verified id failed', left: LEFT_ON_OPS }))
       }
       if (insertError.code === '23505') return refuse('connection_name_taken', words)
       if (insertError.code === '23514' && /alert_name_reserved/.test(insertError.message)) return refuse('connection_name_reserved', words)

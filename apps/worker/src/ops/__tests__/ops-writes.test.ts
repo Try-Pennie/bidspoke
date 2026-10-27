@@ -48,6 +48,7 @@ import {
   recordSfBudgetReading,
   releaseSfLease,
   removeGoogleDelegationSubject,
+  removeUnservedMeasuredIdentities,
   saveConnectionCopies,
   saveWorkflowCopies,
   startRunExecution,
@@ -501,6 +502,26 @@ describe('the ops connection wrappers (#2334)', () => {
     expect(await recordConnectionTombstone(client, ORG, CONN, 2, new Date('2026-10-17T10:00:00Z'))).toEqual({ outcome: 'recorded', copiesRemoved: 1 })
     expect(calls[0].body).toEqual({ p_organization_id: ORG, p_connection_id: CONN, p_generation: 2, p_removed_at: '2026-10-17T10:00:00.000Z' })
     expect(await purgeExpiredConnectionTombstones(rpcFetch([{ purged: 3, more: false }]).client, 100)).toEqual({ purged: 3, more: false })
+  })
+
+  it('the removal of unserved measured identities sends the list\'s time and the ids it names, and reads back each row it removed (#2573)', async () => {
+    const OTHER = '00000000-0000-4000-8000-0000000025a2'
+    const { client, calls } = rpcFetch([{ organization_id: ORG, connection_id: CONN, generation: 1, measured_at: '2026-10-17T08:00:00+00:00' }])
+    expect(await removeUnservedMeasuredIdentities(client, '2026-10-17T10:00:00.000Z', [OTHER])).toEqual([
+      { organizationId: ORG, connectionId: CONN, generation: 1, measuredAt: '2026-10-17T08:00:00+00:00' },
+    ])
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/remove_unserved_measured_identities', body: { p_served_at: '2026-10-17T10:00:00.000Z', p_named: [OTHER] } })
+    expect(await removeUnservedMeasuredIdentities(rpcFetch([]).client, '2026-10-17T10:00:00.000Z', [])).toEqual([])
+    // A row of the wrong shape is an error, never a quiet count.
+    await expect(removeUnservedMeasuredIdentities(rpcFetch([{ organization_id: ORG, connection_id: 'x', generation: 1, measured_at: '2026-10-17T08:00:00+00:00' }]).client, '2026-10-17T10:00:00.000Z', []))
+      .rejects.toThrow(/connection id that is not a uuid/)
+    await expect(removeUnservedMeasuredIdentities(rpcFetch([{ organization_id: ORG, connection_id: CONN, generation: 0, measured_at: '2026-10-17T08:00:00+00:00' }]).client, '2026-10-17T10:00:00.000Z', []))
+      .rejects.toThrow(/generation below 1/)
+    // Refused before sending: no time, or more ids than one save carries.
+    const none = rpcFetch([])
+    await expect(removeUnservedMeasuredIdentities(none.client, 'never', [])).rejects.toThrow(/served_at is not a time/)
+    await expect(removeUnservedMeasuredIdentities(none.client, '2026-10-17T10:00:00.000Z', Array.from({ length: 1001 }, () => CONN))).rejects.toThrow(/1001 named connections/)
+    expect(none.calls).toEqual([])
   })
 
   it('each health writer sends only its own fields, and a check failure needs a cause', async () => {
