@@ -240,8 +240,9 @@ describe('the collections share (#2847)', () => {
     expect(SALESFORCE_COLLECTIONS_BULKHEAD_WAIT_MS).toBeLessThan(salesforceBulkheadWaitMs({} as Env))
   })
 
-  // The post-answer share's edge rules: held below the main cap so other calls
-  // always find one slot, and never 0 (which would shed every collections post).
+  // The collections share follows the same edge rules as the post-answer share:
+  // held below the main cap so other calls always find one slot, and never 0
+  // (which would shed every collections post).
   it.each([
     ['20', [SALESFORCE_COLLECTIONS_BULKHEAD_LIMIT, 20]],
     ['4', [3, 4]],

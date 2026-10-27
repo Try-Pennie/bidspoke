@@ -172,7 +172,9 @@ of the 142,000 to 191,000 Salesforce steps a day.
 **It has its own small share of the Salesforce bulkhead (#2847)**, so on a
 Salesforce slowdown day it cannot take a slot the trades call beside it needs.
 The main `salesforce` key (cap 20, wait 15 s) filled at least once in the week to
-2026-10-27, during a slowdown. The collections call takes a slot of
+2026-10-27, during a slowdown (a shed at 20 of 20 after 15,042 ms in Workers Logs,
+read on #2847; the counts there are the query engine's estimates), as it reached
+20 of 20 on 2026-10-11 without shedding. The collections call takes a slot of
 `salesforce-collections` first and a main slot second, as a post-answer call takes
 its own share (#2170, ADR 0005), so it never holds a main slot while waiting on
 its share. The trades call and every other call before the answer take the main
