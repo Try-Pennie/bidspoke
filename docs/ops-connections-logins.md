@@ -229,6 +229,8 @@ value, a refusal naming its cause. Each method has a ceiling
 | `lookup` | One level of a connection's schema, behind 60 lookups a minute per organization (`take_lookup_allowance`). | the allowance |
 | `exchangeOAuthCode` | A person bound login's consent, to its ConnectionTokenObject, which answers the new generation and, where the provider's id_token names a verified email for this client, whom the person signed in as (`id-token-account.ts`, #2338). A consent is a person bound login's Reconnect (it is never verified as a candidate), so its success then records the clearing of needs_reauth; a clearing that cannot be written is answered `reauth_cleared: false`, never as a failed consent, since the login is already stored. | the object's storage, then `reauth_cleared_at` |
 | `signInClient` | The client id of the sign in app the ops Worker holds for a service (`connections/oauth-apps.ts`, #2338 build PR 13), for the bidding Worker's Sign in with Google link; never its secret. Refuses `sign_in_app_unset` or `sign_in_app_malformed` naming the secret, and `sign_in_not_offered` for a service with no sign in. It shipped on ops ahead of the bidding route that calls it (build PR 13a, #2739), as the Google list's methods did, and joined `OPS_CONNECTIONS_METHODS` with that route (build PR 13b). | nothing |
+| `testStep` | Runs one app_action step of an ops workflow for real, through the executor and connectionFetch (`src/ops/step-test.ts`, #2339), for the canvas's test (`routes/api/ops-step-test.ts`). An action that changes something is refused `step_test_send_unconfirmed` unless the person ticked Send for real. It shipped on ops with the bidding route that calls it (#2762) and joined `OPS_CONNECTIONS_METHODS` once the ops deploy carried it (#2764). | the step's latest result in `step_test_results`, kept 7 days |
+| `stepTestResult` | Reads a step's kept test result back for the data picker. Joined `OPS_CONNECTIONS_METHODS` with `testStep` (#2764). | nothing |
 
 - **No copy is written by any of these (F116, F126).** verify and clearReauth use
   the candidate (the bidding row's sealed envelope at its new generation) for
@@ -392,6 +394,17 @@ times, and a span alone lets one slow failure an hour later do it. They live onc
 in `record_connection_refresh` (supabase-ops migration 20261018170000). A
 Reconnect starts a new streak. Nothing is recorded for a credential that is only
 being verified.
+
+A service's own 429 is a `RequeueAt` too, at its Retry-After or the default,
+unless the service's rules say that 429 is no rate limit (`notRateLimited` in
+`service-rules.ts`, #2673). OpenAI's says so of `insufficient_quota`, its 429
+for an account out of credit or at its spend limit, which no wait clears: the
+step's action gets the answer and fails as `openai_insufficient_quota`, and
+verify refuses it naming the quota. A 429 the check cannot read (a body that is
+not JSON) stays a `RequeueAt` and is reported as `rate_limit_check_failed`,
+cause `taken_as_rate_limit`. Anthropic needs no check: its 429 is only ever
+`rate_limit_error`, and an account out of credit is answered with another
+status there, never a 429.
 
 ## Google: delegation scopes and the mailbox allowlist (F129, decision 11)
 

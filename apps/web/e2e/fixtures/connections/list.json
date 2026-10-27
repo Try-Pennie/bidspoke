@@ -1,0 +1,556 @@
+{
+  "connections": [
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000001",
+      "name": "Pennie Salesforce",
+      "service": "salesforce",
+      "service_name": "Salesforce",
+      "alert_login": false,
+      "acts_as": "integration@pennie.example",
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "instance_url": "https://pennie.my.salesforce.com",
+        "client_id": "3MVG9fixture.pennie"
+      },
+      "org": "pennie.my.salesforce.com",
+      "status": "ok",
+      "status_word": "Working",
+      "health": {
+        "ops_status": "healthy",
+        "last_check_ok_at": "2026-10-27T15:56:00Z",
+        "last_check_failed_at": null,
+        "last_check_cause": null,
+        "needs_reauth_at": null,
+        "needs_reauth_cause": null
+      },
+      "checked_at": "2026-10-27T15:56:00Z",
+      "used_by": 6,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000001",
+          "name": "Achieve report import",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000002",
+          "name": "Daily Salesforce cleanup",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000003",
+          "name": "Lead Completed sync",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000004",
+          "name": "Partner report email",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000005",
+          "name": "Reserve My Loan intake",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000006",
+          "name": "Tripoint submission",
+          "deleted": false
+        }
+      ],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000002",
+      "name": "TPL2 Salesforce",
+      "service": "salesforce",
+      "service_name": "Salesforce",
+      "alert_login": false,
+      "acts_as": "bidspoke@tpl2.example",
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "instance_url": "https://tpl2.my.salesforce.com",
+        "client_id": "3MVG9fixture.tpl2"
+      },
+      "org": "tpl2.my.salesforce.com",
+      "status": "ok",
+      "status_word": "Working",
+      "health": {
+        "ops_status": "unchecked",
+        "last_check_ok_at": null,
+        "last_check_failed_at": null,
+        "last_check_cause": null,
+        "needs_reauth_at": null,
+        "needs_reauth_cause": null
+      },
+      "checked_at": null,
+      "used_by": 2,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000007",
+          "name": "TPL2 lead handoff",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000008",
+          "name": "TPL2 nightly reconcile",
+          "deleted": false
+        }
+      ],
+      "created_at": "2026-10-27T15:50:00Z",
+      "updated_at": "2026-10-27T15:50:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000003",
+      "name": "Achieve Salesforce",
+      "service": "salesforce",
+      "service_name": "Salesforce",
+      "alert_login": false,
+      "acts_as": "pennie.api@achieve.example",
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "instance_url": "https://achieve.my.salesforce.com",
+        "client_id": "3MVG9fixture.achieve"
+      },
+      "org": "achieve.my.salesforce.com",
+      "status": "reauth",
+      "status_word": "Needs reconnecting",
+      "health": {
+        "ops_status": "needs_reauth",
+        "last_check_ok_at": "2026-10-27T13:40:00Z",
+        "last_check_failed_at": "2026-10-27T13:52:00Z",
+        "last_check_cause": "login_refused: invalid_client",
+        "needs_reauth_at": "2026-10-27T13:52:00Z",
+        "needs_reauth_cause": "login_refused: invalid_client"
+      },
+      "checked_at": "2026-10-27T13:52:00Z",
+      "used_by": 1,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000001",
+          "name": "Achieve report import",
+          "deleted": false
+        }
+      ],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000004",
+      "name": "Reporting warehouse",
+      "service": "snowflake",
+      "service_name": "Snowflake",
+      "alert_login": false,
+      "acts_as": "OPS_SERVICE in PENNIE",
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "account": "pennie-fx12345",
+        "user": "OPS_SERVICE",
+        "warehouse": "OPS_WH",
+        "role": "OPS_ROLE"
+      },
+      "org": null,
+      "status": "failing",
+      "status_word": "Check failing",
+      "health": {
+        "ops_status": "check_failing",
+        "last_check_ok_at": "2026-10-27T11:02:00Z",
+        "last_check_failed_at": "2026-10-27T15:41:00Z",
+        "last_check_cause": "check_failed: warehouse OPS_WH is suspended",
+        "needs_reauth_at": null,
+        "needs_reauth_cause": null
+      },
+      "checked_at": "2026-10-27T15:41:00Z",
+      "used_by": 3,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000009",
+          "name": "Warehouse daily export",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000010",
+          "name": "Bid volume rollup",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000011",
+          "name": "Partner payout report",
+          "deleted": false
+        }
+      ],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000005",
+      "name": "Ops mailbox",
+      "service": "google",
+      "service_name": "Google",
+      "alert_login": false,
+      "acts_as": "ops@pennie.example",
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "subject": "ops@pennie.example"
+      },
+      "org": null,
+      "status": "ok",
+      "status_word": "Working",
+      "health": {
+        "ops_status": "healthy",
+        "last_check_ok_at": "2026-10-27T15:49:00Z",
+        "last_check_failed_at": null,
+        "last_check_cause": null,
+        "needs_reauth_at": null,
+        "needs_reauth_cause": null
+      },
+      "checked_at": "2026-10-27T15:49:00Z",
+      "used_by": 4,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000004",
+          "name": "Partner report email",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000012",
+          "name": "Ops inbox triage",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000013",
+          "name": "Weekly summary email",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000014",
+          "name": "Lender reply parser",
+          "deleted": false
+        }
+      ],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000006",
+      "name": "Reports drive",
+      "service": "google",
+      "service_name": "Google",
+      "alert_login": false,
+      "acts_as": "reports@pennie.example",
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "subject": "reports@pennie.example",
+        "drives": [
+          "0AFixtureReports"
+        ]
+      },
+      "org": null,
+      "status": "failing",
+      "status_word": "Check failing",
+      "health": {
+        "ops_status": "refresh_failing",
+        "last_check_ok_at": "2026-10-27T09:15:00Z",
+        "last_check_failed_at": "2026-10-27T15:20:00Z",
+        "last_check_cause": "refresh_failed: Google did not answer",
+        "needs_reauth_at": null,
+        "needs_reauth_cause": null
+      },
+      "checked_at": "2026-10-27T15:20:00Z",
+      "used_by": 2,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000004",
+          "name": "Partner report email",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000011",
+          "name": "Partner payout report",
+          "deleted": false
+        }
+      ],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000007",
+      "name": "Editor A's calendar",
+      "service": "google",
+      "service_name": "Google",
+      "alert_login": false,
+      "acts_as": "editor-a@example.com",
+      "person_bound": true,
+      "owner": {
+        "user_id": "0e2e0000-0000-4000-8000-0000000000a2",
+        "name": "Editor A",
+        "email": "editor-a@example.com"
+      },
+      "target": {
+        "own_account": true
+      },
+      "org": null,
+      "status": "ok",
+      "status_word": "Working",
+      "health": {
+        "ops_status": "healthy",
+        "last_check_ok_at": "2026-10-27T15:53:00Z",
+        "last_check_failed_at": null,
+        "last_check_cause": null,
+        "needs_reauth_at": null,
+        "needs_reauth_cause": null
+      },
+      "checked_at": "2026-10-27T15:53:00Z",
+      "used_by": 1,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000015",
+          "name": "Calendar hold for callbacks",
+          "deleted": false
+        }
+      ],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000008",
+      "name": "Ops alerts bot",
+      "service": "slack",
+      "service_name": "Slack",
+      "alert_login": false,
+      "acts_as": "Bidspoke Ops in Pennie",
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "team_id": "T0FIXTURE"
+      },
+      "org": null,
+      "status": "ok",
+      "status_word": "Working",
+      "health": {
+        "ops_status": "healthy",
+        "last_check_ok_at": "2026-10-27T15:55:00Z",
+        "last_check_failed_at": null,
+        "last_check_cause": null,
+        "needs_reauth_at": null,
+        "needs_reauth_cause": null
+      },
+      "checked_at": "2026-10-27T15:55:00Z",
+      "used_by": 9,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000016",
+          "name": "Lead spike alert",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000017",
+          "name": "Stuck lead alert",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000018",
+          "name": "Partner down alert",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000019",
+          "name": "Daily ops digest",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000020",
+          "name": "Cap reached alert",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000021",
+          "name": "Matrix change alert",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000022",
+          "name": "Failed write alert",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000023",
+          "name": "Weekend volume alert",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000024",
+          "name": "Reconnect reminder",
+          "deleted": false
+        }
+      ],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000009",
+      "name": "Bidspoke Alerts",
+      "service": "slack",
+      "service_name": "Slack",
+      "alert_login": true,
+      "acts_as": "bidspoke_alerts in Pennie",
+      "person_bound": false,
+      "owner": null,
+      "target": null,
+      "org": null,
+      "status": "ok",
+      "status_word": "Working",
+      "health": null,
+      "checked_at": "2026-10-27T16:00:00.000Z",
+      "used_by": 0,
+      "workflows": [],
+      "created_at": "2026-06-02T13:00:00Z",
+      "updated_at": "2026-10-20T19:12:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000010",
+      "name": "Summaries",
+      "service": "openai",
+      "service_name": "OpenAI",
+      "alert_login": false,
+      "acts_as": "Project proj_fixture_ops in pennie",
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "project_id": "proj_fixture_ops"
+      },
+      "org": null,
+      "status": "ok",
+      "status_word": "Working",
+      "health": {
+        "ops_status": "healthy",
+        "last_check_ok_at": "2026-10-27T15:48:00Z",
+        "last_check_failed_at": null,
+        "last_check_cause": null,
+        "needs_reauth_at": null,
+        "needs_reauth_cause": null
+      },
+      "checked_at": "2026-10-27T15:48:00Z",
+      "used_by": 2,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000025",
+          "name": "Call summary",
+          "deleted": false
+        },
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000026",
+          "name": "Lead notes summary",
+          "deleted": false
+        }
+      ],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000011",
+      "name": "Lead notes",
+      "service": "anthropic",
+      "service_name": "Anthropic",
+      "alert_login": false,
+      "acts_as": "Workspace wrkspc_fixture",
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "workspace_id": "wrkspc_fixture"
+      },
+      "org": null,
+      "status": "ok",
+      "status_word": "Working",
+      "health": {
+        "ops_status": "healthy",
+        "last_check_ok_at": "2026-10-27T15:51:00Z",
+        "last_check_failed_at": null,
+        "last_check_cause": null,
+        "needs_reauth_at": null,
+        "needs_reauth_cause": null
+      },
+      "checked_at": "2026-10-27T15:51:00Z",
+      "used_by": 0,
+      "workflows": [],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000012",
+      "name": "Partner status API",
+      "service": "http",
+      "service_name": "HTTP",
+      "alert_login": false,
+      "acts_as": null,
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "host": "status.partner.example",
+        "header": "X-Api-Key",
+        "check_path": "/health"
+      },
+      "org": null,
+      "status": null,
+      "status_word": null,
+      "health": null,
+      "checked_at": null,
+      "used_by": 1,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000027",
+          "name": "Old partner status check",
+          "deleted": true
+        }
+      ],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    },
+    {
+      "id": "0e2e0c00-0000-4000-8000-000000000013",
+      "name": "Bidspoke database",
+      "service": "supabase",
+      "service_name": "Supabase",
+      "alert_login": false,
+      "acts_as": "Project fixtureref",
+      "person_bound": false,
+      "owner": null,
+      "target": {
+        "project_url": "https://fixtureref.supabase.co"
+      },
+      "org": null,
+      "status": "ok",
+      "status_word": "Working",
+      "health": {
+        "ops_status": "healthy",
+        "last_check_ok_at": "2026-10-27T15:57:00Z",
+        "last_check_failed_at": null,
+        "last_check_cause": null,
+        "needs_reauth_at": null,
+        "needs_reauth_cause": null
+      },
+      "checked_at": "2026-10-27T15:57:00Z",
+      "used_by": 1,
+      "workflows": [
+        {
+          "id": "0e2e0f00-0000-4000-8000-000000000028",
+          "name": "Bid archive backfill",
+          "deleted": false
+        }
+      ],
+      "created_at": "2026-10-14T14:00:00Z",
+      "updated_at": "2026-10-21T18:30:00Z"
+    }
+  ],
+  "statuses": {
+    "as_of": "2026-10-27T16:00:00.000Z",
+    "stale": false,
+    "unavailable": null
+  }
+}

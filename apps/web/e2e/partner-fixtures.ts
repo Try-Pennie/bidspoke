@@ -18,8 +18,9 @@ import path from 'node:path'
 import type { Page } from '@playwright/test'
 import { mergeHistory, type PartnerHistory } from '@bidspoke/partner-history'
 import { LIVE_MISS_ID, realtimeReplies, versionsFor } from './partner-live-fixtures'
+import { isWorkerApiRequest, ownEntry, routeWorkerAnswers, type Answer } from './worker-fixtures'
 
-export { LIVE_MISS_ID, realtimeReplies, versionsFor }
+export { LIVE_MISS_ID, realtimeReplies, versionsFor, isWorkerApiRequest, type Answer }
 
 const DIR = path.join(__dirname, 'fixtures', 'partners')
 const read = <T>(file: string): T => JSON.parse(readFileSync(path.join(DIR, file), 'utf8')) as T
@@ -93,17 +94,6 @@ export interface FixtureOptions {
   historyIncomplete?: boolean
   /** Give Liberty1 its invented held clicks (#2139), and answer adding a lead id to one, so the cards, the lead id box and the Remove dialog are scanned. */
   heldClicks?: boolean
-}
-
-export interface Answer { status: number; body: unknown }
-
-/**
- * A fixture's own entry for a partner id, or undefined. A JSON object's inherited
- * names (constructor, toString) are no partner, and nor is a file's own note key
- * (one starting with _), so a page asking for one gets no answer.
- */
-function ownEntry<T>(record: Record<string, T>, id: string): T | undefined {
-  return Object.prototype.hasOwnProperty.call(record, id) && !id.startsWith('_') ? record[id] : undefined
 }
 
 /** The answer to one Worker request, or null when the fixtures hold none. Pure, so it is unit tested. */
@@ -189,32 +179,12 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
 }
 
 /**
- * A request the fixtures answer: one to the Worker's API. Only `/api/` paths are
- * taken, so if the Worker were ever served from the web app's own origin the
- * page's own documents and scripts would still load.
- */
-export function isWorkerApiRequest(url: URL, workerOrigin: string): boolean {
-  return url.origin === new URL(workerOrigin).origin && url.pathname.startsWith('/api/')
-}
-
-/**
- * Answer every request to the Worker from the fixtures. Returns the requests
- * that had no answer; the caller asserts it is empty.
+ * Answer every request to the Worker from the fixtures (worker-fixtures.ts).
+ * Returns the requests that had no answer; the caller asserts it is empty.
  */
 export async function routePartnerFixtures(page: Page, workerUrl: string, opts: FixtureOptions = {}): Promise<{ unmatched: string[] }> {
   const fx = loadPartnerFixtures()
-  const unmatched: string[] = []
-  await page.route((url) => isWorkerApiRequest(url, workerUrl), async (route) => {
-    const req = route.request()
-    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' }
-    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors })
-    const answer = answerFor(req.method(), req.url(), fx, opts)
-    if (!answer) {
-      unmatched.push(`${req.method()} ${new URL(req.url()).pathname}`)
-      return route.fulfill({ status: 599, headers: cors, contentType: 'application/json', body: JSON.stringify({ error: 'no_fixture' }) })
-    }
-    return route.fulfill({ status: answer.status, headers: cors, contentType: 'application/json', body: JSON.stringify(answer.body) })
-  })
+  const { unmatched } = await routeWorkerAnswers(page, workerUrl, (method, url) => answerFor(method, url, fx, opts))
   // The live channel's socket (#2135), answered here so the scan never joins production's Realtime.
   await page.routeWebSocket(/\/realtime\/v1\/websocket/, (ws) => {
     ws.onMessage((frame) => {

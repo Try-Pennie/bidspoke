@@ -1,0 +1,11 @@
+{
+  "connected": true,
+  "workspace_name": "Pennie",
+  "default_channel": "C0FIXALERTS",
+  "volume_alerts_enabled": true,
+  "matrix_alerts_enabled": true,
+  "config_alerts_enabled": false,
+  "backup_alerts_enabled": true,
+  "updated_at": "2026-10-20T19:12:00Z",
+  "updated_by_email": "editor-b@example.com"
+}
