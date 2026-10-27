@@ -8,8 +8,8 @@
  */
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ConnectionList, ConnectionListRow } from '@/lib/api'
-import { CONNECTION_REMOVE_TIMEOUT_MS, CONNECTION_SAVE_TIMEOUT_MS } from '@/lib/api'
+import type { ConnectionList, ConnectionListRow, ConnectionReplaceAnswer } from '@/lib/api'
+import { CONNECTION_REMOVE_TIMEOUT_MS, CONNECTION_REPLACE_TIMEOUT_MS, CONNECTION_SAVE_TIMEOUT_MS } from '@/lib/api'
 import { keptSignInsIn } from '../google-sign-in-kept'
 import { ConnectionsScreen, type ConnectionsClock, type ConnectionsSource } from '../ConnectionsScreen'
 import { CHANGE_DEADLINES } from '../connections-state'
@@ -63,6 +63,7 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     create: vi.fn(async () => ({ connection: CREATED })),
     reconnect: vi.fn(async (id: string) => ({ outcome: 'reconnected' as const, connection: { id, acts_as: 'pennie.api@achieve.example' } })),
     remove: vi.fn(async () => ({ outcome: 'removed' as const, ops: { told: true as const } })),
+    replace: vi.fn(async () => { throw new Error('not called') }),
     slackAlerts: vi.fn(async () => ({ connected: true, default_channel: '#bidspoke-alerts' })),
     updateSlackAlerts: vi.fn(async () => ({ ok: true })),
     searchSlackChannels: vi.fn(async () => ({ channels: [] })),
@@ -463,5 +464,137 @@ describe('Remove (R21, D21)', () => {
     await waitFor(() => expect(screen.getByRole('dialog', { name: 'Spare Salesforce' })).toHaveAccessibleDescription('The connection is removed. The workflows server could not be told straight away.'))
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
+
+describe('Replace (R20, D20, build PR 12)', () => {
+  // Pennie Salesforce: two workflows that can get a new version, and one soft deleted, which cannot.
+  const LIVE = [{ id: 'w1', name: 'Lead Completed sync', deleted: false }, { id: 'w2', name: 'Tripoint submission', deleted: false }]
+  const withWorkflows = (workflows: NonNullable<ConnectionListRow['workflows']>): ConnectionList => ({
+    ...LIST,
+    connections: LIST.connections.map((c) => (c.id === 'pennie' ? { ...c, used_by: workflows.length, workflows } : c)),
+  })
+  const USED = withWorkflows([...LIVE, { id: 'w9', name: 'Old import', deleted: true }])
+  const done = (body: { with: string; workflows: string[] }): ConnectionReplaceAnswer => ({
+    outcome: 'replaced', connection: { id: 'pennie' }, with: { id: body.with, name: 'Spare Salesforce' },
+    workflows: body.workflows.map((id) => ({ id, name: LIVE.find((w) => w.id === id)!.name, outcome: 'replaced' as const, version: 5 })),
+  })
+
+  async function openReplace(over: Partial<ConnectionsSource> = {}, list: ConnectionList = USED) {
+    const s = source({ list: vi.fn(async () => list), replace: vi.fn(async (_id: string, body: { with: string; workflows: string[] }) => done(body)), ...over })
+    const m = manualClock()
+    render(<ConnectionsScreen source={s} clock={m.clock} initialChosen={{ kind: 'connection', id: 'pennie' }} />)
+    await waitFor(() => expect(part('actions')).not.toBeNull())
+    fireEvent.click(within(part('actions')!).getByRole('button', { name: 'Replace' }))
+    return { s, dialog: screen.getByRole('dialog', { name: 'Replace Pennie Salesforce' }), ...m }
+  }
+
+  const ticks = (dialog: HTMLElement) => within(dialog).getAllByRole('checkbox') as HTMLButtonElement[]
+
+  it('opens from the panel, with the replacement chosen and each workflow that can get a new version ticked; a deleted one is left out, with nothing said (decision 3)', async () => {
+    const { dialog } = await openReplace()
+    expect(readSelect(within(dialog).getByRole('combobox')).selected).toBe('Spare Salesforce')
+    expect(ticks(dialog).map((t) => [t.textContent, t.getAttribute('aria-checked')])).toEqual([['Lead Completed sync', 'true'], ['Tripoint submission', 'true']])
+    expect(dialog.textContent).not.toContain('Old import')
+    expect(dialog.textContent).not.toContain('deleted')
+    expect(dialog.textContent).toContain('Each ticked workflow gets a new version with Spare Salesforce.')
+    expect(within(dialog).getByRole('button', { name: 'Replace in 2 workflows' })).toHaveClass('btn-destructive')
+    // It still counts in Used by.
+    expect(screen.getByRole('tab', { name: 'Used by (3)', hidden: true })).toBeTruthy()
+  })
+
+  it('sends the replacement and the ticked workflows, greys the button and says what it is moving while it runs (decision 1), then closes into a notice (decision 4)', async () => {
+    let finish: (v: ConnectionReplaceAnswer) => void = () => {}
+    const replace = vi.fn((_id: string, _body: { with: string; workflows: string[] }) => new Promise<ConnectionReplaceAnswer>((r) => { finish = r }))
+    const { dialog, advance } = await openReplace({ replace })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace in 2 workflows' }))
+    expect(replace).toHaveBeenCalledWith('pennie', { with: 'spare', workflows: ['w1', 'w2'] })
+    advance(3_000)
+    const line = within(dialog).getByRole('status')
+    expect(line.textContent).toBe('Moving 2 workflows to Spare Salesforce, 3 s')
+    // Under the buttons, as the add form's working line is.
+    const go = within(dialog).getByRole('button', { name: 'Replace in 2 workflows' }) as HTMLButtonElement
+    expect(go.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(go.disabled).toBe(true)
+    // Only the red button greys out (decision 1); a tick taken off now is for the next press, and the line keeps its words.
+    fireEvent.click(ticks(dialog)[1])
+    expect(within(dialog).getByRole('status').textContent).toBe('Moving 2 workflows to Spare Salesforce, 3 s')
+    fireEvent.click(ticks(dialog)[1])
+    // Escape never closes it while it runs.
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(screen.getByRole('dialog', { name: 'Replace Pennie Salesforce' })).toBeTruthy()
+    await act(async () => finish(done({ with: 'spare', workflows: ['w1', 'w2'] })))
+    expect(screen.queryByRole('dialog', { name: 'Replace Pennie Salesforce' })).toBeNull()
+    // The deleted one is still on it, so Used by is 1 and nothing more is said.
+    expect(screen.getByRole('dialog', { name: 'Pennie Salesforce' })).toHaveAccessibleDescription('Moved 2 workflows to Spare Salesforce.')
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Used by (1)' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Spare Salesforce' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Used by (2)' })).toBeTruthy())
+  })
+
+  it('says nothing uses it now once Used by is 0', async () => {
+    const { dialog } = await openReplace({}, withWorkflows(LIVE))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace in 2 workflows' }))
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Pennie Salesforce' })).toHaveAccessibleDescription('Moved 2 workflows to Spare Salesforce. Nothing uses Pennie Salesforce now.'))
+  })
+
+  it('a workflow left unticked is not sent, and the count and the working line say one', async () => {
+    const { s, dialog } = await openReplace({ replace: vi.fn(() => new Promise<ConnectionReplaceAnswer>(() => {})) })
+    fireEvent.click(ticks(dialog)[1])
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace in 1 workflow' }))
+    expect(s.replace).toHaveBeenCalledWith('pennie', { with: 'spare', workflows: ['w1'] })
+    expect(within(dialog).getByRole('status').textContent).toBe('Moving 1 workflow to Spare Salesforce, 0 s')
+  })
+
+  it('moved only some: stays open with every workflow listed, the moved one greyed and unticked, the one left ticked, and a red line naming it (decision 2)', async () => {
+    const sentence = 'Tripoint submission was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it.'
+    const { dialog } = await openReplace({
+      replace: vi.fn(async () => ({
+        outcome: 'incomplete' as const, connection: { id: 'pennie' }, with: { id: 'spare', name: 'Spare Salesforce' }, message: sentence,
+        workflows: [{ id: 'w1', name: 'Lead Completed sync', outcome: 'replaced' as const, version: 5 }, { id: 'w2', name: 'Tripoint submission', outcome: 'changed' as const }],
+      })),
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace in 2 workflows' }))
+    const alert = await waitFor(() => within(dialog).getByRole('alert'))
+    expect(alert.textContent).toBe(sentence)
+    expect(alert).toHaveClass('field-error')
+    expect(ticks(dialog).map((t) => [t.textContent, t.getAttribute('aria-checked'), t.disabled])).toEqual([
+      ['Lead Completed sync, moved', 'false', true],
+      ['Tripoint submission', 'true', false],
+    ])
+    const again = within(dialog).getByRole('button', { name: 'Replace in 1 workflow' }) as HTMLButtonElement
+    expect(again.disabled).toBe(false)
+    expect(again.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("a refusal says the route's own sentence and changes nothing", async () => {
+    const refused = Object.assign(new Error('replace_with_not_found'), { status: 404, body: { error: 'replace_with_not_found', message: 'The connection chosen to replace it with is not in your organization any more. Nothing was changed. Reload the page and choose another.' } })
+    const { dialog } = await openReplace({ replace: vi.fn(async () => { throw refused }) })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace in 2 workflows' }))
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toContain('Nothing was changed.'))
+    expect(ticks(dialog).map((t) => t.getAttribute('aria-checked'))).toEqual(['true', 'true'])
+  })
+
+  it('stalls at its deadline into a line saying whether the workflows were moved is not known', async () => {
+    const { dialog, advance } = await openReplace({ replace: vi.fn(() => new Promise<ConnectionReplaceAnswer>(() => {})) })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace in 2 workflows' }))
+    advance(CHANGE_DEADLINES.replaceDeadlineMs)
+    expect(within(dialog).getByRole('alert').textContent).toBe(`Bidspoke did not answer within ${CHANGE_DEADLINES.replaceDeadlineMs / 1000} seconds, so it cannot tell whether the workflows were moved. Reload the page to see before replacing again.`)
+  })
+
+  it("waits as long as the request's own ceiling", () => {
+    expect(CHANGE_DEADLINES.replaceDeadlineMs).toBe(CONNECTION_REPLACE_TIMEOUT_MS)
+  })
+
+  it("appends the route's stored copy warning to the notice, since the replace stands", async () => {
+    const warning = 'The change was saved and recorded, but a stored copy of the old version could not be refreshed.'
+    const { dialog } = await openReplace({
+      replace: vi.fn(async (_id: string, body: { with: string; workflows: string[] }) => ({ ...done(body), stored_copy_warning: warning })),
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace in 2 workflows' }))
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Pennie Salesforce' })).toHaveAccessibleDescription(`Moved 2 workflows to Spare Salesforce. ${warning}`))
   })
 })

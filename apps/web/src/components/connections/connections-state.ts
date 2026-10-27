@@ -16,9 +16,10 @@
  * event's, never the machine's, so tests move time by hand.
  */
 import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, LIST_NO_ANSWER, listGroups, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry, type UsingWorkflow } from './connection-model'
-import { draftDirty, EMPTY_ADD_DRAFT, pickedList, withoutDrive, type AddDraft, type GoogleWay } from './add-form-model'
+import { draftDirty, EMPTY_ADD_DRAFT, pickedList, withoutDrive, workflowsCount, type AddDraft, type GoogleWay } from './add-form-model'
 import { alertsReducer, alertsUnsaved, initialAlertsState, type AlertsEvent, type AlertsState } from './alert-settings-state'
 import { SLACK_ALERT_LOGIN_LINK_ID } from '@bidspoke/service-catalogue/schema'
+import type { ConnectionReplaceAnswer } from '@/lib/api'
 
 /** What the could not load card says when Bidspoke's server gave no answer (D23); one copy, in connection-model. */
 export { LIST_NO_ANSWER }
@@ -83,18 +84,29 @@ export type DialogState =
   /** `started`: the change this dialog started last, the only one whose answer may close or fail it. */
   | { kind: 'reconnect'; id: string; values: Readonly<Record<string, string>>; save: SaveState; started: number | null }
   | { kind: 'remove'; id: string; values: Readonly<Record<string, string>>; save: SaveState; started: number | null }
-  /** The removal stands, and the workflows server could not be told at once: its notice, until closed. */
-  | { kind: 'removed'; name: string; notice: string }
-  /** Replace, drawn as the design draws it and inert until build PR 12 (R20). */
-  | { kind: 'replace'; id: string; with: string | null; ticked: string[] }
+  /**
+   * A change that stands, with something to say after it, until closed: a removal the workflows
+   * server could not be told of at once, or a Replace whose stored copy could not be refreshed.
+   */
+  | { kind: 'notice'; name: string; notice: string }
+  /**
+   * Replace (R20, build PR 12): the connection to use instead, `listed` the workflows it opened with
+   * (never a deleted one), `moved` those a Replace has moved off it since, `ticked` those the next
+   * press sends, and its change.
+   */
+  | { kind: 'replace'; id: string; with: string | null; listed: UsingWorkflow[]; moved: string[]; ticked: string[]; save: SaveState; started: number | null }
 
-/** How long a save or a Reconnect may check its login, and a Remove take, before its line says it stalled: the client's own ceilings (api.ts). */
+/** How long a save or a Reconnect may check its login, and a Remove or a Replace take, before its line says it stalled: the client's own ceilings (api.ts). */
 export interface ChangeDeadlines {
   saveDeadlineMs: number
   removeDeadlineMs: number
+  replaceDeadlineMs: number
 }
 
-export const CHANGE_DEADLINES: ChangeDeadlines = { saveDeadlineMs: 120_000, removeDeadlineMs: 50_000 }
+export const CHANGE_DEADLINES: ChangeDeadlines = { saveDeadlineMs: 120_000, removeDeadlineMs: 50_000, replaceDeadlineMs: 120_000 }
+
+/** What one ticked workflow came to, as the Replace route answers it. */
+export type ReplaceResult = Pick<ConnectionReplaceAnswer['workflows'][number], 'id' | 'name' | 'outcome'>
 
 export interface ConnectionsState {
   now: number
@@ -113,8 +125,8 @@ export interface ConnectionsState {
   /** The Add connection form while it is open. */
   add: AddState | null
   dialog: DialogState
-  /** The last save, Reconnect and Remove started, each numbered by the caller; only the latest one's answer counts. */
-  lastChange: { save: number; reconnect: number; remove: number }
+  /** The last save, Reconnect, Remove and Replace started, each numbered by the caller; only the latest one's answer counts. */
+  lastChange: { save: number; reconnect: number; remove: number; replace: number }
   /** The Slack alerts login's alert settings (build PR 14): their own reducer, alert-settings-state.ts. */
   alerts: AlertsState
 }
@@ -170,6 +182,16 @@ export type ConnectionsEvent =
   | { type: 'connection_remove_answered'; attempt: number; id: string; notice: string | null }
   /** `workflows` when it was refused because workflows use it, naming them. */
   | { type: 'connection_remove_refused'; attempt: number; sentence: string; workflows?: UsingWorkflow[] }
+  // ── Replace (build PR 12; R20) ──
+  /** `label`: its working line's words, fixed at the press (decision 1: Moving <n> workflows to <replacement>). */
+  | { type: 'connection_replace_requested'; attempt: number; at: number; stalled: string; label: string }
+  /**
+   * What each ticked workflow came to, moved off `id` and onto `withId` where it was replaced.
+   * `sentence` when some workflow still names `id` (the dialog stays, saying it), null when every
+   * one moved; `warning` the route's stored copy warning, said after either.
+   */
+  | { type: 'connection_replace_answered'; attempt: number; id: string; withId: string; withName: string; workflows: ReplaceResult[]; sentence: string | null; warning: string | null }
+  | { type: 'connection_replace_refused'; attempt: number; sentence: string }
   // ── The Slack alerts login's alert settings (build PR 14), handed to alertsReducer ──
   | AlertsEvent
 
@@ -192,7 +214,7 @@ export function initialConnectionsState(now: number, deadlineMs: number, chosen:
     deadlines,
     add: null,
     dialog: null,
-    lastChange: { save: 0, reconnect: 0, remove: 0 },
+    lastChange: { save: 0, reconnect: 0, remove: 0, replace: 0 },
     alerts: initialAlertsState(now),
   }
 }
@@ -252,8 +274,9 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       // A save, a Reconnect or a Remove that has not answered by its deadline stalls: its outcome is not known (R13).
       if (s.add && stalls(s.add.save, e.at, s.deadlines.saveDeadlineMs)) next = { ...next, add: { ...s.add, save: stalledOf(s.add.save) } }
       const d = s.dialog
-      if (d && (d.kind === 'reconnect' || d.kind === 'remove') && stalls(d.save, e.at, d.kind === 'remove' ? s.deadlines.removeDeadlineMs : s.deadlines.saveDeadlineMs)) {
-        next = { ...next, dialog: { ...d, save: stalledOf(d.save) } }
+      if (d && (d.kind === 'reconnect' || d.kind === 'remove' || d.kind === 'replace')) {
+        const deadline = d.kind === 'remove' ? s.deadlines.removeDeadlineMs : d.kind === 'replace' ? s.deadlines.replaceDeadlineMs : s.deadlines.saveDeadlineMs
+        if (stalls(d.save, e.at, deadline)) next = { ...next, dialog: { ...d, save: stalledOf(d.save) } }
       }
       return next
     }
@@ -369,7 +392,9 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
         const others = s.list.data.connections
           .filter((x) => x.service === c.service && x.id !== c.id && !x.alertLogin)
           .sort((a, b) => Number(a.status !== 'ok') - Number(b.status !== 'ok') || a.name.localeCompare(b.name))
-        return { ...s, dialog: { kind: 'replace', id: c.id, with: others[0]?.id ?? null, ticked: c.workflows.map((w) => w.id) } }
+        // A soft deleted workflow cannot get a new version (no route writes one), so it is left out, with nothing said (decision 3).
+        const listed = replaceable(c)
+        return { ...s, dialog: { kind: 'replace', id: c.id, with: others[0]?.id ?? null, listed, moved: [], ticked: listed.map((w) => w.id), save: { kind: 'editing' }, started: null } }
       }
       return { ...s, dialog: { kind: e.dialog, id: c.id, values: {}, save: { kind: 'editing' }, started: null } }
     }
@@ -383,12 +408,57 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       if (!s.dialog) return s
       return { ...s, dialog: null }
     }
-    case 'replace_with':
-      return s.dialog?.kind === 'replace' ? { ...s, dialog: { ...s.dialog, with: e.id } } : s
-    case 'replace_tick': {
+    // A change of what Replace would do clears a failed line, since what failed is being changed. While
+    // one runs, a change is for the next press: the running one's working line keeps the words it began
+    // with. A workflow it moved cannot be ticked again.
+    case 'replace_with': {
       const d = s.dialog
       if (d?.kind !== 'replace') return s
-      return { ...s, dialog: { ...d, ticked: d.ticked.includes(e.workflow) ? d.ticked.filter((w) => w !== e.workflow) : [...d.ticked, e.workflow] } }
+      return { ...s, dialog: { ...d, with: e.id, save: clearedOf(d.save) } }
+    }
+    case 'replace_tick': {
+      const d = s.dialog
+      if (d?.kind !== 'replace' || d.moved.includes(e.workflow) || !d.listed.some((w) => w.id === e.workflow)) return s
+      return { ...s, dialog: { ...d, ticked: d.ticked.includes(e.workflow) ? d.ticked.filter((w) => w !== e.workflow) : [...d.ticked, e.workflow], save: clearedOf(d.save) } }
+    }
+    case 'connection_replace_requested': {
+      const d = s.dialog
+      if (d?.kind !== 'replace' || d.save.kind === 'saving' || !d.with || d.ticked.length === 0 || e.attempt <= s.lastChange.replace) return s
+      return { ...s, now: e.at, lastChange: { ...s.lastChange, replace: e.attempt }, dialog: { ...d, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled, label: e.label } } }
+    }
+    case 'connection_replace_answered': {
+      // The workflows moved once any Replace answered, however late or superseded, so the list says so.
+      if (s.list.kind !== 'loaded') return s
+      const off = new Set(e.workflows.filter((w) => movedOff(w.outcome)).map((w) => w.id))
+      const gone = new Set(e.workflows.filter((w) => w.outcome === 'deleted').map((w) => w.id))
+      const moved: UsingWorkflow[] = e.workflows.filter((w) => w.outcome === 'replaced').map((w) => ({ id: w.id, name: w.name ?? '', deleted: false }))
+      const connections = s.list.data.connections.map((c) => {
+        // One deleted while it ran still names it, so it stays in Used by, now marked deleted.
+        if (c.id === e.id) return { ...c, workflows: usingOrder(c.workflows.filter((w) => !off.has(w.id)).map((w) => (gone.has(w.id) ? { ...w, deleted: true } : w))) }
+        if (c.id === e.withId) return { ...c, workflows: usingOrder([...c.workflows.filter((w) => !moved.some((m) => m.id === w.id)), ...moved]) }
+        return c
+      })
+      const list = { ...s.list, data: { ...s.list.data, connections } }
+      const d = s.dialog
+      // Only the press that started the open dialog may close it or say how it ended.
+      if (d?.kind !== 'replace' || d.id !== e.id || d.started !== e.attempt) return { ...s, list }
+      if (e.sentence === null) {
+        // Every ticked workflow moved: it closes, and a notice over the page says so (decision 4).
+        const source = connections.find((c) => c.id === e.id)
+        const name = source?.name ?? 'The connection'
+        const notice = replacedNotice(moved.length, e.withName, name, source?.workflows.length ?? 0, e.warning)
+        return { ...s, list, dialog: notice ? { kind: 'notice', name, notice } : null }
+      }
+      // Some were left: it stays open with every workflow it opened with, the moved ones marked and
+      // unticked, the ones left still ticked, and the route's red line naming each left and why (decision 2).
+      const nowMoved = [...d.moved, ...d.listed.filter((w) => off.has(w.id) && !d.moved.includes(w.id)).map((w) => w.id)]
+      const sentence = e.warning ? `${e.sentence} ${e.warning}` : e.sentence
+      return { ...s, list, dialog: { ...d, moved: nowMoved, ticked: d.ticked.filter((w) => !off.has(w) && !gone.has(w)), save: { kind: 'failed', sentence, unconfirmed: false } } }
+    }
+    case 'connection_replace_refused': {
+      const d = s.dialog
+      if (e.attempt !== s.lastChange.replace || d?.kind !== 'replace' || !awaiting(d.save)) return s
+      return { ...s, dialog: { ...d, save: { kind: 'failed', sentence: e.sentence, unconfirmed: false } } }
     }
     case 'reconnect_requested': {
       const d = s.dialog
@@ -425,7 +495,7 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       // A Remove of the connection that is gone closes, whichever press started it; only its own press shows the notice.
       const open = s.dialog?.kind === 'remove' && s.dialog.id === e.id
       const own = open && s.dialog?.kind === 'remove' && s.dialog.started === e.attempt
-      const dialog: DialogState = open ? (own && e.notice ? { kind: 'removed', name: gone?.name ?? 'The connection', notice: e.notice } : null) : s.dialog
+      const dialog: DialogState = open ? (own && e.notice ? { kind: 'notice', name: gone?.name ?? 'The connection', notice: e.notice } : null) : s.dialog
       return { ...s, list: { ...s.list, data }, history, dialog, chosen: keepChosen(s.chosen, data) }
     }
     case 'connection_remove_refused': {
@@ -443,6 +513,40 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
 /** Whether a change is still waiting for its answer: running, or stalled with its outcome not known. */
 function awaiting(save: SaveState): boolean {
   return save.kind === 'saving' || (save.kind === 'failed' && save.unconfirmed)
+}
+
+/** A failed line cleared, since what failed is being changed; any other state as it is. */
+function clearedOf(save: SaveState): SaveState {
+  return save.kind === 'failed' ? { kind: 'editing' } : save
+}
+
+/** Whether a workflow's Replace outcome took it off the connection: given a new version, or found no longer naming it. */
+function movedOff(outcome: ReplaceResult['outcome']): boolean {
+  return outcome === 'replaced' || outcome === 'not_using'
+}
+
+/**
+ * What the notice over the page says once a Replace moved every ticked workflow (decision 4, Dan
+ * 2026-10-27): how many moved where, that nothing uses the connection now only when its Used by is 0,
+ * and the route's stored copy warning as a sentence of its own. Null when there is nothing to say.
+ */
+export function replacedNotice(moved: number, withName: string, name: string, usedBy: number, warning: string | null): string | null {
+  const parts = [
+    ...(moved > 0 ? [`Moved ${workflowsCount(moved)} to ${withName}.`] : []),
+    ...(usedBy === 0 ? [`Nothing uses ${name} now.`] : []),
+    ...(warning ? [warning] : []),
+  ]
+  return parts.length > 0 ? parts.join(' ') : null
+}
+
+/** The workflows using a connection that Replace can give a new version: every one not soft deleted. */
+export function replaceable(c: Pick<ConnectionView, 'workflows'> | undefined): UsingWorkflow[] {
+  return (c?.workflows ?? []).filter((w) => !w.deleted)
+}
+
+/** Workflows in the order the route lists them (connection_references): live ones first, then by name. */
+function usingOrder(workflows: UsingWorkflow[]): UsingWorkflow[] {
+  return [...workflows].sort((a, b) => Number(a.deleted) - Number(b.deleted) || a.name.localeCompare(b.name))
 }
 
 function stalls(save: SaveState, at: number, deadlineMs: number): boolean {
@@ -464,7 +568,7 @@ function editDraft(s: ConnectionsState, change: (d: AddDraft) => AddDraft): Conn
 }
 
 /** What leaving now would lose, so the leave question can name it (L608). */
-export type UnsavedWork = 'form' | 'form_checking' | 'login' | 'login_checking' | 'removing' | 'alert_channel' | 'alert_channel_saving'
+export type UnsavedWork = 'form' | 'form_checking' | 'login' | 'login_checking' | 'removing' | 'replacing' | 'alert_channel' | 'alert_channel_saving'
 
 /**
  * What leaving now would lose (L608): the form with something typed or its
@@ -475,6 +579,7 @@ export type UnsavedWork = 'form' | 'form_checking' | 'login' | 'login_checking' 
 export function unsavedWork(s: ConnectionsState): UnsavedWork | null {
   const d = s.dialog
   if (d?.kind === 'remove' && d.save.kind === 'saving') return 'removing'
+  if (d?.kind === 'replace' && d.save.kind === 'saving') return 'replacing'
   if (d?.kind === 'reconnect') {
     if (d.save.kind === 'saving') return 'login_checking'
     if (Object.values(d.values).some((v) => v.trim() !== '')) return 'login'

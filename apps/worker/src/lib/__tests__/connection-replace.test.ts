@@ -91,48 +91,49 @@ describe('replaceIncompleteSentence', () => {
     expect(replaceIncompleteSentence([wf('A', 'replaced'), wf('B', 'not_using')], 'Pennie Salesforce', 'TPL2 Salesforce')).toBeNull()
   })
 
-  it('says how many were replaced, names each left on the old connection and why, and what to do', () => {
+  // Never a count of those moved: the dialog lists every workflow and marks each moved one (Dan, 2026-10-27, #2338 Replace round 2).
+  it('names each left on the old connection and why, and what to do, with no count of those moved', () => {
     const s = replaceIncompleteSentence([wf('A', 'replaced'), wf('B', 'replaced'), wf('Lead Completed sync', 'changed'), wf('Tripoint submission', 'changed')], 'Pennie Salesforce', 'TPL2 Salesforce')
-    expect(s).toBe('Replaced in 2 workflows. Lead Completed sync and Tripoint submission were saved by someone else while this ran, so they still use Pennie Salesforce. Replace again to move them.')
+    expect(s).toBe('Lead Completed sync and Tripoint submission were saved by someone else while this ran, so they still use Pennie Salesforce. Replace again to move them.')
   })
 
-  it('says nothing was changed when no workflow was replaced', () => {
+  it('says no count when none was moved either', () => {
     const s = replaceIncompleteSentence([wf('Lead Completed sync', 'changed')], 'Pennie Salesforce', 'TPL2 Salesforce')
-    expect(s).toBe('Nothing was changed. Lead Completed sync was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it.')
+    expect(s).toBe('Lead Completed sync was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it.')
   })
 
   it('says a write it could not confirm is not known, and to reload before replacing again (L11)', () => {
     const s = replaceIncompleteSentence([wf('A', 'replaced'), wf('Partner report email', 'failed')], 'Pennie Salesforce', 'TPL2 Salesforce')
-    expect(s).toBe('Replaced in 1 workflow. Bidspoke could not confirm whether Partner report email got a new version. Reload the page to see, then replace again for any still on Pennie Salesforce.')
+    expect(s).toBe('Bidspoke could not confirm whether Partner report email got a new version. Reload the page to see, then replace again for any still on Pennie Salesforce.')
   })
 
   it('says the replacement was removed while it ran, and to choose another', () => {
     const s = replaceIncompleteSentence([wf('A', 'refused', { why: 'replacement_removed' })], 'Pennie Salesforce', 'TPL2 Salesforce')
-    expect(s).toBe('Nothing was changed. TPL2 Salesforce was removed while this ran, so A still uses Pennie Salesforce. Choose another connection and replace again.')
+    expect(s).toBe('TPL2 Salesforce was removed while this ran, so A still uses Pennie Salesforce. Choose another connection and replace again.')
   })
 
   it('says a workflow that also names a removed connection must have that step fixed on its canvas', () => {
     const s = replaceIncompleteSentence([wf('Old import', 'refused', { why: 'names_removed_connection' })], 'Pennie Salesforce', 'TPL2 Salesforce')
-    expect(s).toBe('Nothing was changed. Old import also names a connection that was removed. Open it, give that step a connection and save, then replace again.')
+    expect(s).toBe('Old import also names a connection that was removed. Open it, give that step a connection and save, then replace again.')
   })
 
   it('says a check that could not be made left the workflow as it was', () => {
     const s = replaceIncompleteSentence([wf('A', 'refused', { why: 'check_failed' })], 'Pennie Salesforce', 'TPL2 Salesforce')
-    expect(s).toBe('Nothing was changed. Bidspoke could not check the connections A names, so it still uses Pennie Salesforce. Replace again to move it.')
+    expect(s).toBe('Bidspoke could not check the connections A names, so it still uses Pennie Salesforce. Replace again to move it.')
   })
 
   it('says a workflow it could not read still uses the old connection', () => {
     const s = replaceIncompleteSentence([wf('A', 'refused', { why: 'unreadable' })], 'Pennie Salesforce', 'TPL2 Salesforce')
-    expect(s).toBe('Nothing was changed. Bidspoke could not read A, so it still uses Pennie Salesforce. Replace again to move it.')
+    expect(s).toBe('Bidspoke could not read A, so it still uses Pennie Salesforce. Replace again to move it.')
   })
 
   it('says a new version the database would not take is a fault in Bidspoke, for Dan', () => {
     const s = replaceIncompleteSentence([wf('A', 'refused', { why: 'write_refused' })], 'Pennie Salesforce', 'TPL2 Salesforce')
-    expect(s).toBe('Nothing was changed. The database would not take a new version of A, so it still uses Pennie Salesforce. Tell Dan, since this is a fault in Bidspoke.')
+    expect(s).toBe('The database would not take a new version of A, so it still uses Pennie Salesforce. Tell Dan, since this is a fault in Bidspoke.')
   })
 
   it('says a workflow deleted while it ran cannot get a new version', () => {
     const s = replaceIncompleteSentence([wf('A', 'replaced'), wf('Old import', 'deleted')], 'Pennie Salesforce', 'TPL2 Salesforce')
-    expect(s).toBe('Replaced in 1 workflow. Old import was deleted, so it cannot get a new version.')
+    expect(s).toBe('Old import was deleted, so it cannot get a new version.')
   })
 })

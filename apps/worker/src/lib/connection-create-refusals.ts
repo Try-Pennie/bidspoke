@@ -401,19 +401,19 @@ const wasWere = (names: readonly string[]) => (names.length === 1 ? 'was' : 'wer
 const itThey = (names: readonly string[]) => (names.length === 1 ? 'it' : 'they')
 const useUses = (names: readonly string[]) => (names.length === 1 ? 'uses' : 'use')
 const nameNames = (names: readonly string[]) => (names.length === 1 ? 'names' : 'name')
-const workflowsWord = (n: number) => (n === 1 ? 'workflow' : 'workflows')
 
 /**
  * What an incomplete Replace says (build PR 12; R20), or null when every
- * ticked workflow names the replacement now. Said in the dialog's line as a
- * refusal is (R14): how many were given a new version (or that nothing was
- * changed), each workflow left on the old connection by name with why, and
- * what to do. A save it could not confirm is never claimed either way (L11).
+ * ticked workflow names the replacement now. Said in the dialog's red line as
+ * a refusal is (R14): each workflow left on the old connection by name with
+ * why, and what to do. Never a count of those moved: the dialog lists every
+ * workflow and marks each moved one, so the count would say it twice (Dan,
+ * 2026-10-27, #2338 Replace round 2). A save it could not confirm is never
+ * claimed either way (L11).
  */
 export function replaceIncompleteSentence(workflows: readonly ReplacedWorkflow[], source: string, replacement: string): string | null {
   const named = (pick: (w: ReplacedWorkflow) => boolean) => workflows.filter(pick).map((w) => w.name ?? 'A workflow')
   const refused = (why: ReplacedWorkflow['why']) => named((w) => w.outcome === 'refused' && w.why === why)
-  const replaced = workflows.filter((w) => w.outcome === 'replaced').length
   const changed = named((w) => w.outcome === 'changed')
   const deleted = named((w) => w.outcome === 'deleted')
   const failed = named((w) => w.outcome === 'failed')
@@ -424,7 +424,7 @@ export function replaceIncompleteSentence(workflows: readonly ReplacedWorkflow[]
   const malformed = refused('write_refused')
   if (replaceComplete(workflows)) return null
 
-  const parts: string[] = [replaced > 0 ? `Replaced in ${replaced} ${workflowsWord(replaced)}.` : 'Nothing was changed.']
+  const parts: string[] = []
   if (gone.length) parts.push(`${replacement} was removed while this ran, so ${listed(gone)} still ${useUses(gone)} ${source}.`)
   if (changed.length) parts.push(`${listed(changed)} ${wasWere(changed)} saved by someone else while this ran, so ${itThey(changed)} still ${useUses(changed)} ${source}.`)
   if (unchecked.length) parts.push(`Bidspoke could not check the connections ${listed(unchecked)} ${nameNames(unchecked)}, so ${itThey(unchecked)} still ${useUses(unchecked)} ${source}.`)

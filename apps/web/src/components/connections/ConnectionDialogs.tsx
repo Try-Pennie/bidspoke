@@ -12,9 +12,16 @@
  *   asks for a new bot token (build PR 14).
  * - Remove <name>?: what is lost, said, with Cancel and a red Remove; refused
  *   while a workflow uses it, naming each.
- * - The removal's notice, when the workflows server could not be told at once.
- * - Replace <name>: drawn as the design draws it and inert until build PR 12
- *   (R20), which makes its button replace.
+ * - A notice over the page, titled with the connection's name and closed with
+ *   Close: a removal the workflows server could not be told of at once, or a
+ *   Replace that moved every ticked workflow.
+ * - Replace <name> (R20, build PR 12): the connection to use instead and the
+ *   workflows to move, never a deleted one (Dan's decision 3, 2026-10-27).
+ *   While it runs its red button greys out and the working line under the
+ *   buttons says what it is moving, in words fixed at the press, so a tick
+ *   changed meanwhile is for the next press; one that moved only some stays open with
+ *   every workflow still listed, the moved ones greyed, and the route's red
+ *   line naming each left and why (decisions 1 and 2).
  * - Leaving with something unsaved: Keep editing or Discard (L608).
  *
  * Escape, a click outside and a back gesture are each dialog's safe action:
@@ -28,7 +35,7 @@ import { Dialog } from '@/components/Dialog'
 import { Button, SecretBlock, SecretInput, TextInput, TickRow } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
 import type { LeaveRequest } from '@/lib/leave-guard'
-import { reconnectFieldsFor, workingLabel, type FormService } from './add-form-model'
+import { reconnectFieldsFor, replaceWorkingLabel, workflowsCount, workingLabel, type FormService } from './add-form-model'
 import { GoogleSignIn, SaveLine, SIGN_IN_WORKING_LABEL } from './AddConnectionPanel'
 import type { ConnectionView } from './connection-model'
 import type { DialogState, UnsavedWork } from './connections-state'
@@ -128,7 +135,7 @@ export function RemoveDialog({ dialog, connection, now, onRemove, onClose }: {
   )
 }
 
-export function RemovedDialog({ dialog, onClose }: { dialog: Open<'removed'>; onClose: () => void }) {
+export function NoticeDialog({ dialog, onClose }: { dialog: Open<'notice'>; onClose: () => void }) {
   return (
     <Dialog
       title={dialog.name}
@@ -140,28 +147,34 @@ export function RemovedDialog({ dialog, onClose }: { dialog: Open<'removed'>; on
   )
 }
 
-/** Replace (R20), drawn as the design draws it; its Replace button replaces from build PR 12 (#1947). */
-export function ReplaceDialog({ dialog, connection, candidates, onWith, onTick, onClose }: {
+/** Replace (R20, D20, build PR 12). */
+export function ReplaceDialog({ dialog, connection, candidates, now, onWith, onTick, onReplace, onClose }: {
   dialog: Open<'replace'>
   connection: ConnectionView
   /** The other connections of its service, any of which can stand in for it. */
   candidates: readonly ConnectionView[]
+  now: number
   onWith: (id: string) => void
   onTick: (workflow: string) => void
+  onReplace: () => void
   onClose: () => void
 }) {
   const base = useId()
   const replacement = candidates.find((c) => c.id === dialog.with) ?? null
   const n = dialog.ticked.length
+  const saving = dialog.save.kind === 'saving'
   return (
     <Dialog
       title={`Replace ${connection.name}`}
       className="cx-dialog cx-dialog-replace"
-      onDismiss={onClose}
+      // Nothing running: an incidental gesture closes it; while it runs it stays, as Remove's does.
+      onDismiss={() => { if (!saving) onClose() }}
       actions={
         <>
-          <Button variant="destructive" className="cx-btn-dangerfill" disabled={n === 0 || !replacement}>{`Replace in ${n} ${n === 1 ? 'workflow' : 'workflows'}`}</Button>
+          <Button variant="destructive" className="cx-btn-dangerfill" onClick={onReplace} disabled={saving || n === 0 || !replacement}>{`Replace in ${workflowsCount(n)}`}</Button>
           <Button variant="secondary" className="cx-btn-quiet" onClick={onClose}>Cancel</Button>
+          {/* Its words were fixed at the press (the save's label), so a tick changed meanwhile does not rewrite them. */}
+          <SaveLine save={dialog.save} now={now} label={replaceWorkingLabel(n, replacement?.name ?? '')} />
         </>
       }
     >
@@ -171,9 +184,10 @@ export function ReplaceDialog({ dialog, connection, candidates, onWith, onTick, 
         </Labelled>
         <div data-part="replace-workflows">
           <span className="ad-label">In these workflows</span>
-          {connection.workflows.map((w) => (
-            <TickRow key={w.id} checked={dialog.ticked.includes(w.id)} onChange={() => onTick(w.id)} label={w.name} />
-          ))}
+          {/* Every workflow it opened with stays listed; one a Replace moved is greyed, unticked and held (decision 2). */}
+          {dialog.listed.map((w) => (dialog.moved.includes(w.id)
+            ? <TickRow key={w.id} checked={false} onChange={() => {}} label={`${w.name}, moved`} disabled />
+            : <TickRow key={w.id} checked={dialog.ticked.includes(w.id)} onChange={() => onTick(w.id)} label={w.name} />))}
         </div>
         {replacement && <p className="rp-sentence">Each ticked workflow gets a new version with {replacement.name}.</p>}
       </div>
@@ -188,6 +202,7 @@ export const LEAVE_WORDS: Readonly<Record<UnsavedWork, { title: string; descript
   login: { title: 'The new login is not saved', description: 'Leaving discards the login typed into Reconnect.', leave: 'Discard' },
   login_checking: { title: 'The new login is still being checked', description: 'Leaving now means not seeing whether it was saved.', leave: 'Leave' },
   removing: { title: 'The connection is still being removed', description: 'Leaving now means not seeing whether it was removed.', leave: 'Leave' },
+  replacing: { title: 'The workflows are still being moved', description: 'Leaving now means not seeing which of them moved.', leave: 'Leave' },
   alert_channel: { title: 'The new alert channel is not saved', description: 'Leaving discards the channel chosen for the alerts.', leave: 'Discard' },
   alert_channel_saving: { title: 'The alert channel is still being saved', description: 'Leaving now means not seeing whether it was saved.', leave: 'Leave' },
 }

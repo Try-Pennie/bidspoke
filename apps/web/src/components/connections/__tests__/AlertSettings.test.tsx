@@ -43,6 +43,7 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     create: vi.fn(async () => { throw new Error('not called') }),
     reconnect: vi.fn(async (id: string) => ({ outcome: 'reconnected' as const, connection: { id, acts_as: 'Bidspoke Alerts in Pennie' } })),
     remove: vi.fn(async () => { throw new Error('not called') }),
+    replace: vi.fn(async () => { throw new Error('not called') }),
     slackAlerts: vi.fn(async () => SETTINGS),
     updateSlackAlerts: vi.fn(async () => ({ ok: true })),
     searchSlackChannels: vi.fn(async (q: string) => ({ channels: ['ops-alerts', 'ops-bidding'].filter((c) => c.includes(q)).map((name) => ({ id: name, name })) })),

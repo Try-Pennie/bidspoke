@@ -665,6 +665,29 @@ export interface ConnectionList {
   statuses: { as_of: string | null; stale: boolean; unavailable: { cause: string; detail: string } | null }
 }
 
+/**
+ * What POST /api/connections/:id/replace answers (#2338, build PR 12): what
+ * each ticked workflow came to, and the sentence an incomplete one says
+ * (apps/worker lib/connection-replace.ts has the outcomes).
+ */
+export interface ConnectionReplaceAnswer {
+  outcome: 'replaced' | 'incomplete'
+  connection: { id: string }
+  with: { id: string; name: string }
+  workflows: Array<{
+    id: string
+    /** Null for a workflow that does not name the connection, which the route never reads. */
+    name: string | null
+    outcome: 'replaced' | 'not_using' | 'deleted' | 'changed' | 'refused' | 'failed'
+    version?: number
+    why?: string
+  }>
+  /** Said when incomplete: what was done, each workflow left and why, and what to do. */
+  message?: string
+  /** A stored copy that could not be refreshed: the Replace stands, and this says what follows. */
+  stored_copy_warning?: string
+}
+
 /** An ops step's kept test result, as GET /api/workflows/:id/test-results/:nodeId answers it (#2339). */
 export interface StepTestResult {
   node_id: string
@@ -809,6 +832,12 @@ const CONNECTION_LOOKUP_TIMEOUT_MS = 45_000
 // the check stalled only when the route can no longer answer (#2338 R13).
 export const CONNECTION_SAVE_TIMEOUT_MS = 120_000
 export const CONNECTION_REMOVE_TIMEOUT_MS = 50_000
+// A Replace saves each ticked workflow in turn: a read, the connection check,
+// the save and its stored copy, about a second each at most, and up to three
+// tries for one saved by someone else meanwhile. An organization holds 11 live
+// workflows (2026-10-19), so two minutes covers every one of them tried three
+// times with room to spare.
+export const CONNECTION_REPLACE_TIMEOUT_MS = 120_000
 
 type ReqInit = RequestInit & { timeoutMs?: number }
 
@@ -1425,6 +1454,13 @@ export const api = {
       req<{ outcome: 'removed'; connection: { id: string; generation: number }; ops: { told: true } | { told: false; cause: string; message: string } }>(`/api/connections/${encodeURIComponent(id)}`, {
         method: 'DELETE',
         timeoutMs: CONNECTION_REMOVE_TIMEOUT_MS,
+      }),
+    // Replace (build PR 12, R20): each ticked workflow gets a new version naming `with` in place of this connection.
+    replace: (id: string, body: { with: string; workflows: string[] }) =>
+      req<ConnectionReplaceAnswer>(`/api/connections/${encodeURIComponent(id)}/replace`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        timeoutMs: CONNECTION_REPLACE_TIMEOUT_MS,
       }),
     // Sign in with your own Google account (build PR 13, R17): the link to Google for a new connection or a
     // Reconnect of one, then the finish the Connections page posts once the callback route hands Google's answer back

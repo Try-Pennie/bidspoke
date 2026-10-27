@@ -4,7 +4,7 @@
 // score runs them on the design first (the positive control) and then on the built page.
 (function () {
   var NAVY = "rgb(29, 33, 47)", BLUE = "rgb(27, 114, 186)", RED = "rgb(180, 35, 24)", HINT = "rgb(105, 112, 129)", WHITE = "rgb(255, 255, 255)";
-  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login", "add-stalled", "add-failed-no-cap", "reconnect-failed", "remove-refused-in-use", "alert-reconnect", "alert-login-refused", "alert-switch-failed", "alert-channel-open", "alert-channel-saved", "alert-settings-failed"];
+  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login", "add-stalled", "add-failed-no-cap", "reconnect-failed", "remove-refused-in-use", "alert-reconnect", "alert-login-refused", "alert-switch-failed", "alert-channel-open", "alert-channel-saved", "alert-settings-failed", "replace-working", "replace-partial", "replace-deleted", "replace-done"];
   // Round 26: every dialog's title is one size.
   var DIALOG_TITLE = "20px";
   var EXTRA = ["saved", "remove", "remove-refused-in-use"];
@@ -47,6 +47,11 @@
   }
   // A dialog, or an alert dialog (one whose answer destroys something, announced by what it says).
   function dialogOf(doc) { return q(doc, '[role="dialog"], [role="alertdialog"]'); }
+  // The Replace dialog of the Replace rounds' frames, and the six workflows the fixture gives Pennie Salesforce.
+  function replaceDialogOf(doc) {
+    return qa(doc, '[role="dialog"], [role="alertdialog"]').filter(function (d) { return (d.getAttribute("aria-label") || txt(q(d, "h1, h2, h3"))) === "Replace Pennie Salesforce"; })[0];
+  }
+  function sixOf(ctx) { return ctx.fixture.connections.filter(function (c) { return c.name === "Pennie Salesforce"; })[0].workflows; }
   function connections(ctx) {
     var list = ctx.fixture.connections.slice();
     if (EXTRA.indexOf(ctx.frame) >= 0) list.push(ctx.fixture.justSaved);
@@ -585,7 +590,7 @@
       return ok("the menu floats over Client id");
     } },
     // Round 35: every dialog's title is 20px, drawn by the app's one title rule.
-    { id: "D36", frames: ["reconnect", "replace", "remove", "reconnect-failed", "remove-refused-in-use", "alert-reconnect"], check: function (doc) {
+    { id: "D36", frames: ["reconnect", "replace", "remove", "reconnect-failed", "remove-refused-in-use", "alert-reconnect", "replace-working", "replace-partial", "replace-deleted", "replace-done"], check: function (doc) {
       var dgs = qa(doc, '[role="dialog"], [role="alertdialog"]');
       if (!dgs.length) return bad("no dialog");
       for (var i = 0; i < dgs.length; i++) {
@@ -594,6 +599,63 @@
         if (tp) return bad(tp);
       }
       return ok(dgs.length + " dialog title(s) at " + DIALOG_TITLE);
+    } },
+    // The Replace rounds (build PR 12, Dan 2026-10-27).
+    { id: "D41", frames: ["replace-working"], check: function (doc) {
+      var dg = replaceDialogOf(doc);
+      if (!dg) return bad("no dialog titled Replace Pennie Salesforce");
+      var go = button(dg, "Replace in 6 workflows");
+      if (!go || !disabled(go)) return bad("Replace in 6 workflows is not held");
+      var line = q(dg, '[role="status"]');
+      if (!line || said(line) !== "Moving 6 workflows to TPL2 Salesforce, 3 s") return bad("the working line reads \"" + said(line) + "\"");
+      if (!q(line, '[data-part="spinner"], svg')) return bad("the working line has no spinner");
+      if (!(go.compareDocumentPosition(line) & 4)) return bad("the working line is not after the buttons");
+      var ticks = qa(dg, '[role="checkbox"]');
+      if (ticks.length !== 6 || ticks.some(function (t) { return t.getAttribute("aria-checked") !== "true"; })) return bad("not every workflow is still ticked");
+      return ok("held button, working line under it");
+    } },
+    { id: "D42", frames: ["replace-partial"], check: function (doc, ctx) {
+      var dg = replaceDialogOf(doc), six = sixOf(ctx), left = "Lead Completed sync";
+      if (!dg) return bad("no dialog titled Replace Pennie Salesforce");
+      var ticks = qa(dg, '[role="checkbox"]');
+      var want = six.map(function (w) { return w === left ? w : w + ", moved"; });
+      if (!same(ticks.map(said), want)) return bad("the list reads " + JSON.stringify(ticks.map(said)));
+      for (var i = 0; i < ticks.length; i++) {
+        var t = ticks[i], movedRow = six[i] !== left;
+        if (movedRow && (t.getAttribute("aria-checked") !== "false" || !disabled(t) || css(t).color !== HINT)) return bad(six[i] + " is not unticked, held and grey (" + css(t).color + ")");
+        if (!movedRow && (t.getAttribute("aria-checked") !== "true" || disabled(t))) return bad(left + " is not ticked and ready");
+      }
+      var go = button(dg, "Replace in 1 workflow");
+      if (!go || disabled(go)) return bad("Replace in 1 workflow is not ready");
+      var line = q(dg, '[data-part][data-state="failed"]');
+      var why = left + " was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it.";
+      if (!line || txt(line) !== why) return bad("the red line reads \"" + txt(line) + "\"");
+      if (css(line).color !== failureRed(doc)) return bad("the line is " + css(line).color + ", not FieldError's red");
+      if (!(go.compareDocumentPosition(line) & 4)) return bad("the red line is not after the buttons");
+      return ok("five moved and greyed, one left ticked, its red line");
+    } },
+    { id: "D43", frames: ["replace-deleted"], check: function (doc, ctx) {
+      var dg = replaceDialogOf(doc), six = sixOf(ctx);
+      if (!dg) return bad("no dialog titled Replace Pennie Salesforce");
+      var tab = qa(p(main(doc), "detail"), '[role="tab"]').filter(function (t) { return txt(t).indexOf("Used by") === 0; })[0];
+      if (!tab || txt(tab) !== "Used by (7)") return bad("the Used by tab reads " + txt(tab));
+      var ticks = qa(dg, '[role="checkbox"]');
+      if (!same(ticks.map(said), six) || ticks.some(function (t) { return t.getAttribute("aria-checked") !== "true"; })) return bad("the list reads " + JSON.stringify(ticks.map(said)));
+      if (txt(dg).indexOf("Old lead import") >= 0 || /deleted/i.test(txt(dg))) return bad("the dialog says something of the deleted workflow");
+      if (!button(dg, "Replace in 6 workflows")) return bad("no Replace in 6 workflows");
+      return ok("six listed, the deleted one left out unsaid");
+    } },
+    { id: "D44", frames: ["replace-done"], check: function (doc) {
+      if (replaceDialogOf(doc)) return bad("the Replace dialog is still open");
+      var dg = qa(doc, '[role="dialog"], [role="alertdialog"]').filter(function (d) { return (d.getAttribute("aria-label") || txt(q(d, "h1, h2, h3"))) === "Pennie Salesforce"; })[0];
+      if (!dg) return bad("no notice titled Pennie Salesforce");
+      var tp = titleProblem(dg, "Pennie Salesforce"); if (tp) return bad(tp);
+      var said_ = txt(dg).replace(/^Pennie Salesforce ?/, "").replace(/ ?Close$/, "");
+      if (said_ !== "Moved 6 workflows to TPL2 Salesforce. Nothing uses Pennie Salesforce now.") return bad("the notice reads \"" + said_ + "\"");
+      if (!same(buttons(dg).map(txt), ["Close"])) return bad("the notice's buttons are " + JSON.stringify(buttons(dg).map(txt)));
+      var tab = qa(p(main(doc), "detail"), '[role="tab"]').filter(function (t) { return txt(t).indexOf("Used by") === 0; })[0];
+      if (!tab || txt(tab) !== "Used by (0)") return bad("the Used by tab reads " + txt(tab));
+      return ok("closed into the notice; Used by (0)");
     } },
     // Round 36 (build PR 14): the Slack alert login's alert settings, under its facts, in Dan's words,
     // and the states of them Dan passed as built (review, 2026-10-22).

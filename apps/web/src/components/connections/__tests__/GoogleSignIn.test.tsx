@@ -55,6 +55,7 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     create: vi.fn(async () => { throw new Error('a sign in never saves through the form') }),
     reconnect: vi.fn(async () => { throw new Error('an own account never reconnects through the form') }),
     remove: vi.fn(async () => ({ outcome: 'removed' as const, ops: { told: true as const } })),
+    replace: vi.fn(async () => { throw new Error('not called') }),
     slackAlerts: vi.fn(async () => ({ connected: false })),
     updateSlackAlerts: vi.fn(async () => ({ ok: true })),
     searchSlackChannels: vi.fn(async () => ({ channels: [] })),
