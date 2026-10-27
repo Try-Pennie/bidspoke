@@ -141,6 +141,8 @@ describe('every worker definition write stamps definition_schema_version from th
     expect(result.writers).toEqual(expect.arrayContaining([
       'routes/api/workflows.ts POST /',
       'routes/api/workflows.ts PUT /:id',
+      // Replace gives each ticked workflow a new version (#2338, build PR 12).
+      'routes/api/connections.ts POST /:id/replace',
     ]))
   })
 

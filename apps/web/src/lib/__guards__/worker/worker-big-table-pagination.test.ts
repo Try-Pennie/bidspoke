@@ -162,6 +162,7 @@ const SMALL_TABLES: Record<string, string> = {
   // The Pipedream move inventory, loaded from exports by a script.
   'porting.pipedream_inventory': '386 rows on 2026-10-18. One per Pipedream workflow in a loaded export; bounded by the Pipedream account.',
   'porting.pipedream_workflow_map': '0 rows on 2026-10-18. At most one per inventory row.',
+  'porting.workflow_replacements': '0 rows on 2026-10-27 (new). One per workflow minted to replace another (a converter rerun, a split), so a few per ported workflow at most; no pruning.',
 }
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])

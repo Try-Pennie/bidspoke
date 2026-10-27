@@ -9,7 +9,8 @@
 import { describe, expect, it } from 'vitest'
 import { organizationIdFrom } from '../ops-db'
 import type { ClaimedRun, OpsStepRecord } from '../ops-writes'
-import { RunStopped, StepUnrecorded, type RunContext, type StepSend } from '../run-invocation'
+import { CheckpointStoreMissing, CONTINUATION_BUDGET, type CheckpointStore, type ContinuationBudget } from '../checkpoint'
+import { CheckpointNotNamed, RunStopped, StepUnrecorded, type RunCheckpoints, type RunContext, type StepSend } from '../run-invocation'
 import { OPS_WALK_MAX_STEPS, StepEndsRun, walkOpsDefinition, type OpsStepHandler } from '../run-walk'
 import { STEP_OUTPUT_MAX_BYTES } from '../step-output'
 
@@ -22,10 +23,15 @@ const RUN: ClaimedRun = {
 
 const T0 = Date.parse('2026-10-24T14:00:00.000Z')
 
-/** A run context whose sends and step records are kept; its clock moves 5 ms each time it is read. */
-function runCtx(over: { recordStep?: (record: OpsStepRecord) => Promise<void> } = {}) {
+/**
+ * A run context whose sends and step records are kept; its clock moves 5 ms
+ * each time it is read (or by tick, when the test sets it). Its checkpoint
+ * port keeps what is named, and over.checkpoints replaces it.
+ */
+function runCtx(over: { recordStep?: (record: OpsStepRecord) => Promise<void>; checkpoints?: Partial<RunCheckpoints>; tick?: number } = {}) {
   const sent: Array<StepSend<unknown>> = []
   const records: OpsStepRecord[] = []
+  const named: Array<{ steps: number; key: string; sha256: string; bytes: number }> = []
   let t = T0
   const ctx: RunContext = {
     run: RUN, executionId: '0192f4a0-0000-7000-8000-0000000000ee', attempt: 1, signal: new AbortController().signal,
@@ -35,10 +41,22 @@ function runCtx(over: { recordStep?: (record: OpsStepRecord) => Promise<void> } 
       if (a.kind !== 'answered') throw new Error(`not answered: ${a.kind}`)
       return { status: a.status, value: a.value }
     },
-    now: () => (t += 5),
+    now: () => (t += over.tick ?? 5),
     recordStep: over.recordStep ?? (async (record) => { records.push(record) }),
+    stateVersion: 4,
+    checkpoints: {
+      name: async (ack) => {
+        named.push(ack)
+        return 'recorded'
+      },
+      read: async () => {
+        const last = named[named.length - 1]
+        return last === undefined ? null : { key: last.key, stateVersion: 4, steps: last.steps, sha256: last.sha256, bytes: last.bytes }
+      },
+      ...over.checkpoints,
+    },
   }
-  return { ctx, sent, records }
+  return { ctx, sent, records, named }
 }
 
 const node = (id: string, type: string, config: Record<string, unknown> = {}) => ({ id, namespace: id, type, config })
@@ -263,5 +281,165 @@ describe('walkOpsDefinition records each step (#2703)', () => {
     const run = runCtx({ recordStep: async () => { throw new RunStopped() } })
     await expect(walkOpsDefinition(twoSteps, run.ctx, { action_a: later.handler })).rejects.toBeInstanceOf(RunStopped)
     expect(later.seen).toEqual([])
+  })
+})
+
+// ── time sliced continuation, observe mode (#1951) ──────────────────────────
+
+/** A store in memory with R2's write only where nothing is. */
+function memoryStore(over: Partial<CheckpointStore> = {}) {
+  const objects = new Map<string, string>()
+  const store: CheckpointStore = {
+    put: async (key, body) => {
+      if (objects.has(key)) return objects.get(key) === body ? 'already_written' : Promise.reject(new Error('taken'))
+      objects.set(key, body)
+      return 'written'
+    },
+    get: async (key) => objects.get(key) ?? null,
+    ...over,
+  }
+  return { store, objects }
+}
+
+/** A budget whose slice ends after `steps` steps, nothing else reaching its limit. */
+const stepsBudget = (steps: number): ContinuationBudget => ({ ...CONTINUATION_BUDGET, sliceSteps: steps })
+
+function observing(store: () => CheckpointStore, budget: ContinuationBudget = stepsBudget(2)) {
+  const logs: Array<Record<string, unknown>> = []
+  return { continuation: { mode: 'observe' as const, budget, store, log: (e: Record<string, unknown>) => { logs.push(e) } }, logs }
+}
+
+const chain = (n: number) => ({
+  nodes: Array.from({ length: n }, (_, i) => node(`s${i}`, 'action_a')),
+  edges: [edge('trigger', 's0'), ...Array.from({ length: n - 1 }, (_, i) => edge(`s${i}`, `s${i + 1}`))],
+})
+
+const failures = (logs: Array<Record<string, unknown>>) => logs.filter((l) => l.step === 'observe_failed')
+
+describe('walkOpsDefinition: a slice boundary in observe mode (#1951)', () => {
+  it('off, or with no continuation, writes nothing whatever the budget', async () => {
+    const m = memoryStore()
+    const run = runCtx()
+    const off = { continuation: { mode: 'off' as const, budget: stepsBudget(1), store: () => m.store, log: () => undefined } }
+    expect(await walkOpsDefinition(chain(4), run.ctx, { action_a: recorder().handler }, off)).toEqual({ outcome: 'done' })
+    expect(m.objects.size).toBe(0)
+    expect(run.named).toEqual([])
+  })
+
+  it('writes, names and reads back a checkpoint at each boundary, verifies it would resume where the walk is, and ends the run exactly as without', async () => {
+    const m = memoryStore()
+    const o = observing(() => m.store)
+    const run = runCtx()
+    const r = recorder((seen) => ({ saw: Object.keys(seen).length }))
+    expect(await walkOpsDefinition(chain(5), run.ctx, { action_a: r.handler }, o)).toEqual({ outcome: 'done' })
+    // Every step still ran once, in order, in this invocation.
+    expect(r.seen.map((s) => s.node)).toEqual(['s0', 's1', 's2', 's3', 's4'])
+    expect([...m.objects.keys()]).toEqual([
+      `checkpoints/v1/${RUN.organizationId}/${RUN.runRequestId}/4-2.json`,
+      `checkpoints/v1/${RUN.organizationId}/${RUN.runRequestId}/4-4.json`,
+    ])
+    expect(run.named.map((n) => n.steps)).toEqual([2, 4])
+    expect(failures(o.logs)).toEqual([])
+    const would = o.logs.filter((l) => l.step === 'would_suspend')
+    expect(would.map((l) => [l.steps, l.next_node_id])).toEqual([[2, 's2'], [4, 's4']])
+    const first = JSON.parse(m.objects.get(`checkpoints/v1/${RUN.organizationId}/${RUN.runRequestId}/4-2.json`)!)
+    expect(first).toMatchObject({ stateVersion: 4, executionId: run.ctx.executionId, nextNodeId: 's2', path: [{ nodeId: 's0', edgeId: 's0-s1' }, { nodeId: 's1', edgeId: 's1-s2' }] })
+  })
+
+  it('failure shape 1 through the walk: a checkpoint after a branch that took its second arm resumes down that arm', async () => {
+    const m = memoryStore()
+    const o = observing(() => m.store)
+    const def = {
+      nodes: [
+        node('shape', 'action_a'),
+        node('pick', 'branch', { branches: [{ label: 'big', condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'trigger.payload.amount', operator: 'gt', value: '50' }] }] } }] }),
+        node('a', 'action_b'), node('b', 'action_c'),
+      ],
+      edges: [edge('trigger', 'shape'), edge('shape', 'pick'), edge('pick', 'a', 'big'), edge('pick', 'b', 'else')],
+    }
+    const a = recorder()
+    const b = recorder()
+    expect(await walkOpsDefinition(def, runCtx().ctx, { action_a: recorder().handler, action_b: a.handler, action_c: b.handler }, o)).toEqual({ outcome: 'done' })
+    expect(b.seen).toHaveLength(1)
+    expect(failures(o.logs)).toEqual([])
+    expect(o.logs.find((l) => l.step === 'would_suspend')).toMatchObject({ steps: 2, next_node_id: 'b' })
+  })
+
+  it('a slice also ends on its wall clock and on its sends', async () => {
+    const wall = memoryStore()
+    const byWall = observing(() => wall.store, { ...CONTINUATION_BUDGET, sliceWallMs: 100 })
+    await walkOpsDefinition(chain(3), runCtx({ tick: 60 }).ctx, { action_a: recorder().handler }, byWall)
+    expect(byWall.logs.filter((l) => l.step === 'would_suspend').length).toBeGreaterThan(0)
+
+    const sends = memoryStore()
+    const bySends = observing(() => sends.store, { ...CONTINUATION_BUDGET, sliceSends: 2 })
+    const sender: OpsStepHandler = async ({ node: n, run: rc }) => {
+      await rc.send({ nodeId: n.id, seq: 0, method: 'GET', url: 'https://api.example.test/x', idempotent: true, forward: async () => ({ kind: 'answered', status: 200, value: 1 }) })
+      return { output: { ok: true } }
+    }
+    await walkOpsDefinition(chain(4), runCtx().ctx, { action_a: sender }, bySends)
+    expect(bySends.logs.filter((l) => l.step === 'would_suspend').map((l) => l.steps)).toEqual([2])
+  })
+
+  it('with the R2 binding missing, says so by name once and runs the run to its end as before', async () => {
+    const o = observing(() => { throw new CheckpointStoreMissing() }, stepsBudget(1))
+    const run = runCtx()
+    expect(await walkOpsDefinition(chain(4), run.ctx, { action_a: recorder().handler }, o)).toEqual({ outcome: 'done' })
+    expect(failures(o.logs)).toEqual([expect.objectContaining({ reason: 'store_missing', error: expect.stringMatching(/OPS_CHECKPOINTS/) })])
+    expect(run.named).toEqual([])
+  })
+
+  it('a checkpoint write that fails names nothing, says why, and the run goes on', async () => {
+    const m = memoryStore({ put: async () => { throw new Error('R2 answered 500') } })
+    const o = observing(() => m.store)
+    const run = runCtx()
+    expect(await walkOpsDefinition(chain(3), run.ctx, { action_a: recorder().handler }, o)).toEqual({ outcome: 'done' })
+    expect(failures(o.logs)).toEqual([expect.objectContaining({ reason: 'write_failed', error: expect.stringMatching(/R2 answered 500/) })])
+    expect(run.named).toEqual([])
+  })
+
+  it('a checkpoint written and never named (the acknowledgement failed) is never read back as the run\'s', async () => {
+    const m = memoryStore()
+    const o = observing(() => m.store)
+    const run = runCtx({ checkpoints: { name: async () => { throw new CheckpointNotNamed('record_run_checkpoint: deadline') } } })
+    expect(await walkOpsDefinition(chain(3), run.ctx, { action_a: recorder().handler }, o)).toEqual({ outcome: 'done' })
+    expect(m.objects.size).toBe(1)
+    expect(failures(o.logs)).toEqual([expect.objectContaining({ reason: 'not_named' })])
+    expect(o.logs.some((l) => l.step === 'would_suspend')).toBe(false)
+  })
+
+  it('a stale holder\'s acknowledgement stops the walk: its claim is lost', async () => {
+    const m = memoryStore()
+    const later = recorder()
+    const run = runCtx({ checkpoints: { name: async () => { throw new RunStopped() } } })
+    await expect(walkOpsDefinition(chain(4), run.ctx, { action_a: later.handler }, observing(() => m.store))).rejects.toBeInstanceOf(RunStopped)
+    expect(later.seen.map((s) => s.node)).toEqual(['s0', 's1'])
+  })
+
+  it('reads back through the run\'s own row: a run that names another checkpoint, or none, is reported, never trusted', async () => {
+    const m = memoryStore()
+    const none = observing(() => m.store)
+    await walkOpsDefinition(chain(3), runCtx({ checkpoints: { read: async () => null } }).ctx, { action_a: recorder().handler }, none)
+    expect(failures(none.logs)).toEqual([expect.objectContaining({ reason: 'not_named_on_read' })])
+
+    const corrupt = memoryStore({ get: async () => '{"v":1}' })
+    const c = observing(() => corrupt.store)
+    await walkOpsDefinition(chain(3), runCtx().ctx, { action_a: recorder().handler }, c)
+    expect(failures(c.logs)).toEqual([expect.objectContaining({ reason: 'checkpoint_corrupt' })])
+  })
+
+  it('names a step whose output would not come back the same from a checkpoint', async () => {
+    const m = memoryStore()
+    const o = observing(() => m.store)
+    const dated: OpsStepHandler = async () => ({ output: { at: new Date('2026-10-27T14:00:00.000Z') } })
+    expect(await walkOpsDefinition(chain(3), runCtx().ctx, { action_a: dated }, o)).toEqual({ outcome: 'done' })
+    expect(failures(o.logs)).toEqual([expect.objectContaining({ reason: 'replay_differs', error: expect.stringMatching(/s0/) })])
+  })
+
+  it('records a crossing of a whole run cap without ending the run (observe first)', async () => {
+    const m = memoryStore()
+    const o = observing(() => m.store, { ...stepsBudget(2), runStateBytes: 10, runComputeMs: 1 })
+    expect(await walkOpsDefinition(chain(3), runCtx().ctx, { action_a: recorder().handler }, o)).toEqual({ outcome: 'done' })
+    expect(o.logs.filter((l) => l.step === 'cap_crossed').map((l) => l.cap).sort()).toEqual(['max_compute_exceeded', 'max_state_exceeded'])
   })
 })
