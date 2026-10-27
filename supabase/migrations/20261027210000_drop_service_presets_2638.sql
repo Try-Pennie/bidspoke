@@ -22,6 +22,9 @@ BEGIN
   IF to_regclass('public.service_presets') IS NULL THEN
     RETURN;
   END IF;
+  -- The lock the drop takes anyway, taken before the count, so no row can be
+  -- written between the count and the drop.
+  EXECUTE 'LOCK TABLE public.service_presets IN ACCESS EXCLUSIVE MODE';
   EXECUTE 'SELECT count(*) FROM public.service_presets' INTO v_rows;
   IF v_rows > 0 THEN
     RAISE EXCEPTION 'drop service_presets (#2638): it holds % row(s), so nothing was dropped; copy them out, then run this again', v_rows
