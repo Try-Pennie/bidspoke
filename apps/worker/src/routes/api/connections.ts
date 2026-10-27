@@ -794,8 +794,10 @@ type CreateRefusalAnswer = (code: CreateRefusalCode, ctx?: Partial<RefusalContex
  * what checks it, with auth.test (verifySlackToken), and nothing is asked of
  * ops. With a new bot token: checked first, then saved by the one function
  * that saves that token (saveSlackAlertConnection, which POST
- * /api/integrations/slack calls too), onto the row's own config, so the channel
- * and the four alert switches are kept. With none: the stored token is checked
+ * /api/integrations/slack calls too), which merges only the workspace name
+ * into the row's config, so the channel and the four alert switches are kept as
+ * the row holds them, even when a settings save lands at the same moment
+ * (#2643). With none: the stored token is checked
  * again and nothing is written, as for every other login. A row that was never
  * sealed is unreadable here (its plaintext is never read, #2331's contract
  * release), and a Reconnect with a new token seals it. A token Slack could not
@@ -852,9 +854,14 @@ async function reconnectSlackAlertLogin(
   if (check.kind === 'unanswered') return own('slack_unanswered')
   if (check.kind === 'refused') return own('slack_token_refused', check.slackError ? [check.slackError] : [])
 
-  const existing = row.config && typeof row.config === 'object' && !Array.isArray(row.config) ? (row.config as Record<string, unknown>) : {}
-  const config = { ...existing, bot_token: token, ...(check.team ? { workspace_name: check.team } : {}) }
-  const saved = await saveSlackAlertConnection(c.env, supabase, { orgId, userId, email }, config)
+  // Only the token and the workspace Slack named (#2643): the channel and the
+  // switches are left as the row holds them when the save writes, never put
+  // back as this request read them, which turned a switch someone had just
+  // turned off back on.
+  const saved = await saveSlackAlertConnection(c.env, supabase, { orgId, userId, email }, {
+    bot_token: token,
+    config: check.team ? { workspace_name: check.team } : {},
+  })
   if (saved.kind === 'seal_failed') return refuse.createRefusal('connection_seal_failed', words)
   if (saved.kind === 'store_failed') {
     console.error(JSON.stringify({ event: 'slack_alert_reconnect_store_failed', organization_id: orgId, connection_id: row.id, error: formatErr(saved.error) }))
