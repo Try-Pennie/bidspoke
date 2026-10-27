@@ -1,6 +1,6 @@
 -- save_slack_alert_token and save_slack_alert_settings: each Slack alert writer
 -- changes only its own keys of the alert row's config (#2643), migration
--- 20261027120000.
+-- 20261027170000.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
 -- by replaying every migration from empty, never production. The ciphertexts

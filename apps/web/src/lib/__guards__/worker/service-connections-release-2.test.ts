@@ -107,7 +107,7 @@ describe('every writer of service_connections sends a name (#2332 release 2)', (
     const inserts = readMigrations().flatMap((m) => functionInsertsIn(m.sql).map((cols) => ({ migration: m.name, cols })))
     expect(inserts.filter((i) => !i.cols.includes('name')).map((i) => i.migration)).toEqual([])
     // The Slack token save (#2643) is the one, so an empty offender list is a measurement (L1).
-    expect(inserts.map((i) => i.migration)).toEqual(['20261027120000_slack_alert_config_own_keys_2643.sql'])
+    expect(inserts.map((i) => i.migration)).toEqual(['20261027170000_slack_alert_config_own_keys_2643.sql'])
   })
 
   it('reads a function insert\'s column list, and is seen to fail on one that leaves name out', () => {

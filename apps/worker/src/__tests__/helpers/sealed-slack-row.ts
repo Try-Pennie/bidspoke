@@ -35,7 +35,7 @@ export function withSlackKeyRing<T extends object>(client: T): T {
 
 /**
  * A route double's answer to the two Slack alert config saves of migration
- * 20261027120000 (#2643): save_slack_alert_token and save_slack_alert_settings
+ * 20261027170000 (#2643): save_slack_alert_token and save_slack_alert_settings
  * each merge what they were sent into `row`'s config (the token save also
  * replacing its sealed token) and return the row as written, which is what the
  * routes rebuild the saved Slack copy from. The real functions are proven in

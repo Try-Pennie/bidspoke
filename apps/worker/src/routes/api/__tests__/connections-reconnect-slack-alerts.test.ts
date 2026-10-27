@@ -107,7 +107,7 @@ async function storeDouble(opts: { saveError?: { code: string; message: string }
     if (fn === 'auth_user_with_allowlist') {
       return Promise.resolve({ data: [{ id: USER, organization_id: ORG, email: 'dan@pennie.com', display_name: 'Dan Wright', allowed: true }], error: null })
     }
-    // save_slack_alert_token (migration 20261027120000, proven in supabase/tests/slack_alert_config_own_keys.test.sql):
+    // save_slack_alert_token (migration 20261027170000, proven in supabase/tests/slack_alert_config_own_keys.test.sql):
     // the organization's alert row, its config merged with the keys sent, the sealed token replaced, the row sealed.
     if (fn === 'save_slack_alert_token') {
       tokenSaves.push(args)

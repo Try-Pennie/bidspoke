@@ -227,7 +227,7 @@ export async function saveSlackAlertConnection(
   // so it can only ever land on an alert row, never on an ops connection's
   // credential_enc. It seals a legacy unsealed row (sealed_for bidding_ring,
   // cf_secret_key cleared), and refuses a config key it does not own by name.
-  // This code deploys only once migration 20261027120000 is applied: the deploy
+  // This code deploys only once migration 20261027170000 is applied: the deploy
   // refuses while a merged migration is unapplied (#1829).
   const { data, error } = await supabase.rpc('save_slack_alert_token', {
     p_organization_id: orgId,

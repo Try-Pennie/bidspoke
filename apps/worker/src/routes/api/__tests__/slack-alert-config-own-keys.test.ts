@@ -13,7 +13,7 @@
  *
  * Now each writer sends ONLY the keys it owns, and the database merges them
  * into the row's config in one statement (save_slack_alert_token and
- * save_slack_alert_settings, migration 20261027120000). The double below holds
+ * save_slack_alert_settings, migration 20261027170000). The double below holds
  * one row the way the database does, and merges the way those functions do;
  * supabase/tests/slack_alert_config_own_keys.test.sql proves the real
  * functions, two sessions racing included.
@@ -40,7 +40,7 @@ import api from '../index'
 // Read through Vite's raw import rather than node:fs, because the worker tsconfig targets the
 // Workers runtime and carries no Node types.
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text; there is no ambient declaration for it here.
-import OWN_KEYS_MIGRATION from '../../../../../../supabase/migrations/20261027120000_slack_alert_config_own_keys_2643.sql?raw'
+import OWN_KEYS_MIGRATION from '../../../../../../supabase/migrations/20261027170000_slack_alert_config_own_keys_2643.sql?raw'
 
 const ORG = '0a000000-0000-4000-8000-000000002643'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000002643'
@@ -147,7 +147,7 @@ async function liveTable() {
       return { data: [{ id: USER, organization_id: ORG, email: 'dan@pennie.com', display_name: 'Dan Wright', allowed: true }], error: null }
     }
     rpcCalls.push({ fn, args })
-    // The two functions of migration 20261027120000: each merges its own keys into the row's config.
+    // The two functions of migration 20261027170000: each merges its own keys into the row's config.
     if (fn === 'save_slack_alert_token') {
       const at = table.find((r) => r.organization_id === args.p_organization_id && r.service_type === 'slack' && r.name === 'slack')
       if (!at) return { data: null, error: { code: '23503', message: 'the double inserts no new row' } }
