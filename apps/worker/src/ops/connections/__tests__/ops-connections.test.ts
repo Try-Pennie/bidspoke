@@ -363,7 +363,7 @@ describe('lookup: behind the per organization cap, through connectionFetch', () 
     expect(await lookupConnection(w.deps, { organization_id: ORG, connection_id: CONN, key: 'objects', parents: [] }))
       .toEqual({ ok: true, answer: { key: 'objects', entries: [{ name: 'Submission__c', label: 'Submission' }] } })
     expect(asked).toEqual([{ org: ORG, perMinute: 60 }])
-    expect(w.d.rec.sent.map((s) => s.url)).toEqual(['https://trypennie.my.salesforce.com/services/data/v59.0/sobjects/'])
+    expect(w.d.rec.sent.map((s) => s.url)).toEqual(['https://trypennie.my.salesforce.com/services/data/v60.0/sobjects/'])
     expect(w.d.rec.leases[0]).toMatchObject({ op: 'acquire', purpose: 'lookup' })
     // The connection's token is on the request, applied by connectionFetch.
     expect(new Headers(w.d.rec.sent[0].init.headers).get('authorization')).toBe('Bearer plain-ops-access-token')
