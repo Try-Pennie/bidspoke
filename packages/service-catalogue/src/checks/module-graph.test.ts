@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { collectModuleGraph, collectModuleImports, ModuleGraphError, type WorkspaceLinks } from './module-graph'
+import { collectModuleGraph, collectModuleImports, ModuleGraphError, valueImportSpecifiers, type WorkspaceLinks } from './module-graph'
 import { computeFingerprint } from './fingerprint'
 import { LockfileError, type ImporterLock } from './lockfile'
 import type { ActionSchema } from '../schema/types'
@@ -58,6 +58,143 @@ describe('collectModuleGraph', () => {
     expect(rel(root, collectModuleGraph(path.join(root, 'a.ts')))).toEqual(['a.ts'])
   })
 
+  // #2878: the parser, not a comment pattern, decides where a string ends, so
+  // comment shaped text inside a literal can no longer hide a real import.
+  it('follows a value import that sits between two strings holding comment marks', () => {
+    const root = tree({
+      'a.ts': [
+        "const open = '/*'",
+        "import { b } from './b'",
+        "const close = '*/'",
+        'export const a = [open, b, close]',
+      ].join('\n'),
+      'b.ts': 'export const b = 1\n',
+    })
+    expect(rel(root, collectModuleGraph(path.join(root, 'a.ts')))).toEqual(['a.ts', 'b.ts'])
+  })
+
+  it('follows a value import written after a glob in a string, whose slash star opens no comment', () => {
+    const root = tree({
+      'a.ts': [
+        "export const pattern = 'src/*.ts'",
+        "import { b } from './b'",
+        'export const tail = `*/`',
+        'export const a = b',
+      ].join('\n'),
+      'b.ts': 'export const b = 1\n',
+    })
+    expect(rel(root, collectModuleGraph(path.join(root, 'a.ts')))).toEqual(['a.ts', 'b.ts'])
+  })
+
+  it('follows a value import written on the same line after a string holding two slashes', () => {
+    const root = tree({
+      'a.ts': "const sep = '//'; import { b } from './b'\nexport const a = [sep, b]\n",
+      'b.ts': 'export const b = 1\n',
+    })
+    expect(rel(root, collectModuleGraph(path.join(root, 'a.ts')))).toEqual(['a.ts', 'b.ts'])
+  })
+
+  it('ignores import shaped text inside a string or a template literal', () => {
+    const root = tree({
+      'a.ts': [
+        `export const s = "import { x } from './nope'"`,
+        "export const t = `import './nope2'\nand import('./nope3')`",
+      ].join('\n'),
+    })
+    expect(rel(root, collectModuleGraph(path.join(root, 'a.ts')))).toEqual(['a.ts'])
+  })
+})
+
+describe('valueImportSpecifiers', () => {
+  it('reads a mixed import as a value import and an all type import as type only', () => {
+    expect(
+      valueImportSpecifiers(
+        [
+          "import { type A, b } from './mixed'",
+          "import { type C, type D } from './all-types'",
+          "import e, { type F } from './default-value'",
+          "import type * as G from './namespace-type'",
+        ].join('\n'),
+      ),
+    ).toEqual(['./mixed', './default-value'])
+  })
+
+  it('reads every re-export for its value unless it is type only', () => {
+    expect(
+      valueImportSpecifiers(
+        [
+          "export { a } from './named'",
+          "export * from './star'",
+          "export * as ns from './star-as'",
+          "export { type B, c } from './mixed'",
+          "export { type D } from './all-types'",
+          "export type { E } from './type-clause'",
+          "export type * from './type-star'",
+          "export type * as T from './type-star-as'",
+        ].join('\n'),
+      ),
+    ).toEqual(['./named', './star', './star-as', './mixed'])
+  })
+
+  it('reads a side effect import and an empty import list as value imports', () => {
+    expect(valueImportSpecifiers("import './side-effect'\nimport {} from './empty'\nexport {} from './empty-export'\n")).toEqual([
+      './side-effect',
+      './empty',
+      './empty-export',
+    ])
+  })
+
+  it('reads a dynamic import anywhere in the file, quoted or as a plain template literal', () => {
+    expect(
+      valueImportSpecifiers(
+        [
+          "export const a = () => import('./quoted')",
+          'export async function b() {',
+          '  if (Math.random() > 0.5) return (await import(`./template`)).x',
+          '}',
+        ].join('\n'),
+      ),
+    ).toEqual(['./quoted', './template'])
+  })
+
+  it('leaves out an import type position, which names a type and loads nothing', () => {
+    expect(valueImportSpecifiers("export type M = typeof import('./types-only')\nexport const n: import('./also-types').N = 1\n")).toEqual([])
+  })
+
+  it('reads an import equals require as a value import unless it is type only', () => {
+    expect(valueImportSpecifiers("import cjs = require('./cjs')\nimport type T = require('./cjs-type')\nexport { cjs }\n")).toEqual(['./cjs'])
+  })
+
+  it('leaves out imports written in line, block and doc comments', () => {
+    expect(
+      valueImportSpecifiers(
+        [
+          "// import { a } from './line'",
+          "/* import './block' */",
+          '/**',
+          " * @example import { c } from './doc'",
+          " * @type {import('./doc-type').T}",
+          ' */',
+          'export const d = 1',
+        ].join('\n'),
+      ),
+    ).toEqual([])
+  })
+
+  it('refuses a dynamic import of a computed specifier, since nothing can say which file it loads', () => {
+    try {
+      valueImportSpecifiers("const name = './x'\nexport const a = () => import(name)\n", '/pkg/a.ts')
+      throw new Error('expected a refusal')
+    } catch (err) {
+      expect(err).toBeInstanceOf(ModuleGraphError)
+      expect((err as ModuleGraphError).code).toBe('unsupported_import')
+      expect((err as ModuleGraphError).file).toBe('/pkg/a.ts')
+      expect((err as ModuleGraphError).specifier).toBe('name')
+    }
+  })
+})
+
+describe('collectModuleGraph refusals', () => {
   it('refuses a workspace package import by name, since no fingerprint would cover its source', () => {
     const root = tree({ 'a.ts': "import { x } from '@bidspoke/uuidv7'\nexport const a = x\n" })
     expect(() => collectModuleGraph(path.join(root, 'a.ts'))).toThrow(ModuleGraphError)

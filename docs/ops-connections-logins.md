@@ -415,6 +415,18 @@ cause `taken_as_rate_limit`. Anthropic needs no check: its 429 is only ever
 `rate_limit_error`, and an account out of credit is answered with another
 status there, never a 429.
 
+A run step's `RequeueAt` for a rate limit suspends the run as a
+`rate_limit_wait`, which spends none of its retry attempts (#1693 7.4, #2859).
+So that a host which keeps answering 429 for a quota or plan limit (the HTTP
+service has no rule like OpenAI's) cannot hold a run for ever, one step of one
+run may wait at most 10 times, none waking more than 6 hours after its first
+wait. The wait that would pass either ends the run failed with
+`requeue_cap_reached`, its error naming the step, the host, the status the
+service last answered and the time it asked to wait until. Both numbers live in
+`complete_run_request` (supabase-ops migration 20261027200000) and are named in
+the Worker as `OPS_STEP_REQUEUE_MAX` and `OPS_STEP_REQUEUE_WAIT_MAX_MS`
+(`run-vocabulary.ts`). The tick counts such runs against the `runs_failing` rate.
+
 ## Google: delegation scopes and the mailbox allowlist (F129, decision 11)
 
 Domain wide delegation lets the ops service account act as any mailbox in the

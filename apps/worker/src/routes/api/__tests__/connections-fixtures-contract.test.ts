@@ -9,8 +9,13 @@
  * a shape the Worker never sends: the list at the settled design's count (13
  * connections across eight services, every page status among them, and one
  * ops gives no status), two connections' History, the Google mailboxes and
- * drives, the Slack alerts login's settings, and a Remove whose ops revoke did
- * not answer (which is what opens the page's removal notice).
+ * drives, the Slack alerts login's settings, a Remove whose ops revoke did
+ * not answer (which is what opens the page's removal notice), a Replace of
+ * Pennie Salesforce with TPL2 Salesforce that moved all but Lead Completed
+ * sync, saved by someone else on every try (which keeps the Replace dialog
+ * open with its moved rows and its red line, #2338 build PR 12), and the list
+ * read again once ops stops answering health, which shows the last known
+ * statuses under the page's out of date strip (#2864).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
@@ -21,6 +26,10 @@ import { forgetConnectionStatusesMemory, forgetSlackAlertStatusMemory } from '..
 vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
 vi.mock('../../../lib/audit')
+vi.mock('../../../engine/definition-loader', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../engine/definition-loader')>()),
+  refreshWorkflowCaches: vi.fn(async () => {}),
+}))
 vi.mock('../../../lib/slack-token-check', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../lib/slack-token-check')>()),
   verifySlackToken: vi.fn(),
@@ -38,9 +47,13 @@ import historyJson from '../../../../../web/e2e/fixtures/connections/history.jso
 import subjectsJson from '../../../../../web/e2e/fixtures/connections/google-subjects.json'
 import slackJson from '../../../../../web/e2e/fixtures/connections/slack-alerts.json'
 import removeJson from '../../../../../web/e2e/fixtures/connections/remove.json'
+import listStaleJson from '../../../../../web/e2e/fixtures/connections/list-stale.json'
+import replaceJson from '../../../../../web/e2e/fixtures/connections/replace.json'
 
 /** The moment the list was read: 12:00 PM ET on 2026-10-27. */
 const NOW = '2026-10-27T16:00:00.000Z'
+/** The moment the list was read again with ops not answering: twenty minutes later. */
+const STALE_AT = '2026-10-27T16:20:00.000Z'
 const ORG = '0e2e0000-0000-4000-8000-000000000001'
 const USER = '0e2e0000-0000-4000-8000-0000000000a1'
 const OWNER = '0e2e0000-0000-4000-8000-0000000000a2'
@@ -177,9 +190,28 @@ const SUBJECTS = [
   { kind: 'drive', subject: '0AFixturePayouts', display_name: 'Partner payouts', added_by: 'Editor B', added_at: '2026-10-21T15:10:00Z' },
 ]
 
-/** A database double that applies eq, in and the alert row's or filter, and projects the selected columns. */
+/** An ops workflow whose one Salesforce step runs on Pennie Salesforce, as stored before the Replace. */
+const onPennie = (n: number, name: string): Row => ({
+  id: wf(n), organization_id: ORG, name, version: 1, lane: 'ops', is_active: true, definition_schema_version: 1, deleted_at: null,
+  definition: {
+    nodes: [
+      { id: 'n1', namespace: 'trigger', type: 'webhook_trigger', config: {} },
+      { id: 'n2', namespace: 'write_lead', type: 'app_action', config: { service: 'salesforce', action: 'salesforce.update-record', connection: id(1), boundBy: USER } },
+    ],
+    edges: [{ id: 'e1', source: 'n1', target: 'n2' }],
+  },
+})
+
+/** The six workflows on Pennie Salesforce (REFS), which the Replace is given. */
+const PENNIE_WORKFLOWS = (): Row[] => REFS[id(1)].map((r, i) => onPennie(i + 1, r.name))
+
+/** Lead Completed sync, saved by someone else between every read and write the Replace makes. */
+const SAVED_BY_OTHER = wf(3)
+
+/** A database double that applies eq, in, is and the alert row's or filter, and projects the selected columns. */
 function storeDouble(stored: Row[]) {
-  const tables: Record<string, Row[]> = { service_connections: stored, users: USERS }
+  const workflows = PENNIE_WORKFLOWS()
+  const tables: Record<string, Row[]> = { service_connections: stored, users: USERS, workflows }
   const from = (table: string) => {
     const filters: Array<(r: Row) => boolean> = []
     let columns: string[] | null = null
@@ -192,6 +224,7 @@ function storeDouble(stored: Row[]) {
       select(cols: string) { columns = cols.split(',').map((c) => c.trim()); return b },
       eq(col: string, v: unknown) { filters.push((r) => r[col] === v); return b },
       in(col: string, vs: unknown[]) { filters.push((r) => vs.includes(r[col])); return b },
+      is(col: string, v: unknown) { filters.push((r) => (r[col] ?? null) === v); return b },
       or(expr: string) {
         const alts = expr.split(',').map((a) => {
           const [col, op, v] = a.split('.')
@@ -209,10 +242,22 @@ function storeDouble(stored: Row[]) {
   }
   const rpc = (name: string, args: Record<string, unknown>) => {
     if (name === 'auth_user_with_allowlist') return Promise.resolve({ data: [USERS[0]], error: null })
-    if (args.p_organization_id !== ORG) return Promise.resolve({ data: null, error: { code: 'P0002', message: 'connection_not_found' } })
+    if ((args.p_organization_id ?? args.p_org) !== ORG) return Promise.resolve({ data: null, error: { code: 'P0002', message: 'connection_not_found' } })
     if (name === 'connection_references') return Promise.resolve({ data: REFS[args.p_connection_id as string] ?? [], error: null })
     if (name === 'connection_history') return Promise.resolve({ data: HISTORY[args.p_connection_id as string] ?? [], error: null })
     if (name === 'remove_ops_connection') return Promise.resolve({ data: [{ outcome: 'removed', removed_generation: 2, workflows: [] }], error: null })
+    if (name === 'definition_connection_problems') return Promise.resolve({ data: [], error: null })
+    if (name === 'write_workflow') {
+      const row = workflows.find((w) => w.id === args.p_id)!
+      // Someone else's save lands first every time: the version moves on, so this one is stale.
+      if (row.id === SAVED_BY_OTHER) {
+        row.version = (row.version as number) + 1
+        return Promise.resolve({ data: null, error: { code: 'BP409', message: 'stale_version', details: JSON.stringify({ current: row, last_save_id: null, changed_by_name: 'Editor A', changed_at: NOW }) } })
+      }
+      const fields = args.p_fields as Row
+      Object.assign(row, { definition: fields.definition, version: (row.version as number) + 1 })
+      return Promise.resolve({ data: { workflow: structuredClone(row), version_id: `v-${String(row.id)}`, version_number: row.version }, error: null })
+    }
     return Promise.resolve({ data: null, error: { code: '42883', message: `no function ${name}` } })
   }
   return { from, rpc }
@@ -236,9 +281,9 @@ function makeEnv() {
 
 const ctx = recordingContext()
 
-async function call(method: string, path: string) {
+async function call(method: string, path: string, body?: unknown, env: Env = makeEnv()) {
   vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(await rows()) as never)
-  return api.request(path, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' } }, makeEnv(), ctx)
+  return api.request(path, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, env, ctx)
 }
 
 beforeEach(() => {
@@ -297,9 +342,41 @@ describe('the Connections page fixtures are what their routes answer (#2611)', (
     expect(await res.json()).toEqual(slackJson)
   })
 
+  it('POST /connections/:id/replace: Pennie Salesforce to TPL2 Salesforce, every workflow but Lead Completed sync moved', async () => {
+    const res = await call('POST', `/connections/${id(1)}/replace`, { with: id(2), workflows: REFS[id(1)].map((r) => r.workflow_id) })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(replaceJson)
+  })
+
   it('DELETE /connections/:id: Lead notes removed while ops did not answer the revoke', async () => {
     const res = await call('DELETE', `/connections/${id(11)}`)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(removeJson)
+  })
+
+  // #2864: the out of date strip. One Worker reads the list while ops answers
+  // (which keeps its statuses as the last known copy), then again twenty
+  // minutes later with ops's health call throwing, as it does when the ops
+  // Worker is down, while Slack still answers for the alerts login.
+  it('GET /connections with ops not answering: the last known statuses, as of the earlier read, out of date', async () => {
+    const env = makeEnv()
+    const fresh = await call('GET', '/connections', undefined, env)
+    expect(fresh.status).toBe(200)
+    expect(await fresh.json()).toEqual(listJson)
+
+    vi.setSystemTime(new Date(STALE_AT))
+    const ops = (env as unknown as { OPS_CONNECTIONS: { health: ReturnType<typeof vi.fn> } }).OPS_CONNECTIONS
+    ops.health.mockRejectedValue(new Error('ops is not answering'))
+    const res = await call('GET', '/connections', undefined, env)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(listStaleJson)
+  })
+
+  it('the out of date list is the list the scan opens, its statuses as of the earlier read', () => {
+    const list = listJson as { connections: Array<{ id: string; status: string | null }> }
+    const stale = listStaleJson as { connections: Array<{ id: string; status: string | null }>; statuses: { as_of: string | null; stale: boolean; unavailable: unknown } }
+    expect(stale.statuses).toMatchObject({ as_of: NOW, stale: true })
+    expect(stale.statuses.unavailable).not.toBeNull()
+    expect(stale.connections.map((c) => [c.id, c.status])).toEqual(list.connections.map((c) => [c.id, c.status]))
   })
 })

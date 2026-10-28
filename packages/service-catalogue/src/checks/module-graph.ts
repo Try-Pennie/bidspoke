@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
+import ts from 'typescript'
 
 /**
  * The files a module reaches through its relative VALUE imports and the
@@ -15,10 +16,12 @@ import path from 'node:path'
  * a version (npm refuses to), and a `node:` or `cloudflare:` built in is not
  * pinned at all.
  *
- * Type only imports (`import type`, `export type ... from`) are left out: they
- * are erased before anything runs, so they change no behaviour and pull nothing
- * into a bundle. Comments are blanked first, so a commented out import is not
- * read as one.
+ * Type only imports (`import type`, `export type ... from`, a list of `type`
+ * names alone) are left out: they are erased before anything runs, so they
+ * change no behaviour and pull nothing into a bundle. Imports are read by the
+ * TypeScript parser (#2878), so an import written in a comment, a string or a
+ * template literal is not read as one, and comment shaped text in a string
+ * cannot hide a real one.
  *
  * Runtime built ins are left out by name: a `node:` or `cloudflare:` import is
  * versioned by the runtime and its compatibility date, not by the lockfile. Any
@@ -65,27 +68,70 @@ export class ModuleGraphError extends Error {
   }
 }
 
-/** Blanks block and line comments, keeping line breaks. A `//` after a colon (a URL) is kept. */
-function stripComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '))
-    .replace(/(^|[^:\\])\/\/[^\n]*/g, (_m, lead: string) => lead)
+/** True when every named binding of an import or export list is marked `type`, so the whole statement is erased. */
+const allMarkedType = (elements: ts.NodeArray<ts.ImportSpecifier> | ts.NodeArray<ts.ExportSpecifier>) =>
+  elements.length > 0 && elements.every((element) => element.isTypeOnly)
+
+/** An import or export clause that names only types: `import type`, `export type`, or a list of `type` names alone. */
+function isTypeOnlyImport(node: ts.ImportDeclaration): boolean {
+  const clause = node.importClause
+  if (!clause) return false
+  if (clause.isTypeOnly) return true
+  return !clause.name && clause.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings) && allMarkedType(clause.namedBindings.elements)
 }
 
-/** The relative and bare specifiers a module imports for their values. */
-export function valueImportSpecifiers(source: string): string[] {
-  const code = stripComments(source)
+function isTypeOnlyExport(node: ts.ExportDeclaration): boolean {
+  if (node.isTypeOnly) return true
+  return node.exportClause !== undefined && ts.isNamedExports(node.exportClause) && allMarkedType(node.exportClause.elements)
+}
+
+const literalText = (node: ts.Node | undefined): string | undefined =>
+  node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) ? node.text : undefined
+
+/**
+ * The relative and bare specifiers a module imports for their values, in
+ * source order, read by the TypeScript parser (#2878) so that text inside a
+ * string, a template literal, a regex literal or a comment is never read as an
+ * import and a comment shaped string never hides one. `file` names the file for
+ * the language it is parsed as (from its extension) and for any refusal.
+ *
+ * A value import is a side effect import, an `import` or `export ... from`
+ * naming at least one value (or nothing at all, `import {} from`, which still
+ * loads the module), `export *`, `import x = require(...)`, and a dynamic
+ * `import(...)` anywhere in the file. A dynamic import of anything but a plain
+ * string is refused, since nothing can say which file it loads. A type
+ * position `import('./x')` names a type and loads nothing, so it is left out.
+ *
+ * A list of `type` names alone (`import { type A } from`) is left out because
+ * TypeScript and esbuild erase it whole while `verbatimModuleSyntax` is off,
+ * which catalogue.test.ts holds for every package an action reaches.
+ */
+export function valueImportSpecifiers(source: string, file = 'module.ts'): string[] {
+  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false)
   const out: string[] = []
-  // The span between the keyword and `from` may cross lines (a long import
-  // list) but never another import or export keyword, so an `export type`
-  // alias cannot swallow the value import written after it.
-  const fromClause = /\b(?:import|export)\s+(type\s+)?(?:(?!\b(?:import|export)\b)[^'";])*?\bfrom\s*(['"])([^'"]+)\2/g
-  for (const m of code.matchAll(fromClause)) {
-    if (m[1]) continue
-    out.push(m[3])
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) {
+      const specifier = literalText(node.moduleSpecifier)
+      if (specifier !== undefined && !isTypeOnlyImport(node)) out.push(specifier)
+    } else if (ts.isExportDeclaration(node)) {
+      const specifier = literalText(node.moduleSpecifier)
+      if (specifier !== undefined && !isTypeOnlyExport(node)) out.push(specifier)
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      if (!node.isTypeOnly && ts.isExternalModuleReference(node.moduleReference)) {
+        const specifier = literalText(node.moduleReference.expression)
+        if (specifier !== undefined) out.push(specifier)
+      }
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const argument = node.arguments[0]
+      const specifier = literalText(argument)
+      if (specifier === undefined) {
+        throw new ModuleGraphError('unsupported_import', file, argument ? argument.getText(parsed) : '')
+      }
+      out.push(specifier)
+    }
+    ts.forEachChild(node, visit)
   }
-  for (const m of code.matchAll(/\bimport\s*(['"])([^'"]+)\1/g)) out.push(m[2])
-  for (const m of code.matchAll(/\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g)) out.push(m[2])
+  visit(parsed)
   return out
 }
 
@@ -199,7 +245,7 @@ export function collectModuleImports(entry: string, links?: WorkspaceLinks): Mod
     if (owners.has(file)) continue
     owners.set(file, owner)
     if (file.endsWith('.json')) continue
-    for (const specifier of valueImportSpecifiers(readFileSync(file, 'utf8'))) {
+    for (const specifier of valueImportSpecifiers(readFileSync(file, 'utf8'), file)) {
       if (specifier.startsWith('.')) {
         const resolved = resolveRelative(file, specifier)
         if (!resolved) throw new ModuleGraphError('unresolved_import', file, specifier)

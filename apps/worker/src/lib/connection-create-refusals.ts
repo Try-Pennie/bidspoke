@@ -128,7 +128,7 @@ export function isCreateRefusalCode(code: string): code is CreateRefusalCode {
 export interface RefusalContext {
   /** The service's name, as the catalogue gives it (Salesforce), or the key that was sent when none declares it. */
   service: string
-  /** Its secret field's label in lower case (client secret, private key), or "login". */
+  /** Its secret field's label as it reads mid sentence (client secret, API key), or "login". */
   secret: string
   /** The Salesforce org's address the connection declares, when it is a Salesforce one. */
   org: string | null
@@ -136,6 +136,26 @@ export interface RefusalContext {
   names: readonly string[]
   /** The money identity found, for connection_money_identity. */
   money: MoneyTargetKind | null
+  /**
+   * For a service whose refusal of the key can as well mean a field the key is
+   * scoped to is wrong (OpenAI's Project ID, #2715), the two fields' labels as the
+   * form shows them; null or absent for every other service (connection-create.ts, keyScopeOf).
+   */
+  keyScope?: KeyScope | null
+}
+
+/** A key's label and the label of the field it only works within, as the form shows them (#2715). */
+export interface KeyScope {
+  key: string
+  scope: string
+  /** What the scope field identifies, in the service's own word (OpenAI's project). */
+  owner: string
+  /**
+   * True where the scope cannot be changed: Reconnect takes it from the stored
+   * connection and refuses a changed one (reconnect_target_changed), so its
+   * sentences send the person to the key alone (L111).
+   */
+  fixed?: boolean
 }
 
 /** "A", "A and B", "A, B and C". */
@@ -196,7 +216,9 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   verify_identity_mismatch: (c) => `${c.service} says this login belongs to another account than the one entered. Nothing was saved. Check the account and save again.`,
   verify_slack_not_a_bot: () => 'This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.',
   verify_slack_workspace_mismatch: () => 'Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
-  verify_openai_project_mismatch: () => 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.',
+  verify_openai_project_mismatch: (c) => c.keyScope?.fixed
+    ? 'OpenAI says this API key belongs to another project than this connection\'s Project ID. Nothing was saved. Check the key is from this connection\'s project and save again.'
+    : 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.',
   verify_google_mailbox_mismatch: () => 'Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.',
   verify_anthropic_workspace_mismatch: () => 'Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
   verify_http_check_refused: () => 'The Check path did not answer with this header value. Nothing was saved. Check the Check path, the Header and the Header value, and save again.',
@@ -229,7 +251,14 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   sf_lease_unavailable: () => 'The workflows server could not reserve a Salesforce call for the check. Nothing was saved. Save again in a minute.',
   connection_record_failed: () => 'The workflows server could not record the check before sending it. Nothing was saved. Save again.',
   // The design's sentence (D14): the secret is named once, then "the secret" (L605); a service with no secret says its login.
-  connection_needs_reauth: (c) => `${c.service} refused the ${c.secret}. Nothing was saved. Check the ${c.secret === 'login' ? 'login' : 'secret'} and save again.`,
+  // OpenAI answers a valid key sent with a wrong Project ID with the same 401 as a bad key, and its error reference
+  // documents no code that tells the two apart (#2715), so a key scoped to a field names both, and which to check first.
+  // On Reconnect the scope is the stored connection's and cannot change there, so only the key is named as the fix (L111).
+  connection_needs_reauth: (c) => c.keyScope?.fixed
+    ? `${c.service} refused the ${c.keyScope.key} with this connection's ${c.keyScope.scope}, so the key is wrong or belongs to another ${c.keyScope.owner}. Nothing was saved. Check the key is from this connection's ${c.keyScope.owner} and save again.`
+    : c.keyScope
+    ? `${c.service} refused the ${c.keyScope.key} with this ${c.keyScope.scope}, so either the key or the ${c.keyScope.scope} is wrong. Nothing was saved. Check the ${c.keyScope.scope} first, then the key, and save again.`
+    : `${c.service} refused the ${c.secret}. Nothing was saved. Check the ${c.secret === 'login' ? 'login' : 'secret'} and save again.`,
   connection_auth_unavailable: (c) => `${c.service} did not answer the sign in. Nothing was saved. Save again in a minute.`,
   connection_not_allowed: (c) => `A Bidspoke rule refused this ${c.service} login before it was tried. Nothing was saved. Check what the connection names and save again.`,
   connection_auth_check_unavailable: () => 'The workflows server could not read the list it checks this login against. Nothing was saved. Save again in a minute.',
@@ -311,7 +340,7 @@ export const CONNECTION_ROUTE_REFUSAL_CODES = [
   // Replace (build PR 12; R20). Each refuses the whole request before anything is written.
   /** The body is not the dialog's: no replacement, no workflow ticked, an id that is not one, or a key the route does not read. */
   'replace_body_invalid',
-  /** More workflows ticked than one Replace may write (REPLACE_WORKFLOWS_MAX). */
+  /** More workflows ticked than one Replace may write inside the page's wait (REPLACE_WORKFLOWS_MAX). */
   'replace_too_many',
   /** The Slack alerts login: no workflow can name it, so there is nothing to replace. */
   'connection_not_replaceable',
@@ -333,7 +362,7 @@ export type ConnectionRouteRefusalCode = (typeof CONNECTION_ROUTE_REFUSAL_CODES)
 export interface RouteRefusalContext {
   /** The service's name, as the catalogue gives it, or "the service". */
   service: string
-  /** Its secret field's label in lower case, or "login". */
+  /** Its secret field's label as it reads mid sentence (client secret, API key), or "login". */
   secret: string
   /** The workflows, field labels or list entries the sentence is about. */
   names: readonly string[]
@@ -382,7 +411,7 @@ const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: Route
   delegation_list_unavailable: () => 'The company list of mailboxes and drives could not be read. Nothing was changed. Try again in a minute.',
   delegation_change_refused: () => 'The workflows server would not make the change to the list. Nothing was changed. Tell Dan, since this is a fault in Bidspoke.',
   replace_body_invalid: () => 'Choose a connection to replace it with and tick at least one workflow. Nothing was changed.',
-  replace_too_many: () => `Replace can give at most ${REPLACE_WORKFLOWS_MAX} workflows a new version at a time. Nothing was changed. Untick some and replace again.`,
+  replace_too_many: () => `Replace moves at most ${REPLACE_WORKFLOWS_MAX} workflows at a time. Nothing was changed. Untick some and replace again.`,
   connection_not_replaceable: () => 'Bidspoke\'s own alerts post through this Slack login, and no workflow can use it, so there is nothing to replace. Nothing was changed.',
   replace_with_not_found: () => 'The connection chosen to replace it with is not in your organization any more. Nothing was changed. Reload the page and choose another.',
   replace_with_same: () => 'A connection cannot replace itself. Nothing was changed. Choose another connection.',
@@ -401,19 +430,19 @@ const wasWere = (names: readonly string[]) => (names.length === 1 ? 'was' : 'wer
 const itThey = (names: readonly string[]) => (names.length === 1 ? 'it' : 'they')
 const useUses = (names: readonly string[]) => (names.length === 1 ? 'uses' : 'use')
 const nameNames = (names: readonly string[]) => (names.length === 1 ? 'names' : 'name')
-const workflowsWord = (n: number) => (n === 1 ? 'workflow' : 'workflows')
 
 /**
  * What an incomplete Replace says (build PR 12; R20), or null when every
- * ticked workflow names the replacement now. Said in the dialog's line as a
- * refusal is (R14): how many were given a new version (or that nothing was
- * changed), each workflow left on the old connection by name with why, and
- * what to do. A save it could not confirm is never claimed either way (L11).
+ * ticked workflow names the replacement now. Said in the dialog's red line as
+ * a refusal is (R14): each workflow left on the old connection by name with
+ * why, and what to do. Never a count of those moved: the dialog lists every
+ * workflow and marks each moved one, so the count would say it twice (Dan,
+ * 2026-10-27, #2338 Replace round 2). A save it could not confirm is never
+ * claimed either way (L11).
  */
 export function replaceIncompleteSentence(workflows: readonly ReplacedWorkflow[], source: string, replacement: string): string | null {
   const named = (pick: (w: ReplacedWorkflow) => boolean) => workflows.filter(pick).map((w) => w.name ?? 'A workflow')
   const refused = (why: ReplacedWorkflow['why']) => named((w) => w.outcome === 'refused' && w.why === why)
-  const replaced = workflows.filter((w) => w.outcome === 'replaced').length
   const changed = named((w) => w.outcome === 'changed')
   const deleted = named((w) => w.outcome === 'deleted')
   const failed = named((w) => w.outcome === 'failed')
@@ -424,7 +453,7 @@ export function replaceIncompleteSentence(workflows: readonly ReplacedWorkflow[]
   const malformed = refused('write_refused')
   if (replaceComplete(workflows)) return null
 
-  const parts: string[] = [replaced > 0 ? `Replaced in ${replaced} ${workflowsWord(replaced)}.` : 'Nothing was changed.']
+  const parts: string[] = []
   if (gone.length) parts.push(`${replacement} was removed while this ran, so ${listed(gone)} still ${useUses(gone)} ${source}.`)
   if (changed.length) parts.push(`${listed(changed)} ${wasWere(changed)} saved by someone else while this ran, so ${itThey(changed)} still ${useUses(changed)} ${source}.`)
   if (unchecked.length) parts.push(`Bidspoke could not check the connections ${listed(unchecked)} ${nameNames(unchecked)}, so ${itThey(unchecked)} still ${useUses(unchecked)} ${source}.`)

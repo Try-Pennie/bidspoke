@@ -51,6 +51,7 @@ import {
   STEP_TEST_STATUSES, type StepTestStatus,
   OPS_STEP_RECORD_OUTCOMES, OPS_STEP_RECORD_STATUSES, type OpsStepRecordOutcome, type OpsStepRecordStatus,
   CHECKPOINT_ACK_OUTCOMES, type CheckpointAckOutcome,
+  UNCHARGED_RESUME_REASONS,
 } from './run-vocabulary'
 import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
@@ -269,13 +270,14 @@ export function chargedAttempts(run: Pick<ClaimedRun, 'attempts' | 'unchargedAtt
 /**
  * Whether a retry after this claim's start ends the run dead at max_attempts,
  * the judgement complete_run_request makes (#2336). The start adds one attempt,
- * charged unless the run resumes from a resource wait, so it is the run's last
+ * charged unless the run resumes from a wait (UNCHARGED_RESUME_REASONS: a
+ * resource wait, or a rate limit wait since #2859), so it is the run's last
  * charged attempt when attempts + 1 - unchargedAttempts - (1 if resumed from a
- * resource wait) reaches maxAttempts. supabase-ops/supabase/tests/
+ * wait) reaches maxAttempts. supabase-ops/supabase/tests/
  * claim_uncharged_attempts.test.sql checks the same rule against the database.
  */
 export function lastChargedAttempt(run: Pick<ClaimedRun, 'attempts' | 'unchargedAttempts' | 'maxAttempts' | 'resumeReason'>): boolean {
-  const thisStart = run.resumeReason === 'resource_wait' ? 0 : 1
+  const thisStart = (UNCHARGED_RESUME_REASONS as readonly (string | null)[]).includes(run.resumeReason) ? 0 : 1
   return chargedAttempts(run) + thisStart >= run.maxAttempts
 }
 
@@ -360,8 +362,13 @@ export async function extendRunLease(
  * How a holder ends its claim. A resource_wait suspend (#2334) names what it
  * waited on, sent as p_error; the database ends the run failed with
  * resource_wait_exceeded instead once the wait is past 24 hours, so read
- * runStatus rather than assuming suspended. A holder cannot fail a run for an
- * engine only reason (ENGINE_FAILED_REASONS, finding F122).
+ * runStatus rather than assuming suspended. A rate_limit_wait suspend (#2859)
+ * names its step (p_step, the key the requeue cap counts by), the HTTP status
+ * that asked for it (p_status, null when no request was made) and what was
+ * asked (p_error); the database ends the run failed with requeue_cap_reached
+ * instead once that step reaches the requeue cap (OPS_STEP_REQUEUE_MAX waits,
+ * or OPS_STEP_REQUEUE_WAIT_MAX_MS after its first). A holder cannot fail a run
+ * for an engine only reason (ENGINE_FAILED_REASONS, finding F122).
  */
 export type CompleteOutcome =
   | { outcome: 'done' }
@@ -369,6 +376,7 @@ export type CompleteOutcome =
   | { outcome: 'retry'; error?: string; notBefore?: Date }
   | { outcome: 'suspend'; reason: 'continue' | 'wake'; notBefore: Date }
   | { outcome: 'suspend'; reason: 'resource_wait'; cause: ResourceWaitCause; notBefore: Date }
+  | { outcome: 'suspend'; reason: 'rate_limit_wait'; step: string; status: number | null; notBefore: Date; error: string }
   | { outcome: 'needs_human'; reason: 'lease_expired_after_send' | 'send_outcome_unknown'; error?: string }
   | { outcome: 'dead'; reason: 'workflow_inactive' | 'workflow_deleted' | 'halted_by_rule' }
 
@@ -397,6 +405,8 @@ export async function completeRunRequest(
     p_reason: 'reason' in end ? end.reason : undefined,
     p_error: 'cause' in end ? end.cause : 'error' in end ? end.error : undefined,
     p_not_before: 'notBefore' in end ? iso(end.notBefore) : undefined,
+    // Sent only for a rate limit wait, so every other outcome's call is the one it always was.
+    ...('step' in end ? { p_step: end.step, p_status: end.status } : {}),
   }), options))
   const outcome = field(name, row, 'outcome', oneOf(['completed', 'already_completed', 'claim_lost', 'not_found'] as const), 'a complete outcome')
   if (outcome === 'claim_lost' || outcome === 'not_found') {

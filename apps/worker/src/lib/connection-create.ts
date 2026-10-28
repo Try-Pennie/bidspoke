@@ -9,7 +9,7 @@
  */
 import { connectionSecretLabel, type ConnectionAuthKind, type ConnectionValue, type ServiceSchema } from '@bidspoke/service-catalogue/schema'
 import type { DelegationSubjectRow, MeasuredIdentityAnswer } from './ops-connections-contract'
-import { CONNECTION_NAME_MAX } from './connection-create-refusals'
+import { CONNECTION_NAME_MAX, type KeyScope } from './connection-create-refusals'
 import { slackActsAs } from './slack-token-check'
 import { readGoogleTarget } from '../ops/connections/minters/google-target'
 
@@ -102,9 +102,44 @@ export const AUTH_TYPE_OF: Readonly<Record<ConnectionAuthKind, string>> = {
   oauth_user: 'oauth_user',
 }
 
-/** The service's secret field's label in lower case, for the page's sentence ("refused the client secret"): the catalogue's one rule. */
+/** The service's secret field's label as it reads mid sentence ("refused the client secret", "refused the API key"): the catalogue's one rule. */
 export function secretLabelOf(service: ServiceSchema): string {
   return connectionSecretLabel(service.connection)
+}
+
+/**
+ * The services whose refusal of the key can as well mean a field the key is
+ * scoped to is wrong, by the form's field keys (#2715). OpenAI answers a valid
+ * key sent with a Project ID it cannot act in with a 401, and its error
+ * reference (developers.openai.com/api/docs/guides/error-codes, read
+ * 2026-10-27) lists no code that tells that 401 from a bad key's, so verify
+ * cannot tell them apart and the sentence names both. Anthropic is not listed:
+ * nothing measured says a wrong workspace is answered as a refused key.
+ */
+const KEY_SCOPED: Readonly<Record<string, { key: string; scope: string; owner: string }>> = {
+  openai: { key: 'api_key', scope: 'project_id', owner: 'project' },
+}
+
+/** The key's and its scope's labels as the form shows them, for the refused key sentence; null for a service whose key names no scope. */
+export function keyScopeOf(service: ServiceSchema): KeyScope | null {
+  if (!Object.hasOwn(KEY_SCOPED, service.key)) return null
+  const keys = KEY_SCOPED[service.key]
+  const label = (k: string) => service.connection.fields.find((f) => f.key === k)?.label
+  const key = label(keys.key)
+  const scope = label(keys.scope)
+  // A renamed field would otherwise drop the scope silently and send the person to the key alone.
+  if (key === undefined || scope === undefined) throw new Error(`${service.key} declares no field ${key === undefined ? keys.key : keys.scope} for its key scope`)
+  return { key, scope, owner: keys.owner }
+}
+
+/**
+ * keyScopeOf for Reconnect, where the scope is the stored connection's and a
+ * changed one is refused (reconnect_target_changed), so the sentences name the
+ * key alone as the thing to fix (L111, #2715).
+ */
+export function storedKeyScopeOf(service: ServiceSchema): KeyScope | null {
+  const scope = keyScopeOf(service)
+  return scope === null ? null : { ...scope, fixed: true }
 }
 
 /** The Salesforce org a target declares, by its host, for the sentences that name it (#2556). */

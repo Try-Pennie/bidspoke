@@ -32,6 +32,8 @@ import {
   NON_STEP_LEASE_OUTCOMES,
   OBSERVATION_OUTCOMES,
   OBSERVATION_REASONS,
+  OPS_STEP_REQUEUE_MAX,
+  OPS_STEP_REQUEUE_WAIT_MAX_MS,
   OPS_SWEEPS,
   OVERLAP_RULES,
   RESOURCE_WAIT_CAUSES,
@@ -44,6 +46,7 @@ import {
   STATUS_REASONS,
   TERMINAL_RUN_REQUEST_STATUSES,
   TRIGGER_KINDS,
+  UNCHARGED_RESUME_REASONS,
 } from '../../../../worker/src/ops/run-vocabulary'
 import { PLANNED_TRIGGER_TYPES, TRIGGER_TYPES } from '@bidspoke/workflow-definition'
 
@@ -216,6 +219,37 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     expect(sorted(guardIn(body, 'suspend', 'p_reason'))).toEqual(sorted(RESUME_REASONS.filter((r) => r !== 'retry')))
     expect(sorted(guardIn(body, 'suspend', 'p_error'))).toEqual(sorted(RESOURCE_WAIT_CAUSES))
     expect(sorted(constraintValues(SQL, 'run_requests_resource_wait_cause_check'))).toEqual(sorted(RESOURCE_WAIT_CAUSES))
+  })
+
+  /**
+   * A deferral spends no retry attempt (#1693 7.4): a start resumed from a
+   * resource wait (#2334) or a rate limit wait (#2859) is not charged, and the
+   * lease sweep does not refund such a start twice. Both read the one list.
+   */
+  it('the starts not charged against max_attempts are the same list in the code, the start and the lease sweep (#2859)', () => {
+    const start = /uncharged_attempts \+ CASE WHEN r\.resume_reason IN \(([^)]*)\)/.exec(functionBody(SQL, 'start_run_execution'))
+    expect(start, 'start_run_execution names the uncharged resume reasons').not.toBeNull()
+    expect(sorted([...start![1].matchAll(/'([^']*)'/g)].map((m) => m[1]))).toEqual(sorted(UNCHARGED_RESUME_REASONS))
+    const sweep = /e\.resume_reason IN \(([^)]*)\)/.exec(functionBody(SQL, 'sweep_expired_leases'))
+    expect(sweep, 'sweep_expired_leases names the uncharged resume reasons').not.toBeNull()
+    expect(sorted([...sweep![1].matchAll(/'([^']*)'/g)].map((m) => m[1]))).toEqual(sorted(UNCHARGED_RESUME_REASONS))
+    for (const r of UNCHARGED_RESUME_REASONS) expect(RESUME_REASONS).toContain(r)
+  })
+
+  /**
+   * The requeue cap (#2859) lives in complete_run_request, which ends a step's
+   * rate limit wait failed with requeue_cap_reached; the Worker names the same
+   * two numbers (the tests that model the database's answer, and the docs).
+   */
+  it('complete_run_request caps a step\'s rate limit waits at the numbers the code names (#2859)', () => {
+    const body = functionBody(SQL, 'complete_run_request')
+    const max = /v_requeue_max CONSTANT integer := (\d+);/.exec(body)
+    const wait = /v_requeue_wait_max CONSTANT interval := interval '(\d+) seconds';/.exec(body)
+    expect(max, 'complete_run_request names its requeue count cap').not.toBeNull()
+    expect(wait, 'complete_run_request names its requeue wait cap').not.toBeNull()
+    expect(Number(max![1])).toBe(OPS_STEP_REQUEUE_MAX)
+    expect(Number(wait![1]) * 1000).toBe(OPS_STEP_REQUEUE_WAIT_MAX_MS)
+    expect(body).toContain("v_reason := 'requeue_cap_reached'")
   })
 
   it('a resource wait\'s causes are acquire_sf_lease\'s refusals of a step and an acquire error', () => {

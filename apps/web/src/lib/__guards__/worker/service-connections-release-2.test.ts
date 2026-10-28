@@ -79,10 +79,18 @@ export function tableInsertsIn(raw: string): TableWrite[] {
   return out
 }
 
-/** The column list of each INSERT INTO the table in `sql`: empty when the insert names none. */
+/**
+ * The column list of each INSERT INTO the table in `sql`: empty when the insert names none.
+ * The name must end where the table's does (#2897): a quoted name closes with the quote it opened
+ * with, and an unquoted one is not followed by another identifier character, so a sibling such as
+ * `service_connections_x` is a different table and is not matched.
+ */
 export function functionInsertsIn(sql: string): string[][] {
-  const insert = new RegExp(`INSERT\\s+INTO\\s+(?:public\\.)?"?${TABLE}"?(?:\\s+AS\\s+\\w+)?\\s*(\\(([^)]*)\\))?`, 'gi')
-  return [...sql.matchAll(insert)].map((m) => (m[2] ?? '').split(',').map((c) => c.trim().replace(/"/g, '')).filter((c) => c !== ''))
+  const insert = new RegExp(
+    `INSERT\\s+INTO\\s+(?:("?)public\\1\\.)?(?<q>"?)${TABLE}\\k<q>(?![\\w$])(?:\\s+AS\\s+\\w+)?\\s*(?:\\((?<cols>[^)]*)\\))?`,
+    'gi',
+  )
+  return [...sql.matchAll(insert)].map((m) => (m.groups?.cols ?? '').split(',').map((c) => c.trim().replace(/"/g, '')).filter((c) => c !== ''))
 }
 
 /** A payload names the connection when its object literal carries a `name` key. */
@@ -115,6 +123,24 @@ describe('every writer of service_connections sends a name (#2332 release 2)', (
     expect(functionInsertsIn(`insert into service_connections (organization_id, service_type, config) values (1)`)).toEqual([['organization_id', 'service_type', 'config']])
     // An insert with no column list cannot be read, so it counts as leaving name out.
     expect(functionInsertsIn(`INSERT INTO public.service_connections SELECT * FROM x`)).toEqual([[]])
+  })
+
+  it('matches the exact table name, so an insert into a sibling table is not held to its rule (#2897)', () => {
+    // Sibling tables whose names begin with service_connections are other tables, quoted or not.
+    expect(functionInsertsIn(`INSERT INTO service_connections_x (organization_id, config) VALUES (1)`)).toEqual([])
+    expect(functionInsertsIn(`INSERT INTO public.service_connections_audit SELECT * FROM x`)).toEqual([])
+    expect(functionInsertsIn(`INSERT INTO "service_connections_x" (organization_id) VALUES (1)`)).toEqual([])
+    expect(functionInsertsIn(`INSERT INTO public."service_connections$1" (organization_id) VALUES (1)`)).toEqual([])
+    // The real table is still caught however it is written: quoted, schema quoted, or with no space before its column list.
+    expect(functionInsertsIn(`INSERT INTO "public"."service_connections"(organization_id, config) VALUES (1)`)).toEqual([['organization_id', 'config']])
+    expect(functionInsertsIn(`INSERT INTO service_connections\nSELECT * FROM x`)).toEqual([[]])
+    // A sibling insert beside a real one leaves exactly the real one, which still fails for leaving name out.
+    const both = functionInsertsIn(`
+      INSERT INTO service_connections_history (organization_id, name) VALUES (1, 'a');
+      INSERT INTO public.service_connections AS sc (organization_id, config) VALUES (1, '{}');
+    `)
+    expect(both).toEqual([['organization_id', 'config']])
+    expect(both.filter((cols) => !cols.includes('name'))).toHaveLength(1)
   })
 
   it('is seen to fail on a payload with no name, and to pass one that names it', () => {
