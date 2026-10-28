@@ -97,3 +97,32 @@ describe('salesforce_inquiry_post_fails fails the inquiry post before and after 
     expect(write?.answer.status).toBe(204)
   })
 })
+
+// #2832: the collections call is live in parallel_1 since version 177, so the gate
+// carries a fixture where it fails. The replay itself shows the lead answered and
+// the walk going on past parallel_1 (the slot is marked on_failure continue); this
+// holds the variant to failing that call alone, so it cannot pass by failing the
+// trades call beside it, which would fail the run before any answer.
+describe('salesforce_collections_post_fails fails the collections call and nothing beside it', () => {
+  const found = variants.variants.find((v) => v.name === 'salesforce_collections_post_fails')
+  const stubs = found ? resolveVariant(variants, found).stubs ?? {} : {}
+  const collectionsApex = portedSteps.find((n) => n.config.apex_path === '/services/apexrest/credit-collections')!
+
+  it('is a variant of the gate\'s Main Flow', () => {
+    expect(found?.name).toBe('salesforce_collections_post_fails')
+  })
+
+  it('the credit-collections Apex call answers a failure', () => {
+    const apex = stubAnswer(requestOf(collectionsApex.config), stubs)
+    expect({ rule: apex?.rule, failed: (apex?.answer.status ?? 0) >= 400 }).toEqual({ rule: 'salesforce_credit_collections', failed: true })
+  })
+
+  it('the trades call in the slot beside it, the outcome writes and the inquiry call all still succeed', () => {
+    const trades = stubAnswer({ method: 'POST', url: new URL(`${INSTANCE}/services/apexrest/credit-trades`), headers: {}, body: {} }, stubs)
+    expect({ rule: trades?.rule, status: trades?.answer.status }).toEqual({ rule: 'salesforce_credit_trades', status: 200 })
+    const write = stubAnswer(requestOf(portedSteps.find((n) => n.config.operation === 'update')!.config), stubs)
+    expect(write?.answer.status).toBe(204)
+    const inquiry = stubAnswer(requestOf(portedSteps.find((n) => n.config.apex_path === '/services/apexrest/credit-inquiries')!.config), stubs)
+    expect(inquiry?.answer.status).toBe(200)
+  })
+})
