@@ -98,6 +98,14 @@ describe('the sentences', () => {
     expect(SIGN_IN_REFUSAL_CODES.filter((c) => signInRefusalSentence(c) === s)).toEqual([code])
   })
 
+  // The stored login is read before anything is tried, so the sentence claims no login worked (L11, #2926).
+  it('an unreadable stored login says only that it could not be read, and sends the person to Dan', () => {
+    const s = signInRefusalSentence('google_sign_in_login_unreadable')
+    expect(s).not.toMatch(/worked|could not store/)
+    expect(s).toMatch(/cannot read the login it keeps/)
+    expect(s).toMatch(/Tell Dan, since this is a fault in Bidspoke\.$/)
+  })
+
   it('denied consent, an expired state and a refused code each say a different thing', () => {
     const words = (['google_sign_in_denied', 'google_sign_in_expired', 'google_code_refused'] as const).map((c) => signInRefusalSentence(c))
     expect(new Set(words).size).toBe(3)

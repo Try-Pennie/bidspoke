@@ -139,6 +139,29 @@ describe('the create refusals', () => {
     expect(createRefusalSentence('google_subject_not_listed', { ...CTX, names: ['ops@trypennie.com', 'Finance drive'] }))
       .toContain('ops@trypennie.com and Finance drive are not on the company list')
   })
+
+  // No route passes an empty list today, but the list's words and the verb and pronoun after them must agree
+  // when one does, never "A field are empty ... Fill them in" (#2926).
+  it('words an empty list as one thing, its verb and pronoun agreeing, on Add and on a sign in (#2926)', () => {
+    const none: RefusalContext = { ...CTX, names: [] }
+    expect(createRefusalSentence('connection_fields_missing', none)).toBe('A field is empty. Nothing was saved. Fill it in and save again.')
+    expect(createRefusalSentence('google_subject_not_listed', none))
+      .toBe('That entry is not on the company list of mailboxes and drives. Nothing was saved. Add it to the list on this page, then save again.')
+    const signIn: RefusalContext = { ...none, service: 'Google', targetFrom: 'sign_in' }
+    expect(createRefusalSentence('connection_fields_missing', signIn)).toBe('A field is empty. Nothing was saved. Fill it in and sign in with Google again.')
+  })
+
+  it('never puts an empty list\'s words mid sentence with a capital, or beside a plural verb, in any sentence (#2926)', () => {
+    const bad: string[] = []
+    const check = (code: string, sentence: string) => {
+      if (/[a-z,] (A field|A workflow|A connection|That entry)\b/.test(sentence) || /\b(field|entry|workflow|connection) are\b/.test(sentence)) bad.push(`${code}: ${sentence}`)
+    }
+    for (const from of ['form', 'stored', 'sign_in'] as const) {
+      for (const code of CREATE_REFUSAL_CODES) check(code, createRefusalSentence(code, { ...CTX, names: [], targetFrom: from }))
+    }
+    for (const code of CONNECTION_ROUTE_REFUSAL_CODES) check(code, connectionRouteSentence(code, { service: 'Google', secret: 'login', names: [], deleted: false }))
+    expect(bad).toEqual([])
+  })
 })
 
 // Reconnect takes what a connection names (its target: a Workspace ID, a Project ID, an address) from the stored
