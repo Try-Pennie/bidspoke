@@ -105,7 +105,7 @@ describe('the send_salesforce canary stage over the live Main Flow', () => {
   })
 
   it('keeps the text body exactly, takes the record id from the template its submissionId key holds, and still goes on to exit_1', () => {
-    // The relay post it was ported from, against the live one: version 175 holds the port.
+    // The relay post it was ported from, against the live one: version 175 made the port, and version 177 still holds it.
     const before = nodeByNamespace(beforeCanary(), 'send_salesforce')
     const after = nodeByNamespace(canary(), 'send_salesforce')
     expect(before.type).toBe('webhook')
