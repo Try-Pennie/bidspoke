@@ -40,6 +40,7 @@ import { formatErr } from './format-error'
 import { requireRowsAffected } from './db-retry'
 import { parseJson } from './json'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
+import { salesforceNextPageUrl, salesforceQueryUrl } from './salesforce-api'
 import { pickSalesforceCreds, resolveSalesforceCredsFor } from './salesforce-creds'
 
 // Re-exported so the one implementation is reachable from this module's tests
@@ -406,7 +407,7 @@ export function salesforceRevenueFetcher(
     const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)
     const soql = revenueSoql(prospectIds)
     const records: SalesforceRevenueRecord[] = []
-    let next: string | undefined = `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`
+    let next: string | undefined = salesforceQueryUrl(instanceUrl, soql)
 
     while (next) {
       const res: Response = await fetch(next, { headers: { Authorization: `Bearer ${token}` } })
@@ -420,7 +421,7 @@ export function salesforceRevenueFetcher(
         nextRecordsUrl?: string
       }>(res)
       records.push(...body.records)
-      next = body.done ? undefined : body.nextRecordsUrl ? `${instanceUrl}${body.nextRecordsUrl}` : undefined
+      next = body.done ? undefined : body.nextRecordsUrl ? salesforceNextPageUrl(instanceUrl, body.nextRecordsUrl) : undefined
     }
     return records
   }
