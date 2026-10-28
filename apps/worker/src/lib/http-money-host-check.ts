@@ -20,7 +20,8 @@
  * channel under the configuration alerts toggle (sendHttpMoneyHostAlert),
  * naming the connection, its host, where bidding sends to that host (the
  * partner or money workflow by name, linked, when it came from one), and the
- * organization's active workflows that name the connection, each linked.
+ * organization's active workflows that use the connection, the ones the
+ * Connections page's Used by list names (#2946), each linked.
  * Every day while it stands. The signal is http-money-host
  * (incident-signals.ts), keyed on the connection id, armed only on a delivered
  * page; the all clear goes once a complete read no longer finds it
@@ -98,7 +99,7 @@ export interface HttpMoneyHostReads {
   httpConnections(): Promise<HttpConnection[]>
   /** The organization's money hosts, or which of their sources could not be read. */
   moneyHosts(organizationId: string): Promise<MoneyHostsRead>
-  /** The workflows of `organizationId` whose definition names `connectionId`. */
+  /** The workflows of `organizationId` that use `connectionId`, by the Used by list's predicate (#2946). */
   workflowsNaming(organizationId: string, connectionId: string): Promise<{ id: string; name: string; active: boolean }[]>
 }
 

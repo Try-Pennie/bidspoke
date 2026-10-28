@@ -31,7 +31,7 @@
 import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { formatErr } from './format-error'
 import type { RecoveryMarkerSignal } from './incident-signals'
-import { readOrgWorkflows, type OrgWorkflow } from './org-workflows'
+import { readConnectionReferences, type ConnectionReferences } from './connection-references'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 export interface StandingConnectionFinding {
@@ -231,26 +231,45 @@ export async function settleStandingConnections(o: StandingConnectionsOptions): 
   return outcome
 }
 
-/** Whether a definition names the id anywhere: no step shape names a connection yet, so any field may (#2338). */
-export function definitionNames(definition: unknown, connectionId: string): boolean {
-  if (definition === null || definition === undefined) return false
-  return JSON.stringify(definition).includes(connectionId)
-}
+/** Workflow ids asked for in one `in` filter. */
+const IN_CHUNK = 100
 
 /**
- * The workflows of one organization whose definition names a connection, for
- * the page to name: switched off ones included and marked, since switching one
- * on runs it at once; soft deleted ones left out, since they cannot run.
- * Throws when the workflows cannot be read, never answering none.
+ * The workflows of one organization that use a connection, for the page to
+ * name: the ones the Connections page's Used by list names
+ * (connection-references.ts, the database's one predicate, #2946), with
+ * switched off ones included and marked, since switching one on runs it at
+ * once, and soft deleted ones left out, since they cannot run. A connection
+ * removed since the caller read it is used by none: Remove refuses while any
+ * workflow names it, and no definition naming a removed connection can be
+ * saved (workflows_refuse_missing_connections).
+ *
+ * Whether each is switched on is read after, by id, inside the organization;
+ * one soft deleted or gone between the two reads is left out. DATA VOLUME: the
+ * workflows naming one connection, read IN_CHUNK ids at a time.
+ *
+ * Throws when either read fails, never answering none.
  */
 export async function workflowsNamingConnection(supabase: SupabaseClient, organizationId: string, connectionId: string): Promise<{ id: string; name: string; active: boolean }[]> {
-  let workflows: OrgWorkflow[]
+  let refs: ConnectionReferences
   try {
-    workflows = await readOrgWorkflows(supabase, organizationId)
+    refs = await readConnectionReferences(supabase, organizationId, connectionId)
   } catch (err) {
     throw new Error(`the workflows could not be read: ${formatErr(err)}`, { cause: err })
   }
-  return workflows
-    .filter((w) => definitionNames(w.definition, connectionId))
-    .map((w) => ({ id: w.id, name: w.name, active: w.is_active }))
+  if (!refs.found) return []
+  const live = refs.workflows.filter((w) => !w.deleted)
+  const active = new Map<string, boolean>()
+  for (let i = 0; i < live.length; i += IN_CHUNK) {
+    const ids = live.slice(i, i + IN_CHUNK).map((w) => w.id)
+    // paginate-ok .in(id): id is the primary key, so at most IN_CHUNK (100) rows, one per workflow asked for.
+    const { data, error } = await supabase.from('workflows').select('id, is_active').eq('organization_id', organizationId).is('deleted_at', null).in('id', ids)
+    if (error) throw new Error(`the workflows could not be read: ${formatErr(error)}`)
+    if (!Array.isArray(data)) throw new Error('the workflows could not be read: the read answered no rows')
+    for (const row of data as { id: string; is_active: unknown }[]) active.set(row.id, row.is_active === true)
+  }
+  return live.flatMap((w) => {
+    const on = active.get(w.id)
+    return on === undefined ? [] : [{ id: w.id, name: w.name, active: on }]
+  })
 }
