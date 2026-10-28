@@ -9,7 +9,7 @@ import { CONNECTION_STATUS_WORDS } from '@bidspoke/service-catalogue/schema'
 import type { ConnectionListRow } from '@/lib/api'
 import fixture from '../../../../../../docs/design/connections-page.fixture.json'
 import {
-  addRequestOf, agoText, delegationAdded, delegationShown, NOT_A_DRIVE_ADDRESS, readDriveAddress, etMoment, historyWhat, listGroups, problemNotice, statusWord, viewOf, type ConnectionView,
+  addRequestOf, agoText, COMPANY_MAILBOX_FIX, isCompanyMailbox, delegationAdded, delegationShown, NOT_A_DRIVE_ADDRESS, readDriveAddress, etMoment, historyWhat, listGroups, problemNotice, statusWord, viewOf, type ConnectionView,
 } from '../connection-model'
 
 const NOW = Date.parse('2026-10-20T16:00:00Z') // 12:00 PM ET
@@ -116,6 +116,38 @@ describe('problemNotice (R7, D7)', () => {
     expect(problemNotice({ ...own, problemCause: 'refresh_failing_exhausted: token_endpoint_5xx' }, NOW)!.cause).toBe('Since 9:52 AM ET, Google has stopped accepting its sign in.')
     // A company mailbox keeps the login wording.
     expect(problemNotice({ ...own, ownAccount: false }, NOW)!.fix).not.toMatch(/sign in/)
+  })
+
+  // #2727 (Dan, 2026-10-28, docs/design/google-mailbox-reconnect.html D4): a company mailbox has no login to
+  // hand over, so the fix sends the person to the Workspace admin; the cause and effect are as for every connection.
+  it('sends a refused company mailbox to the Google Workspace admin, then Reconnect, its cause and effect unchanged', () => {
+    const mailbox = conn({
+      name: 'Ops mailbox', service: 'google', serviceName: 'Google', status: 'reauth', target: { subject: 'ops@trypennie.com' },
+      problemSince: '2026-10-20T13:12:00Z', problemCause: 'login_refused: unauthorized_client', workflows: [{ id: 'w', name: 'Daily digest', deleted: false }],
+    })
+    expect(problemNotice(mailbox, NOW)).toEqual({
+      cause: 'Since 9:12 AM ET, Google has refused its login.',
+      effect: 'Daily digest stops at its Google step.',
+      fix: COMPANY_MAILBOX_FIX,
+    })
+    expect(COMPANY_MAILBOX_FIX).toBe("Ask the Google Workspace admin to check Bidspoke's access to this mailbox, then Reconnect.")
+    // A check that keeps failing, not a refusal, is fixed the same way as every connection's.
+    expect(problemNotice({ ...mailbox, status: 'failing' }, NOW)!.fix).toBe('Reconnect to check the login again.')
+  })
+})
+
+describe('isCompanyMailbox: the one reading of a Google company mailbox (#2727)', () => {
+  it("is a Google connection acting through the ops Worker's delegation, never a person's own sign in", () => {
+    const mailbox = conn({ service: 'google', serviceName: 'Google', target: { subject: 'ops@trypennie.com' } })
+    expect(isCompanyMailbox(mailbox)).toBe(true)
+    const own: ConnectionView = { ...mailbox, ownAccount: true, target: { own_account: true } }
+    expect(isCompanyMailbox(own)).toBe(false)
+  })
+
+  it('is no other service, and never the Slack alerts login', () => {
+    expect(isCompanyMailbox(conn({}))).toBe(false)
+    expect(isCompanyMailbox(conn({ service: 'slack', serviceName: 'Slack', alertLogin: true }))).toBe(false)
+    expect(isCompanyMailbox(conn({ service: 'airtable', serviceName: 'Airtable' }))).toBe(false)
   })
 })
 

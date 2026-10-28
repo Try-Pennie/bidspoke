@@ -274,12 +274,14 @@ export function replaceWorkingLabel(n: number, replacement: string): string {
 }
 
 /** What a time taking change was doing, for the sentences about it. */
-export type ChangeKind = 'saved' | 'reconnected' | 'removed' | 'replaced'
+export type ChangeKind = 'saved' | 'reconnected' | 'rechecked' | 'removed' | 'replaced'
 
 /** `was`: what the change did, as "whether <was>" says it; `nothing`: as "so nothing was <nothing>" says it. */
 const WORDS: Readonly<Record<ChangeKind, { was: string; nothing: string; again: string; redo: string }>> = {
   saved: { was: 'the connection was saved', nothing: 'saved', again: 'saving again', redo: 'save again' },
   reconnected: { was: 'the new login was saved', nothing: 'saved', again: 'reconnecting again', redo: 'reconnect again' },
+  // A company mailbox's one click check (#2727) saves nothing: it says whether the stored login works.
+  rechecked: { was: 'the login works', nothing: 'changed', again: 'reconnecting again', redo: 'reconnect again' },
   removed: { was: 'the connection was removed', nothing: 'removed', again: 'removing it again', redo: 'remove it again' },
   // Replace moves workflows, in the words its working line uses (Dan, 2026-10-27).
   replaced: { was: 'the workflows were moved', nothing: 'moved', again: 'replacing again', redo: 'replace again' },

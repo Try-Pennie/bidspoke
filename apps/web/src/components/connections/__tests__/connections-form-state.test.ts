@@ -223,6 +223,45 @@ describe('Reconnect (R19)', () => {
   })
 })
 
+// #2727 (Dan, 2026-10-28): a Google company mailbox has nothing to re-enter, so its Reconnect is a one click
+// check with no dialog. Its running, failed and stalled line belongs to that connection, in its panel.
+describe('the one click check of a company mailbox (#2727)', () => {
+  const MAILBOX = conn({ id: 'm1', name: 'Ops mailbox', service: 'google', serviceName: 'Google', actsAs: 'ops@trypennie.com', target: { subject: 'ops@trypennie.com' }, org: null, status: 'reauth', problemSince: '2026-10-28T13:12:00Z', problemCause: 'login_refused: unauthorized_client' })
+  const withMailbox = (): ConnectionsState => run([{ type: 'list_answered', attempt: 1, data: { ...LIST, connections: [...LIST.connections, MAILBOX, conn({ id: 'own', name: 'My Google', service: 'google', serviceName: 'Google', target: { own_account: true }, ownAccount: true })] } }, { type: 'choose', chosen: { kind: 'connection', id: 'm1' } }])
+  const running = (): ConnectionsState => run([{ type: 'recheck_requested', id: 'm1', attempt: 1, at: T0, stalled: 'stalled sentence' }], withMailbox())
+
+  it('starts for a company mailbox only, opening no dialog, and holds a second press while it runs', () => {
+    const s = running()
+    expect(s.dialog).toBeNull()
+    expect(s.recheck).toEqual({ id: 'm1', started: 1, save: { kind: 'saving', attempt: 1, startedAt: T0, stalled: 'stalled sentence' } })
+    expect(run([{ type: 'recheck_requested', id: 'm1', attempt: 2, at: T0 + 1, stalled: 's' }], s).recheck).toEqual(s.recheck)
+    // A connection with something to enter, or a person's own Google, reconnects in its dialog instead.
+    expect(run([{ type: 'recheck_requested', id: 'c2', attempt: 1, at: T0, stalled: 's' }], withMailbox()).recheck).toBeNull()
+    expect(run([{ type: 'recheck_requested', id: 'own', attempt: 1, at: T0, stalled: 's' }], withMailbox()).recheck).toBeNull()
+  })
+
+  it('a check that passes clears the needs reconnecting mark, checked now, and the line goes', () => {
+    const s = run([{ type: 'reconnect_answered', attempt: 1, id: 'm1', actsAs: null, at: T0 + 3_000 }], running())
+    expect(s.recheck).toBeNull()
+    expect(chosenConnection(s)).toMatchObject({ status: 'ok', problemSince: null, problemCause: null, actsAs: 'ops@trypennie.com', lastCheckedAt: '2026-10-20T16:00:03.000Z' })
+  })
+
+  it("a refusal says its sentence; a stall says it is not known; an earlier press's late answer changes neither", () => {
+    expect(run([{ type: 'recheck_refused', attempt: 1, sentence: 'Google refused the login.' }], running()).recheck).toEqual({ id: 'm1', started: 1, save: { kind: 'failed', sentence: 'Google refused the login.', unconfirmed: false } })
+    const stalled = run([{ type: 'tick', at: T0 + SAVE_DEADLINE }], running())
+    expect(stalled.recheck).toEqual({ id: 'm1', started: 1, save: { kind: 'failed', sentence: 'stalled sentence', unconfirmed: true } })
+    // A stalled check's late answer is still the truth: the mark clears and the line goes.
+    expect(run([{ type: 'reconnect_answered', attempt: 1, id: 'm1', actsAs: null, at: T0 + SAVE_DEADLINE + 1 }], stalled).recheck).toBeNull()
+    expect(run([{ type: 'recheck_refused', attempt: 0, sentence: 'old' }], running()).recheck?.save.kind).toBe('saving')
+  })
+
+  it('a failed line goes when another connection is opened; a running one stays with its connection', () => {
+    const failed = run([{ type: 'recheck_refused', attempt: 1, sentence: 'x' }], running())
+    expect(run([{ type: 'choose', chosen: { kind: 'connection', id: 'c1' } }], failed).recheck).toBeNull()
+    expect(run([{ type: 'choose', chosen: { kind: 'connection', id: 'c1' } }], running()).recheck?.id).toBe('m1')
+  })
+})
+
 describe('Remove (R21)', () => {
   it("a cancelled removal's late answer takes the connection off and closes a Remove opened since, its notice shown only to its own press", () => {
     const reopened = run([{ type: 'dialog_opened', dialog: 'remove', id: 'c3' }, { type: 'connection_remove_requested', attempt: 1, at: T0, stalled: 's' }, { type: 'dialog_closed' }, { type: 'dialog_opened', dialog: 'remove', id: 'c3' }], loaded())

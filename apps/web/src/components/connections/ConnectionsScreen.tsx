@@ -37,17 +37,17 @@ import { errorSentence, requestFailureCause } from '@/lib/error-sentence'
 import { Button, ChoiceGroup, FieldError, Outcome, TextInput } from '@/components/ui/form'
 import { Tabs, TabPanel } from '@/components/ui/Tabs'
 import {
-  addRequestOf, agoText, delegationAdded, delegationShown, draftReady, DELEGATION_KIND_WORDS, etClock, etDay, etMoment, GOOGLE_LIST_ENTRY, historyWhat, isProblem, listFailureCause, listGroups,
+  addRequestOf, agoText, delegationAdded, delegationShown, draftReady, DELEGATION_KIND_WORDS, etClock, etDay, etMoment, GOOGLE_LIST_ENTRY, historyWhat, isCompanyMailbox, isProblem, listFailureCause, listGroups,
   loadFailedSentence, problemNotice, secretWordOf, statusWord, viewOf, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry,
 } from './connection-model'
 import {
-  chosenConnection, connectionsReducer, initialConnectionsState, unsavedWork, type Chosen, type ConnectionsEvent, type ConnectionsState, type DetailTab, type LoadedList,
+  chosenConnection, connectionsReducer, initialConnectionsState, unsavedWork, type Chosen, type ConnectionsEvent, type ConnectionsState, type DetailTab, type LoadedList, type RecheckState,
 } from './connections-state'
 import {
-  catalogueServices, createBodyOf, createdView, knownOrgs, reconnectBodyOf, replaceWorkingLabel, saveFailureSentence, stalledSentence, type CreateBody, type CreatedConnection, type FormService,
+  catalogueServices, createBodyOf, createdView, knownOrgs, reconnectBodyOf, replaceWorkingLabel, saveFailureSentence, stalledSentence, workingLabel, type CreateBody, type CreatedConnection, type FormService,
 } from './add-form-model'
 import { GOOGLE_OWN_ACCOUNT_TARGET } from '@bidspoke/service-catalogue/schema'
-import { AddConnectionPanel } from './AddConnectionPanel'
+import { AddConnectionPanel, SaveLine } from './AddConnectionPanel'
 import type { KeptSignIns } from './google-sign-in-kept'
 import { FINISHING_LABEL, NO_SIGN_IN, type SignInFinishBody, type SignInReturn } from './google-sign-in-return'
 import { LeaveConnectionDialog, NoticeDialog, ReconnectDialog, RemoveDialog, ReplaceDialog } from './ConnectionDialogs'
@@ -220,6 +220,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     || Object.values(state.history).some((h) => h.kind === 'loading')
     || state.add?.save.kind === 'saving'
     || ((state.dialog?.kind === 'reconnect' || state.dialog?.kind === 'remove' || state.dialog?.kind === 'replace') && state.dialog.save.kind === 'saving')
+    || state.recheck?.save.kind === 'saving'
     || alertsWaiting(state.alerts)
   useEffect(() => clock.every(waiting ? 1000 : 30_000, () => dispatch({ type: 'tick', at: clock.now() })), [clock, waiting])
 
@@ -297,6 +298,23 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
       (err: unknown) => dispatch({ type: 'reconnect_refused', attempt, sentence: saveFailureSentence(err, serviceName, ms, 'reconnected') }),
     )
   }, [source, clock, services])
+
+  // A company mailbox's Reconnect (#2727, Dan 2026-10-28): nothing to enter, so one press checks its stored
+  // login again, with no dialog; a check that passes clears its needs reconnecting mark (reconnect_answered).
+  const recheck = useCallback((id: string) => {
+    const s = latest.current
+    if (s.list.kind !== 'loaded' || s.recheck?.save.kind === 'saving') return
+    const c = s.list.data.connections.find((x) => x.id === id)
+    if (!c || !isCompanyMailbox(c)) return
+    const attempt = ++changeNumber.current.reconnect
+    if (attempt <= s.lastChange.reconnect) return
+    const ms = s.deadlines.saveDeadlineMs
+    dispatch({ type: 'recheck_requested', id: c.id, attempt, at: clock.now(), stalled: stalledSentence(c.serviceName, ms, 'rechecked') })
+    source.reconnect(c.id, {}).then(
+      (a) => dispatch({ type: 'reconnect_answered', attempt, id: c.id, actsAs: a.connection.acts_as, at: clock.now() }),
+      (err: unknown) => dispatch({ type: 'recheck_refused', attempt, sentence: saveFailureSentence(err, c.serviceName, ms, 'rechecked') }),
+    )
+  }, [source, clock])
 
   // ── Sign in with Google (build PR 13, R17) ──
   // Google's link, once the Worker gives it, is followed only after the form or dialog closes, so the
@@ -616,7 +634,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
                     orgNames={orgNames}
                     onTab={(tab) => dispatch({ type: 'tab', tab })}
                     onHistoryRetry={() => loadHistory(chosen.id)}
-                    onReconnect={() => dispatch({ type: 'dialog_opened', dialog: 'reconnect', id: chosen.id })}
+                    onReconnect={() => (isCompanyMailbox(chosen) ? recheck(chosen.id) : dispatch({ type: 'dialog_opened', dialog: 'reconnect', id: chosen.id }))}
                     onRemove={() => dispatch({ type: 'dialog_opened', dialog: 'remove', id: chosen.id })}
                     onReplace={() => dispatch({ type: 'dialog_opened', dialog: 'replace', id: chosen.id })}
                     alerts={alertsPanel}
@@ -744,6 +762,11 @@ function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, o
     ['Last checked', c.lastCheckedAt ? agoText(c.lastCheckedAt, state.now) : 'Not checked yet'],
   ]
   const history = state.history[c.id]
+  // A company mailbox (#2727): Reconnect is its one click check, held while it runs, and it has no Replace.
+  const mailbox = isCompanyMailbox(c)
+  const recheck: RecheckState | null = state.recheck?.id === c.id ? state.recheck : null
+  const checking = recheck?.save.kind === 'saving'
+  const checkLine = recheck && <SaveLine save={recheck.save} now={state.now} label={workingLabel(c.serviceName)} />
   return (
     <section className="cx-card cx-detail" data-part="detail" aria-label={c.name}>
       <h2>{c.name}</h2>
@@ -761,7 +784,8 @@ function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, o
               <p>{notice.cause}</p>
               {notice.effect && <p>{notice.effect}</p>}
               <p className="cx-hint">{notice.fix}</p>
-              <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onReconnect}>Reconnect</Button>
+              <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onReconnect} disabled={checking}>Reconnect</Button>
+              {checkLine}
             </div>
           )}
           <div className="cx-rows">
@@ -786,11 +810,15 @@ function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, o
             )
             : (
               <>
-                {/* Rounds 6 and 9c; Replace opens its dialog (build PR 12, R20). */}
-                <div className="cx-actions" data-part="actions">
-                  {!notice && <Button variant="secondary" className="cx-btn-quiet" onClick={onReconnect}>Reconnect</Button>}
-                  <Button variant="secondary" className="cx-btn-quiet" onClick={onReplace}>Replace</Button>
-                </div>
+                {/* Rounds 6 and 9c; Replace opens its dialog (build PR 12, R20). A company mailbox has none (#2727, D1, D3):
+                    another mailbox is a new connection, so with its notice drawn the row would hold nothing. */}
+                {(!notice || !mailbox) && (
+                  <div className="cx-actions" data-part="actions">
+                    {!notice && <Button variant="secondary" className="cx-btn-quiet" onClick={onReconnect} disabled={checking}>Reconnect</Button>}
+                    {!mailbox && <Button variant="secondary" className="cx-btn-quiet" onClick={onReplace}>Replace</Button>}
+                  </div>
+                )}
+                {!notice && checkLine}
                 <div className="cx-danger" data-part="remove-row">
                   {n > 0 && <div className="what">Cannot be removed while a workflow uses it.</div>}
                   <Button variant="danger" className="cx-btn-danger" disabled={n > 0} onClick={onRemove}>Remove</Button>
