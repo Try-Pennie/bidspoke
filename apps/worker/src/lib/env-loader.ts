@@ -65,7 +65,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { isOrgOnlyEnvKey } from './org-only-env-keys'
+import { rowReach } from './env-row-reach'
 import { fetchAllPaged } from './paginate'
 import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
 import { leadRead } from './lead-read-budget'
@@ -94,19 +94,8 @@ interface EnvRow {
   workflow_id: string | null
 }
 
-/**
- * Which runs a stored row reaches (#1681): every run of the organization
- * ('org'), its own workflow's runs ('workflow'), or none. A workflow scoped row
- * that names no workflow reaches none, and so does a workflow's own value for a
- * key that is the organization's only (org-only-env-keys). The one predicate the
- * loader and the daily decrypt check both apply, so the check reports exactly
- * the rows a run can be handed (L11).
- */
-export function rowReach(row: { scope: string; workflow_id: string | null; key: string }): 'org' | 'workflow' | 'none' {
-  if (row.scope === 'global') return 'org'
-  if (row.scope === 'workflow' && row.workflow_id && !isOrgOnlyEnvKey(row.key)) return 'workflow'
-  return 'none'
-}
+/** Which runs a stored row reaches (#1681), from its own module (env-row-reach.ts), so other readers of it need not import this one. */
+export { rowReach }
 
 /**
  * Which values a load is for (#1681). A run names its workflow, so it gets that

@@ -20,6 +20,11 @@
  * A TEST SENDS FOR REAL. Ops refuses a step that changes something in its
  * service unless confirm_send is true (step_test_send_unconfirmed, 409 here).
  *
+ * ITS VARIABLES (#2702). A step reading env.X is given the plain values the
+ * workflow's newest saved version kept, as a run of it would be: this Worker
+ * reads that version and sends them with the step, and ops refuses by name a
+ * secret variable or one the version did not keep.
+ *
  * FROM A PAST RUN (#2339, #2703). With an execution_id, ops rebuilds the step's
  * context from that run's payload and recorded step outputs, within the
  * organization, and refuses by name a run it cannot rebuild it from (gone after
@@ -30,7 +35,11 @@ import type { Context } from 'hono'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
-import type { OpsConnectionsRefused, StepTestView } from '../../lib/ops-connections-contract'
+import type { OpsConnectionsRefused, StepTestView, TestStepCall } from '../../lib/ops-connections-contract'
+import { envReferences } from '../../lib/definition-env-references'
+import { formatErr } from '../../lib/format-error'
+import { createSupabaseClient } from '../../lib/supabase'
+import { servedVersionVariables } from '../../lib/version-variables'
 import { sampleRows } from '@bidspoke/references'
 import { isUuid } from '../../lib/query-validators'
 
@@ -68,9 +77,34 @@ function refusedAnswer(c: Ctx, answer: OpsConnectionsRefused): Response {
       return c.json({ error: answer.refused, message: 'That run\'s payload is not held where a test can read it. Nothing was sent. Give a payload to test with.' }, 409)
     case 'step_test_run_unavailable':
       return c.json({ error: answer.refused, message: 'That run\'s step records could not be read. Nothing was sent. Try again in a moment.' }, 503)
+    // A variable the step cannot be given (#2702): ops names each in the sentence it gives.
+    case 'step_test_variable_unavailable':
+      return c.json({ error: answer.refused, message: `${answer.detail.charAt(0).toUpperCase()}${answer.detail.slice(1)}.` }, 409)
     default:
       return c.json({ error: answer.refused, message: answer.detail }, 502)
   }
+}
+
+/**
+ * The workflow's newest saved version and the variables kept with it that the
+ * step reads (#2702), which ops gives the step as a run of that version would
+ * be given them; null when the workflow has no saved version. Read only for a
+ * step that reads a variable. Throws on a failed read or kept variables it
+ * cannot read, so the test is refused rather than sent with blanks.
+ */
+async function newestVersionFor(c: Ctx, workflowId: string, step: Record<string, unknown>): Promise<TestStepCall['version']> {
+  const supabase = createSupabaseClient(c.env)
+  const { data, error } = await supabase
+    .from('workflow_versions')
+    .select('version_number, env_capture')
+    .eq('workflow_id', workflowId)
+    .order('version_number', { ascending: false })
+    .limit(1)
+  if (error) throw new Error(`the workflow's saved versions could not be read (${error.code ?? 'no code'}): ${error.message}`)
+  const newest = (data ?? [])[0] as { version_number: number; env_capture: unknown } | undefined
+  if (newest === undefined) return null
+  const variables = servedVersionVariables(newest.env_capture, workflowId, { nodes: [step], edges: [] }, `workflow ${workflowId} version ${newest.version_number}`)
+  return { number: newest.version_number, variables }
 }
 
 /** POST test-node for an ops workflow's app_action step. `node` is the step as the canvas holds it. */
@@ -82,6 +116,16 @@ export async function testOpsStep(c: Ctx, workflowId: string, body: Record<strin
   }
   const config = isRecord(node.config) ? node.config : {}
   const steps = isRecord(body.steps) ? (body.steps as Record<string, { output: unknown; status: string }>) : null
+  const step = { id: node.id, namespace: node.namespace, type: 'app_action', config }
+  let version: TestStepCall['version'] | undefined
+  if (envReferences({ nodes: [step], edges: [] }).length > 0) {
+    try {
+      version = await newestVersionFor(c, workflowId, step)
+    } catch (err) {
+      console.error(`[ops-step-test] the variables of workflow ${workflowId} could not be read: ${formatErr(err)}`)
+      return c.json({ error: 'step_test_variables_unavailable', message: 'The workflow\'s saved variables could not be read, so this step could not be given them. Nothing was sent. Try again in a moment.' }, 503)
+    }
+  }
   const answer = await callOpsConnections(c.env, 'testStep', {
     organization_id: orgId,
     workflow_id: workflowId,
@@ -97,6 +141,7 @@ export async function testOpsStep(c: Ctx, workflowId: string, body: Record<strin
       }
       : { trigger_payload: body.trigger_payload ?? {}, steps: steps ?? {} }),
     confirm_send: body.confirm_send === true,
+    ...(version !== undefined ? { version } : {}),
   })
   if (isOpsConnectionsUnavailable(answer)) {
     return c.json({ error: answer.refused, cause: answer.cause, message: answer.detail }, OPS_CONNECTIONS_UNAVAILABLE_STATUS)

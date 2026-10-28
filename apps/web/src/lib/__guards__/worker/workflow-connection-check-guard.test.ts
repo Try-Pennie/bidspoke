@@ -34,7 +34,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { WORKER_SRC, listTsFiles, sanitizeSource, chainCallsAfter, routeHandlersOf, type RouteHandler } from '../../__tests__/_scan-utils'
+import { WORKER_SRC, listTsFiles, sanitizeSource, chainCallsAfter, routeHandlersOf, writeWorkflowWritesDefinition, type RouteHandler } from '../../__tests__/_scan-utils'
 
 const WRITES = new Set(['insert', 'update', 'upsert', 'delete'])
 const DEFINITION_WRITES = new Set(['insert', 'update', 'upsert'])
@@ -54,7 +54,8 @@ const DEFINITION_OPS = new Set(['create', 'duplicate', 'save', 'restore'])
 function writesOf(src: string): Write[] {
   const out: Write[] = []
   for (const m of src.matchAll(WRITE_WORKFLOW)) {
-    out.push({ at: m.index ?? 0, table: 'workflows', writesDefinitionArg: DEFINITION_OPS.has(m[2]) })
+    // A save sending no definition snapshots the stored one (#2702), so it writes none.
+    out.push({ at: m.index ?? 0, table: 'workflows', writesDefinitionArg: DEFINITION_OPS.has(m[2]) && writeWorkflowWritesDefinition(src, m.index ?? 0, m[2]) })
   }
   for (const m of src.matchAll(/\.from\(\s*(['"`])(workflows|workflow_versions)\1\s*\)/g)) {
     const calls = chainCallsAfter(src, (m.index ?? 0) + m[0].length)
@@ -208,6 +209,13 @@ describe('the scanner', () => {
     expect(scanSource('p.ts', planted([del])).definitionWriters).toEqual([])
     const on = planted(['  fields.is_active = body.is_active', "  const result = await writeWorkflow(supabase, { op: 'patch', orgId })"])
     expect(scanSource('p.ts', on).unchecked).toEqual(['p.ts PUT /:id'])
+  })
+
+  it('does not count a save sending no definition as a definition writer, since it snapshots the stored one (#2702)', () => {
+    const snapshot = "  const result = await writeWorkflow(supabase, { op: 'save', orgId, fields: { message: 'Switched on' } })"
+    expect(scanSource('p.ts', planted([snapshot])).definitionWriters).toEqual([])
+    const sent = "  const result = await writeWorkflow(supabase, { op: 'save', orgId, fields: { definition: def } })"
+    expect(scanSource('p.ts', planted([sent])).definitionWriters.map((h) => h.label)).toEqual(['PUT /:id'])
   })
 
   it('does not count a check that sits only in a comment', () => {

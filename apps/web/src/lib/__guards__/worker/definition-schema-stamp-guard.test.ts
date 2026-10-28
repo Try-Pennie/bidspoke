@@ -33,7 +33,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { WORKER_SRC, listTsFiles, sanitizeSource, chainCallsAfter, routeHandlersOf } from '../../__tests__/_scan-utils'
+import { WORKER_SRC, listTsFiles, sanitizeSource, chainCallsAfter, routeHandlersOf, writeWorkflowWritesDefinition } from '../../__tests__/_scan-utils'
 
 const DEFINITION_WRITES = new Set(['insert', 'update', 'upsert'])
 const VERSION_WRITES = new Set(['insert', 'upsert'])
@@ -53,7 +53,8 @@ const AUTHORING_WRITE = /\bwriteWorkflow\s*\(\s*\w+\s*,\s*\{\s*op\s*:\s*(['"`])(
  */
 function definitionWritesOf(kept: string): number[] {
   const out: number[] = []
-  for (const m of kept.matchAll(AUTHORING_WRITE)) out.push(m.index ?? 0)
+  // A save sending no definition snapshots the stored one with its stamp (#2702), so authors none.
+  for (const m of kept.matchAll(AUTHORING_WRITE)) if (writeWorkflowWritesDefinition(kept, m.index ?? 0, m[2])) out.push(m.index ?? 0)
   for (const m of kept.matchAll(/\.from\(\s*(['"`])(workflows|workflow_versions)\1\s*\)/g)) {
     const at = m.index ?? 0
     const calls = chainCallsAfter(kept, at + m[0].length)
@@ -165,6 +166,15 @@ describe('the scanner', () => {
     '})',
     '',
   ].join('\n')
+
+  it('counts a save sending a definition, or fields it cannot see, and not one sending none, which snapshots the stored one (#2702)', () => {
+    const snapshot = planted(["  await writeWorkflow(supabase, { op: 'save', orgId, fields: { message: 'Switched on' }, saveId: null })"])
+    expect(scanSource('p.ts', snapshot).unstamped).toEqual([])
+    const sent = planted(["  await writeWorkflow(supabase, { op: 'save', orgId, fields: { message: 'm', definition: def }, saveId: null })"])
+    expect(scanSource('p.ts', sent).unstamped).toEqual(['p.ts PUT /:id: 1 definition writes, 0 stamps'])
+    const built = planted(["  await writeWorkflow(supabase, { op: 'save', orgId, fields, saveId: null })"])
+    expect(scanSource('p.ts', built).unstamped).toEqual(['p.ts PUT /:id: 1 definition writes, 0 stamps'])
+  })
 
   it('fails a workflows definition write with no stamp', () => {
     const src = planted(["  await supabase.from('workflows').update({ definition: def }).eq('id', id)"])

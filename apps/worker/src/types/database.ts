@@ -2983,6 +2983,7 @@ export type Database = {
           definition: Json
           definition_report: Json | null
           definition_schema_version: number | null
+          env_capture: Json | null
           id: string
           message: string | null
           version_number: number
@@ -2995,6 +2996,7 @@ export type Database = {
           definition: Json
           definition_report?: Json | null
           definition_schema_version?: number | null
+          env_capture?: Json | null
           id?: string
           message?: string | null
           version_number: number
@@ -3007,6 +3009,7 @@ export type Database = {
           definition?: Json
           definition_report?: Json | null
           definition_schema_version?: number | null
+          env_capture?: Json | null
           id?: string
           message?: string | null
           version_number?: number

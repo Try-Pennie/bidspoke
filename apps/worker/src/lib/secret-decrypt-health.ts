@@ -29,7 +29,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
-import { rowReach } from './env-loader'
+import { rowReach } from './env-row-reach'
 import { decryptSecret, secretKeys, type SecretKeyInput } from './secret-crypto'
 import { getSlackConnection, sendSecretDecryptAlert } from './slack'
 import { formatErr } from './format-error'

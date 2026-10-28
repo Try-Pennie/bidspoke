@@ -104,7 +104,7 @@ interface Fake {
     calls: string[]; saved: WorkflowCopyInput[][]; savedConnections: ConnectionCopyInput[][]; observations: ScheduleObservation[]
     sfReadings: Array<{ sfOrgId: string; dailyApiMax: number; dailyApiRemaining: number }>
     connectionChecks: Array<{ connectionId: string; result: { ok: true } | { ok: false; cause: string } }>
-    savedDefinitions: Array<{ organizationId: string; workflowId: string; versionNumber: number; definition: unknown }>
+    savedDefinitions: Array<{ organizationId: string; workflowId: string; versionNumber: number; definition: unknown; variables: unknown }>
     fires: Array<{ organizationId: string; fire: ScheduleFire }>
     claims: ClaimRunRequests[]
     completed: Array<{ runRequestId: string; end: CompleteOutcome }>
@@ -239,7 +239,7 @@ function fake(opts: {
         nothingLeftSince: null, restarted: false, dbNow: DB_NOW, ...opts.resealState,
       }
     },
-    savedDefinitions: [] as Array<{ organizationId: string; workflowId: string; versionNumber: number; definition: unknown }>,
+    savedDefinitions: [] as Array<{ organizationId: string; workflowId: string; versionNumber: number; definition: unknown; variables: unknown }>,
     fires: [] as Array<{ organizationId: string; fire: ScheduleFire }>,
     claims: [] as ClaimRunRequests[],
     completed: [] as Array<{ runRequestId: string; end: CompleteOutcome }>,
@@ -260,8 +260,8 @@ function fake(opts: {
       const missing = (opts.missingDefs ?? []).map((m) => ({ ...m, organizationId: organizationIdFrom(m.organizationId) }))
       return { missing, reachedLimit: missing.length === limit }
     },
-    async saveDefinition(organizationId: string, workflowId: string, versionNumber: number, definition: Record<string, unknown>) {
-      fail('saveDefinition'); db.savedDefinitions.push({ organizationId, workflowId, versionNumber, definition })
+    async saveDefinition(organizationId: string, workflowId: string, versionNumber: number, definition: Record<string, unknown>, variables: unknown) {
+      fail('saveDefinition'); db.savedDefinitions.push({ organizationId, workflowId, versionNumber, definition, variables })
       return opts.saveDef?.(workflowId) ?? 'saved'
     },
     async purgeObservations(limit: number) { fail('purgeObservations'); calls.push(`purgeObservations:${limit}`); return opts.observationsPurge ?? { purged: 0, more: false } },
@@ -1039,9 +1039,21 @@ describe('the frozen definition copies (#1950)', () => {
     const f = fake({ missingDefs: missing })
     const report = await runOpsTick(f.ports)
     expect(f.definitionRequests).toEqual([{ versions: [{ workflow_id: WF_D, version_number: 3 }] }])
-    expect(f.db.savedDefinitions).toEqual([{ organizationId: ORG, workflowId: WF_D, versionNumber: 3, definition: { nodes: [] } }])
+    expect(f.db.savedDefinitions).toEqual([{ organizationId: ORG, workflowId: WF_D, versionNumber: 3, definition: { nodes: [] }, variables: null }])
     expect(report.counts.definitions_saved).toBe(1)
     expect(report.outcome).toBe('ok')
+  })
+
+  it('saves the variables served with a version beside its definition (#2702)', async () => {
+    const variables = { values: { API_BASE: 'https://api.example.test' }, secret_keys: ['TOKEN'] }
+    const f = fake({
+      missingDefs: missing,
+      serveDefs: async () => ({ definitions: [{ workflow_id: WF_D, organization_id: ORG, version_number: 3, definition: { nodes: [] }, variables }], unserved: [] }),
+    })
+    await runOpsTick(f.ports)
+    expect(f.db.savedDefinitions).toEqual([{
+      organizationId: ORG, workflowId: WF_D, versionNumber: 3, definition: { nodes: [] }, variables: { values: { API_BASE: 'https://api.example.test' }, secretKeys: ['TOKEN'] },
+    }])
   })
 
   it('pages at once on a conflict, a version the bidding Worker cannot serve, and a definition served under another organization', async () => {

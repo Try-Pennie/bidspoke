@@ -102,6 +102,48 @@ describe('OpsInternal.run', () => {
     expect(report).toMatchObject({ outcome: 'completed' })
   })
 
+  it('runs on the variables ops froze with the version, never asking the bidding Worker for them again (#2702)', async () => {
+    const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'env.API_BASE', target: 'base' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
+    const asked: unknown[] = []
+    const gateway = { opsWorkflowDefinitions: async (r: unknown) => { asked.push(r); return { definitions: [], unserved: [] } } }
+    const db = opsDb({
+      ...LIFECYCLE, record_ops_step: 'recorded',
+      workflow_definition: [{ definition: def, saved_at: '2026-10-17T09:00:00Z', variables: { values: { API_BASE: 'kept-at-save' }, secret_keys: [] } }],
+    })
+    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
+    expect(asked).toEqual([])
+    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_status: 'completed', p_output: { base: 'kept-at-save' } })
+  })
+
+  it('freezes the variables served with a version it fetches, and runs on them (#2702)', async () => {
+    const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'env.API_BASE', target: 'base' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
+    const variables = { values: { API_BASE: 'served' }, secret_keys: [] }
+    const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: def, variables }], unserved: [] }) }
+    const db = opsDb({ ...LIFECYCLE, workflow_definition: [], record_ops_step: 'recorded' })
+    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
+    expect(db.calls.find((c) => c.name === 'save_workflow_definition')?.body).toMatchObject({ p_variables: variables })
+    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'served' } })
+  })
+
+  it('a run of a version holding a secret variable ends failed by name, before any step (#2702)', async () => {
+    const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'env.TOKEN', target: 't' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
+    const db = opsDb({
+      ...LIFECYCLE, record_ops_step: 'recorded',
+      workflow_definition: [{ definition: def, saved_at: '2026-10-17T09:00:00Z', variables: { values: {}, secret_keys: ['TOKEN'] } }],
+    })
+    await runDispatched(env(), await signed({ kind: 'run', run: RUN }), deps(db.fetch))
+    expect(db.names()).not.toContain('record_ops_step')
+    expect(String(db.calls.find((c) => c.name === 'complete_run_request')?.body.p_error)).toMatch(/secret variable env\.TOKEN.*connection/)
+  })
+
+  it('a version the bidding Worker refused to serve returns the run to the queue, naming why (#2702)', async () => {
+    const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [], unserved: [], refused: [{ workflow_id: WF, version_number: 3, reason: 'its kept variables cannot be read' }] }) }
+    const db = opsDb({ ...LIFECYCLE, workflow_definition: [], complete_run_request: [{ outcome: 'completed', run_status: 'queued', state_version: 3 }] })
+    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))).toMatchObject({ outcome: 'definition_unavailable' })
+    expect(db.names()).not.toContain('start_run_execution')
+    expect(String(db.calls.find((c) => c.name === 'complete_run_request')?.body.p_error)).toMatch(/its kept variables cannot be read/)
+  })
+
   it('a definition it cannot have returns the run to the queue a minute on, without starting it', async () => {
     const gateway = { opsWorkflowDefinitions: async () => { throw new Error('the bidding Worker did not answer') } }
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [], complete_run_request: [{ outcome: 'completed', run_status: 'queued', state_version: 3 }] })

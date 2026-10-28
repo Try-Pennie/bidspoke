@@ -15,8 +15,10 @@
  * ORDER.
  *  1. The lane, the signature, the item.
  *  2. The run's definition at its recorded version (#1698 1.3: never a newer
- *     one): the frozen copy ops holds (ops_workflow_definitions), else asked of
- *     the bidding Worker and frozen. A run whose definition cannot be had is
+ *     one), with the plain variables kept with that version at its save
+ *     (#2702): the frozen copy ops holds (ops_workflow_definitions), else asked
+ *     of the bidding Worker and frozen. The bidding database is never read for
+ *     a variable's current value. A run whose definition cannot be had is
  *     returned to the queue RUN_DEFINITION_RETRY_MS on, never started, so it
  *     spends no attempt.
  *  3. invokeRun (run-invocation.ts) with the ops database's own functions,
@@ -28,7 +30,7 @@
  *     checkpoint to OPS_CHECKPOINTS and names it on the run.
  */
 import { uuidv7 } from '@bidspoke/uuidv7'
-import { parseServedOpsDefinitions } from '../lib/ops-gateway-contract'
+import { parseServedOpsDefinitions, type OpsVersionVariables } from '../lib/ops-gateway-contract'
 import { raceDeadline } from '../lib/alert-claim'
 import { formatErr } from '../lib/format-error'
 import { dispatchKey, verifyDispatch } from './dispatch-auth'
@@ -109,10 +111,19 @@ export function liveContinuation(env: OpsEnv, budget: ContinuationBudget = CONTI
   }
 }
 
-/** The run's definition at its version: the frozen copy, else the bidding Worker's, frozen. Throws when neither can be had. */
-async function definitionOf(env: OpsEnv, client: OpsSupabaseClient, run: ClaimedRun, delay: RunLiveDeps['delay']): Promise<Record<string, unknown>> {
+/** A run's version: its definition and the variables kept with it (#2702). */
+interface RunVersion {
+  definition: Record<string, unknown>
+  variables: OpsVersionVariables | null
+}
+
+/**
+ * The run's definition at its version, with the variables kept with it: the
+ * frozen copy, else the bidding Worker's, frozen. Throws when neither can be had.
+ */
+async function definitionOf(env: OpsEnv, client: OpsSupabaseClient, run: ClaimedRun, delay: RunLiveDeps['delay']): Promise<RunVersion> {
   const held = await readWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion)
-  if (held !== null) return held.definition
+  if (held !== null) return { definition: held.definition, variables: held.variables }
   const gateway = env.OPS_GATEWAY
   if (!gateway) throw new Error('the OPS_GATEWAY binding to the bidding Worker is missing from this deploy')
   const asked = [{ workflowId: run.workflowId, versionNumber: run.workflowVersion }]
@@ -121,15 +132,19 @@ async function definitionOf(env: OpsEnv, client: OpsSupabaseClient, run: Claimed
   if (r.kind === 'threw') throw r.error
   const served = parseServedOpsDefinitions(r.value, asked)
   const def = served.definitions.find((d) => d.workflowId === run.workflowId && d.versionNumber === run.workflowVersion)
-  if (def === undefined) throw new Error(`the bidding Worker holds no ops lane version ${run.workflowVersion} of workflow ${run.workflowId}`)
+  if (def === undefined) {
+    // A version it holds and would not serve says why (#2702), rather than reading as one it lacks.
+    const refused = served.refused.find((r) => r.workflowId === run.workflowId)
+    throw new Error(refused?.text ?? `the bidding Worker holds no ops lane version ${run.workflowVersion} of workflow ${run.workflowId}`)
+  }
   if (def.organizationId !== run.organizationId) throw new Error(`the bidding Worker served workflow ${run.workflowId} under another organization than its run`)
-  const saved = await saveWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion, def.definition)
+  const saved = await saveWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion, def.definition, def.variables)
   // A conflict keeps ops's own copy, which is the one to run; read it back.
   if (saved === 'conflict') {
     const kept = await readWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion)
-    if (kept !== null) return kept.definition
+    if (kept !== null) return { definition: kept.definition, variables: kept.variables }
   }
-  return def.definition
+  return { definition: def.definition, variables: def.variables }
 }
 
 export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveDeps): Promise<RunDispatchAnswer> {
@@ -152,9 +167,9 @@ export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveD
     if (err instanceof OpsDatabaseConfigError) return { refused: `ops_database_not_configured: ${formatErr(err)}` }
     throw err
   }
-  let definition: Record<string, unknown>
+  let version: RunVersion
   try {
-    definition = await definitionOf(env, client, run, deps.delay)
+    version = await definitionOf(env, client, run, deps.delay)
   } catch (err) {
     const why = `the run's definition (workflow ${run.workflowId} version ${run.workflowVersion}) could not be had: ${formatErr(err)}`
     const end = { outcome: 'retry' as const, error: why, notBefore: new Date(deps.nowMs + RUN_DEFINITION_RETRY_MS) }
@@ -175,7 +190,7 @@ export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveD
     clock: deps.clock ?? realRunClock,
     newExecutionId: deps.newExecutionId ?? (() => uuidv7()),
     log: (fields) => console.log(JSON.stringify(fields)),
-  }, run, runBodyFor(definition, opsStepHandlers({
+  }, run, runBodyFor(version.definition, version.variables, opsStepHandlers({
     // Built the first time an app_action step reaches its connection (app-action.ts), so a run with
     // none never needs the ops connections key, and a deploy without it fails that step by name.
     appAction: appActionDeps(() => {
