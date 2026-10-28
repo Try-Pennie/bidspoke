@@ -301,7 +301,7 @@ export async function runDeadLetterBuildTriggerCheck(
     perOrg: async (orgId) => {
       const slack = await getSlackConnection(supabase, orgId)
       if (!slack || !slack.config_alerts_enabled) return false
-      return (await postMessage(slack.bot_token, slack.default_channel, buildBlocks(verdict, appUrl), 'Time to build the durable outcome store')) !== null
+      return (await postMessage(slack.bot_token, slack.default_channel, buildBlocks(verdict, appUrl), 'Time to build the durable outcome store', 'deadletter-volume')) !== null
     },
   })
 }

@@ -137,6 +137,8 @@ describe('runKillRateDriftCheck (#1355)', () => {
     expect(await runKillRateDriftCheck(supaWith(driftedStartedAt()), fakeKv(), 'https://app.test', NOW)).toBe(true)
     expect(postMessage).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(vi.mocked(postMessage).mock.calls[0][2])).toMatch(/re-measur/i)
+    // Logged under its fixed kind (#2948).
+    expect(vi.mocked(postMessage).mock.calls[0][4]).toBe('kill-rate-drift')
   })
 
   it('suppresses a repeat while the monthly cooldown is set', async () => {

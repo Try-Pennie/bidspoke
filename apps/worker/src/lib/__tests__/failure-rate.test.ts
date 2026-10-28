@@ -304,6 +304,8 @@ describe('runFailureRateCheck recovery (#253)', () => {
 
     expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
     expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ subject: 'Engine Bidding', alertedAt })
+    // Logged under its fixed kind (#2948).
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][3]).toBe('failure-rate-all-clear')
     expect(kv.store.has('failure-rate-recovery:wf-1:ACRO_GATEWAY')).toBe(false)
     expect(kv.store.has('failure-rate-cooldown:wf-1:ACRO_GATEWAY')).toBe(false)
   })

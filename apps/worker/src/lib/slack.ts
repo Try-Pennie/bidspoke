@@ -323,7 +323,7 @@ export async function sendFailureAlert(
     },
   ]
 
-  const ts = await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed at ${stepText}: ${errorText}`)
+  const ts = await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed at ${stepText}: ${errorText}`, 'execution-failure')
   return ts ? { channel, ts, bot_token: connection.bot_token } : null
 }
 
@@ -376,7 +376,8 @@ export async function sendDurationAlert(
     connection.bot_token,
     channel,
     blocks,
-    `Workflow "${payload.workflow_name}" took ${seconds}s (threshold: ${thresholdSeconds}s)`
+    `Workflow "${payload.workflow_name}" took ${seconds}s (threshold: ${thresholdSeconds}s)`,
+    'slow-execution',
   )
   return ts ? { channel, ts, bot_token: connection.bot_token } : null
 }
@@ -444,7 +445,8 @@ export async function sendSlowSpikeAlert(
     connection.bot_token,
     channel,
     blocks,
-    `Slow execution spike: ${payload.workflow_name}, ${payload.slow_count}/${payload.total_count} runs over ${thresholdSeconds}s`
+    `Slow execution spike: ${payload.workflow_name}, ${payload.slow_count}/${payload.total_count} runs over ${thresholdSeconds}s`,
+    'slow-spike',
   )
 }
 
@@ -525,6 +527,7 @@ export async function sendPartnerErrorRateAlert(
     channel,
     blocks,
     `${payload.partner} failing: ${payload.error_count} of ${payload.ping_count} pings failed in ${payload.window_minutes} minutes on ${payload.workflow_name}`,
+    'partner-error-rate',
   )
 }
 
@@ -572,7 +575,7 @@ export async function sendLeadValidationConfigAlert(
     },
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.app_url}/workflows/${payload.workflow_id}|Open workflow →>` } },
   ]
-  return (await postMessage(slack.bot_token, channel, blocks, `Lead validation setting missing on ${payload.workflow_name}: ${payload.namespace}`)) !== null
+  return (await postMessage(slack.bot_token, channel, blocks, `Lead validation setting missing on ${payload.workflow_name}: ${payload.namespace}`, 'lead-validation-config')) !== null
 }
 
 export interface LeadValidationRejectionAlertPayload {
@@ -629,7 +632,7 @@ export async function sendLeadValidationRejectionAlert(
     },
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.app_url}/workflows/${payload.workflow_id}|Open workflow →>` } },
   ]
-  return (await postMessage(slack.bot_token, channel, blocks, `Lead rejections changed on ${payload.workflow_name}`)) !== null
+  return (await postMessage(slack.bot_token, channel, blocks, `Lead rejections changed on ${payload.workflow_name}`, 'lead-validation-rejection-rate')) !== null
 }
 
 export interface FailureSpikeAlertPayload {
@@ -684,7 +687,8 @@ export async function sendFailureSpikeAlert(
     connection.bot_token,
     channel,
     blocks,
-    `Failure spike: ${payload.workflow_name}, ${payload.failure_count} failures matching ${payload.signal} in ${payload.window_minutes}m`
+    `Failure spike: ${payload.workflow_name}, ${payload.failure_count} failures matching ${payload.signal} in ${payload.window_minutes}m`,
+    'failure-spike',
   )
 }
 
@@ -801,7 +805,8 @@ export async function sendFailureSaturationAlert(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    `Most runs failing: ${payload.workflow_name}, ${payload.failure_count} of ${payload.total_count} in ${payload.window_minutes}m`
+    `Most runs failing: ${payload.workflow_name}, ${payload.failure_count} of ${payload.total_count} in ${payload.window_minutes}m`,
+    'failure-saturation',
   )) !== null
 }
 
@@ -875,7 +880,8 @@ export async function sendUpstreamOutageAlert(
     connection.bot_token,
     channel,
     blocks,
-    `${payload.failure_count} leads failing for one cause: ${payload.cause_label}, in ${payload.window_minutes}m`
+    `${payload.failure_count} leads failing for one cause: ${payload.cause_label}, in ${payload.window_minutes}m`,
+    'upstream-outage',
   )
 }
 
@@ -897,7 +903,7 @@ export async function sendUpstreamOutageAlert(
  * chat.postMessage, so this is an edge. lib/__tests__/slack-thread-reply.test.ts
  * pins every case.
  */
-export async function sendThreadReply(handle: SlackAlertHandle, text: string): Promise<void> {
+export async function sendThreadReply(handle: SlackAlertHandle, text: string, alertKind: SlackAlertKind): Promise<void> {
   // Through the same outcome logger as deliverMessage (#2364), titled only as a
   // thread reply: its text summarises a failure and is never recorded.
   const channel = handle.channel
@@ -912,22 +918,22 @@ export async function sendThreadReply(handle: SlackAlertHandle, text: string): P
     // ok:false with no error code is returned, not thrown, by the library.
     if (result.ok !== true) {
       console.error(`[slack] thread reply API error: ${result.error}`)
-      logSlackPostOutcome({ outcome: 'refused', reason: result.error ?? null, status: 200, channel, title })
+      logSlackPostOutcome({ outcome: 'refused', reason: result.error ?? null, status: 200, channel, title, alertKind })
     } else {
-      logSlackPostOutcome({ outcome: 'delivered', status: 200, channel, title })
+      logSlackPostOutcome({ outcome: 'delivered', status: 200, channel, title, alertKind })
     }
   } catch (e) {
     const failure = slackCallFailure(e)
     if (!failure) {
       console.error('[slack] thread reply failed:', slackNetworkCause(e))
-      logSlackPostOutcome({ outcome: 'no_answer', channel, title })
+      logSlackPostOutcome({ outcome: 'no_answer', channel, title, alertKind })
     } else if (failure.kind === 'api') {
       console.error(`[slack] thread reply API error: ${failure.error}`)
-      logSlackPostOutcome({ outcome: 'refused', reason: failure.error, status: 200, channel, title })
+      logSlackPostOutcome({ outcome: 'refused', reason: failure.error, status: 200, channel, title, alertKind })
     } else {
       const wait = failure.retryAfter === null ? '' : `, Retry-After ${failure.retryAfter} s, not waited for`
       console.error(`[slack] thread reply HTTP error ${failure.status}${wait}`)
-      logSlackPostOutcome({ outcome: 'refused', status: failure.status, retryAfter: failure.retryAfter, channel, title })
+      logSlackPostOutcome({ outcome: 'refused', status: failure.status, retryAfter: failure.retryAfter, channel, title, alertKind })
     }
   }
 }
@@ -1040,7 +1046,7 @@ export async function sendMatrixChangeAlert(
     })
   }
 
-  return (await postMessage(connection.bot_token, channel, blocks, `Bid matrix changed: ${summary}`)) !== null
+  return (await postMessage(connection.bot_token, channel, blocks, `Bid matrix changed: ${summary}`, 'bid-matrix-change')) !== null
 }
 
 // One problem found in a matrix's structure. Mirrors MatrixProblem in
@@ -1125,7 +1131,7 @@ export async function sendMatrixValidationAlert(
     })
   }
 
-  return (await postMessage(connection.bot_token, channel, blocks, `Bid matrix problem: ${total} found`)) !== null
+  return (await postMessage(connection.bot_token, channel, blocks, `Bid matrix problem: ${total} found`, 'bid-matrix-validation')) !== null
 }
 
 // Structural shapes of one workflow's offending nodes. Defined here (rather than
@@ -1238,7 +1244,8 @@ export async function sendTimeoutConfigAlert(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    `Step timeout warnings: ${totalNodes} step${totalNodes === 1 ? '' : 's'} need a higher timeout`
+    `Step timeout warnings: ${totalNodes} step${totalNodes === 1 ? '' : 's'} need a higher timeout`,
+    'timeout-config',
   )
 }
 
@@ -1283,7 +1290,8 @@ export async function sendSecretDriftAlert(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    `Secrets out of sync: ${missing.length} missing from Cloudflare`
+    `Secrets out of sync: ${missing.length} missing from Cloudflare`,
+    'secret-drift',
   )) !== null
 }
 
@@ -1541,7 +1549,7 @@ async function sendLostWritebackAlert(
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
     { type: 'section', text: { type: 'mrkdwn', text: link } },
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${run.workflow_name}`)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${run.workflow_name}`, 'outcome-deadletter-writeback-lost')) !== null
 }
 
 /**
@@ -1580,7 +1588,7 @@ async function sendUncapturableWritebackAlert(
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
     { type: 'section', text: { type: 'mrkdwn', text: link } },
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, run ? `${title}: ${run.workflow_name}` : title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, run ? `${title}: ${run.workflow_name}` : title, 'outcome-deadletter-writeback-uncapturable')) !== null
 }
 
 /**
@@ -1613,7 +1621,7 @@ async function sendHeldWithoutRecordAlert(
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
     { type: 'section', text: { type: 'mrkdwn', text: link } },
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, run ? `${title}: ${run.workflow_name}` : title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, run ? `${title}: ${run.workflow_name}` : title, 'outcome-deadletter-writeback-held-unrecorded')) !== null
 }
 
 /**
@@ -1665,7 +1673,7 @@ async function sendHeldWritebackAlert(
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
     { type: 'section', text: { type: 'mrkdwn', text: link } },
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${run.workflow_name}`)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${run.workflow_name}`, 'outcome-deadletter-writeback-held')) !== null
 }
 
 /**
@@ -1723,7 +1731,7 @@ async function sendUnfinishedWorkAlert(
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
     { type: 'section', text: { type: 'mrkdwn', text: link } },
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, run ? `${title}: ${run.workflow_name}` : title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, run ? `${title}: ${run.workflow_name}` : title, 'outcome-deadletter-continuation-unfinished')) !== null
 }
 
 /**
@@ -1816,7 +1824,8 @@ export async function sendOutcomeDeadLetterAlert(
       ? `Execution finalize delayed: ${payload.label}`
       : sightingDrainRecoverable
       ? `Outcome record delayed: ${payload.label}`
-      : `Outcome record lost: ${payload.label}`
+      : `Outcome record lost: ${payload.label}`,
+    'outcome-deadletter',
   )) !== null
 }
 
@@ -1939,7 +1948,7 @@ export async function sendSlowdownSummaryAlert(
   const snapshotLine = stallSnapshotLine(payload.snapshots, 'it')
   if (snapshotLine) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: snapshotLine } })
   blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } })
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${runs}`)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${runs}`, 'slowdown-summary')) !== null
 }
 
 export interface RepeatedSlowdownAlert {
@@ -1997,7 +2006,7 @@ export async function sendRepeatedSlowdownAlert(
   const snapshotLine = stallSnapshotLine(payload.snapshots, 'them', true)
   if (snapshotLine) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: snapshotLine } })
   blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } })
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${n} in ${payload.window_hours} hours`)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${n} in ${payload.window_hours} hours`, 'repeated-slowdown')) !== null
 }
 
 export interface UnconfirmedWritesAlert {
@@ -2069,7 +2078,7 @@ export async function sendUnconfirmedWritesAlert(
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
   ]
   if (shown.length > 0) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: runs } })
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${n} unconfirmed`)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${n} unconfirmed`, 'unconfirmed-writes')) !== null
 }
 
 /**
@@ -2109,7 +2118,8 @@ export async function sendBackupFailureAlert(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    `Workflow backup failing: ${payload.workflow_name}`
+    `Workflow backup failing: ${payload.workflow_name}`,
+    'backup-failure',
   )) !== null
 }
 
@@ -2184,6 +2194,7 @@ export async function sendDrainStallAlert(
     connection.default_channel,
     blocks,
     `Lead sightings not finalized: ${strandedCount.toLocaleString()} in_flight over 30h old`,
+    'drain-stall',
   )) !== null
 }
 
@@ -2222,6 +2233,7 @@ export async function sendBigTableGrowthAlert(
     connection.default_channel,
     blocks,
     `Big table approaching the 1,000-row cap: ${tables.map((t) => t.table_name).join(', ')}`,
+    'big-table-growth',
   )) !== null
 }
 
@@ -2306,6 +2318,7 @@ export async function sendQueryTimeoutAlert(
     connection.default_channel,
     blocks,
     `Query approaching its statement timeout: ${offenders.length} statement(s)`,
+    'query-timeout',
   )) !== null
 }
 
@@ -2372,7 +2385,7 @@ export async function sendQueryCancelledAlert(
     { type: 'section', text: { type: 'mrkdwn', text: body } },
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback, 'query-cancelled')) !== null
 }
 
 export async function sendCronHeartbeatAlert(
@@ -2441,6 +2454,7 @@ export async function sendCronHeartbeatAlert(
       connection.default_channel,
       blocks,
       `${job.label} is missing its heartbeat`,
+      'cron-heartbeat-unstamped',
     )) !== null
   }
   // A run that started and never finished is a different failure from a
@@ -2472,6 +2486,7 @@ export async function sendCronHeartbeatAlert(
       connection.default_channel,
       blocks,
       `${job.label} started and never finished (vanished)`,
+      'cron-heartbeat-vanished',
     )) !== null
   }
   const when =
@@ -2504,6 +2519,7 @@ export async function sendCronHeartbeatAlert(
     connection.default_channel,
     blocks,
     `${job.label} is${again} dark (${status})`,
+    'cron-heartbeat-dark',
   )) !== null
 }
 
@@ -2611,7 +2627,10 @@ export async function sendCronHeartbeatGroupAlert(
   let fix: string
   let how: string
   let fallback: string
+  // The same two alerts the single job page sends, about several jobs at once.
+  let kind: SlackAlertKind
   if (group.status === 'stale') {
+    kind = 'cron-heartbeat-dark'
     header = `Every job that ${words ? `runs ${words}` : 'runs on one schedule'} is${again} dark`
     const since = Number.isFinite(runAtMs)
       ? ` since ${etTime(runAtMs)} (${agoInWords(nowMs - runAtMs)} ago)`
@@ -2628,6 +2647,7 @@ export async function sendCronHeartbeatGroupAlert(
     how = 'Seen because none of these jobs has stamped a run inside its expected cadence.'
     fallback = `Every job that ${words ? `runs ${words}` : 'runs on one schedule'} is${again} dark (stale): ${labels}`
   } else {
+    kind = 'cron-heartbeat-vanished'
     header = `${group.jobs.length} jobs of one scheduled run${again} started and never finished`
     const ages = group.jobs.map((j) => j.ageMs).filter((a): a is number => a !== null)
     const started = ages.length ? ` ${agoInWords(Math.max(...ages))} ago` : ''
@@ -2647,7 +2667,7 @@ export async function sendCronHeartbeatGroupAlert(
     // The schedule string and how the check saw it come last, in one line (#1300).
     { type: 'section', text: { type: 'mrkdwn', text: `_${how} Schedule: ${schedule}._` } },
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback, kind)) !== null
 }
 
 /**
@@ -2715,6 +2735,7 @@ export async function sendPgCronAlert(
     connection.default_channel,
     blocks,
     `${verdict.jobname}: ${verdict.status}`,
+    'pg-cron-watch',
   )) !== null
 }
 
@@ -2894,7 +2915,7 @@ export async function sendWorkflowDispatchAlert(
   blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*How to fix:* ${fixes.join(' ')}` } })
 
   const summary = `workflow dispatch failed: ${problems.map((p) => p.file).join(', ')}`
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, summary)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, summary, 'workflow-dispatch')) !== null
 }
 
 export async function sendWorkflowScheduleAlert(
@@ -2946,7 +2967,7 @@ export async function sendWorkflowScheduleAlert(
     summary = alert.workflows.map((w) => `${w.workflow.label}: ${w.verdict.status}`).join(', ')
   }
 
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, summary)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, summary, 'workflow-schedule')) !== null
 }
 
 /**
@@ -3029,7 +3050,7 @@ export async function sendMatrixSyncFailureAlert(
 
   const channel = channelOverride || connection.default_channel
   const summary = `Bid matrix sync: ${issue.failed.length} failed, ${issue.preserved.length} preserved`
-  return (await postMessage(connection.bot_token, channel, blocks, summary)) !== null
+  return (await postMessage(connection.bot_token, channel, blocks, summary, 'bid-matrix-sync')) !== null
 }
 
 /**
@@ -3051,6 +3072,7 @@ export async function sendTitledAlert(
     intermittentSince?: string
     repeat?: string
   },
+  alertKind: SlackAlertKind,
 ): Promise<boolean> {
   const shown = payload.errors.slice(0, 20)
   const findings = shown.length === 1 ? shown[0] : shown.map((line) => `• ${line}`).join('\n')
@@ -3065,7 +3087,7 @@ export async function sendTitledAlert(
   if (payload.fixHint) blocks.push(section(`*Fix:* ${payload.fixHint}`))
   if (payload.repeat) blocks.push(section(payload.repeat))
   const channel = channelOverride || connection.default_channel
-  return (await postMessage(connection.bot_token, channel, blocks, title)) !== null
+  return (await postMessage(connection.bot_token, channel, blocks, title, alertKind)) !== null
 }
 
 const easternInstant = (iso: string) =>
@@ -3153,13 +3175,14 @@ export async function sendExportFailureAlert(
     /** One line under the findings of a titled alert. */
     context?: string
   },
+  alertKind: SlackAlertKind,
 ): Promise<boolean> {
   if (payload.errors.length === 0) return false
   // An error line is upstream text and can name an address with its query (L741, #1740).
   payload = { ...payload, errors: payload.errors.map(stripUrlQueriesInText) }
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection || !connection.config_alerts_enabled) return false
-  if (payload.title) return sendTitledAlert(connection, channelOverride, payload as typeof payload & { title: string })
+  if (payload.title) return sendTitledAlert(connection, channelOverride, payload as typeof payload & { title: string }, alertKind)
 
   const lines = payload.errors.slice(0, 20).map((line) => `• ${line}`).join('\n')
   // A failed purge means the rows are ALREADY in Snowflake and only the Supabase
@@ -3222,7 +3245,7 @@ export async function sendExportFailureAlert(
   })
   if (payload.repeat) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } })
   const channel = channelOverride || connection.default_channel
-  return (await postMessage(connection.bot_token, channel, blocks, `${payload.jobName}${again} ${headlineVerb}: ${payload.errors.length} ${noun}`)) !== null
+  return (await postMessage(connection.bot_token, channel, blocks, `${payload.jobName}${again} ${headlineVerb}: ${payload.errors.length} ${noun}`, alertKind)) !== null
 }
 
 /**
@@ -3285,6 +3308,7 @@ export async function sendSecretDecryptAlert(
     connection.default_channel,
     blocks,
     `Secret cannot be decrypted: ${keys.join(', ')}`,
+    'secret-decrypt',
   )) !== null
 }
 
@@ -3319,6 +3343,7 @@ export async function sendRequiredSecretsAlert(
     connection.default_channel,
     blocks,
     `Required worker secret missing: ${missingKeys.join(', ')}`,
+    'required-secrets',
   )) !== null
 }
 
@@ -3360,6 +3385,7 @@ export async function sendRequiredEnvVarsAlert(
     connection.default_channel,
     blocks,
     `Required configuration value missing: ${missingKeys.join(', ')}`,
+    'required-env-vars',
   )) !== null
 }
 
@@ -3415,7 +3441,7 @@ export async function sendCircuitAlert(
     ? `Circuit breaker opened for ${payload.service_name}`
     : `Circuit breaker recovered for ${payload.service_name}`
 
-  await postMessage(connection.bot_token, channel, blocks, fallback)
+  await postMessage(connection.bot_token, channel, blocks, fallback, isOpen ? 'circuit-breaker' : 'circuit-breaker-all-clear')
 }
 
 /** One recovered subject: what paged, when, and where to look. */
@@ -3636,7 +3662,7 @@ export async function sendDatabaseUnreachableAlert(
     ...(payload.repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } }] : []),
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
-  return postOutageOwnerMessage(slack.bot_token, channel, blocks, 'Bidspoke cannot read its database')
+  return postOutageOwnerMessage(slack.bot_token, channel, blocks, 'Bidspoke cannot read its database', 'db-unreachable')
 }
 
 /** The same alert when the read got a Cloudflare error page instead of an answer. */
@@ -3672,7 +3698,7 @@ function sendDatabaseUnreachableThroughCloudflare(
     ...(payload.repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } }] : []),
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
-  return postOutageOwnerMessage(slack.bot_token, channel, blocks, title)
+  return postOutageOwnerMessage(slack.bot_token, channel, blocks, title, 'db-unreachable')
 }
 
 /**
@@ -3692,6 +3718,7 @@ export async function sendRecoveryAlert(
   slack: { bot_token: string },
   channel: string,
   payload: RecoveredSubject & RecoveryWording,
+  alertKind: SlackAlertKind,
   now: number = Date.now(),
 ): Promise<boolean> {
   const { url, ...item } = payload
@@ -3703,7 +3730,7 @@ export async function sendRecoveryAlert(
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${url}|Open workflow >` } })
   }
 
-  return (await postMessage(slack.bot_token, channel, blocks, `Recovered: ${payload.subject}`)) !== null
+  return (await postMessage(slack.bot_token, channel, blocks, `Recovered: ${payload.subject}`, alertKind)) !== null
 }
 
 /**
@@ -3726,7 +3753,7 @@ export async function sendDatabaseRecoveredAlert(
     { type: 'section', text: { type: 'mrkdwn', text: payload.measured } },
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
-  return (await postOutageOwnerMessage(slack.bot_token, channel, blocks, 'Recovered: Bidspoke can read its database again')) !== null
+  return (await postOutageOwnerMessage(slack.bot_token, channel, blocks, 'Recovered: Bidspoke can read its database again', 'db-unreachable-all-clear')) !== null
 }
 
 /**
@@ -3760,7 +3787,7 @@ export async function sendSlackTokenUnreadableAlert(
       },
     },
   ]
-  return (await postMessage(slack.bot_token, channel, blocks, `Slack token cannot be read (${payload.reason})`)) !== null
+  return (await postMessage(slack.bot_token, channel, blocks, `Slack token cannot be read (${payload.reason})`, 'slack-token-undecryptable')) !== null
 }
 
 /** The all-clear for sendSlackTokenUnreadableAlert: the sealed token reads again. Returns whether it reached Slack. */
@@ -3777,7 +3804,7 @@ export async function sendSlackTokenReadableAlert(
     { type: 'section', text: { type: 'mrkdwn', text: recoverySentence(item, wording, now) } },
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}${SLACK_ALERT_LOGIN_LINK}|Open Bidspoke Alerts>` } },
   ]
-  return (await postMessage(slack.bot_token, channel, blocks, 'Recovered: the Slack token can be read again')) !== null
+  return (await postMessage(slack.bot_token, channel, blocks, 'Recovered: the Slack token can be read again', 'slack-token-undecryptable-all-clear')) !== null
 }
 
 /**
@@ -3794,6 +3821,7 @@ export async function sendGroupedRecoveryAlert(
   slack: { bot_token: string },
   channel: string,
   payload: RecoveryWording & { items: RecoveredSubject[] },
+  alertKind: SlackAlertKind,
   now: number = Date.now(),
 ): Promise<boolean> {
   // When every subject paged and cleared on the same tick the timing sentence is
@@ -3819,7 +3847,7 @@ export async function sendGroupedRecoveryAlert(
     { type: 'section', text: { type: 'mrkdwn', text } },
   ]
   const fallback = `Recovered: ${payload.items.map((i) => i.subject).join(', ')}`
-  return (await postMessage(slack.bot_token, channel, blocks, fallback)) !== null
+  return (await postMessage(slack.bot_token, channel, blocks, fallback, alertKind)) !== null
 }
 
 /** What the heartbeat's all-clear calls its signal; the incident record's label is the same words (#2103). */
@@ -3853,6 +3881,7 @@ export async function sendCronHeartbeatRecoveryAlert(
       endedAt: recovery.endedAt,
       endedAtIsClearing: true,
     },
+    'cron-heartbeat-all-clear',
     now,
   )
 }
@@ -3888,7 +3917,7 @@ export async function sendCronHeartbeatGroupRecoveryAlert(
     { type: 'section', text: { type: 'mrkdwn', text } },
   ]
   const fallback = `Recovered: ${recovery.jobs.map((j) => j.label).join(', ')}`
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback, 'cron-heartbeat-all-clear')) !== null
 }
 
 /**
@@ -3921,6 +3950,7 @@ export async function sendPgCronRecoveryAlert(
       endedAt: recovery.endedAt,
       firstHealthyAt: recovery.firstHealthyAt,
     },
+    'pg-cron-watch-all-clear',
     now,
   )
 }
@@ -4000,7 +4030,7 @@ export async function sendWritebackBacklogAlert(
     { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
     ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title, 'writeback-backlog')) !== null
 }
 
 /** What the backlog's all-clear calls its subject; the incident record's label is the same words. */
@@ -4024,6 +4054,7 @@ export async function sendWritebackBacklogRecoveryAlert(
     connection,
     connection.default_channel,
     { subject: WRITEBACK_BACKLOG_RECOVERY_SUBJECT, alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...writebackBacklogRecoveryWording },
+    'writeback-backlog-all-clear',
     now,
   )
 }
@@ -4111,7 +4142,7 @@ export async function sendOpsConnectionLoginAlert(supabase: SupabaseClient, orgI
     { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
     ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title, 'ops-connection-login')) !== null
 }
 
 export const opsConnectionLoginRecoveryWording: RecoveryWording = {
@@ -4132,6 +4163,7 @@ export async function sendOpsConnectionLoginRecoveryAlert(
     connection,
     connection.default_channel,
     { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionLoginRecoveryWording },
+    'ops-connection-login-all-clear',
     now,
   )
 }
@@ -4186,7 +4218,7 @@ export async function sendOpsConnectionWriteBackAlert(supabase: SupabaseClient, 
     { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
     ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title, 'ops-connection-write-back')) !== null
 }
 
 export const opsConnectionWriteBackRecoveryWording: RecoveryWording = {
@@ -4207,6 +4239,7 @@ export async function sendOpsConnectionWriteBackRecoveryAlert(
     connection,
     connection.default_channel,
     { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionWriteBackRecoveryWording },
+    'ops-connection-write-back-all-clear',
     now,
   )
 }
@@ -4291,7 +4324,7 @@ export async function sendOpsKeyResealAlert(supabase: SupabaseClient, orgId: str
     { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
     ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title, 'ops-key-reseal')) !== null
 }
 
 /** The all clear once the switch is removed or the reseal is back inside its bounds. Returns whether it reached Slack. */
@@ -4314,6 +4347,7 @@ export async function sendOpsKeyResealRecoveryAlert(
       signal: 'ops key reseal',
       recoveredPhrase: recovery.phrase,
     },
+    'ops-key-reseal-all-clear',
     now,
   )
 }
@@ -4405,7 +4439,7 @@ export async function sendOpsConnectionOwnerAlert(supabase: SupabaseClient, orgI
     { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
     ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title, 'ops-connection-owner')) !== null
 }
 
 export const opsConnectionOwnerRecoveryWording: RecoveryWording = {
@@ -4426,6 +4460,7 @@ export async function sendOpsConnectionOwnerRecoveryAlert(
     connection,
     connection.default_channel,
     { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionOwnerRecoveryWording },
+    'ops-connection-owner-all-clear',
     now,
   )
 }
@@ -4559,6 +4594,7 @@ export async function sendHttpMoneyHostRecoveryAlert(
     connection,
     connection.default_channel,
     { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...httpMoneyHostRecoveryWording(recovery.context, appUrl) },
+    'http-money-host-all-clear',
     now,
   )
 }
@@ -4595,7 +4631,7 @@ export async function sendSalesforceBulkheadLimitAlert(supabase: SupabaseClient,
     { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
     ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title, 'salesforce-bulkhead-limit')) !== null
 }
 
 /** The all clear once the limit matches the value the ops lane is sized for again. Returns whether it reached Slack. */
@@ -4618,6 +4654,7 @@ export async function sendSalesforceBulkheadLimitRecoveryAlert(
       signal: 'Salesforce bulkhead limit',
       recoveredPhrase: `matches the ${recovery.sizedFor} the ops Salesforce lane is sized for again`,
     },
+    'salesforce-bulkhead-limit-all-clear',
     now,
   )
 }
@@ -4635,7 +4672,7 @@ export async function sendSlackRefusalAllClear(slack: { bot_token: string }, cha
     { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
     ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  return (await postMessage(slack.bot_token, channel, blocks, `${m.title}: Slack is taking alert posts again`)) !== null
+  return (await postMessage(slack.bot_token, channel, blocks, `${m.title}: Slack is taking alert posts again`, 'slack-post-refused-all-clear')) !== null
 }
 
 // ── A scheduled job whose runs keep failing while they finish (#2523, #2526) ───
@@ -4686,7 +4723,7 @@ export async function sendMinuteJobFailingAlert(supabase: SupabaseClient, orgId:
     { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
     ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title, 'minute-job-failing')) !== null
 }
 
 /** The all clear once the job has run without failing for the re-arm window. Returns whether it reached Slack. */
@@ -4710,6 +4747,7 @@ export async function sendMinuteJobFailingRecoveryAlert(
       endedAt: recovery.endedAt,
       firstHealthyAt: recovery.firstHealthyAt,
     },
+    'minute-job-failing-all-clear',
     now,
   )
 }
@@ -4793,7 +4831,7 @@ export async function sendWritebackDrainAlert(connection: { bot_token: string; d
     { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
     ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title, 'writeback-drain')) !== null
 }
 
 /**
@@ -4820,6 +4858,7 @@ export async function sendWorkflowScheduleRecoveryAlert(
       endedAt: recovery.endedAt,
       firstHealthyAt: recovery.firstHealthyAt,
     },
+    'workflow-schedule-all-clear',
     now,
   )
 }
@@ -4834,12 +4873,12 @@ export async function sendSalesforceReadBackAlert(
   payload: SalesforceReadBackAlert,
   appUrl: string,
 ): Promise<boolean> {
-  const { title, sections, fallback } = composeSalesforceReadBackAlert(payload, appUrl)
+  const { title, sections, fallback, alertKind } = composeSalesforceReadBackAlert(payload, appUrl)
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
     ...sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback, alertKind)) !== null
 }
 
 export interface PartnerPageLivePayload {
@@ -4906,7 +4945,7 @@ export async function sendPartnerPageLiveAlert(
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
   ]
-  return postMessage(slack.bot_token, channel, blocks, header)
+  return postMessage(slack.bot_token, channel, blocks, header, broken ? 'partner-page-live-channel' : 'partner-page-live-monitor')
 }
 
 /** One ET timestamp format, so a new alert does not add another copy of it. */
@@ -4972,15 +5011,15 @@ function withOutageLine(blocks: unknown[], outage: OpenOutage): unknown[] {
 // gets the outage line while the database outage is open (#2061). Reading the
 // incident never throws and never waits past its own deadline.
 //
-// `alertKind` is the alert's fixed kind name (#2948), which the post outcome
-// line records whether or not the blocks carry a header title. Only the HTTP
-// money host page names one so far; the rest record null, as before.
+// `alertKind` is the alert's fixed kind name from SLACK_ALERT_KINDS (#2948),
+// which the post outcome line records whether or not the blocks carry a header
+// title. It is required, so every alert names one.
 export async function postMessage(
   botToken: string,
   channel: string,
   blocks: unknown[],
   text: string,
-  alertKind?: SlackAlertKind,
+  alertKind: SlackAlertKind,
 ): Promise<string | null> {
   const outage = await openOutageForPost()
   return deliverMessage(botToken, channel, outage ? withOutageLine(blocks, outage) : blocks, text, alertKind)
@@ -4991,8 +5030,8 @@ export async function postMessage(
  * which would name the outage on the message that announces it. Private to this
  * module, so no other sender can leave the line out.
  */
-function postOutageOwnerMessage(botToken: string, channel: string, blocks: unknown[], text: string): Promise<string | null> {
-  return deliverMessage(botToken, channel, blocks, text)
+function postOutageOwnerMessage(botToken: string, channel: string, blocks: unknown[], text: string, alertKind: SlackAlertKind): Promise<string | null> {
+  return deliverMessage(botToken, channel, blocks, text, alertKind)
 }
 
 /**
@@ -5023,7 +5062,7 @@ async function deliverMessage(
   channel: string,
   blocks: unknown[],
   text: string,
-  alertKind?: SlackAlertKind,
+  alertKind: SlackAlertKind,
 ): Promise<string | null> {
   let ts: string | undefined
   // The title only, redacted, for the outcome line (#2364): never the body or `text`.
@@ -5069,6 +5108,8 @@ async function deliverMessage(
 /** Composed by lib/buyer-click-alert.ts, which owns the wording; this only lays it out. */
 export interface BuyerClickAlertMessage {
   header: string
+  /** Which of the click alerts this is (#2948). */
+  alertKind: SlackAlertKind
   body: string
   link: string | null
 }
@@ -5083,7 +5124,7 @@ export async function sendBuyerClickAlert(
     { type: 'section', text: { type: 'mrkdwn', text: message.body } },
   ]
   if (message.link) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${message.link}|Open the executions>` } })
-  return postMessage(slack.bot_token, channel, blocks, message.header)
+  return postMessage(slack.bot_token, channel, blocks, message.header, message.alertKind)
 }
 
 // ── Partner firewall block page (#1265) ──────────────────────────────────────
@@ -5160,7 +5201,7 @@ export async function sendPartnerBlockAlert(
   if (!fromProbe) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/workflows/${payload.workflowId}/executions?trace=${encodeURIComponent(payload.traceId ?? '')}|Open the execution>` } })
   }
-  return postMessage(slack.bot_token, channel, blocks, header)
+  return postMessage(slack.bot_token, channel, blocks, header, 'partner-reachability-blocked')
 }
 
 export interface PartnerUnreachableAlertPayload {
@@ -5200,7 +5241,7 @@ export async function sendPartnerUnreachableAlert(
       },
     },
   ]
-  return postMessage(slack.bot_token, channel, blocks, header)
+  return postMessage(slack.bot_token, channel, blocks, header, 'partner-reachability-unreachable')
 }
 
 export interface ProbeControlAlertPayload {
@@ -5243,7 +5284,7 @@ export async function sendProbeControlAlert(
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
   ]
-  return postMessage(slack.bot_token, channel, blocks, header)
+  return postMessage(slack.bot_token, channel, blocks, header, 'partner-reachability-control-failing')
 }
 
 export interface ProbeBrokenAlertPayload {
@@ -5274,7 +5315,7 @@ export async function sendProbeBrokenAlert(
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
     { type: 'section', text: { type: 'mrkdwn', text: '*How to fix:* open the worker\'s logs and search for `event=partner_probe`. If every host reads unreachable with the same error, the worker\'s outbound fetch is failing: check Cloudflare\'s status page and the worker\'s subrequest usage. Leads are unaffected unless they fail too, which the failure alerts report separately.' } },
   ]
-  return postMessage(slack.bot_token, channel, blocks, header)
+  return postMessage(slack.bot_token, channel, blocks, header, 'partner-reachability-probe-broken')
 }
 
 /** Bytes in the units Supabase sizes compute in: decimal, so 4 GB of compute reads 4.0 GB. */
@@ -5356,7 +5397,7 @@ export async function sendDatabaseMemoryShortAlert(
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
   ]
-  return postMessage(slack.bot_token, channel, blocks, header)
+  return postMessage(slack.bot_token, channel, blocks, header, 'supabase-memory-short')
 }
 
 export interface DatabaseMemoryUnreadablePayload {
@@ -5389,5 +5430,5 @@ export async function sendDatabaseMemoryUnreadableAlert(
       },
     },
   ]
-  return postMessage(slack.bot_token, channel, blocks, header)
+  return postMessage(slack.bot_token, channel, blocks, header, 'supabase-memory-unreadable')
 }

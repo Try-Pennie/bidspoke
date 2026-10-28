@@ -224,6 +224,7 @@ describe('the all clear', () => {
         recoveredPhrase: 'reads every setting its checks need again',
         url: `https://app.test/workflows/${WF}`,
       },
+      'lead-validation-config-all-clear',
     ])
     expect(h.store.get(recoveryKey(LEAD_VALIDATION_CONFIG_SIGNAL, SUBJECT))).toBeUndefined()
     expect(h.outbox().map((e) => e.type)).toEqual(['opened', 'paged', 'ended'])

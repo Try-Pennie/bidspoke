@@ -270,6 +270,8 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
       const { claims, log } = claimLedger()
       await overlap(() => runSlowExecutionCheck(healthy() as never, kv as never, url, claims), () => held.open(true), () => log.length === 2)
       expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+      // Logged under its fixed kind (#2948).
+      expect(vi.mocked(sendRecoveryAlert).mock.calls[0][3]).toBe('slow-spike-all-clear')
       expect(log).toEqual(['claim minute-alert:all-clear:slow-spike:wf-1', 'claim minute-alert:all-clear:slow-spike:wf-1'])
     })
 

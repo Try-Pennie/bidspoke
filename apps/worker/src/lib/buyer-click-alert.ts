@@ -210,6 +210,7 @@ export function clickAlertMessage(alert: ClickAlert, appUrl: string): BuyerClick
     const release = (HELD_CLICK_REASONS as readonly string[]).includes(alert.reason) ? [releaseLine(alert, appUrl)] : []
     return {
       header: `${alert.partner_slug} ${w.header}`,
+      alertKind: 'buyer-click-page',
       body: [
         alert.prospect_id === null ? `${alert.detail}.` : `Prospect \`${alert.prospect_id}\`: ${alert.detail}.`,
         alert.unanswered === true && w.heldUnanswered !== undefined ? w.heldUnanswered : w.held,
@@ -221,6 +222,7 @@ export function clickAlertMessage(alert: ClickAlert, appUrl: string): BuyerClick
   }
   return {
     header: `${alert.partner_slug} clicks reached ${alert.count} today`,
+    alertKind: 'buyer-click-over-cap',
     body: [
       `${alert.count} distinct prospects were sent to ${alert.partner_slug} on ${alert.date} (Pacific day), at or past ${alert.alert_over_percent} percent of the daily cap of ${alert.daily_lead_cap} (${alert.threshold}).`,
       'Offers stop at the cap; clicks on offers already made still send, which is how the count passes it. This notice posts once per Pacific day.',

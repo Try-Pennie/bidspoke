@@ -103,6 +103,8 @@ describe('recordAndCheckBranchSkew (#1133)', () => {
     const alerted = await recordAndCheckBranchSkew(kv, counts({ unresolved: SKEW_MIN_SAMPLE }), { supabase: supa, appUrl: 'https://app.test' })
     expect(alerted).toBe(true)
     expect(postMessage).toHaveBeenCalledTimes(1)
+    // Logged under its fixed kind (#2948).
+    expect(vi.mocked(postMessage).mock.calls[0][4]).toBe('strand-branch-skew')
     // The window resets after evaluating, so the next stretch is judged fresh.
     const stored = JSON.parse(kv.store.get('strand-branch-skew:window')!)
     expect(stored.counts.unresolved).toBe(0)

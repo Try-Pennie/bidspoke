@@ -169,7 +169,7 @@ export async function runKillRateDriftCheck(
     perOrg: async (orgId) => {
       const slack = await getSlackConnection(supabase, orgId)
       if (!slack || !slack.config_alerts_enabled) return false
-      return (await postMessage(slack.bot_token, slack.default_channel, buildBlocks(reason, weeksLine, appUrl), 'Archive kill-rate thresholds may need re-measuring')) !== null
+      return (await postMessage(slack.bot_token, slack.default_channel, buildBlocks(reason, weeksLine, appUrl), 'Archive kill-rate thresholds may need re-measuring', 'kill-rate-drift')) !== null
     },
   })
 }
