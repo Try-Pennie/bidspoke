@@ -4499,7 +4499,7 @@ export function httpMoneyHostMessage(alert: HttpMoneyHostAlert, appUrl: string):
     httpMoneyHostOpening(alert, appUrl),
     workflowsUsingConnection(alert.workflows, { activeOnly: true, appUrl }),
     noActive
-      ? '*Fix:* remove it on the Connections page.'
+      ? '*Fix:* remove it on the Connections page. If it is still used by switched off workflows, move them with Replace first.'
       : '*Fix:* use Replace on the Connections page to move the workflows that use it onto an HTTP connection with another host, then remove this one.',
   ]
   if (alert.firstReportedAt !== null) sections.push(`First reported ${etTime(alert.firstReportedAt)}.`)

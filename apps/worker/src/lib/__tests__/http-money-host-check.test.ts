@@ -416,7 +416,7 @@ describe('the page', () => {
   it('asks only for the removal when no active workflow uses it, a switched off one included', () => {
     for (const workflows of [[], [{ id: 'wf-b', name: 'Old export', active: false }]]) {
       const m = httpMoneyHostMessage({ ...base, workflows }, APP)
-      expect(m.sections.slice(1)).toEqual(['No active workflow uses it.', '*Fix:* remove it on the Connections page.'])
+      expect(m.sections.slice(1)).toEqual(['No active workflow uses it.', '*Fix:* remove it on the Connections page. If it is still used by switched off workflows, move them with Replace first.'])
     }
   })
 
