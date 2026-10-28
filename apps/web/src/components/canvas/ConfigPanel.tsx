@@ -21,6 +21,7 @@ import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
 import { duplicateBranchArmIndices } from '@/lib/branch-validation'
 import { isHardCoded4xx } from '@/lib/response-status'
 import { isBuyerPartner } from '@/lib/partner-roles'
+import { panelHeadingOf } from '@/lib/panel-heading'
 import { CLICK_CHECK_BUDGET_MS, DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, POPULATIONS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
 import { POPULATION_LABELS } from '@/components/partners/buyer-profile/labels'
 import { SIMPLE_FILTER_OPERATORS, VALUE_LESS_OPERATORS } from '@bidspoke/workflow-definition'
@@ -226,7 +227,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{type}</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{panelHeadingOf(type, data.config)}</p>
           <p className="mt-0.5 text-sm font-semibold text-graphite">{data.label || data.namespace}</p>
           {data.label && <p className="font-mono text-xs text-gray-500">{data.namespace}</p>}
         </div>
