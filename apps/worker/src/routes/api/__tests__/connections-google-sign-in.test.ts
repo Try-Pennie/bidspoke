@@ -17,6 +17,7 @@ import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 import { parseExchangeOAuthCodeRequest, parseRevokeRequest, parseSignInClientRequest } from '../../../lib/ops-connections-contract'
 import { pkceChallenge } from '../../../lib/google-sign-in'
+import { CREATE_REFUSAL_CODES } from '../../../lib/connection-create-refusals'
 import { makeKeys, type TestKeys } from '../../../ops/connections/__tests__/harness'
 import { rpcStub } from '../../../test-setup/rpc-stub'
 
@@ -516,6 +517,24 @@ describe('finishing a sign in: a Reconnect', () => {
         expect(body.message).not.toMatch(/Check the address|Check what the connection names/)
       }
     }
+  })
+
+  // No form is saved on a sign in, so whatever ops answers the exchange, the person is sent to signing in again
+  // or to Dan, never to a save (#2923). Walks every code the route words through the shared sentences, by what
+  // it answers, never a list of the ones known to say save (L247).
+  it('a refused exchange never asks the person to save, whatever ops answers, new or a Reconnect', async () => {
+    const asks: string[] = []
+    for (const reconnect of [false, true]) {
+      for (const refused of [...CREATE_REFUSAL_CODES, 'a_code_bidding_does_not_know']) {
+        const order: string[] = []
+        vi.mocked(createSupabaseClient).mockReturnValue(store(order, { states: [reconnect ? state({ connection_id: OWN, reconnect: true, name: null }) : state()] }) as never)
+        const { env } = makeEnv(order, { exchangeOAuthCode: async () => ({ ok: false, refused, detail: 'x', retry_at: null }) })
+        const body = (await (await finish(env, { state: STATE, code: CODE })).json()) as Answer
+        const rest = (body.message ?? '').replace(/Nothing was saved\./g, '')
+        if (body.message === undefined || /\bsav(?:e|ed|es|ing)\b/i.test(rest)) asks.push(`${refused} reconnect=${reconnect}: ${body.error}: ${body.message}`)
+      }
+    }
+    expect(asks).toEqual([])
   })
 
   it('a Reconnect whose exchange is refused changes nothing on bidding', async () => {
