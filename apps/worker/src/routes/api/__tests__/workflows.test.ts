@@ -3072,3 +3072,70 @@ describe('a save made from a version no longer stored is refused, never written 
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
   })
 })
+
+// #2879: create and duplicate write a version as a save does, so each is backed
+// up as a save is. Until then a new or duplicated workflow was missing from the
+// backup until its first save, since neither write answered the version it made.
+describe('a created or duplicated workflow is pushed to the GitHub backup (#2879)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    vi.mocked(recordBackupSuccess).mockResolvedValue(undefined)
+    vi.mocked(recordBackupFailure).mockResolvedValue(false)
+    app = await makeApp()
+  })
+
+  const definition = { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } }
+  const created = { ...existingWorkflow, id: 'wf-new', name: 'New Flow', definition, version: 0, is_active: false }
+  const createClient = () => makeSupabase(
+    { users: { single: testUser }, workflow_versions: { list: [{ id: 'ver-new-1' }] } },
+    { write: () => ({ data: { workflow: created, version_id: 'ver-new-1', version_number: 1 }, error: null }) },
+  )
+  const source = { name: 'Lead Routing', description: null, definition, folder_id: null, is_active: true, lane: 'money', version: 3 }
+  const clone = { ...existingWorkflow, id: 'wf-copy', name: 'Lead Routing (copy)', definition, is_active: false }
+  const duplicateClient = () => makeSupabase(
+    { users: { single: testUser }, workflows: { single: source }, workflow_versions: { list: [{ id: 'ver-copy-3' }] } },
+    { write: () => ({ data: { workflow: clone, version_id: 'ver-copy-3', version_number: 3, versions_copied: 3 }, error: null }) },
+  )
+
+  it('pushes a created workflow\'s definition and stamps the commit on its first version row', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-create-1')
+    const sb = createClient()
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New Flow', definition } })
+    expect(res.status).toBe(201)
+    await mockCtx.settle()
+    expect(vi.mocked(pushWorkflowToGitHub)).toHaveBeenCalledWith('gh-tok', 'Try-Pennie/backups', 'wf-new', 'New Flow', definition, 1, expect.stringMatching(/create/))
+    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'update')).toEqual([['update', [{ commit_sha: 'commit-create-1' }]]])
+    expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
+  })
+
+  it('pushes a duplicate as the copy, and stamps the copy\'s version row', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-copy-1')
+    const sb = duplicateClient()
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    await mockCtx.settle()
+    expect(vi.mocked(pushWorkflowToGitHub)).toHaveBeenCalledWith('gh-tok', 'Try-Pennie/backups', 'wf-copy', 'Lead Routing (copy)', definition, 3, expect.stringMatching(/duplicate workflow wf-1/))
+    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'update')).toEqual([['update', [{ commit_sha: 'commit-copy-1' }]]])
+  })
+
+  it.each([
+    ['create', () => createClient(), '/workflows', { name: 'New Flow', definition }, 'wf-new', 'New Flow'],
+    ['duplicate', () => duplicateClient(), '/workflows/wf-1/duplicate', undefined, 'wf-copy', 'Lead Routing (copy)'],
+  ] as const)('answers a %s whose backup push fails as written, and alerts the failure as a save does', async (_op, client, path, body, workflowId, workflowName) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(pushWorkflowToGitHub).mockRejectedValue(new Error('GitHub push failed (401): Bad credentials'))
+    vi.mocked(createSupabaseClient).mockReturnValue(client() as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', path, body ? { body } : {})
+    expect(res.status).toBe(201)
+    await mockCtx.settle()
+    expect(vi.mocked(recordBackupFailure)).toHaveBeenCalledWith(expect.objectContaining({ workflowId, workflowName }))
+    expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
+  })
+})

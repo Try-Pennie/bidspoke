@@ -35,7 +35,9 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { refreshWorkflowCaches } from '../../../engine/definition-loader'
 import api from '../index'
-import { REPLACE_OUTCOMES, REPLACE_WORKFLOWS_MAX } from '../../../lib/connection-replace'
+import {
+  replaceClock, replaceWorstMsPerWorkflow, REPLACE_CLIENT_WAIT_MS, REPLACE_DEADLINE_MS, REPLACE_OUTCOMES, REPLACE_WORKFLOWS_MAX,
+} from '../../../lib/connection-replace'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -398,6 +400,93 @@ describe('a concurrent edit is never written over', () => {
     expect(db.writes).toHaveLength(3)
     expect(stepOf(wf(ACHIEVE).definition).config.connection).toBe(PENNIE)
     expect(writeAuditLog).not.toHaveBeenCalled()
+  })
+})
+
+// The 7 workflow cap comes from measured call times, not a hard worst case, so the route also keeps its
+// own deadline, the page's wait less the request's trip, and stops before a workflow whose slowest run
+// could not finish by it (#2903). The clock is the module's, replaced here, so nothing waits for real (L524).
+describe('Replace stops before a workflow it has no time left to finish', () => {
+  const START = 1_800_000_000_000
+  const lastStart = START + REPLACE_DEADLINE_MS - replaceWorstMsPerWorkflow()
+  let now = START
+
+  beforeEach(() => {
+    now = START
+    vi.spyOn(replaceClock, 'now').mockImplementation(() => now)
+  })
+
+  /** The first workflow's save takes until `at`, so the second is judged at that time. */
+  function firstSaveEndsAt(at: number) {
+    use(storeDouble({ beforeWrite: (id) => { if (id === ACHIEVE) now = at } }))
+  }
+
+  it('starts a workflow whose slowest run just finishes by the deadline', async () => {
+    firstSaveEndsAt(lastStart)
+    const res = await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE, CLEANUP] })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Answer
+    expect(body).toMatchObject({ outcome: 'replaced', workflows: [{ id: ACHIEVE, outcome: 'replaced' }, { id: CLEANUP, outcome: 'replaced' }] })
+    expect(db.writes.map((w) => w.p_id)).toEqual([ACHIEVE, CLEANUP])
+  })
+
+  it('leaves one that would finish a millisecond late, naming it with its own reason, nothing read or written for it', async () => {
+    firstSaveEndsAt(lastStart + 1)
+    const res = await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE, CLEANUP, OLD_IMPORT] })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Answer
+    // The page's own shape: a workflow left is refused with why, and stays ticked (connections-state.ts).
+    expect(body).toMatchObject({
+      outcome: 'incomplete',
+      workflows: [
+        { id: ACHIEVE, name: 'Achieve report import', outcome: 'replaced', version: 5 },
+        { id: CLEANUP, name: 'Daily Salesforce cleanup', outcome: 'refused', why: 'not_reached' },
+        // A workflow that needs no call is still answered as it is.
+        { id: OLD_IMPORT, name: 'Old import', outcome: 'deleted' },
+      ],
+    })
+    expect(body.message).toBe('Bidspoke stopped before Daily Salesforce cleanup so the page would not time out. It still uses Pennie Salesforce. '
+      + 'Old import was deleted, so it cannot get a new version. Replace again to move it.')
+    // The earlier workflow stays replaced; the late one was neither read nor written, nor audited.
+    expect(stepOf(wf(ACHIEVE).definition).config.connection).toBe(TPL2)
+    expect(stepOf(wf(CLEANUP).definition).config.connection).toBe(PENNIE.toUpperCase())
+    expect(wf(CLEANUP).version).toBe(9)
+    expect(db.writes.map((w) => w.p_id)).toEqual([ACHIEVE])
+    expect(db.reads.map((r) => r.table)).toEqual(['service_connections', 'workflows'])
+    expect(vi.mocked(writeAuditLog).mock.calls.map((c) => c[3])).toEqual([ACHIEVE])
+  })
+
+  it('logs that it stopped, and how many it left, so a Replace cut short is seen', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    firstSaveEndsAt(lastStart + 1)
+    await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE, CLEANUP] })
+    const line = warn.mock.calls.map((c) => String(c[0])).find((s) => s.includes('"connection_replace_out_of_time"'))
+    expect(JSON.parse(line!)).toMatchObject({ organization_id: ORG, connection_id: PENNIE, not_reached: 1 })
+  })
+
+  it('writes nothing when the reads before the first workflow took the time', async () => {
+    vi.spyOn(replaceClock, 'now').mockImplementationOnce(() => START).mockImplementation(() => lastStart + 1)
+    const res = await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE, CLEANUP] })
+    const body = (await res.json()) as Answer
+    expect(body).toMatchObject({ outcome: 'incomplete', workflows: [{ id: ACHIEVE, outcome: 'refused', why: 'not_reached' }, { id: CLEANUP, outcome: 'refused', why: 'not_reached' }] })
+    expect(body.message).toBe('Bidspoke stopped before Achieve report import and Daily Salesforce cleanup so the page would not time out. They still use Pennie Salesforce. Replace again to move them.')
+    expect(db.writes).toEqual([])
+  })
+
+  it('never stops in the middle of a workflow: one started is finished however long its calls take', async () => {
+    // Someone saves ACHIEVE between the read and the write, and that first try runs far past the deadline.
+    let landed = false
+    use(storeDouble({
+      beforeWrite: (id, rows) => {
+        if (landed || id !== ACHIEVE) return
+        landed = true
+        now = START + REPLACE_CLIENT_WAIT_MS * 2
+        rows.find((r) => r.id === ACHIEVE)!.version = 5
+      },
+    }))
+    const res = await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE] })
+    expect(await res.json()).toMatchObject({ outcome: 'replaced', workflows: [{ id: ACHIEVE, outcome: 'replaced', version: 6 }] })
+    expect(db.writes.map((w) => w.p_expected_version)).toEqual([4, 5])
   })
 })
 

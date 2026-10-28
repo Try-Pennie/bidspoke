@@ -2,7 +2,8 @@
  * The GitHub backup of a written workflow version (#2868).
  *
  * Every version snapshot written (a canvas save, a version restore, a
- * Connections Replace) is pushed to the backup repo as the workflow's file, and
+ * Connections Replace, and since #2879 a create's first version and the
+ * version a duplicate's definition is) is pushed to the backup repo as the workflow's file, and
  * the commit is stamped on the version row. This is called from one place
  * only, writeWorkflow (lib/write-workflow.ts), for every op that writes a
  * version, so no route can write a version and leave the backup holding the

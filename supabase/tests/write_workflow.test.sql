@@ -7,7 +7,9 @@
 --
 -- WHAT IT PROVES, each call made as service_role, the Worker's role:
 --   A. create: a switched off money workflow at version 0 with the stamp sent
---      and the save id; a written definition without its stamp, a field the op
+--      and the save id, and since #2879 a first snapshot (v1), so the saves
+--      below number from 2 (supabase/tests/write_workflow_backup_versions.test.sql
+--      proves that snapshot); a written definition without its stamp, a field the op
 --      does not take, a definition that is not an object, a blank name and a
 --      folder of another organization are each refused by name, writing nothing.
 --   B. save: from the stored version it writes the snapshot and the row
@@ -129,7 +131,7 @@ BEGIN
   v := pg_temp.ww('save', wf, 0, jsonb_build_object('definition', pg_temp.def('b'), 'definition_schema_version', 1, 'message', 'first',
                   'definition_report', '{"verdict":"judged","would_refuse":0}'::jsonb), '55555555-5555-5555-5555-555555550002');
   IF v -> 'ok' IS NULL THEN RAISE EXCEPTION 'B: save refused: %', v; END IF;
-  IF (v -> 'ok' ->> 'version_number')::int <> 1 OR (v -> 'ok' -> 'workflow' ->> 'version')::int <> 1 THEN RAISE EXCEPTION 'B: save returned %', v; END IF;
+  IF (v -> 'ok' ->> 'version_number')::int <> 2 OR (v -> 'ok' -> 'workflow' ->> 'version')::int <> 1 THEN RAISE EXCEPTION 'B: save returned %', v; END IF;
   SELECT * INTO r FROM public.workflow_versions WHERE id = (v -> 'ok' ->> 'version_id')::uuid;
   IF r.definition <> pg_temp.def('b') OR r.definition_schema_version <> 1 OR r.message <> 'first' OR r.definition_report ->> 'verdict' <> 'judged'
      OR r.created_by <> '22222222-2222-2222-2222-222222221947' THEN
@@ -155,7 +157,7 @@ BEGIN
   -- A rename: the snapshot holds the stored definition and its stamp.
   v := pg_temp.ww('save', wf, 1, jsonb_build_object('name', 'Renamed'));
   SELECT * INTO r FROM public.workflow_versions WHERE id = (v -> 'ok' ->> 'version_id')::uuid;
-  IF r.version_number <> 2 OR r.definition <> pg_temp.def('b') OR r.definition_schema_version <> 1 OR r.definition_report IS NOT NULL
+  IF r.version_number <> 3 OR r.definition <> pg_temp.def('b') OR r.definition_schema_version <> 1 OR r.definition_report IS NOT NULL
      OR (v -> 'ok' -> 'workflow' ->> 'version')::int <> 2 OR v -> 'ok' -> 'workflow' ->> 'name' <> 'Renamed' THEN
     RAISE EXCEPTION 'B: rename snapshot % row %', to_jsonb(r), v;
   END IF;
@@ -168,14 +170,14 @@ DO $do$
 DECLARE wf uuid := current_setting('ww.wf')::uuid; v1 uuid; v jsonb; other uuid;
 BEGIN
   -- An unstamped old version, as every row before #1947 is.
-  INSERT INTO public.workflow_versions (workflow_id, version_number, definition) VALUES (wf, 3, pg_temp.def('old')) RETURNING id INTO v1;
+  INSERT INTO public.workflow_versions (workflow_id, version_number, definition) VALUES (wf, 4, pg_temp.def('old')) RETURNING id INTO v1;
   PERFORM pg_temp.expect_refused(pg_temp.ww('restore', wf, 2, jsonb_build_object('version_id', v1, 'definition', pg_temp.def('old'), 'definition_schema_version', 1)), 'BP422', 'field_not_writable', 'C caller stamp');
   v := pg_temp.ww('restore', wf, 2, jsonb_build_object('version_id', v1, 'definition', pg_temp.def('old')));
-  IF (v -> 'ok' ->> 'version_number')::int <> 4 OR (v -> 'ok' ->> 'restored_from')::int <> 3
+  IF (v -> 'ok' ->> 'version_number')::int <> 5 OR (v -> 'ok' ->> 'restored_from')::int <> 4
      OR v -> 'ok' -> 'workflow' -> 'definition_schema_version' <> 'null'::jsonb OR v -> 'ok' -> 'workflow' -> 'definition' <> pg_temp.def('old') THEN
     RAISE EXCEPTION 'C: restore returned %', v;
   END IF;
-  IF (SELECT message FROM public.workflow_versions WHERE id = (v -> 'ok' ->> 'version_id')::uuid) <> 'Restored from v3'
+  IF (SELECT message FROM public.workflow_versions WHERE id = (v -> 'ok' ->> 'version_id')::uuid) <> 'Restored from v4'
      OR (SELECT definition_schema_version FROM public.workflow_versions WHERE id = (v -> 'ok' ->> 'version_id')::uuid) IS NOT NULL THEN
     RAISE EXCEPTION 'C: restore snapshot wrong';
   END IF;
