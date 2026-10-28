@@ -694,6 +694,7 @@ const ROUTE_STATUS: Readonly<Record<ConnectionRouteRefusalCode, 200 | 400 | 404 
   slack_unanswered: 503,
   reconnect_target_changed: 422,
   reconnect_target_unreadable: 422,
+  reconnect_no_login_to_enter: 422,
   reconnect_login_unreadable: 422,
   reconnect_stale: 409,
   reconnect_unconfirmed: 503,
@@ -966,6 +967,10 @@ connections.post('/:id/reconnect', async (c) => {
     console.log(JSON.stringify({ event: 'connection_rechecked', organization_id: orgId, connection_id: row.id, generation: row.credential_generation }))
     return c.json({ outcome: 'checked', connection: { id: row.id, generation: row.credential_generation, acts_as: row.acts_as } })
   }
+
+  // A login with no field a person types (Google, by delegation or a person's own sign in) has nothing new to
+  // take: its Reconnect only checks it again (#2727), and a login sent would seal an empty one.
+  if (reconnectLogin(service.connection).fields.length === 0) return ownRefusal('reconnect_no_login_to_enter')
 
   // 2. The login, from the row's target and the new fields.
   const labelOf = (key: string) => service.connection.fields.find((f) => f.key === key)?.label ?? key

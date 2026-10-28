@@ -15,7 +15,7 @@
  * answer cannot replace the card or a newer list. The clock is the `tick`
  * event's, never the machine's, so tests move time by hand.
  */
-import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, LIST_NO_ANSWER, listGroups, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry, type UsingWorkflow } from './connection-model'
+import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, isCompanyMailbox, LIST_NO_ANSWER, listGroups, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry, type UsingWorkflow } from './connection-model'
 import { draftDirty, EMPTY_ADD_DRAFT, pickedList, withoutDrive, workflowsCount, type AddDraft, type GoogleWay } from './add-form-model'
 import { alertsReducer, alertsUnsaved, initialAlertsState, type AlertsEvent, type AlertsState } from './alert-settings-state'
 import { SLACK_ALERT_LOGIN_LINK_ID } from '@bidspoke/service-catalogue/schema'
@@ -97,6 +97,9 @@ export type DialogState =
    */
   | { kind: 'replace'; id: string; with: string | null; listed: UsingWorkflow[]; moved: string[]; ticked: string[]; save: SaveState; started: number | null }
 
+/** A company mailbox's one click check (#2727): which connection, its running, failed or stalled line, and the press that started it. */
+export interface RecheckState { id: string; save: SaveState; started: number }
+
 /** How long a save or a Reconnect may check its login, and a Remove or a Replace take, before its line says it stalled: the client's own ceilings (api.ts). */
 export interface ChangeDeadlines {
   saveDeadlineMs: number
@@ -126,6 +129,11 @@ export interface ConnectionsState {
   /** The Add connection form while it is open. */
   add: AddState | null
   dialog: DialogState
+  /**
+   * A company mailbox's one click check (#2727): no dialog, its line drawn in that connection's panel. It
+   * shares Reconnect's numbering, so an answer is taken only by the press that started it.
+   */
+  recheck: RecheckState | null
   /** The last save, Reconnect, Remove and Replace started, each numbered by the caller; only the latest one's answer counts. */
   lastChange: { save: number; reconnect: number; remove: number; replace: number }
   /** The Slack alerts login's alert settings (build PR 14): their own reducer, alert-settings-state.ts. */
@@ -178,6 +186,9 @@ export type ConnectionsEvent =
   | { type: 'reconnect_requested'; attempt: number; at: number; stalled: string; label?: string }
   | { type: 'reconnect_answered'; attempt: number; id: string; actsAs: string | null; at: number }
   | { type: 'reconnect_refused'; attempt: number; sentence: string }
+  /** A company mailbox's Reconnect (#2727): the check of its stored login, started with no dialog. Its pass is reconnect_answered. */
+  | { type: 'recheck_requested'; id: string; attempt: number; at: number; stalled: string }
+  | { type: 'recheck_refused'; attempt: number; sentence: string }
   | { type: 'connection_remove_requested'; attempt: number; at: number; stalled: string }
   /** `notice` when the removal stands and the workflows server could not be told at once. */
   | { type: 'connection_remove_answered'; attempt: number; id: string; notice: string | null }
@@ -215,6 +226,7 @@ export function initialConnectionsState(now: number, deadlineMs: number, chosen:
     deadlines,
     add: null,
     dialog: null,
+    recheck: null,
     lastChange: { save: 0, reconnect: 0, remove: 0, replace: 0 },
     alerts: initialAlertsState(now),
   }
@@ -279,12 +291,15 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
         const deadline = d.kind === 'remove' ? s.deadlines.removeDeadlineMs : d.kind === 'replace' ? s.deadlines.replaceDeadlineMs : s.deadlines.saveDeadlineMs
         if (stalls(d.save, e.at, deadline)) next = { ...next, dialog: { ...d, save: stalledOf(d.save) } }
       }
+      if (s.recheck && stalls(s.recheck.save, e.at, s.deadlines.saveDeadlineMs)) next = { ...next, recheck: { ...s.recheck, save: stalledOf(s.recheck.save) } }
       return next
     }
     case 'choose':
       // Leaving the form or the channel editor discards it; the page asks first while it holds something (unsavedWork).
       return {
         ...s, chosen: e.chosen, tab: 'connection', edit: s.edit.kind === 'failed' ? { kind: 'idle' } : s.edit, add: e.chosen.kind === 'add' ? s.add : null,
+        // A failed check's line is said once; a running one stays with its connection until it answers.
+        recheck: s.recheck?.save.kind === 'saving' ? s.recheck : null,
         alerts: alertsReducer(s.alerts, { type: 'alerts_channel_closed' }),
       }
     case 'tab':
@@ -476,7 +491,20 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       // Its history has a new entry now, so it is read again when its tab next opens.
       const history = Object.fromEntries(Object.entries(s.history).filter(([id]) => id !== e.id))
       const dialog = s.dialog?.kind === 'reconnect' && s.dialog.id === e.id && s.dialog.started === e.attempt ? null : s.dialog
-      return { ...s, list: { ...s.list, data: { ...s.list.data, connections } }, history, dialog }
+      const recheck = s.recheck?.id === e.id && s.recheck.started === e.attempt ? null : s.recheck
+      return { ...s, list: { ...s.list, data: { ...s.list.data, connections } }, history, dialog, recheck }
+    }
+    case 'recheck_requested': {
+      if (s.list.kind !== 'loaded' || s.recheck?.save.kind === 'saving' || e.attempt <= s.lastChange.reconnect) return s
+      const c = s.list.data.connections.find((x) => x.id === e.id)
+      // Every other connection has something to enter, or a sign in, so it reconnects in its dialog.
+      if (!c || !isCompanyMailbox(c)) return s
+      return { ...s, now: e.at, lastChange: { ...s.lastChange, reconnect: e.attempt }, recheck: { id: c.id, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
+    }
+    case 'recheck_refused': {
+      const r = s.recheck
+      if (!r || r.started !== e.attempt || !awaiting(r.save)) return s
+      return { ...s, recheck: { ...r, save: { kind: 'failed', sentence: e.sentence, unconfirmed: false } } }
     }
     case 'reconnect_refused': {
       const d = s.dialog

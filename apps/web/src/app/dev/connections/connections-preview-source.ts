@@ -316,8 +316,9 @@ export const SCRIPTED_FRAMES = [
   'add-openai', 'add-openai-project-mismatch', 'openai-summaries',
   // #2337: an Anthropic workspace's key: its form, verify's workspace refusal, and its panel.
   'add-anthropic', 'add-anthropic-workspace-mismatch', 'anthropic-lead-notes',
-  // #2337: Google, the catalogue's own entry now: verify's mailbox refusal, and a company mailbox's panel.
-  'add-google-mailbox-mismatch', 'google-ops-mailbox',
+  // #2337: Google, the catalogue's own entry now: verify's mailbox refusal, and a company mailbox's panel,
+  // working and refused (#2727).
+  'add-google-mailbox-mismatch', 'google-ops-mailbox', 'google-ops-mailbox-refused',
   // #2338 build PR 13, the settled return from Sign in with Google (docs/design/google-sign-in-return.html):
   // back in the add form, the finish running, and the sign in declined on Google's page.
   'add-google-own-finishing', 'add-google-own-declined',
@@ -544,6 +545,11 @@ function formScript(frame: string, moreGoogle: number): PreviewScript | null {
       return script([...googleForm, saveAt(T - elapsed), { type: 'save_refused', attempt: 1, sentence: GOOGLE_OTHER_MAILBOX }])
     case 'google-ops-mailbox':
       return script([listed(), google, choose('Ops mailbox')])
+    case 'google-ops-mailbox-refused': {
+      // #2727: the company mailbox with its login refused, the settled design's refused frame (docs/design/google-mailbox-reconnect.html).
+      const refused = rowOf({ ...(fixture.connections.find((c) => c.name === 'Ops mailbox') as FixtureConnection), status: 'reauth', since: '9:12 AM ET' } as FixtureConnection)
+      return script([{ type: 'list_answered', attempt: 1, data: loadedOf({ connections: rows.map((r) => (r.name === 'Ops mailbox' ? refused : r)), statuses }) }, google, choose('Ops mailbox')])
+    }
     case 'add-google-own':
       return script(ownForm)
     case 'add-google-own-finishing':

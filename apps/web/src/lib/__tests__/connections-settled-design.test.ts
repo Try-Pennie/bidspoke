@@ -15,7 +15,8 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { coverageProblems, designPath as design, jsonBlock, loadChecks, type Decision } from './_settled-design'
+import { coverageProblems, designPath as design, jsonBlock, loadChecks, readSettledDesign, type Decision } from './_settled-design'
+import { COMPANY_MAILBOX_FIX } from '@/components/connections/connection-model'
 import { CONNECTION_REPLACE_MOST } from '@/lib/api'
 import { replaceCapSentence } from '@/components/connections/ConnectionDialogs'
 
@@ -126,6 +127,22 @@ describe('settled Connections designs (#2338)', () => {
       const frame = (id: string) => spec.frames.find((f) => f.id === id)?.variant
       expect(frame('replace-capped')).toMatchObject({ inUse: nine, replace: { stage: 'capped', all: nine, ticked: CONNECTION_REPLACE_MOST } })
       expect(frame('replace-over-cap')).toMatchObject({ inUse: nine, replace: { stage: 'capped', all: nine, ticked: CONNECTION_REPLACE_MOST + 1 } })
+    })
+  })
+
+  // #2727 (Dan, 2026-10-28): the company mailbox Reconnect design. It was settled with no regeneration
+  // folder of its own (its chrome came from this page's preview), so the map and its checks are held here.
+  describe('#2727: the company mailbox Reconnect design', () => {
+    const { decisions, frameIds, checks } = readSettledDesign('google-mailbox-reconnect')
+
+    it('every checked decision has its check, on every frame it shows on, and every decision one owner', () => {
+      expect(checks.map((c) => c.id)).toEqual(['D1', 'D3', 'D4'])
+      expect(coverageProblems(decisions, checks, frameIds)).toEqual([])
+      expect(decisions.filter((d) => !d.requirement === !d.noCode).map((d) => d.id)).toEqual([])
+    })
+
+    it("D4: its check expects the page's own fix sentence, word for word", () => {
+      expect(readFileSync(design('google-mailbox-reconnect.checks.js'), 'utf8')).toContain(`var FIX = "${COMPANY_MAILBOX_FIX}";`)
     })
   })
 

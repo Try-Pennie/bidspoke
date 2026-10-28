@@ -395,6 +395,12 @@ export const CONNECTION_ROUTE_REFUSAL_CODES = [
   'reconnect_target_changed',
   /** What the stored row names cannot be read back into the form's fields. */
   'reconnect_target_unreadable',
+  /**
+   * A new login sent for a connection whose login holds nothing a person types (a Google company mailbox,
+   * acting through the ops Worker's own delegation key, or a person's own Google sign in): its Reconnect only
+   * checks it again (#2727), so a login sent would seal an empty one at the next generation.
+   */
+  'reconnect_no_login_to_enter',
   /** The stored login could not be read, so a Reconnect without a new one has nothing to check. */
   'reconnect_login_unreadable',
   /** The compare and set lost: the row moved on while the new login was checked (F116). */
@@ -471,6 +477,7 @@ const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: Route
   slack_unanswered: () => 'Slack did not answer when Bidspoke asked about the token. Nothing was changed. Try again in a minute.',
   reconnect_target_changed: (c) => `A Reconnect keeps what the connection names, so ${listed(c.names, 'that field')} cannot change here. Nothing was saved. To use another, add a new connection.`,
   reconnect_target_unreadable: () => 'Bidspoke cannot read back what this connection names, so it cannot be reconnected. Nothing was saved. Tell Dan.',
+  reconnect_no_login_to_enter: () => 'This connection has no login to enter, so Reconnect only checks it again. Nothing was changed. Reload the page and press Reconnect.',
   reconnect_login_unreadable: (c) => `Bidspoke cannot read this connection's stored login, so there is nothing to check. Nothing was changed. Reconnect with a new ${c.secret}.`,
   reconnect_stale: () => 'Someone else changed this connection\'s login while yours was being checked. Nothing was saved. Reload the page, and reconnect again if it still needs it.',
   reconnect_unconfirmed: (c) => `Bidspoke could not confirm whether the new ${c.secret} was saved. Reload the page to see, and reconnect again if it still needs it.`,
