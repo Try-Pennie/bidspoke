@@ -121,7 +121,7 @@ const writesOf = (sb: { writes: WriteArgs[] }, op: string) => sb.writes.filter((
 const USER_ORG = 'org-abc'
 /** A schedule trigger whose settings are whole, for tests about something else (an invalid one is refused at save, #1952). */
 const OPS_SCHEDULE = { type: 'schedule', config: { cron: '0 13 * * *', timezone: 'America/New_York', overlap: 'skip', catch_up: 'none', jitter_max_seconds: 0 } }
-const testUser ={ id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
+const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
 // A stored row always carries its lane (NOT NULL, default money, #1707), and the
 // test and test-node routes refuse a row without one (#1725).
 const existingWorkflow = { id: 'wf-1', name: 'Lead Routing', organization_id: USER_ORG, definition: { nodes: [], edges: [] }, lane: 'money', version: 4 }
@@ -2875,6 +2875,53 @@ describe('an invalid schedule is refused by a named 400 on create and save (#195
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition: scheduled(validSchedule) } })
     expect(res.status).toBe(201)
     expect(writesOf(sb, 'create')).toHaveLength(1)
+  })
+
+  // The stored definitions: none in production held a schedule when this
+  // shipped, but a rule on what is stored must not rest on that measurement, so
+  // the three routes that carry a stored definition into a new write, or make
+  // one live, refuse an invalid schedule too.
+  const storedInvalid = scheduled({ ...validSchedule, cron: '0 6 * * 1' })
+
+  it('duplicate refuses a source whose stored schedule is invalid, and copies nothing', async () => {
+    const source = { name: 'Weekly', description: null, definition: storedInvalid, folder_id: null, is_active: false, lane: 'ops', version: 3 }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: source } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(400)
+    const body = await res.json() as { reason: string; problems: Array<{ reason: string }> }
+    expect(body.reason).toBe('schedule_invalid')
+    expect(body.problems.map((p) => p.reason)).toEqual(['cron_weekday_not_named'])
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('restore refuses a version whose schedule is invalid, onto a switched off workflow too, and writes nothing', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { single: { ...existingWorkflow, lane: 'ops', is_active: false } },
+      workflow_versions: { single: { id: 'ver-1', definition: storedInvalid, version_number: 1 } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(400)
+    expect((await res.json() as { reason: string }).reason).toBe('schedule_invalid')
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('switching on refuses a workflow whose stored schedule is invalid, and switches nothing', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, lane: 'ops', is_active: false, definition: storedInvalid } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { reason: string }).reason).toBe('schedule_invalid')
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('switching off is never refused for it, so an invalid schedule can always be stopped', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, lane: 'ops', is_active: true, definition: storedInvalid } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
+    expect(res.status).toBe(200)
   })
 
   it('a trigger that is not a schedule is not judged as one', async () => {
