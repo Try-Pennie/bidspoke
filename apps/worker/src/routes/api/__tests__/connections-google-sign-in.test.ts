@@ -498,6 +498,26 @@ describe('finishing a sign in: a Reconnect', () => {
     expect(db.table.find((r) => r.id === OWN)).toMatchObject({ acts_as: 'dan@trypennie.com', credential_generation: 4 })
   })
 
+  // A sign in is for the person's own account, which nobody types, so a refusal about what it names sends the
+  // person to Dan or to signing in again, never to an address, on a new connection and a Reconnect alike (#2910).
+  it('a refusal about what the sign in names never asks for an address, new or a Reconnect', async () => {
+    const said: Record<string, string> = {
+      connection_target_invalid: 'Bidspoke asked Google for a sign in it cannot use. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
+      connection_not_allowed: 'A Bidspoke rule refused this Google login before it was tried. Nothing was saved. Tell Dan.',
+    }
+    for (const reconnect of [false, true]) {
+      for (const [refused, message] of Object.entries(said)) {
+        const order: string[] = []
+        const db = store(order, { states: [reconnect ? state({ connection_id: OWN, reconnect: true, name: null }) : state()] })
+        vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+        const { env } = makeEnv(order, { exchangeOAuthCode: async () => ({ ok: false, refused, detail: 'x', retry_at: null }) })
+        const body = (await (await finish(env, { state: STATE, code: CODE })).json()) as Answer
+        expect(body, `${refused} reconnect=${reconnect}`).toMatchObject({ error: refused, message })
+        expect(body.message).not.toMatch(/Check the address|Check what the connection names/)
+      }
+    }
+  })
+
   it('a Reconnect whose exchange is refused changes nothing on bidding', async () => {
     const order: string[] = []
     const db = store(order, { states: [state({ connection_id: OWN, reconnect: true, name: null })] })
