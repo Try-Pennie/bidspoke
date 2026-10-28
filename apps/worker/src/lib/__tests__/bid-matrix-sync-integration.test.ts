@@ -133,6 +133,30 @@ describe('#182 sync integration', () => {
     expect(query).toContain('Is_Lead_Economy__c = FALSE')
     expect(query).toContain('IsSoFi__c = FALSE')
   })
+
+  // #2394: the query url and the next page url are built by the shared
+  // salesforce-api module now, and must be byte for byte the urls the hand built
+  // template sent. The expected values are that template written out: the query
+  // url over the full query, and the instance url with the relative
+  // nextRecordsUrl Salesforce returns appended.
+  it('asks for the matrix rows and their next page at exactly the urls the hand built template sent', async () => {
+    servedConfig = { ...CONFIG, sf_filters: { partner_flag: 'IsSoFi__c', extra: 'RangeValue__c != null' } }
+    const nextRecordsUrl = '/services/data/v60.0/query/01gRO00000GXDvSYAX-2000'
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      return urls.length === 1
+        ? { ok: true, json: async () => ({ records: [SF_RECORDS[0]], done: false, nextRecordsUrl }) }
+        : { ok: true, json: async () => ({ records: [SF_RECORDS[1]], done: true }) }
+    }))
+    await syncBidConfig('cfg-1', ENV, makeSupabase())
+    const soql = 'SELECT Id, RowId__c, RowLow__c, RowHigh__c, RangeLow__c, RangeHigh__c, RangeValue__c, IsSellOff__c ' +
+      'FROM BidRangeRow__c WHERE IsSoFi__c = TRUE AND RangeValue__c != null ORDER BY RowId__c, RangeLow__c'
+    expect(urls).toEqual([
+      `https://sf.example/services/data/v60.0/query?q=${encodeURIComponent(soql)}`,
+      'https://sf.example/services/data/v60.0/query/01gRO00000GXDvSYAX-2000',
+    ])
+  })
 })
 
 // #2141: History credits a Sync now press to the person who pressed it, and the
