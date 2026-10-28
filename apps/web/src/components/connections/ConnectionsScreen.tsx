@@ -21,8 +21,9 @@
  * form in the right panel (AddConnectionPanel.tsx), a save lists the new
  * connection and opens it, Reconnect and Remove open their dialogs
  * (ConnectionDialogs.tsx), and leaving with something unsaved asks first
- * (lib/leave-guard.ts). Replace is drawn and inert until build PR 12, and Sign
- * in with Google until build PR 13.
+ * (lib/leave-guard.ts). Sign in with Google came with build PR 13, and Replace
+ * with build PR 12 (R20): the panel's Replace opens its dialog, which moves the
+ * ticked workflows to another connection of the service.
  *
  * Build PR 14 (R2): the Integrations page is retired. The Slack alerts login's
  * panel holds its alert settings (AlertSettings.tsx: the channel the alerts
@@ -31,7 +32,7 @@
  */
 import Link from 'next/link'
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
-import type { ConnectionList, SlackAlertSettingsAnswer, SlackAlertSettingsPatch } from '@/lib/api'
+import { CONNECTION_REPLACE_MOST, type ConnectionList, type ConnectionReplaceAnswer, type SlackAlertSettingsAnswer, type SlackAlertSettingsPatch } from '@/lib/api'
 import { errorSentence, requestFailureCause } from '@/lib/error-sentence'
 import { Button, ChoiceGroup, FieldError, Outcome, TextInput } from '@/components/ui/form'
 import { Tabs, TabPanel } from '@/components/ui/Tabs'
@@ -43,13 +44,13 @@ import {
   chosenConnection, connectionsReducer, initialConnectionsState, unsavedWork, type Chosen, type ConnectionsEvent, type ConnectionsState, type DetailTab, type LoadedList,
 } from './connections-state'
 import {
-  catalogueServices, createBodyOf, createdView, knownOrgs, reconnectBodyOf, saveFailureSentence, stalledSentence, type CreateBody, type CreatedConnection, type FormService,
+  catalogueServices, createBodyOf, createdView, knownOrgs, reconnectBodyOf, replaceWorkingLabel, saveFailureSentence, stalledSentence, type CreateBody, type CreatedConnection, type FormService,
 } from './add-form-model'
 import { GOOGLE_OWN_ACCOUNT_TARGET } from '@bidspoke/service-catalogue/schema'
 import { AddConnectionPanel } from './AddConnectionPanel'
 import type { KeptSignIns } from './google-sign-in-kept'
 import { FINISHING_LABEL, NO_SIGN_IN, type SignInFinishBody, type SignInReturn } from './google-sign-in-return'
-import { LeaveConnectionDialog, ReconnectDialog, RemoveDialog, RemovedDialog, ReplaceDialog } from './ConnectionDialogs'
+import { LeaveConnectionDialog, NoticeDialog, ReconnectDialog, RemoveDialog, ReplaceDialog } from './ConnectionDialogs'
 import { leaveThen, useLeaveGuard, type LeaveRequest } from '@/lib/leave-guard'
 import type { ComboboxOption } from '@/components/ui/Combobox'
 import { AlertSettings } from './AlertSettings'
@@ -80,6 +81,8 @@ export interface ConnectionsSource {
   keptSignIns: KeptSignIns
   /** DELETE /api/connections/:id: refused while a workflow uses it (build PR 6). */
   remove(id: string): Promise<{ outcome: 'removed'; ops: { told: true } | { told: false; message: string } }>
+  /** POST /api/connections/:id/replace: each ticked workflow gets a new version naming `with` in its place (build PR 12, R20). */
+  replace(id: string, body: { with: string; workflows: string[] }): Promise<ConnectionReplaceAnswer>
   /** GET /api/integrations/slack: the Slack alerts login's alert settings (build PR 14). */
   slackAlerts(): Promise<SlackAlertSettingsAnswer>
   /** PATCH /api/integrations/slack/settings: one switch, or the channel. */
@@ -216,7 +219,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     || state.edit.kind === 'adding' || state.edit.kind === 'removing'
     || Object.values(state.history).some((h) => h.kind === 'loading')
     || state.add?.save.kind === 'saving'
-    || ((state.dialog?.kind === 'reconnect' || state.dialog?.kind === 'remove') && state.dialog.save.kind === 'saving')
+    || ((state.dialog?.kind === 'reconnect' || state.dialog?.kind === 'remove' || state.dialog?.kind === 'replace') && state.dialog.save.kind === 'saving')
     || alertsWaiting(state.alerts)
   useEffect(() => clock.every(waiting ? 1000 : 30_000, () => dispatch({ type: 'tick', at: clock.now() })), [clock, waiting])
 
@@ -420,6 +423,30 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     )
   }, [source, clock])
 
+  // Replace (build PR 12, R20): the ticked workflows, sent with the connection to use instead.
+  const replace = useCallback(() => {
+    const s = latest.current
+    const d = s.dialog
+    if (d?.kind !== 'replace' || d.save.kind === 'saving' || !d.with || d.ticked.length === 0 || d.ticked.length > CONNECTION_REPLACE_MOST || s.list.kind !== 'loaded') return
+    const c = s.list.data.connections.find((x) => x.id === d.id)
+    const replacement = s.list.data.connections.find((x) => x.id === d.with)
+    if (!c || !replacement) return
+    const attempt = ++changeNumber.current.replace
+    if (attempt <= s.lastChange.replace) return
+    const ms = s.deadlines.replaceDeadlineMs
+    const withId = d.with
+    dispatch({ type: 'connection_replace_requested', attempt, at: clock.now(), stalled: stalledSentence(c.serviceName, ms, 'replaced'), label: replaceWorkingLabel(d.ticked.length, replacement.name) })
+    source.replace(c.id, { with: withId, workflows: [...d.ticked] }).then(
+      (a) => dispatch({
+        type: 'connection_replace_answered', attempt, id: c.id, withId: a.with.id, withName: a.with.name, workflows: a.workflows,
+        // Incomplete always says why; a route that somehow did not is still never read as done.
+        sentence: a.outcome === 'replaced' ? null : (a.message ?? 'Some workflows were not moved. Reload the page to see which, then replace again.'),
+        warning: a.stored_copy_warning ?? null,
+      }),
+      (err: unknown) => dispatch({ type: 'connection_replace_refused', attempt, sentence: saveFailureSentence(err, c.serviceName, ms, 'replaced') }),
+    )
+  }, [source, clock])
+
   // ── The Slack alerts login's alert settings (build PR 14) ──
   // Each change's number, taken at the press, above every earlier one, so a late answer is never taken for a later press.
   const alertChange = useRef(state.alerts.lastAttempt)
@@ -504,7 +531,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   const groups = useMemo(() => (loaded ? listGroups(loaded.data.connections) : []), [loaded])
   const orgs = useMemo(() => knownOrgs(loaded ? loaded.data.connections : [], orgNames), [loaded, orgNames])
   const dialog = state.dialog
-  const dialogConnection = loaded && dialog && dialog.kind !== 'removed' ? loaded.data.connections.find((c) => c.id === dialog.id) ?? null : null
+  const dialogConnection = loaded && dialog && dialog.kind !== 'notice' ? loaded.data.connections.find((c) => c.id === dialog.id) ?? null : null
   const dialogService = dialogConnection ? services.find((x) => x.key === dialogConnection.service) ?? null : null
 
   return (
@@ -591,6 +618,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
                     onHistoryRetry={() => loadHistory(chosen.id)}
                     onReconnect={() => dispatch({ type: 'dialog_opened', dialog: 'reconnect', id: chosen.id })}
                     onRemove={() => dispatch({ type: 'dialog_opened', dialog: 'remove', id: chosen.id })}
+                    onReplace={() => dispatch({ type: 'dialog_opened', dialog: 'replace', id: chosen.id })}
                     alerts={alertsPanel}
                   />
                 )
@@ -614,14 +642,16 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
       {dialog?.kind === 'remove' && dialogConnection && (
         <RemoveDialog dialog={dialog} connection={dialogConnection} now={state.now} onRemove={remove} onClose={() => dispatch({ type: 'dialog_closed' })} />
       )}
-      {dialog?.kind === 'removed' && <RemovedDialog dialog={dialog} onClose={() => dispatch({ type: 'dialog_closed' })} />}
+      {dialog?.kind === 'notice' && <NoticeDialog dialog={dialog} onClose={() => dispatch({ type: 'dialog_closed' })} />}
       {dialog?.kind === 'replace' && dialogConnection && loaded && (
         <ReplaceDialog
           dialog={dialog}
           connection={dialogConnection}
           candidates={loaded.data.connections.filter((c) => c.service === dialogConnection.service && c.id !== dialogConnection.id && !c.alertLogin)}
+          now={state.now}
           onWith={(id) => dispatch({ type: 'replace_with', id })}
           onTick={(workflow) => dispatch({ type: 'replace_tick', workflow })}
+          onReplace={replace}
           onClose={() => dispatch({ type: 'dialog_closed' })}
         />
       )}
@@ -693,7 +723,7 @@ function WorkflowLinks({ workflows }: { workflows: ConnectionView['workflows'] }
   )
 }
 
-function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, onRemove, alerts }: {
+function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, onRemove, onReplace, alerts }: {
   c: ConnectionView
   state: ConnectionsState
   orgNames: Readonly<Record<string, string>>
@@ -701,6 +731,7 @@ function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, o
   onHistoryRetry: () => void
   onReconnect: () => void
   onRemove: () => void
+  onReplace: () => void
   /** The Slack alerts login's alert settings, drawn under its facts (round 36). */
   alerts: React.ReactNode
 }) {
@@ -755,10 +786,10 @@ function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, o
             )
             : (
               <>
-                {/* Rounds 6 and 9c. Replace is drawn and does nothing until build PR 12 (#1947). */}
+                {/* Rounds 6 and 9c; Replace opens its dialog (build PR 12, R20). */}
                 <div className="cx-actions" data-part="actions">
                   {!notice && <Button variant="secondary" className="cx-btn-quiet" onClick={onReconnect}>Reconnect</Button>}
-                  <Button variant="secondary" className="cx-btn-quiet">Replace</Button>
+                  <Button variant="secondary" className="cx-btn-quiet" onClick={onReplace}>Replace</Button>
                 </div>
                 <div className="cx-danger" data-part="remove-row">
                   {n > 0 && <div className="what">Cannot be removed while a workflow uses it.</div>}

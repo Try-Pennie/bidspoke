@@ -69,6 +69,7 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     create: vi.fn(async () => { throw new Error('not called in this test') }),
     reconnect: vi.fn(async () => { throw new Error('not called in this test') }),
     remove: vi.fn(async () => { throw new Error('not called in this test') }),
+    replace: vi.fn(async () => { throw new Error('not called in this test') }),
     slackAlerts: vi.fn(async () => ({ connected: true, default_channel: '#bidspoke-alerts' })),
     updateSlackAlerts: vi.fn(async () => ({ ok: true })),
     searchSlackChannels: vi.fn(async () => ({ channels: [] })),

@@ -418,7 +418,7 @@ describe('listDrainRows', () => {
  * so three such minutes in a row page every Slack organization.
  */
 describe('drainRunFailure', () => {
-  const summary = (alert_failures: number) => ({ listed: 0, replayed: 0, refused: 0, abandoned: 0, moved: 0, retrying: 0, waiting: 0, skipped: 0, deferred: 0, unread: 0, alerts: 0, alert_failures })
+  const summary = (alert_failures: number) => ({ listed: 0, replayed: 0, refused: 0, abandoned: 0, moved: 0, later_states: 0, retrying: 0, waiting: 0, skipped: 0, deferred: 0, unread: 0, alerts: 0, alert_failures })
 
   it('is no failure when every alert reached Slack', () => {
     expect(drainRunFailure(summary(0))).toBeUndefined()

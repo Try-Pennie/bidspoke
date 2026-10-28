@@ -27,6 +27,7 @@ const live: ConnectionsSource = {
   create: (body) => api.connections.create(body),
   reconnect: (id, body) => api.connections.reconnect(id, body),
   remove: (id) => api.connections.remove(id),
+  replace: (id, body) => api.connections.replace(id, body),
   startGoogleSignIn: (body) => api.connections.startGoogleSignIn(body),
   finishGoogleSignIn: (body) => api.connections.finishGoogleSignIn(body),
   // The add form's values across the round trip to Google, in this tab's session storage (D1).

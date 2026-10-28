@@ -26,9 +26,9 @@ After a restore, the canvas loads the restored definition. Save again if you mak
 
 ## GitHub backup
 
-On every save, Bidspoke pushes the workflow definition to a GitHub backup repository (configured at the platform level). When the push succeeds, the resulting commit SHA is recorded on that version's row (`commit_sha`). This gives you an off-platform, diffable record of every workflow definition over time.
+Every new version is pushed to a GitHub backup repository (configured at the platform level), whatever made it: a save on the canvas, a restore, or a connection replaced on the Connections page. When the push succeeds, the resulting commit SHA is recorded on that version's row (`commit_sha`). This gives you an off-platform, diffable record of every workflow definition over time.
 
-The GitHub push runs in the background and does not block your save. If it fails (for example a transient GitHub error), the version is still created in Bidspoke; only the `commit_sha` is left empty for that version.
+The GitHub push runs in the background and does not block the save or restore. If it fails (for example a transient GitHub error), the version is still created in Bidspoke; only the `commit_sha` is left empty for that version, and repeated failures post a backup failure alert to Slack.
 
 ## Duplicating a workflow
 
