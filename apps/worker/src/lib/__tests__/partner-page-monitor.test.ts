@@ -337,11 +337,11 @@ function fakeClaims(clock: { now: number }) {
 function monitorHarness(opts: { env?: Record<string, string | undefined>; measure?: () => Promise<Outcome> } = {}) {
   const clock = { now: Date.parse('2026-10-15T17:00:00Z') }
   const kv = fakeKv(clock)
-  const sent: Array<{ kind: string; payload: Record<string, unknown> }> = []
+  const sent: Array<{ kind: string; payload: Record<string, unknown>; alertKind?: unknown }> = []
   const records: Array<{ outcome: string; summary: Record<string, unknown> }> = []
   let next: Outcome = { kind: 'received', latencyMs: 90, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 }
-  const answer = (kind: string) => (_s: unknown, _c: string, payload: Record<string, unknown>) => {
-    sent.push({ kind, payload })
+  const answer = (kind: string) => (_s: unknown, _c: string, payload: Record<string, unknown>, alertKind?: unknown) => {
+    sent.push({ kind, payload, alertKind })
     return Promise.resolve(kind === 'recovery' ? true : 'ts')
   }
   const deps: MonitorDeps = {
@@ -397,6 +397,8 @@ describe('runPartnerPageMonitor', () => {
     h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
     await h.every5(RECOVERY_REARM_MINUTES + 5)
     expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(1)
+    // The all-clear is logged under its fixed kind (#2948).
+    expect(h.sent.find((s) => s.kind === 'recovery')?.alertKind).toBe('partner-page-live-all-clear')
     expect(await readCondition(h.kv, PARTNER_PAGE_LIVE_KEY)).toBeNull()
     expect(transitions(h.kv.store as unknown as Map<string, { value: string }>)).toEqual([
       'opened channel', 'paged channel', 'ended channel all_clear',

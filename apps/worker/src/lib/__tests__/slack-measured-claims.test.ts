@@ -480,7 +480,7 @@ describe('required secrets: no redeploy step', () => {
 
 describe('export failure: the consequence follows each error phase', () => {
   const send = (jobName: string, errors: string[]) =>
-    sendExportFailureAlert(makeSupabase(slackConfig), 'org-1', null, { jobName, errors })
+    sendExportFailureAlert(makeSupabase(slackConfig), 'org-1', null, { jobName, errors }, 'export-alert')
 
   it('a sandbox purge failure does not claim rows were not exported', async () => {
     await send('Achieve export', ['sandbox purge: canceling statement due to statement timeout'])

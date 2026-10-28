@@ -35,7 +35,7 @@ const CONTACT = { fields: [{ name: 'Email', label: 'Email', type: 'email', nilla
 
 afterEach(() => vi.unstubAllGlobals())
 
-describe('every request carries the auth it was given, at API v59.0', () => {
+describe('every request carries the auth it was given, at API v60.0, the version every Salesforce data call shares (#2394)', () => {
   it('the object list and a describe', async () => {
     forbidGlobalFetch()
     const list = fetchSequence(json(200, SOBJECTS))
@@ -44,8 +44,8 @@ describe('every request carries the auth it was given, at API v59.0', () => {
     await describeSalesforceObject(source(one.fetch), 'Contact')
     const calls = [...list.calls, ...one.calls]
     expect(calls.map((c) => c.url)).toEqual([
-      'https://test.my.salesforce.com/services/data/v59.0/sobjects/',
-      'https://test.my.salesforce.com/services/data/v59.0/sobjects/Contact/describe/',
+      'https://test.my.salesforce.com/services/data/v60.0/sobjects/',
+      'https://test.my.salesforce.com/services/data/v60.0/sobjects/Contact/describe/',
     ])
     for (const call of calls) expect(headersOf(call.init).authorization).toBe('Bearer tok-abc')
   })
@@ -117,7 +117,7 @@ describe('keyed lookups', () => {
     const { fetch, calls } = fetchSequence(json(200, LEAD))
     const fields = await describeSalesforceObject(source(fetch), 'Lead')
     expect(fields.map((f) => f.name)).toEqual(['FirstName', 'LastName'])
-    expect(calls[0].url).toBe('https://test.my.salesforce.com/services/data/v59.0/sobjects/Lead/describe/')
+    expect(calls[0].url).toBe('https://test.my.salesforce.com/services/data/v60.0/sobjects/Lead/describe/')
   })
 
   it('refuses an object name that is not an API name before sending anything', async () => {

@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { detectAnomaly, MIN_BASELINE_DAYS, runVolumeAnomalyCheck } from '../volume-anomaly'
 import { PAGE_SIZE } from '../paginate'
+import { SLACK_POST_OUTCOME_PREFIX } from '../slack-post-outcome'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
@@ -267,6 +268,8 @@ describe('runVolumeAnomalyCheck', () => {
       { workflow_id: 'wf-1', day: '2026-04-07', run_count: 20, is_test: false },  // Tue (yesterday), a real drop
     ]
     const supabase = makeSupabase([...filler, ...real])
+    const logged: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')) })
 
     await runVolumeAnomalyCheck(supabase as never)
 
@@ -279,5 +282,9 @@ describe('runVolumeAnomalyCheck', () => {
     const body = JSON.stringify(await slackPostOf(fetchMock.mock.calls[0]))
     expect(body).toContain('20')
     expect(body).not.toMatch(/may indicate|upstream source outage/)
+    // Logged under its fixed kind (#2948).
+    const outcome = logged.find((l) => l.startsWith(SLACK_POST_OUTCOME_PREFIX))
+    expect(outcome && JSON.parse(outcome.slice(SLACK_POST_OUTCOME_PREFIX.length)).alert_kind).toBe('volume-anomaly')
+    vi.mocked(console.log).mockRestore()
   })
 })

@@ -1,17 +1,19 @@
 /**
  * The held write capture and the replay tool share ONE rule for "Salesforce
  * rejected this write" (#2054): `salesforceRejectedTheWrite`, imported from the
- * Salesforce node. A capture that kept its own copy of the rule would agree with
- * the replay only until one of them changed (L263, L370), so this replaces the
- * imported rule with a spy and checks the capture follows it wherever it goes: a
- * copied rule never calls the spy and ignores what it answers.
+ * shared salesforce-api module (#2394), which the Salesforce node re-exports, so
+ * the spy goes in there and every importer sees it. A capture that kept its own
+ * copy of the rule would agree with the replay only until one of them changed
+ * (L263, L370), so this replaces the imported rule with a spy and checks the
+ * capture follows it wherever it goes: a copied rule never calls the spy and
+ * ignores what it answers.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ResolvedStepInput } from '../../types'
 
-vi.mock('../nodes/salesforce', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../nodes/salesforce')>()
+vi.mock('../../lib/salesforce-api', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../lib/salesforce-api')>()
   return { ...real, salesforceRejectedTheWrite: vi.fn(real.salesforceRejectedTheWrite) }
 })
 vi.mock('../durability', async (importOriginal) => {
@@ -19,7 +21,7 @@ vi.mock('../durability', async (importOriginal) => {
   return { ...real, recordOutcomeDeadLetter: vi.fn().mockResolvedValue(true) }
 })
 
-import { salesforceRejectedTheWrite } from '../nodes/salesforce'
+import { salesforceRejectedTheWrite } from '../../lib/salesforce-api'
 import { captureFailedWriteback } from '../writeback-deadletter'
 
 const KEY = Buffer.from(new Uint8Array(32).map((_, i) => i + 54)).toString('base64')

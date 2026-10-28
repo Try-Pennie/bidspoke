@@ -615,7 +615,7 @@ describe('sendExportFailureAlert (#412)', () => {
   it('names the job and lists the errors with a fix hint', async () => {
     const sent = await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'Lead sightings export', errors: ['sightings export: Snowflake 503', 'bids export: timeout'],
-    })
+    }, 'export-alert')
     expect(sent).toBe(true)
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
@@ -626,8 +626,8 @@ describe('sendExportFailureAlert (#412)', () => {
 
   it('cuts an address in an error line at its query string, titled or not (L741, #1740)', async () => {
     const leaky = 'sightings export: 401 from https://p.example/x?email=jo%40example.com'
-    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'Lead sightings export', errors: [leaky] })
-    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'x', errors: [leaky], title: 'Export failed' })
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'Lead sightings export', errors: [leaky] }, 'export-alert')
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'x', errors: [leaky], title: 'Export failed' }, 'export-alert')
     for (const call of fetchMock.mock.calls) {
       const body = await slackPostOf(call)
       const text = [body.text, ...body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '')].join('\n')
@@ -647,7 +647,7 @@ describe('sendExportFailureAlert (#412)', () => {
       title: 'Tripoint rate mismatch',
       context: 'Salesforce changed Sep 30 by Daniel Wright.',
       fixHint: 'update whichever is wrong.',
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.blocks[0].text.text).toBe('Tripoint rate mismatch')
     const rest = body.blocks.slice(1).map((b: { text?: { text: string } }) => b.text?.text ?? '')
@@ -663,7 +663,7 @@ describe('sendExportFailureAlert (#412)', () => {
       jobName: 'tripoint-pricing-drift',
       errors: ['one', 'two'],
       title: "Tripoint rate check couldn't run",
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const rest = body.blocks.slice(1).map((b: { text?: { text: string } }) => b.text?.text ?? '')
     expect(rest).toEqual(['• one\n• two'])
@@ -672,7 +672,7 @@ describe('sendExportFailureAlert (#412)', () => {
   it('a titled reminder says still in its title', async () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'tripoint-pricing-drift', errors: ['x'], title: 'Tripoint rate mismatch', repeat: 'Reminder 2.',
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.blocks[0].text.text).toBe('Tripoint rate mismatch (still)')
   })
@@ -683,7 +683,7 @@ describe('sendExportFailureAlert (#412)', () => {
     // that self-healed within 2 hours read like a full night of stale analytics.
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'Lead sightings export', errors: ['bids export: Snowflake 503'],
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const header = body.blocks[0].text.text
     expect(header).toBe('Lead sightings export failed')
@@ -696,7 +696,7 @@ describe('sendExportFailureAlert (#412)', () => {
     // of the July export incidents. The header must name the job that failed.
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'Lead sightings purge', errors: ['sightings purge: error code: 522'],
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.blocks[0].text.text).toBe('Lead sightings purge failed')
   })
@@ -713,7 +713,7 @@ describe('sendExportFailureAlert (#412)', () => {
       errors: ['A / b prints c to the log.'],
       headlineVerb: 'found something to look at',
       itemNoun: { one: 'finding', many: 'findings' },
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.blocks[0].text.text).toBe('code-node-payload-prints found something to look at')
     expect(JSON.stringify(body.blocks)).toContain('reported 1 finding.')
@@ -726,7 +726,7 @@ describe('sendExportFailureAlert (#412)', () => {
       errors: ['one', 'two'],
       headlineVerb: 'found something to look at',
       itemNoun: { one: 'finding', many: 'findings' },
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(JSON.stringify(body.blocks)).toContain('reported 2 findings.')
   })
@@ -734,7 +734,7 @@ describe('sendExportFailureAlert (#412)', () => {
   it('still says failed and errors when the caller supplies neither', async () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'Lead sightings export', errors: ['bids export: Snowflake 503'],
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.blocks[0].text.text).toBe('Lead sightings export failed')
     expect(JSON.stringify(body.blocks)).toContain('reported 1 error.')
@@ -745,7 +745,7 @@ describe('sendExportFailureAlert (#412)', () => {
     // Supabase cleanup is behind. Saying analytics are stale is false alarm copy.
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'Lead sightings purge', errors: ['sightings purge: error code: 522'],
-    })
+    }, 'export-alert')
     const text = JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
     expect(text).not.toContain('stale')
     expect(text).toContain('already')
@@ -756,7 +756,7 @@ describe('sendExportFailureAlert (#412)', () => {
       jobName: 'Lead sightings purge',
       errors: ['sightings purge: error code: 522'],
       failingSince: '2026-07-24T11:48:00.000Z',
-    })
+    }, 'export-alert')
     const text = JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
     expect(text).toContain('second consecutive')
     // Rendered in ET like every other alert timestamp (11:48 UTC = 7:48 AM EDT).
@@ -768,7 +768,7 @@ describe('sendExportFailureAlert (#412)', () => {
       jobName: 'Lead sightings export',
       errors: ['bids export: Snowflake 503: connection termination'],
       fixHint: 'No action needed. The rows retry on the next run.',
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('No action needed. The rows retry on the next run.')
@@ -783,7 +783,7 @@ describe('sendExportFailureAlert (#412)', () => {
       errors: ['the previous run has held the lock for 60 minutes, past its own deadline and the 5 minute grace, so it was killed rather than still working.'],
       consequence: 'This run took over and is archiving the hours its predecessor left:',
       fixHint: 'Nothing is lost.',
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('is archiving the hours its predecessor left')
@@ -794,20 +794,20 @@ describe('sendExportFailureAlert (#412)', () => {
   it('falls back to the generic fix line when no hint is supplied', async () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'x', errors: ['boom'],
-    })
+    }, 'export-alert')
     const body = (await slackPostOf(fetchMock.mock.calls[0]))
     // The generic line no longer names Snowflake (#835): it names no system at all.
     expect(JSON.stringify(body.blocks)).toContain('Read the error above')
   })
 
   it('does nothing when there are no errors', async () => {
-    const sent = await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'x', errors: [] })
+    const sent = await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'x', errors: [] }, 'export-alert')
     expect(sent).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('respects the config-alerts opt-out', async () => {
-    const sent = await sendExportFailureAlert(makeSupabase({ ...conn, config_alerts_enabled: false }) as never, 'org-1', null, { jobName: 'x', errors: ['boom'] })
+    const sent = await sendExportFailureAlert(makeSupabase({ ...conn, config_alerts_enabled: false }) as never, 'org-1', null, { jobName: 'x', errors: ['boom'] }, 'export-alert')
     expect(sent).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -1847,24 +1847,24 @@ describe('sendRecoveryAlert (#253, #814)', () => {
   it('measures the duration to the LAST FAILURE, not to the announcement', async () => {
     // Announced 30 minutes after it cleared. The outage lasted 1h 32m, and the
     // reader must not be told 2 hours because we waited to be sure.
-    await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, Date.parse('2026-08-15T03:34:00.000Z'))
+    await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, 'volume-cliff-all-clear', Date.parse('2026-08-15T03:34:00.000Z'))
     expect((await sentText())).toContain('last seen 1 hour 32 minutes later')
   })
 
   it('names the last sighting, since the all-clear arrives after a re-arm delay', async () => {
-    await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, Date.parse('2026-08-15T03:34:00.000Z'))
+    await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, 'volume-cliff-all-clear', Date.parse('2026-08-15T03:34:00.000Z'))
     expect((await sentText())).toContain('11:04 PM EDT')
   })
 
   it('falls back to the announcement time when no end was recorded', async () => {
-    await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: null }, Date.parse('2026-08-15T02:32:00.000Z'))
+    await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: null }, 'volume-cliff-all-clear', Date.parse('2026-08-15T02:32:00.000Z'))
     const text = (await sentText())
     expect(text).toContain('lasted 1 hour')
     expect(text).not.toContain('clearing at')
   })
 
   it('says nothing about the duration when the marker is unparseable', async () => {
-    await sendRecoveryAlert(slack, '#alerts', { ...base, alertedAt: 'garbage', endedAt: null })
+    await sendRecoveryAlert(slack, '#alerts', { ...base, alertedAt: 'garbage', endedAt: null }, 'volume-cliff-all-clear')
     const text = (await sentText())
     expect(text).not.toContain('NaN')
     expect(text).not.toContain('lasted')
@@ -1877,6 +1877,7 @@ describe('sendRecoveryAlert (#253, #814)', () => {
       slack,
       '#alerts',
       { ...base, alertedAt: '2026-10-14T21:48:37.000Z', endedAt: '2026-10-14T21:48:01.000Z' },
+      'volume-cliff-all-clear',
       Date.parse('2026-10-14T22:20:00.000Z'),
     )
     const text = (await sentText())
@@ -1917,7 +1918,7 @@ describe('sendRecoveryAlert names what was observed on each side of the end (#25
   }
 
   it('a one run incident names the first healthy check, never a clearing time equal to the fire time', async () => {
-    await sendRecoveryAlert(slack, 'C1', { ...partnersPage, firstHealthyAt: FIRST_RECEIVED }, ANNOUNCED)
+    await sendRecoveryAlert(slack, 'C1', { ...partnersPage, firstHealthyAt: FIRST_RECEIVED }, 'volume-cliff-all-clear', ANNOUNCED)
     const text = await sectionText()
     expect(text).toBe(
       "*The partners page channel* has delivered the delivery check's notice for 30 minutes. " +
@@ -1931,14 +1932,14 @@ describe('sendRecoveryAlert names what was observed on each side of the end (#25
   })
 
   it('a one run incident whose first healthy check is not known says it had cleared by the announcing tick', async () => {
-    await sendRecoveryAlert(slack, 'C1', partnersPage, ANNOUNCED)
+    await sendRecoveryAlert(slack, 'C1', partnersPage, 'volume-cliff-all-clear', ANNOUNCED)
     const text = await sectionText()
     expect(text).toContain('fired at Oct 21, 4:01 AM EDT, when the problem was last seen. It had cleared by Oct 21, 4:35 AM EDT.')
     expect(text.match(/4:01 AM/g)).toHaveLength(1)
   })
 
   it('a first healthy check at or before the last sighting is not one, so it falls back to "had cleared by"', async () => {
-    await sendRecoveryAlert(slack, 'C1', { ...partnersPage, firstHealthyAt: PAGED }, ANNOUNCED)
+    await sendRecoveryAlert(slack, 'C1', { ...partnersPage, firstHealthyAt: PAGED }, 'volume-cliff-all-clear', ANNOUNCED)
     const text = await sectionText()
     expect(text).toContain('It had cleared by Oct 21, 4:35 AM EDT.')
     expect(text).not.toContain('first check')
@@ -1956,6 +1957,7 @@ describe('sendRecoveryAlert names what was observed on each side of the end (#25
         endedAt: '2026-08-15T03:04:00.000Z',
         firstHealthyAt: '2026-08-15T03:05:00.000Z',
       },
+      'volume-cliff-all-clear',
       Date.parse('2026-08-15T03:35:00.000Z'),
     )
     expect(await sectionText()).toBe(
@@ -1974,7 +1976,7 @@ describe('sendRecoveryAlert names what was observed on each side of the end (#25
       endedAt: '2026-09-10T10:01:15Z',
       measuredWindowMinutes: 60,
     }
-    await sendRecoveryAlert(slack, 'C1', { ...windowed, firstHealthyAt: '2026-09-10T11:00:05Z' }, Date.parse('2026-09-10T11:00:05Z'))
+    await sendRecoveryAlert(slack, 'C1', { ...windowed, firstHealthyAt: '2026-09-10T11:00:05Z' }, 'volume-cliff-all-clear', Date.parse('2026-09-10T11:00:05Z'))
     expect(await sectionText()).toBe(
       '*RML - Bidding Workflow (LendSwift) ping_lendswift.data.data* is back within normal range. ' +
         'The output field stopped alert fired at Sep 10, 6:01 AM EDT and covered the 1 hour before it, which is as precisely as this check measures. ' +
@@ -1983,7 +1985,7 @@ describe('sendRecoveryAlert names what was observed on each side of the end (#25
   })
 
   it('makes no claim about the span or the end when the marker is unreadable', async () => {
-    await sendRecoveryAlert(slack, 'C1', { ...partnersPage, alertedAt: 'garbage', firstHealthyAt: FIRST_RECEIVED }, ANNOUNCED)
+    await sendRecoveryAlert(slack, 'C1', { ...partnersPage, alertedAt: 'garbage', firstHealthyAt: FIRST_RECEIVED }, 'volume-cliff-all-clear', ANNOUNCED)
     const text = await sectionText()
     expect(text).not.toContain('last seen')
     expect(text).not.toContain('first check')
@@ -1997,7 +1999,7 @@ describe('sendRecoveryAlert names what was observed on each side of the end (#25
       { subject: 'a', alertedAt: PAGED, endedAt: PAGED, firstHealthyAt: FIRST_RECEIVED },
       { subject: 'b', alertedAt: PAGED, endedAt: PAGED, firstHealthyAt: '2026-10-21T08:10:31.000Z' },
     ]
-    await sendGroupedRecoveryAlert(slack, 'C1', { signal: 'partners page live updates', items }, ANNOUNCED)
+    await sendGroupedRecoveryAlert(slack, 'C1', { signal: 'partners page live updates', items }, 'volume-cliff-all-clear', ANNOUNCED)
     const text = await sectionText()
     expect(text.match(/alert fired at/g)).toHaveLength(2)
     expect(text).toContain('4:05 AM EDT')
@@ -2038,6 +2040,7 @@ describe('sendRecoveryAlert on a windowed check', () => {
         endedAt: '2026-09-02T13:00:00Z',
         measuredWindowMinutes: 60,
       },
+      'volume-cliff-all-clear',
       Date.parse('2026-09-02T15:00:00Z'),
     )
     const text = (await textOf())
@@ -2062,6 +2065,7 @@ describe('sendRecoveryAlert on a windowed check', () => {
         endedAt: '2026-09-10T10:01:15Z',
         measuredWindowMinutes: 60,
       },
+      'volume-cliff-all-clear',
       Date.parse('2026-09-10T11:00:05Z'),
     )
     const text = (await textOf())
@@ -2083,6 +2087,7 @@ describe('sendRecoveryAlert on a windowed check', () => {
         endedAt: '2026-09-02T11:00:00Z',
         measuredWindowMinutes: 60,
       },
+      'volume-cliff-all-clear',
       Date.parse('2026-09-02T12:00:00Z'),
     )
     expect((await textOf())).toMatch(/6 hours/)
@@ -2099,6 +2104,7 @@ describe('sendRecoveryAlert on a windowed check', () => {
         alertedAt: '2026-09-02T13:00:00Z',
         endedAt: '2026-09-02T13:20:00Z',
       },
+      'volume-cliff-all-clear',
       Date.parse('2026-09-02T14:00:00Z'),
     )
     expect((await textOf())).toMatch(/20 minutes/)
@@ -2140,6 +2146,7 @@ describe('sendGroupedRecoveryAlert', () => {
       slack,
       'C1',
       { signal: 'output field stopped', measuredWindowMinutes: 60, items },
+      'volume-cliff-all-clear',
       Date.parse('2026-09-10T11:00:05Z'),
     )
     expect(ok).toBe(true)
@@ -2159,6 +2166,7 @@ describe('sendGroupedRecoveryAlert', () => {
       slack,
       'C1',
       { signal: 'output field stopped', measuredWindowMinutes: 60, items },
+      'volume-cliff-all-clear',
       Date.parse('2026-09-10T11:00:05Z'),
     )
     const section = (await slackPostOf(fetchMock.mock.calls[0])).blocks[1].text.text as string
@@ -2180,6 +2188,7 @@ describe('sendGroupedRecoveryAlert', () => {
       slack,
       'C1',
       { signal: 'output field stopped', measuredWindowMinutes: 60, items: mixed },
+      'volume-cliff-all-clear',
       Date.parse('2026-09-10T11:00:05Z'),
     )
     const section = (await slackPostOf(fetchMock.mock.calls[0])).blocks[1].text.text as string
@@ -2200,6 +2209,7 @@ describe('sendGroupedRecoveryAlert', () => {
       slack,
       'C1',
       { signal: 'output field stopped', measuredWindowMinutes: 60, items: many },
+      'volume-cliff-all-clear',
       Date.parse('2026-09-10T11:00:05Z'),
     )
     const section = (await slackPostOf(fetchMock.mock.calls[0])).blocks[1].text.text as string
@@ -2213,6 +2223,7 @@ describe('sendGroupedRecoveryAlert', () => {
       slack,
       'C1',
       { signal: 'output field stopped', measuredWindowMinutes: 60, items },
+      'volume-cliff-all-clear',
       Date.parse('2026-09-10T11:00:05Z'),
     )
     expect(ok).toBe(false)

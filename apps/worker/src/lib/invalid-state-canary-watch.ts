@@ -180,6 +180,7 @@ import { secretKeys } from './secret-crypto'
 import { formatErr } from './format-error'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { getSlackConnection, postMessage } from './slack'
+import type { SlackAlertKind } from './slack-post-outcome'
 
 export const INVALID_STATE_WATCH_JOB = 'invalid-state-canary-watch'
 export const SEND_SALESFORCE_WATCH_JOB = 'send-salesforce-canary-watch'
@@ -209,6 +210,8 @@ export interface CanaryWatchSubject {
   checksLead: boolean
   /** Steps of its post read per day, at most. */
   maxSteps: number
+  /** The fixed kind its daily message is logged under (#2948). */
+  alertKind: SlackAlertKind
 }
 
 /** Direct send_salesforce writes read back per day (#2174): about 1,271 ran a day, too many to read every one. */
@@ -230,6 +233,7 @@ const etDay = (at: string) => new Intl.DateTimeFormat('en-US', { timeZone: ET_ZO
 
 export const INVALID_STATE_SUBJECT: CanaryWatchSubject = {
   job: INVALID_STATE_WATCH_JOB,
+  alertKind: 'invalid-state-canary-watch',
   step: WATCHED_STEP,
   title: 'Direct Salesforce writes',
   intro: `Since ${etDay(DIRECT_WRITE_SINCE)}, Main Flow writes the outcome for leads from states we don't serve straight to Salesforce, while most other outcomes still go through Pipedream.`,
@@ -247,6 +251,7 @@ export const INVALID_STATE_SUBJECT: CanaryWatchSubject = {
  */
 export const SEND_SALESFORCE_SUBJECT: CanaryWatchSubject = {
   job: SEND_SALESFORCE_WATCH_JOB,
+  alertKind: 'send-salesforce-canary-watch',
   step: 'send_salesforce',
   title: 'Direct Send Salesforce writes',
   intro: 'Main Flow writes the outcome of its Send Salesforce step straight to Salesforce, while most other outcomes still go through Pipedream.',
@@ -510,7 +515,7 @@ export interface CanaryWatchDeps {
   /** Main Flow's Salesforce, as one read: `path` below `/services/data/v60.0`. Throws when its settings cannot be loaded. */
   salesforce: () => Promise<(path: string) => Promise<SalesforceRead>>
   /** Posts the message. True when Slack took it. */
-  post: (message: CanaryWatchMessage) => Promise<boolean>
+  post: (message: CanaryWatchMessage, alertKind: SlackAlertKind) => Promise<boolean>
   recordRun?: (startedAtMs: number, ending: JobRunEnding) => Promise<void>
 }
 
@@ -1520,7 +1525,7 @@ export async function runCanaryWatch(subject: CanaryWatchSubject, deps: CanaryWa
   } else {
     report = await measure(subject, deps, from, to)
     try {
-      posted = await deps.post(canaryWatchMessage(report, deps.appUrl, subject))
+      posted = await deps.post(canaryWatchMessage(report, deps.appUrl, subject), subject.alertKind)
       if (!posted) console.error(`[${subject.job}] Slack did not take the daily message`)
     } catch (e) {
       console.error(`[${subject.job}] could not post the daily message:`, formatErr(e))
@@ -1697,10 +1702,10 @@ export async function runCanaryWatchForEnv(subject: CanaryWatchSubject, supabase
         return { kind: 'no_answer', error: raced.kind === 'threw' ? formatErr(raced.error) : `no answer within ${SF_READ_DEADLINE_MS / 1000} s` }
       }
     },
-    post: async (message) => {
+    post: async (message, alertKind) => {
       const slack = await getSlackConnection(supabase, await orgId())
       if (!slack) throw new Error("Main Flow's organization has no Slack connection")
-      return (await postMessage(slack.bot_token, slack.default_channel, canaryWatchBlocks(message), message.title)) !== null
+      return (await postMessage(slack.bot_token, slack.default_channel, canaryWatchBlocks(message), message.title, alertKind)) !== null
     },
     recordRun: (startedAtMs, ending) => recordFinishedJobRun(supabase, subject.job, startedAtMs, ending),
   })

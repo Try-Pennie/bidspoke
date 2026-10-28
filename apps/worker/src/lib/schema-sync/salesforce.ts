@@ -4,15 +4,15 @@
  * SchemaRequestBase), and every failure is a named SchemaLookupError: a failed
  * describe is never an object with an empty field list (L10).
  *
- * The API version stays v59.0 here; whether to move it is #2394's question.
+ * Both URLs are built by the shared Salesforce API helpers, so they are on the
+ * one version every Salesforce data call is made on (#2394).
  */
+import { salesforceDataUrl, salesforceSobjectUrl } from '../salesforce-api'
 import { SchemaLookupError } from './errors'
 import { isHttpsBase, isRecord, readBody, requireOk, send, type RequestContext } from './request'
 import type { SalesforceSource, SchemaField, SchemaObjectSummary } from './types'
 
 export type { SalesforceSource } from './types'
-
-const API_VERSION = 'v59.0'
 
 /** A Salesforce API name: letters, digits and underscores (custom objects end __c). */
 const API_NAME = /^[A-Za-z][A-Za-z0-9_]{0,79}$/
@@ -42,17 +42,16 @@ function isDescribe(value: unknown): value is Describe {
   return isRecord(value) && Array.isArray(value.fields) && value.fields.every(isDescribeField)
 }
 
-function baseOf(source: SalesforceSource, ctx: RequestContext): string {
+function instanceOf(source: SalesforceSource, ctx: RequestContext): string {
   if (!isHttpsBase(source.instanceUrl)) {
     throw new SchemaLookupError({ ...ctx, code: 'schema_source_invalid', detail: 'an instance URL that is not a plain https address' })
   }
-  return `${source.instanceUrl}/services/data/${API_VERSION}`
+  return source.instanceUrl
 }
 
 async function sobjectList(source: SalesforceSource): Promise<SObjectEntry[]> {
   const ctx: RequestContext = { service: 'salesforce', step: 'object_list' }
-  const base = baseOf(source, ctx)
-  const res = await send(source, ctx, `${base}/sobjects/`)
+  const res = await send(source, ctx, salesforceDataUrl(instanceOf(source, ctx), '/sobjects/'))
   requireOk(ctx, res)
   return (await readBody(ctx, res, isSObjectList)).sobjects
 }
@@ -69,8 +68,7 @@ export async function describeSalesforceObject(source: SalesforceSource, objectN
   if (!API_NAME.test(objectName)) {
     throw new SchemaLookupError({ ...ctx, code: 'schema_key_invalid', detail: 'an object name that is not a Salesforce API name' })
   }
-  const base = baseOf(source, ctx)
-  const res = await send(source, ctx, `${base}/sobjects/${objectName}/describe/`)
+  const res = await send(source, ctx, `${salesforceSobjectUrl(instanceOf(source, ctx), objectName)}/describe/`)
   requireOk(ctx, res)
   const desc = await readBody(ctx, res, isDescribe)
   return desc.fields.map((f) => ({ name: f.name, label: f.label, type: f.type, nullable: f.nillable }))

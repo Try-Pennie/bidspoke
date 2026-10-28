@@ -480,7 +480,7 @@ export async function runLeadValidationRejectionWatch(
             measuredWindowMinutes: WINDOW_MINUTES,
             recoveredPhrase: 'is rejecting leads at the shares of the days before again',
             url: `${appUrl}/workflows/${wf.id}`,
-          })
+          }, 'lead-validation-rejection-rate-all-clear')
         },
         // A whole window past the last shift, so the all-clear is judged on
         // hours that hold none of it.
