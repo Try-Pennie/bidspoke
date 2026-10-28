@@ -4,6 +4,7 @@ import ConfigPanel from '../ConfigPanel'
 import { api } from '@/lib/api'
 import { CLICK_CHECK_BUDGET_MS } from '@bidspoke/buyer-profile'
 import { SIMPLE_FILTER_OPERATORS, VALUE_LESS_OPERATORS } from '@bidspoke/workflow-definition'
+import { WEB_REQUEST_SERVICES } from '@bidspoke/service-catalogue/schema'
 
 // Characterization tests (#239): every node type's config form mounts via the
 // public ConfigPanel (the per-type sub-forms are internal, not exported), so a
@@ -702,6 +703,49 @@ describe('ConfigPanel: the Webhook step offers its built in services only (#2338
     expect(service).toBeDefined()
     expect(Array.from(service!.options).map((o) => o.textContent)).toEqual(['Custom', 'Equifax', 'Salesforce'])
     expect((api as unknown as Record<string, unknown>).servicePresets).toBeUndefined()
+  })
+})
+
+// #2342 (decision 10 of the #1689 plan): the step reads its services and their sign in presets from
+// the service catalogue's one list, and what it stores when a service is picked is what it stored
+// when the list was two constants in this file. The stored values below are those constants, written
+// out, so a change to the list that would change a saved step fails here and not on a live workflow.
+describe('ConfigPanel: the Webhook step reads its services from the catalogue (#2342)', () => {
+  function serviceSelect(): HTMLSelectElement {
+    const select = Array.from(document.querySelectorAll('select')).find((s) => Array.from(s.options).some((o) => o.value === 'equifax'))
+    if (!select) throw new Error('no service dropdown')
+    return select
+  }
+
+  it('offers exactly the catalogue\'s web request services, by value and by word', async () => {
+    renderPanel(nodeOf('webhook', { service: 'custom' }))
+    await screen.findByText(/^URL$/)
+    const options = Array.from(serviceSelect().options)
+    expect(options.map((o) => o.value)).toEqual(WEB_REQUEST_SERVICES.map((s) => s.value))
+    expect(options.map((o) => o.textContent)).toEqual(WEB_REQUEST_SERVICES.map((s) => s.label))
+  })
+
+  it.each([
+    ['equifax', 'Equifax', 'basic'],
+    ['salesforce', 'Salesforce', 'bearer'],
+    ['custom', 'Custom', 'none'],
+  ])('picking %s stores the same service, name and sign in as before', async (service, label, authType) => {
+    const { onUpdate } = renderPanel(nodeOf('webhook', { service: service === 'custom' ? 'equifax' : 'custom', auth: { type: 'api_key', header: 'X-Key' } }))
+    await screen.findByText(/^URL$/)
+    fireEvent.change(serviceSelect(), { target: { value: service } })
+    const stored = vi.mocked(onUpdate).mock.calls.at(-1)?.[1]?.config as Record<string, unknown>
+    expect(stored.service).toBe(service)
+    expect(stored.service_label).toBe(label)
+    expect(stored.auth).toEqual({ type: authType, header: 'X-Key' })
+  })
+
+  it('shows a saved step\'s service and sign in as stored, untouched', async () => {
+    const { onUpdate } = renderPanel(nodeOf('webhook', { service: 'salesforce', service_label: 'Salesforce', auth: { type: 'basic' } }))
+    await screen.findByText(/^URL$/)
+    expect(serviceSelect().value).toBe('salesforce')
+    const auth = Array.from(document.querySelectorAll('select')).find((s) => Array.from(s.options).some((o) => o.value === 'api_key'))
+    expect(auth?.value).toBe('basic')
+    expect(vi.mocked(onUpdate)).not.toHaveBeenCalled()
   })
 })
 
