@@ -570,6 +570,25 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // #2864: the page with its statuses out of date, answered from fixtures/connections/list-stale.json,
+  // the same list read twenty minutes later with ops not answering health. The page draws its
+  // out of date strip, saying when the statuses shown are from, over the last known statuses.
+  test('connections page: statuses out of date, with the strip saying when they are from, has no serious a11y violations', async ({ page }) => {
+    const { unmatched, fx } = await routeConnectionFixtures(page, workerUrl(), { staleStatuses: true })
+    await openConnection(page, connectionId(fx, 'Achieve Salesforce'))
+    const strip = page.locator('[data-part="stale-strip"]')
+    await expect(strip).toBeVisible()
+    await expect(strip.getByText(/^Login checks are not answering\. Statuses are as of /)).toBeVisible()
+    await expect(strip.getByRole('button', { name: 'Try again' })).toBeVisible()
+    // The last known statuses are still drawn under it, the problems still first.
+    const list = page.getByRole('navigation', { name: 'Connections' })
+    await expect(list.getByRole('button')).toHaveCount(fx.listStale.connections.length + 1)
+    await expect(list.getByRole('button', { name: /^Achieve Salesforce.*needs reconnecting/i })).toBeVisible()
+    await expect(page.locator('[data-part="problem-notice"]')).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/connections')
+    expect(unmatched).toEqual([])
+  })
+
   test('connections page: the Slack alerts login\'s settings and the Google mailboxes and drives have no serious a11y violations', async ({ page }) => {
     const { unmatched, fx } = await routeConnectionFixtures(page, workerUrl())
     await openConnection(page, connectionId(fx, 'Bidspoke Alerts'))
