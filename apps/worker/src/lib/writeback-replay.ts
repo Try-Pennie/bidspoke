@@ -42,6 +42,7 @@ import { loadEnvVars } from './env-loader'
 import { buildSandboxEnv } from './sandbox-env'
 import { salesforceBulkheads } from './bulkhead-client'
 import { isSalesforceApiName, isSalesforceRecordId } from './salesforce-names'
+import { salesforceApexUrl, salesforceDataUrl, salesforceInstanceUrl } from './salesforce-api'
 import {
   getSalesforceToken,
   isSalesforceBulkheadShed,
@@ -636,7 +637,7 @@ export async function salesforcePortFor(
   opts: { waitMs?: number } = {},
 ): Promise<SalesforcePort> {
   const vars = buildSandboxEnv(env, await loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, keys, { workflowId }))
-  const instanceUrl = (vars.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
+  const instanceUrl = salesforceInstanceUrl(vars.SALESFORCE_INSTANCE_URL ?? '')
   const clientId = vars.SALESFORCE_CLIENT_ID ?? ''
   const clientSecret = vars.SALESFORCE_CLIENT_SECRET ?? ''
   if (!instanceUrl || !clientId || !clientSecret) {
@@ -653,7 +654,7 @@ export async function salesforcePortFor(
     const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)
     const apex = method === 'POST'
     const { res, responseText } = await performSalesforceCall(body, {
-      url: apex ? `${instanceUrl}${path}` : `${instanceUrl}/services/data/v60.0${path}`,
+      url: apex ? salesforceApexUrl(instanceUrl, path) : salesforceDataUrl(instanceUrl, path),
       method,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       bulkheads,
