@@ -506,6 +506,7 @@ export function replaceIncompleteSentence(workflows: readonly ReplacedWorkflow[]
   const stale = refused('names_removed_connection')
   const unchecked = refused('check_failed')
   const unread = refused('unreadable')
+  const late = refused('not_reached')
   const malformed = refused('write_refused')
   if (replaceComplete(workflows)) return null
 
@@ -514,13 +515,15 @@ export function replaceIncompleteSentence(workflows: readonly ReplacedWorkflow[]
   if (changed.length) parts.push(`${listed(changed)} ${wasWere(changed)} saved by someone else while this ran, so ${itThey(changed)} still ${useUses(changed)} ${source}.`)
   if (unchecked.length) parts.push(`Bidspoke could not check the connections ${listed(unchecked)} ${nameNames(unchecked)}, so ${itThey(unchecked)} still ${useUses(unchecked)} ${source}.`)
   if (unread.length) parts.push(`Bidspoke could not read ${listed(unread)}, so ${itThey(unread)} still ${useUses(unread)} ${source}.`)
+  // #2903: the route stops before a workflow whose slowest run could not finish inside the page's wait.
+  if (late.length) parts.push(`Bidspoke stopped before ${listed(late)} so the page would not time out. ${late.length === 1 ? 'It' : 'They'} still ${useUses(late)} ${source}.`)
   if (stale.length) parts.push(`${listed(stale)} also ${nameNames(stale)} a connection that was removed. Open ${stale.length === 1 ? 'it' : 'each'}, give that step a connection and save, then replace again.`)
   if (malformed.length) parts.push(`The database would not take a new version of ${listed(malformed)}, so ${itThey(malformed)} still ${useUses(malformed)} ${source}. Tell Dan, since this is a fault in Bidspoke.`)
   if (deleted.length) parts.push(`${listed(deleted)} ${wasWere(deleted)} deleted, so ${itThey(deleted)} cannot get a new version.`)
   if (failed.length) parts.push(`Bidspoke could not confirm whether ${listed(failed)} got a new version.`)
 
   // What to do, said once. A save not known comes first: replacing again before reloading would be done blind.
-  const again = [...changed, ...unchecked, ...unread]
+  const again = [...changed, ...unchecked, ...unread, ...late]
   if (failed.length) parts.push(`Reload the page to see, then replace again for any still on ${source}.`)
   else if (gone.length) parts.push('Choose another connection and replace again.')
   else if (again.length) parts.push(`Replace again to move ${again.length === 1 ? 'it' : 'them'}.`)

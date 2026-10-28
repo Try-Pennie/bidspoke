@@ -4,7 +4,7 @@
 // score runs them on the design first (the positive control) and then on the built page.
 (function () {
   var NAVY = "rgb(29, 33, 47)", BLUE = "rgb(27, 114, 186)", RED = "rgb(180, 35, 24)", HINT = "rgb(105, 112, 129)", WHITE = "rgb(255, 255, 255)";
-  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login", "add-stalled", "add-failed-no-cap", "reconnect-failed", "remove-refused-in-use", "alert-reconnect", "alert-login-refused", "alert-switch-failed", "alert-channel-open", "alert-channel-saved", "alert-settings-failed", "replace-working", "replace-partial", "replace-deleted", "replace-done"];
+  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login", "add-stalled", "add-failed-no-cap", "reconnect-failed", "remove-refused-in-use", "alert-reconnect", "alert-login-refused", "alert-switch-failed", "alert-channel-open", "alert-channel-saved", "alert-settings-failed", "replace-working", "replace-partial", "replace-deleted", "replace-done", "replace-capped", "replace-over-cap"];
   // Round 26: every dialog's title is one size.
   var DIALOG_TITLE = "20px";
   var EXTRA = ["saved", "remove", "remove-refused-in-use"];
@@ -52,6 +52,31 @@
     return qa(doc, '[role="dialog"], [role="alertdialog"]').filter(function (d) { return (d.getAttribute("aria-label") || txt(q(d, "h1, h2, h3"))) === "Replace Pennie Salesforce"; })[0];
   }
   function sixOf(ctx) { return ctx.fixture.connections.filter(function (c) { return c.name === "Pennie Salesforce"; })[0].workflows; }
+  // #2904: Pennie Salesforce used by nine, the fixture's six and its replaceMore, in the order the route lists them (by name).
+  function nineOf(ctx) { return sixOf(ctx).concat(ctx.fixture.replaceMore).sort(function (a, b) { return a.localeCompare(b); }); }
+  // The capped Replace dialog (D45, D46): all nine listed, the first <ticked> ticked, every row ready, the grey
+  // line between the list and the buttons, and the button held only past 7.
+  function cappedProblem(doc, ctx, ticked, line, held) {
+    var dg = replaceDialogOf(doc), nine = nineOf(ctx);
+    if (!dg) return bad("no dialog titled Replace Pennie Salesforce");
+    var tab = qa(p(main(doc), "detail"), '[role="tab"]').filter(function (t) { return txt(t).indexOf("Used by") === 0; })[0];
+    if (!tab || txt(tab) !== "Used by (9)") return bad("the Used by tab reads " + txt(tab));
+    var ticks = qa(dg, '[role="checkbox"]');
+    if (!same(ticks.map(said), nine)) return bad("the list reads " + JSON.stringify(ticks.map(said)));
+    for (var i = 0; i < ticks.length; i++) {
+      if (ticks[i].getAttribute("aria-checked") !== String(i < ticked)) return bad(nine[i] + (i < ticked ? " is not ticked" : " is ticked"));
+      if (disabled(ticks[i])) return bad(nine[i] + " is held");
+    }
+    var cap = p(dg, "replace-cap");
+    if (!cap || txt(cap) !== line) return bad("the line under the list reads \"" + txt(cap) + "\"");
+    if (css(cap).color !== HINT) return bad("the line is " + css(cap).color + ", not the hint grey");
+    if (!(ticks[ticks.length - 1].compareDocumentPosition(cap) & 4)) return bad("the line is not under the list");
+    var want = "Replace in " + ticked + " workflows", go = button(dg, want);
+    if (!go) return bad("no button reads " + want);
+    if (!(cap.compareDocumentPosition(go) & 4)) return bad("the line is not before the buttons");
+    if (disabled(go) !== held) return bad(want + (held ? " is not held" : " is held"));
+    return ok(ticked + " of 9 ticked, the grey line, " + want + (held ? " held" : " ready"));
+  }
   function connections(ctx) {
     var list = ctx.fixture.connections.slice();
     if (EXTRA.indexOf(ctx.frame) >= 0) list.push(ctx.fixture.justSaved);
@@ -590,7 +615,7 @@
       return ok("the menu floats over Client id");
     } },
     // Round 35: every dialog's title is 20px, drawn by the app's one title rule.
-    { id: "D36", frames: ["reconnect", "replace", "remove", "reconnect-failed", "remove-refused-in-use", "alert-reconnect", "replace-working", "replace-partial", "replace-deleted", "replace-done"], check: function (doc) {
+    { id: "D36", frames: ["reconnect", "replace", "remove", "reconnect-failed", "remove-refused-in-use", "alert-reconnect", "replace-working", "replace-partial", "replace-deleted", "replace-done", "replace-capped", "replace-over-cap"], check: function (doc) {
       var dgs = qa(doc, '[role="dialog"], [role="alertdialog"]');
       if (!dgs.length) return bad("no dialog");
       for (var i = 0; i < dgs.length; i++) {
@@ -656,6 +681,13 @@
       var tab = qa(p(main(doc), "detail"), '[role="tab"]').filter(function (t) { return txt(t).indexOf("Used by") === 0; })[0];
       if (!tab || txt(tab) !== "Used by (0)") return bad("the Used by tab reads " + txt(tab));
       return ok("closed into the notice; Used by (0)");
+    } },
+    // #2904, drawn as shipped (Dan 2026-10-27): a connection used by more workflows than one Replace moves.
+    { id: "D45", frames: ["replace-capped"], check: function (doc, ctx) {
+      return cappedProblem(doc, ctx, 7, "Replace moves at most 7 workflows at a time, so the first 7 are ticked. Replace again to move the rest.", false);
+    } },
+    { id: "D46", frames: ["replace-over-cap"], check: function (doc, ctx) {
+      return cappedProblem(doc, ctx, 8, "Replace moves at most 7 workflows at a time. Untick 1 first.", true);
     } },
     // Round 36 (build PR 14): the Slack alert login's alert settings, under its facts, in Dan's words,
     // and the states of them Dan passed as built (review, 2026-10-22).

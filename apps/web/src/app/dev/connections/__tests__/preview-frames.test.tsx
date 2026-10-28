@@ -63,6 +63,9 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'replace-partial': ['Achieve report import, moved', 'Replace in 1 workflow', 'Lead Completed sync was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it.'],
   'replace-deleted': ['Used by (7)', 'Replace in 6 workflows'],
   'replace-done': ['Moved 6 workflows to TPL2 Salesforce. Nothing uses Pennie Salesforce now.', 'Used by (0)'],
+  // #2904: the Replace cap, drawn as shipped.
+  'replace-capped': ['Used by (9)', 'Replace moves at most 7 workflows at a time, so the first 7 are ticked. Replace again to move the rest.', 'Replace in 7 workflows'],
+  'replace-over-cap': ['Replace moves at most 7 workflows at a time. Untick 1 first.', 'Replace in 8 workflows'],
   // Build PR 14: the Slack alerts login's Reconnect and its alert settings.
   'alert-reconnect': ['Reconnect Bidspoke Alerts', 'New bot token'],
   'alert-reconnect-checking': ['Checking the login with Slack, 4 s'],

@@ -12,7 +12,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  readReplaceBody, replaceConnectionId, replaceWorstMsPerWorkflow, REPLACE_CLIENT_WAIT_MS, REPLACE_SAVE_ATTEMPTS, REPLACE_WORKFLOWS_MAX, REPLACE_WORST_MS, type ReplacedWorkflow,
+  readReplaceBody, replaceConnectionId, replaceHasTimeFor, replaceWorstMsPerWorkflow, REPLACE_CLIENT_WAIT_MS, REPLACE_DEADLINE_MS, REPLACE_SAVE_ATTEMPTS, REPLACE_WORKFLOWS_MAX, REPLACE_WORST_MS,
+  type ReplacedWorkflow,
 } from '../connection-replace'
 import { replaceIncompleteSentence } from '../connection-create-refusals'
 
@@ -96,6 +97,31 @@ describe('readReplaceBody', () => {
   })
 })
 
+// The cap is worked out from measured times, not a hard worst case, so the route also stops before a
+// workflow it has no time left to finish (#2903): one call hanging to its own timeout cannot then carry
+// a Replace past the page's wait.
+describe('replaceHasTimeFor', () => {
+  it('gives the route the page\'s wait less the request\'s own trip', () => {
+    expect(REPLACE_DEADLINE_MS).toBe(REPLACE_CLIENT_WAIT_MS - REPLACE_WORST_MS.margin)
+  })
+
+  it('starts a workflow whose slowest run just finishes by the deadline', () => {
+    const start = 1_000_000
+    expect(replaceHasTimeFor(start, start + REPLACE_DEADLINE_MS - replaceWorstMsPerWorkflow())).toBe(true)
+  })
+
+  it('does not start one whose slowest run would finish a millisecond past it', () => {
+    const start = 1_000_000
+    expect(replaceHasTimeFor(start, start + REPLACE_DEADLINE_MS - replaceWorstMsPerWorkflow() + 1)).toBe(false)
+  })
+
+  it(`never stops a Replace of ${REPLACE_WORKFLOWS_MAX} that runs at the measured worst`, () => {
+    for (let n = 0; n < REPLACE_WORKFLOWS_MAX; n += 1) {
+      expect(replaceHasTimeFor(0, REPLACE_WORST_MS.before + n * replaceWorstMsPerWorkflow())).toBe(true)
+    }
+  })
+})
+
 describe('replaceIncompleteSentence', () => {
   const wf = (name: string, outcome: ReplacedWorkflow['outcome'], extra: Partial<ReplacedWorkflow> = {}): ReplacedWorkflow => ({ id: name, name, outcome, ...extra })
 
@@ -147,5 +173,18 @@ describe('replaceIncompleteSentence', () => {
   it('says a workflow deleted while it ran cannot get a new version', () => {
     const s = replaceIncompleteSentence([wf('A', 'replaced'), wf('Old import', 'deleted')], 'Pennie Salesforce', 'TPL2 Salesforce')
     expect(s).toBe('Old import was deleted, so it cannot get a new version.')
+  })
+
+  it('says Bidspoke stopped before a workflow so the page would not time out, and to replace again (#2903)', () => {
+    const s = replaceIncompleteSentence([wf('A', 'replaced'), wf('Tripoint submission', 'refused', { why: 'not_reached' })], 'Pennie Salesforce', 'TPL2 Salesforce')
+    expect(s).toBe('Bidspoke stopped before Tripoint submission so the page would not time out. It still uses Pennie Salesforce. Replace again to move it.')
+  })
+
+  it('names every workflow it stopped before, and says what to do once beside another reason', () => {
+    const s = replaceIncompleteSentence([
+      wf('Lead Completed sync', 'changed'), wf('Tripoint submission', 'refused', { why: 'not_reached' }), wf('Old import', 'refused', { why: 'not_reached' }),
+    ], 'Pennie Salesforce', 'TPL2 Salesforce')
+    expect(s).toBe('Lead Completed sync was saved by someone else while this ran, so it still uses Pennie Salesforce. '
+      + 'Bidspoke stopped before Tripoint submission and Old import so the page would not time out. They still use Pennie Salesforce. Replace again to move them.')
   })
 })
