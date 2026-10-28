@@ -185,17 +185,31 @@ export async function readMoneyTargets(env: Readonly<Record<string, unknown>>, o
  * other hosts stay reachable; erring towards a match only ever refuses a save.
  *
  * WHAT IT CANNOT SEE. A host that reaches a money workflow only through an
- * environment variable ({{env.X}}) and is written nowhere else, and a host the
- * money lane starts sending to after the HTTP connection was saved: the check
- * runs at the save, and ops cannot read bidding's hosts.
+ * environment variable ({{env.X}}) and is written nowhere else. A host the
+ * money lane starts sending to after the HTTP connection was saved is not seen
+ * at the save, since ops cannot read bidding's hosts; the daily HTTP connection
+ * host check (http-money-host-check.ts, #2761) recomputes these hosts through
+ * the same reads (money-host-reads.ts) and pages each saved connection whose
+ * host is now among them. It only alerts: the connection keeps working.
  */
 export type MoneyHostSource = 'SUPABASE_URL' | 'APP_URL' | 'SALESFORCE_INSTANCE_URL' | 'ACHIEVE_HOSTS' | 'partner_configs' | 'money workflows'
+
+/**
+ * Which partner or money workflow a host came from, for a page that names and
+ * links it (#2761). Only partner and workflow hosts carry one: the other
+ * sources are one fixed thing each.
+ */
+export type MoneyHostOrigin =
+  | { readonly kind: 'partner'; readonly slug: string; readonly name: string }
+  | { readonly kind: 'workflow'; readonly id: string; readonly name: string }
 
 export interface MoneyHost {
   readonly host: string
   /** `domain`: the host and every host under it; `exact`: the host alone. */
   readonly match: 'domain' | 'exact'
   readonly source: MoneyHostSource
+  /** The first partner or money workflow the host was found in. */
+  readonly origin?: MoneyHostOrigin
 }
 
 const URL_HOST = /https?:\/\/([A-Za-z0-9.-]+)/g
@@ -211,43 +225,58 @@ function hostOfUrl(value: string): string | null {
   }
 }
 
+/** One partner's endpoints: its api, dedup and click URLs, any of which may be unset. */
+export interface MoneyPartner {
+  readonly slug: string
+  readonly name: string
+  readonly urls: readonly (string | null)[]
+}
+
+/** One money lane workflow, its definition as text. */
+export interface MoneyWorkflow {
+  readonly id: string
+  readonly name: string
+  readonly definition: string
+}
+
 export interface MoneyHostInputs {
   readonly salesforceInstanceUrls: readonly string[]
-  readonly partnerUrls: readonly string[]
-  /** The money workflows' definitions, as text. */
-  readonly moneyDefinitions: readonly string[]
+  readonly partners: readonly MoneyPartner[]
+  readonly moneyWorkflows: readonly MoneyWorkflow[]
 }
 
 /** Every host bidding sends to, from the Worker env and the organization's stores. A blank or unparsable value adds nothing. */
 export function moneyHostsFrom(env: Readonly<Record<string, unknown>>, inputs: MoneyHostInputs): MoneyHost[] {
   const out: MoneyHost[] = []
-  const add = (host: string | null, match: MoneyHost['match'], source: MoneyHostSource) => {
-    if (host !== null && !out.some((h) => h.host === host && h.match === match)) out.push({ host, match, source })
+  const add = (host: string | null, match: MoneyHost['match'], source: MoneyHostSource, origin?: MoneyHostOrigin) => {
+    if (host !== null && !out.some((h) => h.host === host && h.match === match)) out.push(origin ? { host, match, source, origin } : { host, match, source })
   }
   add(hostOfUrl(readText(env, 'SUPABASE_URL') ?? ''), 'domain', 'SUPABASE_URL')
   const app = hostOfUrl(readText(env, 'APP_URL') ?? '')
   if (app !== null) add(app.split('.').length >= 3 ? app.split('.').slice(1).join('.') : app, 'domain', 'APP_URL')
   for (const url of [...inputs.salesforceInstanceUrls, readText(env, 'SALESFORCE_INSTANCE_URL') ?? '']) add(hostOfUrl(url), 'domain', 'SALESFORCE_INSTANCE_URL')
   for (const host of [...ACHIEVE_HOSTS, hostOfUrl(PROD_BASE_URL), hostOfUrl(STAGING_BASE_URL)]) add(host, 'exact', 'ACHIEVE_HOSTS')
-  for (const url of inputs.partnerUrls) add(hostOfUrl(url), 'exact', 'partner_configs')
-  for (const text of inputs.moneyDefinitions) {
-    for (const m of text.matchAll(URL_HOST)) add(hostOfUrl(`https://${m[1]}`), 'exact', 'money workflows')
+  for (const p of inputs.partners) {
+    for (const url of p.urls) if (url !== null) add(hostOfUrl(url), 'exact', 'partner_configs', { kind: 'partner', slug: p.slug, name: p.name })
+  }
+  for (const w of inputs.moneyWorkflows) {
+    for (const m of w.definition.matchAll(URL_HOST)) add(hostOfUrl(`https://${m[1]}`), 'exact', 'money workflows', { kind: 'workflow', id: w.id, name: w.name })
   }
   return out
 }
 
-/** The money host a declared host is, or null. Names the host and the source only. */
-export function moneyHostOf(host: string, hosts: readonly MoneyHost[]): { host: string; source: MoneyHostSource } | null {
+/** The money host a declared host is, or null: the host, its source, and the partner or workflow it came from when it has one. */
+export function moneyHostOf(host: string, hosts: readonly MoneyHost[]): { host: string; source: MoneyHostSource; origin: MoneyHostOrigin | null } | null {
   const h = host.toLowerCase()
   const found = hosts.find((m) => (m.match === 'domain' ? hostWithin(h, m.host) : h === m.host))
-  return found ? { host: h, source: found.source } : null
+  return found ? { host: h, source: found.source, origin: found.origin ?? null } : null
 }
 
-/** The organization scoped reads behind the money hosts, bound to the bidding client by the route. */
+/** The organization scoped reads behind the money hosts, bound to the bidding database by liveMoneyHostReads (money-host-reads.ts) for the save and the daily check. */
 export interface MoneyHostReads {
   readonly salesforce: ResolveSalesforceCreds
-  partnerUrls(organizationId: string): Promise<string[]>
-  moneyDefinitions(organizationId: string): Promise<string[]>
+  partners(organizationId: string): Promise<MoneyPartner[]>
+  moneyWorkflows(organizationId: string): Promise<MoneyWorkflow[]>
 }
 
 export type MoneyHostsRead = { ok: true; hosts: MoneyHost[] } | { ok: false; detail: string }
@@ -266,17 +295,17 @@ export async function readMoneyHosts(env: Readonly<Record<string, unknown>>, org
   } catch {
     return { ok: false, detail: 'the organization\'s environment variables could not be read for the money Salesforce instance' }
   }
-  let partnerUrls: string[]
+  let partners: MoneyPartner[]
   try {
-    partnerUrls = await reads.partnerUrls(organizationId)
+    partners = await reads.partners(organizationId)
   } catch {
     return { ok: false, detail: 'the partner endpoints could not be read' }
   }
-  let moneyDefinitions: string[]
+  let moneyWorkflows: MoneyWorkflow[]
   try {
-    moneyDefinitions = await reads.moneyDefinitions(organizationId)
+    moneyWorkflows = await reads.moneyWorkflows(organizationId)
   } catch {
     return { ok: false, detail: 'the money workflows could not be read' }
   }
-  return { ok: true, hosts: moneyHostsFrom(env, { salesforceInstanceUrls, partnerUrls, moneyDefinitions }) }
+  return { ok: true, hosts: moneyHostsFrom(env, { salesforceInstanceUrls, partners, moneyWorkflows }) }
 }

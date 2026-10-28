@@ -17,11 +17,12 @@
  * - `lib/timeout-audit.ts`: the timeout audit (`activeOnly`);
  * - `routes/api/partner-delete.ts`: the partner delete check (#2140), whose
  *   fingerprint reads `updated_at`;
- * - `lib/ops-connection-owner-check.ts`: the daily owner check (#2340), which
- *   names the workflows whose definition names a person bound connection
- *   whose owner left Bidspoke.
- * - `routes/api/connections.ts`: an HTTP connection's save (#2337), which
- *   refuses a host the money lane's workflows send to (`lane`).
+ * - `lib/standing-connection-incidents.ts`: the workflows a connection page
+ *   names (#2340, #2761), for the daily owner check and the daily HTTP
+ *   connection host check.
+ * - `lib/money-host-reads.ts`: the money hosts an HTTP connection's save
+ *   (#2337) and the daily HTTP connection host check (#2761) compare against,
+ *   which take every host the money lane's workflows send to (`lane`).
  *
  * The Worker connects as service_role, which bypasses row level security, so
  * this read is what scopes the answer to one organization: it filters

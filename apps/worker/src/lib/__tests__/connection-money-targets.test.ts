@@ -88,8 +88,16 @@ describe('moneyHostsFrom and moneyHostOf', () => {
   const ENV = { ...WORKER_ENV, APP_URL: 'https://bidspoke.trypennie.dev' }
   const hosts = () => moneyHostsFrom(ENV, {
     salesforceInstanceUrls: ['https://lendco.my.salesforce.com'],
-    partnerUrls: ['https://partner-proxy.trypennie.dev/bid', 'https://offers.lender.example/click?id={prospect_id}', '{{env.PARTNER_URL}}', ''],
-    moneyDefinitions: [JSON.stringify({ nodes: [{ type: 'webhook', data: { config: { url: 'https://api.equifax.example/v1/report' } } }, { type: 'code', data: { code: 'await fetch("https://risk.decide.example/run")' } }] })],
+    partners: [
+      { slug: 'proxy', name: 'Proxy', urls: ['https://partner-proxy.trypennie.dev/bid', null, null] },
+      { slug: 'lendco', name: 'Lendco', urls: [null, '{{env.PARTNER_URL}}', 'https://offers.lender.example/click?id={prospect_id}'] },
+      { slug: 'blank', name: 'Blank', urls: ['', null, null] },
+    ],
+    moneyWorkflows: [{
+      id: 'wf-engine',
+      name: 'Engine Bidding',
+      definition: JSON.stringify({ nodes: [{ type: 'webhook', data: { config: { url: 'https://api.equifax.example/v1/report' } } }, { type: 'code', data: { code: 'await fetch("https://risk.decide.example/run")' } }] }),
+    }],
   })
 
   it.each([
@@ -103,7 +111,15 @@ describe('moneyHostsFrom and moneyHostOf', () => {
     ['a host a money code node calls', 'risk.decide.example', 'money workflows'],
     ['an Achieve host the achieve_offers node calls', ACHIEVE_HOSTS[0], 'ACHIEVE_HOSTS'],
   ])('refuses %s', (_what, host, source) => {
-    expect(moneyHostOf(host, hosts())).toEqual({ host, source })
+    expect(moneyHostOf(host, hosts())).toMatchObject({ host, source })
+  })
+
+  // #2761: the daily check names and links the partner or workflow a host came from.
+  it('names the partner or money workflow a host came from, and nothing for the fixed sources', () => {
+    expect(moneyHostOf('offers.lender.example', hosts())?.origin).toEqual({ kind: 'partner', slug: 'lendco', name: 'Lendco' })
+    expect(moneyHostOf('risk.decide.example', hosts())?.origin).toEqual({ kind: 'workflow', id: 'wf-engine', name: 'Engine Bidding' })
+    expect(moneyHostOf('lendco.my.salesforce.com', hosts())?.origin).toBeNull()
+    expect(moneyHostOf('bidspoke.trypennie.dev', hosts())?.origin).toBeNull()
   })
 
   it('takes a partner or workflow host exactly, never the domain around it', () => {
@@ -116,13 +132,13 @@ describe('moneyHostsFrom and moneyHostOf', () => {
   })
 
   it('takes the bidding zone from APP_URL only when APP_URL has a zone above its host', () => {
-    const bare = moneyHostsFrom({ APP_URL: 'https://bidspoke.app' }, { salesforceInstanceUrls: [], partnerUrls: [], moneyDefinitions: [] })
+    const bare = moneyHostsFrom({ APP_URL: 'https://bidspoke.app' }, { salesforceInstanceUrls: [], partners: [], moneyWorkflows: [] })
     expect(moneyHostOf('bidspoke.app', bare)?.source).toBe('APP_URL')
     expect(moneyHostOf('other.app', bare)).toBeNull()
   })
 
   it('never matches on a value that is unset, blank or not an address', () => {
-    expect(moneyHostsFrom({ SUPABASE_URL: '', APP_URL: 'not a url' }, { salesforceInstanceUrls: [''], partnerUrls: ['{{env.X}}'], moneyDefinitions: ['{}'] })
+    expect(moneyHostsFrom({ SUPABASE_URL: '', APP_URL: 'not a url' }, { salesforceInstanceUrls: [''], partners: [{ slug: 'x', name: 'X', urls: ['{{env.X}}', null, ''] }], moneyWorkflows: [{ id: 'w', name: 'W', definition: '{}' }] })
       .filter((h) => h.source !== 'ACHIEVE_HOSTS')).toEqual([])
   })
 })
@@ -130,8 +146,8 @@ describe('moneyHostsFrom and moneyHostOf', () => {
 describe('readMoneyHosts', () => {
   const reads = (over: Partial<MoneyHostReads> = {}): MoneyHostReads => ({
     salesforce: async () => ({ creds: { clientId: MONEY_CLIENT_ID, instanceUrl: 'https://lendco.my.salesforce.com' }, missing: [] }),
-    partnerUrls: async () => ['https://partner-proxy.trypennie.dev/bid'],
-    moneyDefinitions: async () => [],
+    partners: async () => [{ slug: 'proxy', name: 'Proxy', urls: ['https://partner-proxy.trypennie.dev/bid', null, null] }],
+    moneyWorkflows: async () => [],
     ...over,
   })
 
@@ -146,8 +162,8 @@ describe('readMoneyHosts', () => {
 
   it.each([
     ['the organization store', { salesforce: async () => { throw new Error('db down SECRET') } }],
-    ['the partner endpoints', { partnerUrls: async () => { throw new Error('db down SECRET') } }],
-    ['the money workflows', { moneyDefinitions: async () => { throw new Error('db down SECRET') } }],
+    ['the partner endpoints', { partners: async () => { throw new Error('db down SECRET') } }],
+    ['the money workflows', { moneyWorkflows: async () => { throw new Error('db down SECRET') } }],
   ])('refuses to answer, never passing, when %s cannot be read', async (_what, over) => {
     const read = await readMoneyHosts(WORKER_ENV, 'org-1', reads(over as Partial<MoneyHostReads>))
     expect(read).toEqual({ ok: false, detail: expect.not.stringContaining('SECRET') })
