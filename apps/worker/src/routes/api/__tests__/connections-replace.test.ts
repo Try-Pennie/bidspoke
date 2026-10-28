@@ -25,8 +25,12 @@ vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
 vi.mock('../../../lib/audit')
 vi.mock('../../../engine/definition-loader')
+vi.mock('../../../lib/github')
+vi.mock('../../../lib/github-backup-alert')
 
 import { verifyJwt } from '../../../lib/jwt'
+import { pushWorkflowToGitHub } from '../../../lib/github'
+import { recordBackupFailure, recordBackupSuccess } from '../../../lib/github-backup-alert'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { refreshWorkflowCaches } from '../../../engine/definition-loader'
@@ -117,8 +121,22 @@ function storeDouble(opts: StoreOptions = {}) {
   const order: string[] = []
   const writes: Array<Record<string, unknown>> = []
   const reads: Array<{ table: string; filters: string[] }> = []
+  /** The GitHub backup's commit stamps on version rows (#2868). */
+  const stamps: Array<{ values: unknown; versionId: unknown }> = []
 
   const from = (table: string) => {
+    if (table === 'workflow_versions') {
+      return {
+        update: (values: unknown) => ({
+          eq: (_col: string, versionId: unknown) => ({
+            select: () => {
+              stamps.push({ values, versionId })
+              return Promise.resolve({ data: [{ id: versionId }], error: null })
+            },
+          }),
+        }),
+      }
+    }
     const source = table === 'service_connections' ? connections : table === 'workflows' ? workflows : null
     if (!source) throw new Error(`the double holds no table ${table}`)
     const filters: Array<(r: Row) => boolean> = []
@@ -184,11 +202,11 @@ function storeDouble(opts: StoreOptions = {}) {
     const answer = opts.rpc?.[name] ?? functions[name]
     return Promise.resolve(answer ? answer(args) : { data: null, error: { code: '42883', message: `no function ${name}` } })
   }
-  return { from, rpc, connections, workflows, removed, order, writes, reads }
+  return { from, rpc, connections, workflows, removed, order, writes, reads, stamps }
 }
 
 const ctx = recordingContext()
-const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {} } as unknown as Env
+const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, IDEMPOTENCY: {}, APP_URL: 'https://app.test', GITHUB_TOKEN: 'gh-tok', GITHUB_REPO: 'Try-Pennie/backups' } as unknown as Env
 
 async function replace(id: string, body: unknown, headers: Record<string, string> = { Authorization: 'Bearer tok' }) {
   return api.request(`/connections/${id}/replace`, {
@@ -221,6 +239,10 @@ beforeEach(() => {
   vi.mocked(verifyJwt).mockResolvedValue({ sub: USER, email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' })
   vi.mocked(writeAuditLog).mockResolvedValue(undefined)
   vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
+  // The backup is not configured unless a test says otherwise (#2868).
+  vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+  vi.mocked(recordBackupSuccess).mockResolvedValue(undefined)
+  vi.mocked(recordBackupFailure).mockResolvedValue(false)
   use(storeDouble())
 })
 
@@ -518,5 +540,46 @@ describe('workflows that cannot get a new version', () => {
     expect(res.status).toBe(503)
     expect(((await res.json()) as Answer).error).toBe('replace_uses_unreadable')
     expect(db.writes).toEqual([])
+  })
+})
+
+// #2868: each new version Replace writes is pushed to the GitHub backup, as a
+// canvas save's is, or the backup would keep naming the connection Replace
+// moved the workflow away from until someone next saved it on the canvas.
+describe('the GitHub backup of each moved workflow (#2868)', () => {
+  it('pushes each moved workflow\'s new version, naming the replacement, and stamps the commit on that version row', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockImplementation(async (_t, _r, workflowId) => `commit-${workflowId}`)
+    const res = await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE, CLEANUP] })
+    expect(res.status).toBe(200)
+    await ctx.settle()
+    const pushes = vi.mocked(pushWorkflowToGitHub).mock.calls
+    expect(pushes.map((c) => [c[2], c[3], c[5], c[6]])).toEqual([
+      [ACHIEVE, 'Achieve report import', 5, 'Replaced Pennie Salesforce with TPL2 Salesforce'],
+      [CLEANUP, 'Daily Salesforce cleanup', 10, 'Replaced Pennie Salesforce with TPL2 Salesforce'],
+    ])
+    for (const c of pushes) expect(stepOf(c[4]).config.connection).toBe(TPL2)
+    expect(db.stamps).toEqual([
+      { values: { commit_sha: `commit-${ACHIEVE}` }, versionId: `v-${ACHIEVE}-5` },
+      { values: { commit_sha: `commit-${CLEANUP}` }, versionId: `v-${CLEANUP}-10` },
+    ])
+    expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalledTimes(2)
+  })
+
+  it('pushes nothing for a workflow it did not write', async () => {
+    const res = await replace(PENNIE, { with: TPL2, workflows: [TRIPOINT, OLD_IMPORT] })
+    expect(res.status).toBe(200)
+    await ctx.settle()
+    expect(vi.mocked(pushWorkflowToGitHub)).not.toHaveBeenCalled()
+  })
+
+  it('a push that fails leaves the workflow replaced, and is alerted as a save\'s is', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockRejectedValue(new Error('GitHub push failed (401): Bad credentials'))
+    const res = await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE] })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as Answer).workflows).toEqual([expect.objectContaining({ id: ACHIEVE, outcome: 'replaced', version: 5 })])
+    await ctx.settle()
+    expect(stepOf(wf(ACHIEVE).definition).config.connection).toBe(TPL2)
+    expect(vi.mocked(recordBackupFailure)).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG, workflowId: ACHIEVE, workflowName: 'Achieve report import' }))
+    expect(db.stamps).toEqual([])
   })
 })

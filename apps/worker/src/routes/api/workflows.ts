@@ -9,8 +9,6 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
 import { definitionShapeProblems, findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems, unfinishedAppActionSteps } from '@bidspoke/workflow-definition'
 import { reportDefinition } from '../../lib/definition-report'
-import { pushWorkflowToGitHub } from '../../lib/github'
-import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
 import { copyCleared, copyWarning } from '../../lib/stored-copy'
 import { executeWorkflow, moneyRuntime, nodeExecutorForLane } from '../../engine/index'
@@ -27,7 +25,6 @@ import { asJson } from '../../lib/json'
 import { fetchAllPaged, fetchUpTo } from '../../lib/paginate'
 import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import { jsonEqual } from '../../lib/stable-json'
-import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
 import { loadBuyerProfiles } from '../../lib/buyer-profile-loader'
 import { hasBuyerStep, inputGapsForWorkflowSave } from '../../lib/buyer-input-coverage'
 import { pricedPartnersByPopulation } from '../../lib/priced-partners'
@@ -38,6 +35,7 @@ import { retirePartnerLastGood } from '../../lib/partner-last-good'
 import { checkDefinitionConnections, type ConnectionCheckedAction } from '../../lib/workflow-connection-check'
 import { copiedDefinitionStamp, writtenDefinitionStamp } from '../../lib/definition-stamp'
 import { writeWorkflow, type WriteWorkflowResult } from '../../lib/write-workflow'
+import type { WorkflowBackupContext } from '../../lib/workflow-backup'
 import { stampAppActionBinders } from '../../lib/app-action-binders'
 import { readOpsStepTest, testOpsStep } from './ops-step-test'
 import { assertNever } from '@bidspoke/node-types'
@@ -246,6 +244,11 @@ function actorOf(c: Context<{ Bindings: Env; Variables: Variables }>) {
   return { id: userId, email, name }
 }
 
+/** Where writeWorkflow backs up the version a write makes (#2868): this request's env and waitUntil. */
+function backupOf(c: Context<{ Bindings: Env; Variables: Variables }>): WorkflowBackupContext {
+  return { env: c.env, waitUntil: (promise) => c.executionCtx.waitUntil(promise) }
+}
+
 /**
  * A save of a definition from a canvas opened before every canvas save named
  * the version it was loaded from and its press (#2599). Its save would be made
@@ -350,6 +353,7 @@ workflows.post('/', async (c) => {
     },
     saveId: null,
     actor: actorOf(c),
+    backup: backupOf(c),
     storedDefinition: null,
   })
   if (result.kind !== 'written') return answerUnwritten(c, result)
@@ -409,6 +413,7 @@ workflows.post('/:id/duplicate', async (c) => {
     fields: { name: `${source.name} (copy)`, definition: cloneDefinition },
     saveId: null,
     actor: actorOf(c),
+    backup: backupOf(c),
     // The copy has no stored definition of its own: every step is bound by whoever duplicated it (#2339).
     storedDefinition: null,
   })
@@ -659,6 +664,7 @@ workflows.put('/:id', async (c) => {
     fields,
     saveId: typeof body.save_id === 'string' ? body.save_id : null,
     actor: actorOf(c),
+    backup: backupOf(c),
     storedDefinition: existing.definition,
   })
   if (result.kind !== 'written') return answerUnwritten(c, result)
@@ -693,66 +699,7 @@ workflows.put('/:id', async (c) => {
     )
   }
 
-  // Push definition to GitHub backup repo and store commit SHA on the version row (non-blocking)
-  const workflowName = body.name ?? (existing.definition as { name?: string } | null)?.name ?? id
-  c.executionCtx.waitUntil(
-    pushWorkflowToGitHub(
-      c.env.GITHUB_TOKEN,
-      c.env.GITHUB_REPO,
-      id,
-      workflowName,
-      body.definition ?? existing.definition,
-      nextVersion,
-      body.message
-    )
-      .then(async (commitSha) => {
-        // null = backup not configured (no token/repo) — not a failure, leave the streak alone.
-        if (!commitSha) return
-        // Runs after the save has already been answered, so there is no response
-        // to fail. Both a real error and a zero-row match were discarded here,
-        // leaving a version row with no commit_sha that still looked like a
-        // healthy backup. The GitHub push itself did succeed, so the streak is
-        // still reset; only the bookkeeping is reported as broken (#588).
-        // write_workflow names the snapshot it wrote; an answer without one leaves
-        // nothing to stamp, reported as the unset stamp it is, never sent as an empty id.
-        const { error: stampError } = versionId
-          ? await requireRowsAffected(
-            'workflow_versions.commit_sha',
-            () => supabase.from('workflow_versions').update({ commit_sha: commitSha }).eq('id', versionId).select('id'),
-            { onMiss: 'error', context: { workflow_id: id, version_id: versionId } }
-          )
-          : { error: new Error('write_workflow answered the save without the id of the version it wrote') }
-        if (stampError && !isNoRowMatchedError(stampError)) {
-          console.error(
-            JSON.stringify({
-              event: 'workflow_version_commit_sha_unset',
-              workflow_id: id,
-              version_id: versionId,
-              reason: stampError.message,
-            })
-          )
-        }
-        await recordBackupSuccess(c.env.IDEMPOTENCY, orgId)
-      })
-      .catch(async (e) => {
-        console.error('[github] backup failed:', e)
-        // LOCAL_DEV (set only in .dev.vars, never in production) means this save is
-        // running against the real production Supabase/Slack connection from a local
-        // `wrangler dev` process, which has no GITHUB_TOKEN. Recording the failure here
-        // would trip the real org's backup-failure Slack alert from local testing.
-        if (c.env.LOCAL_DEV) return
-        await recordBackupFailure({
-          supabase,
-          kv: c.env.IDEMPOTENCY,
-          orgId,
-          workflowId: id,
-          workflowName,
-          error: e,
-          appUrl: c.env.APP_URL,
-        }).catch((alertErr) => console.error('[github] backup alert failed:', alertErr))
-      })
-  )
-
+  // The GitHub backup of the version written was started by writeWorkflow itself (#2868).
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
     version: nextVersion,
     changed_by_name: email,
@@ -886,6 +833,7 @@ workflows.patch('/:id', async (c) => {
     fields,
     saveId: null,
     actor: actorOf(c),
+    backup: backupOf(c),
     storedDefinition: null,
   })
   if (result.kind !== 'written') {
@@ -934,7 +882,7 @@ workflows.delete('/:id', async (c) => {
 
   // Through write_workflow (#1947). A workflow that never existed, belongs to
   // another organization, or was already deleted is a 404 (#588).
-  const result = await writeWorkflow(supabase, { op: 'delete', orgId, workflowId: id, expectedVersion: null, fields: {}, saveId: null, actor: actorOf(c), storedDefinition: null })
+  const result = await writeWorkflow(supabase, { op: 'delete', orgId, workflowId: id, expectedVersion: null, fields: {}, saveId: null, actor: actorOf(c), storedDefinition: null, backup: backupOf(c) })
   if (result.kind !== 'written') return answerUnwritten(c, result)
 
   const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
@@ -1127,6 +1075,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
     fields: { version_id: versionId, definition: restored, definition_report: report },
     saveId: null,
     actor: actorOf(c),
+    backup: backupOf(c),
     // A restored step keeps its binder only where its connection is the one bound now (#2339).
     storedDefinition: owner.definition,
   })

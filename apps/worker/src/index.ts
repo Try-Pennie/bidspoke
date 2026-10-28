@@ -36,6 +36,7 @@ import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './l
 import { failedRun, makeCompleteAfter, minuteJobFailingDepsForEnv } from './lib/minute-job-failures'
 import { runOpsTickReportCheck, OPS_TICK_REPORT_JOB } from './lib/ops-gateway'
 import { runOpsConnectionLoginCheckForEnv, runOpsConnectionWriteBackCheckForEnv, OPS_CONNECTION_LOGINS_JOB, OPS_CONNECTION_WRITE_BACKS_JOB } from './lib/ops-connection-logins'
+import { runOpsKeyResealCheckForEnv, OPS_KEY_RESEAL_JOB } from './lib/ops-key-reseal'
 import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
 import { resolveSlackForEveryOrg } from './lib/standing-alert'
 import { runIncidentDrain, INCIDENT_DRAIN_JOB } from './lib/incident-drain'
@@ -1517,6 +1518,25 @@ const scheduledJobs = {
             }),
           OPS_CONNECTION_WRITE_BACKS_JOB,
           '[ops-connection-write-back] check failed:',
+        ),
+      )
+      // An ops key reseal left behind or left on (#2486): the tick judges the
+      // switch every minute and its report carries the verdict; this pages every
+      // organization with Slack and sends the all clear (lib/ops-key-reseal.ts).
+      // Its own heartbeat, as the other report jobs (#2519).
+      minuteJob(OPS_KEY_RESEAL_JOB,
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, OPS_KEY_RESEAL_JOB)
+            .catch((e) => console.error(`[${OPS_KEY_RESEAL_JOB}] heartbeat write failed:`, e))
+            .then(() => runOpsKeyResealCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims))
+            .then((s) => {
+              if (s.errors.length === 0) return
+              console.error(`[ops-key-reseal] ${s.errors.length} fault(s): ${s.errors.join('; ')}`)
+              // Faults it caught and only logs are a failed run (#2523).
+              return failedRun('[ops-key-reseal] fault(s):')
+            }),
+          OPS_KEY_RESEAL_JOB,
+          '[ops-key-reseal] check failed:',
         ),
       )
       minuteJob('heartbeat-checks',

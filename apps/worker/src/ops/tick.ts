@@ -86,6 +86,10 @@
  *     problem carries a key, its kind and subject (#2506): a kind a passing tick
  *     would clear pages only once three ticks in a row report it, and every
  *     other kind at once (OPS_TICK_PROBLEM_RULES in lib/ops-gateway-contract.ts).
+ *     Before it, the reseal watch (#2486, reseal-watch.ts): while OPS_RESEAL is
+ *     set it stamps the switch seen and judges how long it has been on and what
+ *     its runs last said, and the report carries the verdict, which the bidding
+ *     Worker pages and stands down (lib/ops-key-reseal.ts).
  *
  * Every port is injected, so the tests set both clocks (tick.test.ts); the live
  * ports are tick-live.ts.
@@ -109,8 +113,9 @@ import type { OrganizationId } from './ops-db'
 import { RUN_LEASE_SECONDS, type RunInvocationReport } from './run-invocation'
 import {
   MAX_COPIES_PER_SAVE, type ClaimRunRequests, type ClaimedRun, type CompleteOutcome, type CompletedRun, type ScheduleFire, type ScheduleFireResult, type ConnectionCheckTarget, type QueueDisagreement, type SaveCopiesResult, type ScheduleObservation, type SfLimitsTarget, type SweepClaim,
-  type SweepResult, type WorkflowCopy, type WorkflowCopyInput,
+  type OpsResealMode, type OpsResealState, type SweepResult, type WorkflowCopy, type WorkflowCopyInput,
 } from './ops-writes'
+import { resealSwitchFrom, watchReseal } from './reseal-watch'
 import { OBSERVATION_REASONS, type OpsSweep, type OverlapRule } from './run-vocabulary'
 
 
@@ -273,6 +278,8 @@ export interface OpsTickDb extends ConnectionServeDb {
   connectionCheckTargets(limit: number): Promise<{ targets: ConnectionCheckTarget[]; reachedLimit: boolean }>
   /** A connection check's result (record_connection_check): the last_check_* columns only. */
   recordConnectionCheck(organizationId: OrganizationId, connectionId: string, result: { ok: true } | { ok: false; cause: string }): Promise<'recorded' | 'connection_removed'>
+  /** The reseal watch's sighting of OPS_RESEAL in its mode (#2486, observe_ops_reseal), every tick it is set. */
+  observeReseal(mode: OpsResealMode, restartAfterSeconds: number): Promise<OpsResealState>
 }
 
 /**
@@ -302,6 +309,8 @@ export interface OpsTickPorts {
    */
   dispatchRun(run: ClaimedRun): Promise<RunInvocationReport>
   tickId: string
+  /** OPS_RESEAL as this Worker has it (#2486): the reseal watch judges it every tick (reseal-watch.ts). */
+  resealSwitch: string | undefined
   /** The cron's scheduledTime, reported as received; nothing keys on it. */
   scheduledTime: number | null
   /** This Worker's clock: only the report's start and finish read it. */
@@ -1074,6 +1083,13 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     for (const [key, n] of Object.entries(wb.counts)) bump(counts, key, n)
   }
 
+  // 7e. The reseal watch (#2486), its own boundary: its verdict rides the
+  // report for the bidding Worker to page and stand down; a read that failed is
+  // a problem, and the verdict unjudged.
+  const resealWatch = await watchReseal(resealSwitchFrom(ports.resealSwitch), db ? (mode, seconds) => db.observeReseal(mode, seconds) : null)
+  if (resealWatch.problem) problems.push(resealWatch.problem)
+  if (resealWatch.report) bump(counts, `reseal_${resealWatch.report.verdict}`)
+
   // 8. Completed.
   const outcome: OpsTickOutcome = notConfigured ? 'not_configured' : problems.length > 0 ? 'problems' : 'ok'
   const capped = capTickProblems(problems)
@@ -1093,6 +1109,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     connection_logins: connectionLogins,
     write_backs: writeBacks,
     sweeps_run: sweepsRun,
+    reseal: resealWatch.report,
   }
   log('finished', { tick_id: ports.tickId, outcome, problems: problems.length, ...counts })
   for (const p of problems) log('problem', { tick_id: ports.tickId, key: p.key, problem: p.text })

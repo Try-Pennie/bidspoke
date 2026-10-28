@@ -1174,9 +1174,9 @@ function replaceRefusalOf(refusal: ConnectionCheckRefusal, replacement: string):
 // (write_workflow writes none), so it is named and left. The version keeps the
 // rules stamp it had, since only one id changed; an unstamped one takes this
 // build's, which a save must carry. Each written workflow's stored copy is
-// refreshed and its write audited as a workflow update under the person, as
-// the canvas save is; the GitHub backup is not pushed, as a version restore
-// does not push it either.
+// refreshed and its write audited as a workflow update under the person, and
+// its new version pushed to the GitHub backup by writeWorkflow, as the canvas
+// save is (#2868).
 //
 // Who may call it: any signed in user of the organization (jwtAuth). Whose
 // data: both connections and every workflow are read by the caller's
@@ -1268,6 +1268,7 @@ connections.post('/:id/replace', async (c) => {
         saveId: null,
         actor,
         storedDefinition: row.definition,
+        backup: { env: c.env, waitUntil: (promise) => c.executionCtx.waitUntil(promise) },
       })
       switch (written.kind) {
         case 'written': {

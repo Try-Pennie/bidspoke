@@ -696,6 +696,8 @@ export interface StepTestResult {
   status: 'completed' | 'failed'
   output: unknown
   output_bytes: number | null
+  /** True only for an answer over the kept size; an action that answered nothing is output null with this false (#2773). */
+  output_dropped: boolean
   error: string | null
   duration_ms: number
 }

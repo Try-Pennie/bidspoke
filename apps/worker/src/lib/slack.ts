@@ -22,7 +22,7 @@ import { cloudflareEdgeCodeIn } from './html-error-summary'
 import { listSteps } from '../engine/running-step'
 import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_HELD_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
-import { REFRESH_FAILING_PAGE_SPAN_MS, type ConnectionLoginState, type NeedsReauthReason } from './ops-gateway-contract'
+import { REFRESH_FAILING_PAGE_SPAN_MS, type ConnectionLoginState, type NeedsReauthReason, type OpsResealReport } from './ops-gateway-contract'
 import { RECOVERY_REARM_MINUTES } from './alert-recovery'
 import { describeDuration, measureIncidentSpan } from './incident-span'
 import type { ErrorType } from '../types'
@@ -4206,6 +4206,113 @@ export async function sendOpsConnectionWriteBackRecoveryAlert(
     connection,
     connection.default_channel,
     { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionWriteBackRecoveryWording },
+    now,
+  )
+}
+
+// ── An ops key reseal left behind or left on (#2486) ─────────────────────────
+
+/** What the reseal page carries: the tick's verdict and its facts, and the reminder sentence on a repeat. */
+export interface OpsKeyResealAlert {
+  report: OpsResealReport
+  repeat?: string
+}
+
+/** How long from one time to another, in the words an alert uses; a time that cannot be read is said as such, never guessed (L11). */
+function howLongBetween(from: string | null, to: string | null): string {
+  const ms = from === null || to === null ? Number.NaN : Date.parse(to) - Date.parse(from)
+  return describeDuration(ms) ?? 'a time that could not be read'
+}
+
+/**
+ * The page's title and sentences, separate from the send so the words can be
+ * tested (ops-key-reseal.ts says when each verdict pages). Each names how long,
+ * what the last run left and when, and the one thing to do, in the words of the
+ * place the reader acts: the switch in wrangler.ops.toml, the ops Worker's logs.
+ */
+export function opsKeyResealMessage(alert: OpsKeyResealAlert): { title: string; sections: string[] } {
+  const r = alert.report
+  let title: string
+  let sections: string[]
+  switch (r.verdict) {
+    case 'preview_left_on':
+      title = 'An ops key reseal is only previewing'
+      sections = [
+        `OPS_RESEAL has been set to preview on the ops Worker for ${howLongBetween(r.since, r.db_now)}. A preview moves nothing, so logins still on the old key stay there.`,
+        '*Fix:* set OPS_RESEAL to apply in wrangler.ops.toml to move them, or remove it if no key rotation is under way.',
+      ]
+      break
+    case 'finished_left_on':
+      title = 'An ops key reseal is finished but still switched on'
+      sections = [
+        `Every ops connection login has been on the new key since ${etTime(r.nothing_left_since ?? Number.NaN)}, but OPS_RESEAL is still set on the ops Worker, so the reseal goes on running every minute for nothing.`,
+        '*Fix:* remove OPS_RESEAL from wrangler.ops.toml, then delete the old key, as the steps for rotating the ops private key in the disaster recovery runbook say.',
+      ]
+      break
+    case 'switch_unknown':
+      title = 'The ops key reseal switch has a value it cannot use'
+      sections = [
+        'OPS_RESEAL on the ops Worker is set to something other than preview or apply, so no reseal runs and logins on the old key stay there.',
+        '*Fix:* set it to apply in wrangler.ops.toml to move them, or remove it if no key rotation is under way.',
+      ]
+      break
+    default: {
+      // logins_left, and any verdict the page is not worded for, which is read as the stuck rotation it most nearly is.
+      const last = r.last_run_at === null
+        ? 'and no run has recorded what it left.'
+        : r.last_run_left === null
+          ? `and its last run, at ${etTime(r.last_run_at)}, failed before it could count what was left.`
+          : `and its last run, at ${etTime(r.last_run_at)}, still left ${r.last_run_left} login${r.last_run_left === 1 ? '' : 's'} on the old key.`
+      title = 'An ops key rotation is stuck'
+      sections = [
+        `The ops key reseal has been moving ops connection logins to the new key for ${howLongBetween(r.since, r.db_now)}, ${last} It runs every minute, so a login still left after this long will not move on its own.`,
+        '*Fix:* search the bidspoke-worker-ops logs for ops_reseal to see which connections it cannot move and why. Do not delete the old key until a run reports nothing left, or those connections will stop working.',
+      ]
+    }
+  }
+  if (alert.repeat) sections.push(alert.repeat)
+  return { title, sections }
+}
+
+/** What the all clear says the reseal is doing now, from the verdict that cleared it. */
+export function opsKeyResealRecoveredPhrase(report: OpsResealReport): string {
+  if (report.mode === null) return 'is switched off'
+  if (report.nothing_left_since !== null) return 'has moved every login to the new key'
+  return report.mode === 'apply' ? 'is moving logins to the new key' : 'is set to preview, which moves nothing'
+}
+
+/** Pages one organization, under its configuration alerts toggle. Returns whether it reached Slack. */
+export async function sendOpsKeyResealAlert(supabase: SupabaseClient, orgId: string, alert: OpsKeyResealAlert): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  const m = opsKeyResealMessage(alert)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+}
+
+/** The all clear once the switch is removed or the reseal is back inside its bounds. Returns whether it reached Slack. */
+export async function sendOpsKeyResealRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { phrase: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    {
+      subject: 'The ops key reseal',
+      alertedAt: recovery.alertedAt,
+      endedAt: recovery.endedAt,
+      firstHealthyAt: recovery.firstHealthyAt,
+      signal: 'ops key reseal',
+      recoveredPhrase: recovery.phrase,
+    },
     now,
   )
 }
