@@ -12,7 +12,18 @@
  * runs; the job records its own outcome so a lifetime of zero passes reads as
  * broken (L557).
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+// The independent record lookup's own Salesforce read (#2394) runs against these:
+// a fixed instance url and token, so the test sees exactly the urls it fetches.
+vi.mock('../salesforce-creds', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../salesforce-creds')>()),
+  resolveSalesforceCredsFor: vi.fn(async () => ({ creds: { instanceUrl: 'https://sf.test', clientId: 'id', clientSecret: 'secret' }, missing: [] })),
+}))
+vi.mock('../../engine/nodes/salesforce', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../engine/nodes/salesforce')>()),
+  getSalesforceToken: vi.fn(async () => 'token'),
+}))
 import type { LedgerEntry } from '../../durable-objects/buyer-ledger'
 import { PURGE_GRACE_HOURS } from '../sightings-export'
 import { PAGE_SIZE } from '../paginate'
@@ -739,6 +750,41 @@ describe('the independent record lookup (#1737)', () => {
     await runBuyerSalesChecks(d)
     // The fixture checks Eastern days 2027-09-20 and 2027-09-19; 2027-09-19 starts at 04:00 UTC (EDT).
     expect(seen).toEqual([Date.UTC(2027, 8, 19, 3, 0, 0)])
+  })
+
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  // #2394: the query url and the next page url are built by the shared
+  // salesforce-api module now, and must be byte for byte the urls the hand built
+  // template sent. The expected values are that template written out: the query
+  // url over each chunk's full query, and the instance url with the relative
+  // nextRecordsUrl Salesforce returns appended.
+  it('asks for every chunk and its next page at exactly the urls the hand built template sent', async () => {
+    const nextRecordsUrl = '/services/data/v60.0/query/01gRO00000GXDvSYAX-2000'
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      const page = urls.length === 1
+        ? { records: [{ TripointLeadID__c: 'TP-0' }], done: false, nextRecordsUrl }
+        : { records: [{ TripointLeadID__c: 'TP-150' }], done: true }
+      return new Response(JSON.stringify(page), { status: 200 })
+    }))
+    // 151 safe references fill one 150 reference chunk and start a second; the
+    // one with a space is dropped before any query is built.
+    const references = [...Array.from({ length: 151 }, (_, i) => `TP-${i}`), 'not safe']
+    const found = await productionChecksDeps({} as SupabaseClient, {} as unknown as Env)
+      .readIndependentRecord(TRIPOINT, references, Date.UTC(2027, 8, 19, 3, 0, 0, 250))
+    const inList = (ids: string[]) => ids.map((r) => `'${r}'`).join(',')
+    const first = 'SELECT TripointLeadID__c FROM Prospect__c WHERE CreatedDate >= 2027-09-19T03:00:00Z ' +
+      `AND TripointLeadID__c IN (${inList(references.slice(0, 150))})`
+    const second = 'SELECT TripointLeadID__c FROM Prospect__c WHERE CreatedDate >= 2027-09-19T03:00:00Z ' +
+      "AND TripointLeadID__c IN ('TP-150')"
+    expect(urls).toEqual([
+      `https://sf.test/services/data/v60.0/query?q=${encodeURIComponent(first)}`,
+      'https://sf.test/services/data/v60.0/query/01gRO00000GXDvSYAX-2000',
+      `https://sf.test/services/data/v60.0/query?q=${encodeURIComponent(second)}`,
+    ])
+    expect(found).toEqual(new Set(['TP-0', 'TP-150']))
   })
 })
 
