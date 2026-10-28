@@ -302,6 +302,8 @@ export const SCRIPTED_FRAMES = [
   'remove-removing', 'remove-refused-in-use', 'remove-ops-not-told',
   // Build PR 12: the Replace dialog's states, settled in the Replace rounds (Dan, 2026-10-27).
   'replace-working', 'replace-partial', 'replace-deleted', 'replace-done',
+  // #2904: the Replace cap, drawn as shipped (Dan, 2026-10-27).
+  'replace-capped', 'replace-over-cap',
   // Build PR 14: the Slack alerts login's alert settings and its Reconnect. alert-login and
   // alert-reconnect are settled frames; the rest are states the settled design never drew.
   'alert-reconnect', 'alert-reconnect-checking', 'alert-reconnect-refused', 'alert-login-refused',
@@ -517,6 +519,12 @@ function formScript(frame: string, moreGoogle: number): PreviewScript | null {
     type: 'connection_replace_answered', attempt: 1, id: pennie.id, withId: tpl2.id, withName: tpl2.name, sentence, warning: null,
     workflows: (pennie.workflows ?? []).map((w) => ({ id: w.id, name: w.name, outcome: outcome(w.name) })),
   })
+  // #2904, drawn as shipped: Pennie Salesforce used by nine, the fixture's six and its replaceMore,
+  // more than one Replace moves, listed by name as the route lists them.
+  const nineNames = [...(pennie.workflows ?? []).map((w) => w.name), ...fixture.replaceMore].sort((a, b) => a.localeCompare(b))
+  const nine = (r: ConnectionListRow): ConnectionListRow => (r.id === pennie.id
+    ? { ...r, used_by: nineNames.length, workflows: nineNames.map((name) => ({ id: idOf(name), name, deleted: false })) }
+    : r)
   const script = (events: ConnectionsEvent[], more: Partial<PreviewScript> = {}): PreviewScript => ({ events, orgNames: known, ...more })
   const S = T - ELAPSED_MS
   switch (frame) {
@@ -560,6 +568,11 @@ function formScript(frame: string, moreGoogle: number): PreviewScript | null {
       return script(replaceOf((r) => (r.name === 'Pennie Salesforce' ? { ...r, used_by: r.used_by + 1, workflows: [...(r.workflows ?? []), { id: idOf('Old lead import'), name: 'Old lead import', deleted: true }] } : r)))
     case 'replace-done':
       return script([...replaceOf(), replacePressed(S), replaceAnswered(null, () => 'replaced')])
+    // #2904: opened with the first 7 of 9 ticked, and then an 8th ticked, which holds the button.
+    case 'replace-capped':
+      return script(replaceOf(nine))
+    case 'replace-over-cap':
+      return script([...replaceOf(nine), { type: 'replace_tick', workflow: idOf(nineNames[7]) }])
     case 'remove':
       return script(removeOf())
     case 'add-stalled':
