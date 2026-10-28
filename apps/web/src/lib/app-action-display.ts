@@ -1,4 +1,4 @@
-import { CATALOGUE, GOOGLE_PRODUCTS, catalogueActions, googleProductOf, markKeyFor, resolveActionVersion } from '@bidspoke/service-catalogue/schema'
+import { CATALOGUE, GOOGLE_PRODUCTS, STEP_OUTPUT_MAX_BYTES, catalogueActions, googleProductOf, markKeyFor, resolveActionVersion } from '@bidspoke/service-catalogue/schema'
 
 /**
  * What an App Action step's card says (#2339; settled in
@@ -131,3 +131,18 @@ export function appActionSchema(config: Record<string, unknown>) {
   const resolved = actionKey !== null && typeof version === 'number' ? resolveActionVersion(ACTIONS, actionKey, version) : null
   return resolved?.ok ? resolved.action : null
 }
+
+/**
+ * A size in KB of 1,000 bytes, rounded down, so "more than" it is always true
+ * of the bytes it names: 160,000 is 160 KB, 1,234,000 is 1,234 KB.
+ */
+export const kilobytes = (bytes: number): string => `${Math.floor(bytes / 1000).toLocaleString('en-US')} KB`
+
+/**
+ * What an earlier step's group in the Insert list says when its last test
+ * finished with an answer too big to keep (#2882, settled in
+ * docs/design/insert-too-big-answer.html): the size named is the ops Worker's
+ * own kept limit, the shared STEP_OUTPUT_MAX_BYTES (D2), so whoever built the
+ * action knows the size to get under.
+ */
+export const TOO_BIG_TO_KEEP_SENTENCE = `Its last test answered more than ${kilobytes(STEP_OUTPUT_MAX_BYTES)}, too much to keep, so it has no values.`
