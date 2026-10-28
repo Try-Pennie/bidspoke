@@ -68,10 +68,12 @@ export interface StrandStepEvidence {
  * branch that cannot fire, is caught (L551): the precise branches hiding behind
  * the conservative `unresolved` fallback is exactly how #1112 stayed invisible
  * for 14 days (119 of 119 rows took `unresolved`, none took `graph_dead_end`).
+ * `no_evidence` is the same fallback for a row with no finished step and no
+ * sighting verdict, tallied apart because no precise branch could have read it.
  */
-export type StrandBranch = 'failed_step' | 'graph_dead_end' | 'sighting_outcome' | 'unresolved'
+export type StrandBranch = 'failed_step' | 'graph_dead_end' | 'sighting_outcome' | 'unresolved' | 'no_evidence'
 
-export const STRAND_BRANCHES: readonly StrandBranch[] = ['failed_step', 'graph_dead_end', 'sighting_outcome', 'unresolved']
+export const STRAND_BRANCHES: readonly StrandBranch[] = ['failed_step', 'graph_dead_end', 'sighting_outcome', 'unresolved', 'no_evidence']
 
 export interface ResolvedStrand {
   status: 'failed' | 'completed'
@@ -254,7 +256,10 @@ export function resolveStrandedExecution(
     duration_ms: Math.max(0, new Date(completedAtIso).getTime() - startedAtMs),
     error_message: UNRESOLVED_MESSAGE,
     failed_step_type: null,
-    branch: 'unresolved',
+    // No finished step and no sighting verdict: no precise branch had anything to
+    // read, so the branch-skew check must not count this row as one they missed.
+    // The label is the same; only the tally differs.
+    branch: finalSteps.length === 0 ? 'no_evidence' : 'unresolved',
   }
 }
 
@@ -273,7 +278,7 @@ export interface ReduceFinalizeResult {
 
 /** A zeroed per-branch tally. */
 export function emptyBranchCounts(): Record<StrandBranch, number> {
-  return { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 }
+  return { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0, no_evidence: 0 }
 }
 
 /**
