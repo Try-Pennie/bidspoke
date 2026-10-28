@@ -162,6 +162,8 @@ describe('runPartnerErrorRateCheck', () => {
     expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({
       signal: 'partner error', subject: wf.name, alertedAt, endedAt: lastSeen, recoveredPhrase: 'is getting answers from LendSwift again',
     })
+    // Logged under its fixed kind (#2948).
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][3]).toBe('partner-error-rate-all-clear')
     expect(kv.store.has(`partner-error-rate-recovery:${WF}`)).toBe(false)
     expect(kv.store.has(`partner-error-rate-cooldown:${WF}`)).toBe(false)
   })

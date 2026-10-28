@@ -208,7 +208,7 @@ export async function recordAndCheckBranchSkew(
         { type: 'section', text: { type: 'mrkdwn', text: reason } },
         { type: 'section', text: { type: 'mrkdwn', text: `<${deps.appUrl}/dashboard|Open dashboard>` } },
       ]
-      return (await postMessage(slack.bot_token, slack.default_channel, blocks, 'Stranded-run cleanup may be missing outcomes')) !== null
+      return (await postMessage(slack.bot_token, slack.default_channel, blocks, 'Stranded-run cleanup may be missing outcomes', 'strand-branch-skew')) !== null
     },
   })
 }

@@ -413,7 +413,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
       signal,
       recoveredPhrase,
       items: [{ subject, alertedAt: due.alertedAt, endedAt: due.endedAt, firstHealthyAt: due.firstHealthyAt }],
-    }, nowMs))
+    }, 'supabase-memory-all-clear', nowMs))
     if (!delivered) {
       await release(claimKey)
       summary.errors.push(`the ${signal} all-clear was not delivered`)

@@ -352,7 +352,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
               signal: 'probe control',
               recoveredPhrase: 'reading the block page again',
               items: [{ subject: host, alertedAt: due.alertedAt, endedAt: due.endedAt, firstHealthyAt: due.firstHealthyAt }],
-            }, nowMs))
+            }, 'partner-reachability-all-clear', nowMs))
             if (delivered) {
               await settleRecovery(deps.kv, RECOVERY_PREFIX, host, backoffCooldownKey(PROBE_CONTROL_KEY), { ...incident(host), reason: 'all_clear' }, nowMs)
               await clearCondition(deps.kv, PROBE_CONTROL_KEY)
@@ -426,7 +426,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
         signal: 'partner reachability',
         recoveredPhrase: 'answering a GET without a Cloudflare block page for 30 minutes, with no lead sighting one in that time',
         items: dueForAllClear.map((d) => ({ subject: d.host, alertedAt: d.alertedAt, endedAt: d.endedAt, firstHealthyAt: d.firstHealthyAt })),
-      }, nowMs))
+      }, 'partner-reachability-all-clear', nowMs))
       if (delivered) {
         for (const d of dueForAllClear) {
           await settleRecovery(deps.kv, RECOVERY_PREFIX, d.host, backoffCooldownKey(partnerBlockKey(d.host)), { ...incident(d.host), reason: 'all_clear' }, nowMs)

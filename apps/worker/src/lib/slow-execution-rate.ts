@@ -238,6 +238,7 @@ export async function runSlowExecutionCheck(
             // Judges the trailing WINDOW_MINUTES, so a one-tick incident has a
             // zero span: name the window it measured, not a gap it did not (#1108).
             { signal: 'slow execution', subject: wf.name, alertedAt, endedAt, firstHealthyAt, measuredWindowMinutes: WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
+            'slow-spike-all-clear',
           )
         },
         { hasEvidence: () => (finishedByWorkflow.get(wfId) ?? 0) >= MIN_RECOVERY_RUNS, claim: minuteAllClearClaim(claims, 'slow-spike', wfId) },

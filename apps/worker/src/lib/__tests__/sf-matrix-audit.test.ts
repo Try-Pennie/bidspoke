@@ -7,6 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { registerScheduledSlack } from '../scheduled-slack'
 import { fakeClient, fakeTimers, kvWith, kvWithCopy, TEST_KEY } from './_scheduled-slack-doubles'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
+import { SLACK_POST_OUTCOME_PREFIX } from '../slack-post-outcome'
 import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
 import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
@@ -220,6 +221,8 @@ describe('notifyAllOrgsWithSlack, delivery gates the snapshot', () => {
   })
 
   it('posts one message per matrix and returns true when each delivers', async () => {
+    const logged: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')) })
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ ok: true, ts: '1.1' }), { status: 200 }))
     expect(await notifyAllOrgsWithSlack(makeSupabase(['org-1'], enabled), [alert, { ...alert, matrix: 'TLG' }], now, undefined)).toBe(true)
     const bodies = await Promise.all(fetchSpy.mock.calls.map((c) => slackPostOf(c)))
@@ -227,6 +230,9 @@ describe('notifyAllOrgsWithSlack, delivery gates the snapshot', () => {
       'Bid matrix changed: SoFi, 1 bid, by Pat Example',
       'Bid matrix changed: TLG, 1 bid, by Pat Example',
     ])
+    // Each logged under the matrix change kind, whatever the matrix (#2948).
+    const kinds = logged.filter((l) => l.startsWith(SLACK_POST_OUTCOME_PREFIX)).map((l) => JSON.parse(l.slice(SLACK_POST_OUTCOME_PREFIX.length)).alert_kind)
+    expect(kinds).toEqual(['sf-matrix-audit', 'sf-matrix-audit'])
   })
 
   // #2338 build PR 14 (Dan's decision 3): the separate matrix channel is retired, so the hourly audit

@@ -210,6 +210,36 @@ describe('salesforcePortFor', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  // #2394: the port's urls are built by the shared salesforce-api module now, and
+  // must be byte for byte the urls the hand built templates sent. The expected
+  // values are those templates written out over every kind of request the replay
+  // and the read-back send: a record read with its field list, a field history
+  // query, a PATCH, and an Apex REST post. The instance url is configured both
+  // with and without its trailing slash, and both send the same bytes.
+  it('sends every kind of request at exactly the url the hand built templates sent', async () => {
+    const history = '/query?q=SELECT%20Field%20FROM%20Submission__History%20WHERE%20ParentId%20%3D%20\'a04Ui00000NkhG1IAJ\''
+    for (const configured of ['https://sf.example/', 'https://sf.example']) {
+      vi.mocked(loadEnvVars).mockResolvedValue({ SALESFORCE_INSTANCE_URL: configured, SALESFORCE_CLIENT_ID: 'id', SALESFORCE_CLIENT_SECRET: 'secret' })
+      const sent: Array<[string, string | undefined]> = []
+      vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+        sent.push([url, init.method])
+        return new Response('{}', { status: 200 })
+      }))
+      const port = await salesforcePortFor({ WORKFLOW_CACHE: kv() } as unknown as Env, {} as SupabaseClient, 'k', 'org-1', 'wf-1')
+      await port.send('GET', '/sobjects/Submission__c/a04Ui00000NkhG1IAJ?fields=LastModifiedDate,A__c,B__c')
+      await port.send('GET', history)
+      await port.send('PATCH', '/sobjects/Submission__c/a04Ui00000NkhG1IAJ', '{"A__c":1}')
+      await port.postApex('/services/apexrest/credit-inquiries', '{"submissionId":"a"}')
+      expect(sent).toEqual([
+        ['https://sf.example/services/data/v60.0/sobjects/Submission__c/a04Ui00000NkhG1IAJ?fields=LastModifiedDate,A__c,B__c', 'GET'],
+        ['https://sf.example/services/data/v60.0/query?q=SELECT%20Field%20FROM%20Submission__History%20WHERE%20ParentId%20%3D%20\'a04Ui00000NkhG1IAJ\'', 'GET'],
+        ['https://sf.example/services/data/v60.0/sobjects/Submission__c/a04Ui00000NkhG1IAJ', 'PATCH'],
+        ['https://sf.example/services/apexrest/credit-inquiries', 'POST'],
+      ])
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('refuses a path that is not a plain Apex REST path, sending nothing', async () => {
     vi.mocked(loadEnvVars).mockResolvedValue({ SALESFORCE_INSTANCE_URL: 'https://sf.example/', SALESFORCE_CLIENT_ID: 'id', SALESFORCE_CLIENT_SECRET: 'secret' })
     const fetchMock = vi.fn()

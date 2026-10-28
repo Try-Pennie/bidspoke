@@ -105,7 +105,7 @@ function makeDeps(overrides: Partial<ReachabilityDeps> = {}) {
   const claims = fakeClaims(clock)
   const plan: { current: Plan } = { current: {} }
   const requests: Array<{ url: string; headers: Record<string, string> }> = []
-  const sent: Array<{ kind: string; channel: string; payload: unknown }> = []
+  const sent: Array<{ kind: string; channel: string; payload: unknown; alertKind?: unknown }> = []
   const logs: string[] = []
   const deps: ReachabilityDeps = {
     kv, claims,
@@ -120,7 +120,7 @@ function makeDeps(overrides: Partial<ReachabilityDeps> = {}) {
       block: async (_s, channel, payload) => { sent.push({ kind: 'block', channel, payload }); return '1.1' },
       unreachable: async (_s, channel, payload) => { sent.push({ kind: 'unreachable', channel, payload }); return '1.2' },
       control: async (_s, channel, payload) => { sent.push({ kind: 'control', channel, payload }); return '1.3' },
-      recovery: async (_s, channel, payload) => { sent.push({ kind: 'recovery', channel, payload }); return true },
+      recovery: async (_s, channel, payload, alertKind) => { sent.push({ kind: 'recovery', channel, payload, alertKind }); return true },
       probeBroken: async (_s, channel, payload) => { sent.push({ kind: 'probe-broken', channel, payload }); return '1.4' },
     },
     now: () => clock.now,
@@ -324,6 +324,8 @@ describe('the all-clear', () => {
     const payload = recoveries[0].payload as { items: Array<{ subject: string }>; recoveredPhrase: string }
     expect(payload.items.map((i) => i.subject)).toEqual(['oauth.prd.ffngcp.com'])
     expect(payload.recoveredPhrase).toMatch(/block page/)
+    // The all-clear is logged under its fixed kind (#2948).
+    expect(recoveries[0].alertKind).toBe('partner-reachability-all-clear')
     expect(await readCondition(kv, partnerBlockKey('oauth.prd.ffngcp.com'))).toBeNull()
     expect(kv.store.has(recoveryKey(PARTNER_REACHABILITY_RECOVERY_PREFIX, 'oauth.prd.ffngcp.com'))).toBe(false)
     // The next block is a fresh incident, not a suppressed repeat.

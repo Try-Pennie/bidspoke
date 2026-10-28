@@ -80,6 +80,7 @@ import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { withJobRun, type JobRunEnding } from './job-run-record'
 import { parseJson } from './json'
 import { fetchAllPaged } from './paginate'
+import { salesforceNextPageUrl, salesforceQueryUrl } from './salesforce-api'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 import { BID_PURGE_HORIZON_MS } from './sightings-export'
 import { describeDuration } from './incident-span'
@@ -874,13 +875,13 @@ export function productionChecksDeps(supabase: SupabaseClient, env: Env): Checks
       for (let i = 0; i < safe.length; i += SOQL_CHUNK) {
         const chunk = safe.slice(i, i + SOQL_CHUNK)
         const soql = independentRecordSoql(chunk, fromMs)
-        let next: string | undefined = `${creds.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`
+        let next: string | undefined = salesforceQueryUrl(creds.instanceUrl, soql)
         while (next) {
           const res: Response = await fetch(next, { headers: { Authorization: `Bearer ${token}` } })
           if (!res.ok) throw new Error(`Salesforce query failed (${res.status}): ${(await res.text()).slice(0, 300)}`)
           const body = await parseJson<{ records: Array<{ TripointLeadID__c?: unknown }>; done: boolean; nextRecordsUrl?: string }>(res)
           for (const rec of body.records) if (typeof rec.TripointLeadID__c === 'string') found.add(rec.TripointLeadID__c)
-          next = body.done ? undefined : body.nextRecordsUrl ? `${creds.instanceUrl}${body.nextRecordsUrl}` : undefined
+          next = body.done ? undefined : body.nextRecordsUrl ? salesforceNextPageUrl(creds.instanceUrl, body.nextRecordsUrl) : undefined
         }
       }
       return found

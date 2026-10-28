@@ -479,6 +479,8 @@ describe('runLeadValidationRejectionWatch', () => {
     const out = await runLeadValidationRejectionWatch(db(runs(windowAt, 600, { 'ineligible state': 70, 'loan amount exceeds maximum': 95 })) as never, kv as never, URL, NOW)
     expect(out.allClear).toEqual([GIGFI])
     expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ signal: 'lead validation rejections', subject: wf.name, alertedAt, endedAt: lastSeen })
+    // Logged under its fixed kind (#2948).
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][3]).toBe('lead-validation-rejection-rate-all-clear')
     expect(kv.store.has(`${LEAD_VALIDATION_REJECTION_SIGNAL}-recovery:${GIGFI}`)).toBe(false)
     expect(kv.store.has(`${LEAD_VALIDATION_REJECTION_SIGNAL}-cooldown:${GIGFI}`)).toBe(false)
   })

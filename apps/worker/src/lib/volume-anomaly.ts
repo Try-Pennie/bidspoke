@@ -213,5 +213,5 @@ async function sendVolumeAlert(
 
   // postMessage detects both HTTP errors and Slack's HTTP-200 ok:false
   // failures (channel_not_found / not_in_channel / invalid_auth) and logs them.
-  await postMessage(connection.bot_token, connection.default_channel, blocks, header)
+  await postMessage(connection.bot_token, connection.default_channel, blocks, header, 'volume-anomaly')
 }

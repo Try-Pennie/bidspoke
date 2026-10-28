@@ -166,6 +166,29 @@ describe('a field filled by a lookup on the connection', () => {
     expect(screen.getByRole('combobox')).toBeDisabled()
     expect(api.connections.lookup).not.toHaveBeenCalled()
   })
+
+  // #2782: a parent not filled yet is not "no parent", so the lookup waits for it.
+  it('waits for a parent not filled yet, then reads with exactly the parents once they are', async () => {
+    vi.mocked(api.connections.lookup).mockResolvedValue({ answer: { key: 'fields', parent: 'Lead', fields: [{ name: 'Email', label: 'Email', type: 'string' }] } })
+    const view = render(<LookupDropdown id="f" lookup="fields" connection={CONN} parents={['Lead', '']} value="" onChange={() => {}} />)
+    expect(screen.getByRole('combobox')).toBeDisabled()
+    expect(screen.getByRole('combobox')).toHaveTextContent('Choose one')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(api.connections.lookup).not.toHaveBeenCalled()
+
+    view.rerender(<LookupDropdown id="f" lookup="fields" connection={CONN} parents={['Lead', 'Business']} value="" onChange={() => {}} />)
+    await waitFor(() => expect(api.connections.lookup).toHaveBeenCalledTimes(1))
+    expect(api.connections.lookup).toHaveBeenCalledWith(CONN, 'fields', ['Lead', 'Business'])
+    expect(screen.getByRole('combobox')).not.toBeDisabled()
+  })
+
+  it('reads at once when it has no parents', async () => {
+    vi.mocked(api.connections.lookup).mockResolvedValue({ answer: { key: 'objects', entries: [] } })
+    render(<LookupDropdown id="obj" lookup="objects" connection={CONN} parents={[]} value="" onChange={() => {}} />)
+    await waitFor(() => expect(api.connections.lookup).toHaveBeenCalledTimes(1))
+    expect(api.connections.lookup).toHaveBeenCalledWith(CONN, 'objects', [])
+    expect(screen.getByRole('combobox')).not.toBeDisabled()
+  })
 })
 
 describe('insertReference', () => {
