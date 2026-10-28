@@ -24,6 +24,8 @@
  * marker is armed only on a delivered page (markAlerted, then recordPaged), and
  * the all clear is sent once a complete read no longer finds it (the owner is
  * back on the list, or the connection is gone or no longer person bound).
+ * That bookkeeping, and the workflows read, are shared with the HTTP money
+ * host check (#2761) in standing-connection-incidents.ts.
  *
  * A READ THAT FAILS IS NOT QUIET (L10). If the connections, the owners or the
  * allowlist cannot be read, nothing is judged: no page, no all clear, every
@@ -44,11 +46,11 @@
  * workflows.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import type { RecoveryKv } from './alert-recovery'
 import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
 import { formatErr } from './format-error'
-import { readOrgWorkflows, type OrgWorkflow } from './org-workflows'
 import { fetchAllPaged } from './paginate'
+import { settleStandingConnections, workflowsNamingConnection, type StandingConnectionFinding } from './standing-connection-incidents'
 import { opsConnectionLabel, sendOpsConnectionOwnerAlert, sendOpsConnectionOwnerRecoveryAlert, type OpsConnectionOwnerAlert } from './slack'
 import type { Env } from '../index'
 
@@ -123,115 +125,46 @@ export interface OpsConnectionOwnerSummary {
   errors: string[]
 }
 
-interface OpenOwner {
-  organization_id: string
-  label: string
-}
-
-interface OwnerState {
-  open: Record<string, OpenOwner>
-}
-
-/**
- * The stored record, and how many of its entries could not be read. An entry
- * that cannot be read is the only copy of whose incident it was, so it is
- * dropped and counted; its marker lapses and the drain closes it as lapsed.
- */
-function parseState(raw: string | null): { state: OwnerState; unreadable: number } {
-  if (!raw) return { state: { open: {} }, unreadable: 0 }
-  try {
-    const v = JSON.parse(raw) as { open?: unknown }
-    const open: Record<string, OpenOwner> = {}
-    if (!v.open || typeof v.open !== 'object' || Array.isArray(v.open)) return { state: { open }, unreadable: 1 }
-    let unreadable = 0
-    for (const [id, e] of Object.entries(v.open as Record<string, unknown>)) {
-      const o = e as Partial<OpenOwner> | null
-      if (o && typeof o.organization_id === 'string' && typeof o.label === 'string') open[id] = { organization_id: o.organization_id, label: o.label }
-      else unreadable++
-    }
-    return { state: { open }, unreadable }
-  } catch {
-    return { state: { open: {} }, unreadable: 1 }
-  }
-}
-
-const incidentFor = (organizationId: string, label: string, errors: string[]): IncidentContext => ({
-  scope: { kind: 'org', organizationId },
-  subjectLabel: label,
-  onRecordError: (message) => errors.push(message),
-})
-
 interface Orphan {
   connection: PersonBoundConnection
   kind: OpsConnectionOwnerAlert['kind']
   ownerName: string | null
 }
 
-/** One orphaned connection: its workflows, then its page, armed on delivery. Returns whether it was paged. */
-async function pageOrphan(deps: OpsConnectionOwnerDeps, o: Orphan, nowMs: number, errors: string[]): Promise<boolean> {
-  const { kv } = deps
+/** One orphaned connection as the shared bookkeeping pages it: its workflows read, then its page. */
+function findingOf(deps: OpsConnectionOwnerDeps, o: Orphan, errors: string[]): StandingConnectionFinding {
   const c = o.connection
-  let workflows: OpsConnectionOwnerAlert['workflows'] = null
-  try {
-    workflows = await deps.reads.workflowsNaming(c.organization_id, c.id)
-  } catch (err) {
-    errors.push(`${c.id}: the workflows that use it could not be read, so the page does not name them: ${formatErr(err)}`)
+  return {
+    id: c.id,
+    organizationId: c.organization_id,
+    label: opsConnectionLabel(c.name, c.service_type),
+    send: async (firstReportedAt) => {
+      let workflows: OpsConnectionOwnerAlert['workflows'] = null
+      try {
+        workflows = await deps.reads.workflowsNaming(c.organization_id, c.id)
+      } catch (err) {
+        errors.push(`${c.id}: the workflows that use it could not be read, so the page does not name them: ${formatErr(err)}`)
+      }
+      return deps.sendAlert(c.organization_id, {
+        kind: o.kind, name: c.name, service: c.service_type, ownerName: o.ownerName, workflows, firstReportedAt,
+      })
+    },
   }
-  const incident = incidentFor(c.organization_id, opsConnectionLabel(c.name, c.service_type), errors)
-  await markSpikeSeen(kv, OPS_CONNECTION_OWNER_SIGNAL, c.id, nowMs)
-  const firstReportedAt = await kv.get(recoveryKey(OPS_CONNECTION_OWNER_SIGNAL, c.id))
-  const delivered = await deps.sendAlert(c.organization_id, {
-    kind: o.kind, name: c.name, service: c.service_type, ownerName: o.ownerName, workflows, firstReportedAt,
-  })
-  if (!delivered) {
-    // Armed only on delivery, so a Slack outage does not open an incident nobody saw.
-    if (firstReportedAt !== null) await refreshAlerted(kv, OPS_CONNECTION_OWNER_SIGNAL, c.id)
-    return false
-  }
-  await markAlerted(kv, OPS_CONNECTION_OWNER_SIGNAL, c.id, incident, nowMs)
-  await recordPaged(kv, OPS_CONNECTION_OWNER_SIGNAL, c.id, incident, nowMs)
-  return true
-}
-
-/**
- * One open incident no longer found: its all clear. `sent` when it reached
- * Slack, `nothing_owed` when no page ever did, `still_open` when it did not.
- */
-async function clearOrphan(deps: OpsConnectionOwnerDeps, id: string, open: OpenOwner, nowMs: number, errors: string[]): Promise<'sent' | 'nothing_owed' | 'still_open'> {
-  const { kv } = deps
-  // Never paged (its page did not deliver), or already settled: nothing is owed.
-  if ((await kv.get(recoveryKey(OPS_CONNECTION_OWNER_SIGNAL, id))) === null) return 'nothing_owed'
-  const delivered = await announceRecovery(
-    kv,
-    OPS_CONNECTION_OWNER_SIGNAL,
-    id,
-    null,
-    incidentFor(open.organization_id, open.label, errors),
-    (alertedAt, endedAt, firstHealthyAt) => deps.sendRecovery(open.organization_id, { subject: open.label, alertedAt, endedAt, firstHealthyAt }),
-    // A daily state check: a complete read that no longer finds it is the end.
-    { now: nowMs, rearmMinutes: 0 },
-  )
-  return delivered ? 'sent' : 'still_open'
 }
 
 export async function runOpsConnectionOwnerCheck(deps: OpsConnectionOwnerDeps): Promise<OpsConnectionOwnerSummary> {
   const nowMs = deps.now()
   const errors: string[] = []
   const summary: OpsConnectionOwnerSummary = { judged: false, personBound: 0, orphaned: [], paged: [], allClear: [], unreadable: [], errors }
-
-  let rawState: string | null = null
-  // A record that could not be read is not an empty one: writing over it would
-  // drop every incident it holds, and with it the all clear each is owed.
-  let stateRead = true
-  try {
-    rawState = await deps.kv.get(OPS_CONNECTION_OWNER_STATE_KEY)
-  } catch (err) {
-    stateRead = false
-    errors.push(`the open incidents could not be read, so they are left as stored: ${formatErr(err)}`)
-  }
-  const parsed = parseState(rawState)
-  const previous = parsed.state
-  if (parsed.unreadable > 0) errors.push(`${parsed.unreadable} open incident record${parsed.unreadable === 1 ? '' : 's'} could not be read, so no all clear can be sent for ${parsed.unreadable === 1 ? 'it' : 'them'}`)
+  const settle = (findings: StandingConnectionFinding[] | null) => settleStandingConnections({
+    kv: deps.kv,
+    signal: OPS_CONNECTION_OWNER_SIGNAL,
+    stateKey: OPS_CONNECTION_OWNER_STATE_KEY,
+    nowMs,
+    findings,
+    sendRecovery: (organizationId, recovery) => deps.sendRecovery(organizationId, recovery),
+    errors,
+  })
 
   // The three reads the judgement rests on. Any failure judges nothing.
   let connections: PersonBoundConnection[] = []
@@ -260,13 +193,8 @@ export async function runOpsConnectionOwnerCheck(deps: OpsConnectionOwnerDeps): 
   }
 
   if (summary.unreadable.length > 0) {
-    for (const id of Object.keys(previous.open)) {
-      try {
-        await refreshAlerted(deps.kv, OPS_CONNECTION_OWNER_SIGNAL, id)
-      } catch (err) {
-        errors.push(`${id}: the open incident could not be kept: ${formatErr(err)}`)
-      }
-    }
+    // Nothing judged: every open incident is kept, with no page and no all clear.
+    await settle(null)
     await deps.reportUnreadable(summary.unreadable)
     return summary
   }
@@ -287,37 +215,9 @@ export async function runOpsConnectionOwnerCheck(deps: OpsConnectionOwnerDeps): 
   // Said before any enrichment, so a slow workflows read cannot hide what was found (L492).
   if (orphans.length > 0) console.error(`${LOG} ${orphans.length} person bound ops connection${orphans.length === 1 ? '' : 's'} without an owner on the Access list: ${orphans.map((o) => `${o.connection.id} (${o.kind}, org ${o.connection.organization_id})`).join(', ')}`)
 
-  const next: OwnerState = { open: {} }
-  for (const o of orphans) {
-    const c = o.connection
-    // Listed whatever the page does, so its all clear is asked for once it clears.
-    next.open[c.id] = { organization_id: c.organization_id, label: opsConnectionLabel(c.name, c.service_type) }
-    try {
-      if (await pageOrphan(deps, o, nowMs, errors)) summary.paged.push(c.id)
-    } catch (err) {
-      errors.push(`${c.id}: the page failed: ${formatErr(err)}`)
-    }
-  }
-  const found = new Set(summary.orphaned)
-  for (const [id, open] of Object.entries(previous.open)) {
-    if (found.has(id)) continue
-    try {
-      const cleared = await clearOrphan(deps, id, open, nowMs, errors)
-      if (cleared === 'still_open') next.open[id] = open
-      else if (cleared === 'sent') summary.allClear.push(id)
-    } catch (err) {
-      errors.push(`${id}: the all clear failed: ${formatErr(err)}`)
-      next.open[id] = open
-    }
-  }
-
-  if (stateRead && JSON.stringify(next) !== JSON.stringify(previous)) {
-    try {
-      await deps.kv.put(OPS_CONNECTION_OWNER_STATE_KEY, JSON.stringify(next))
-    } catch (err) {
-      errors.push(`the open incidents could not be kept for the next check: ${formatErr(err)}`)
-    }
-  }
+  const outcome = await settle(orphans.map((o) => findingOf(deps, o, errors)))
+  summary.paged = outcome.paged
+  summary.allClear = outcome.allClear
   await deps.reportReadable()
   return summary
 }
@@ -329,12 +229,6 @@ function chunks<T>(items: readonly T[], size: number): T[][] {
   const out: T[][] = []
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
   return out
-}
-
-/** Whether a definition names the id anywhere: no step shape names a connection yet, so any field may (#2338). */
-export function definitionNames(definition: unknown, connectionId: string): boolean {
-  if (definition === null || definition === undefined) return false
-  return JSON.stringify(definition).includes(connectionId)
 }
 
 /** The reads, against the bidding database as service_role: the organization filter is the scoping. */
@@ -372,17 +266,7 @@ export function liveOwnerCheckReads(supabase: SupabaseClient): OwnerCheckReads {
       }
       return out
     },
-    workflowsNaming: async (organizationId, connectionId) => {
-      let workflows: OrgWorkflow[]
-      try {
-        workflows = await readOrgWorkflows(supabase, organizationId)
-      } catch (err) {
-        throw new Error(`the workflows could not be read: ${formatErr(err)}`, { cause: err })
-      }
-      return workflows
-        .filter((w) => definitionNames(w.definition, connectionId))
-        .map((w) => ({ name: w.name, active: w.is_active }))
-    },
+    workflowsNaming: (organizationId, connectionId) => workflowsNamingConnection(supabase, organizationId, connectionId),
   }
 }
 

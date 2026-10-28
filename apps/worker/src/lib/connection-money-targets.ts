@@ -185,9 +185,12 @@ export async function readMoneyTargets(env: Readonly<Record<string, unknown>>, o
  * other hosts stay reachable; erring towards a match only ever refuses a save.
  *
  * WHAT IT CANNOT SEE. A host that reaches a money workflow only through an
- * environment variable ({{env.X}}) and is written nowhere else, and a host the
- * money lane starts sending to after the HTTP connection was saved: the check
- * runs at the save, and ops cannot read bidding's hosts.
+ * environment variable ({{env.X}}) and is written nowhere else. A host the
+ * money lane starts sending to after the HTTP connection was saved is not seen
+ * at the save, since ops cannot read bidding's hosts; the daily HTTP connection
+ * host check (http-money-host-check.ts, #2761) recomputes these hosts through
+ * the same reads (money-host-reads.ts) and pages each saved connection whose
+ * host is now among them. It only alerts: the connection keeps working.
  */
 export type MoneyHostSource = 'SUPABASE_URL' | 'APP_URL' | 'SALESFORCE_INSTANCE_URL' | 'ACHIEVE_HOSTS' | 'partner_configs' | 'money workflows'
 

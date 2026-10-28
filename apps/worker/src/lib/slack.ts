@@ -26,6 +26,7 @@ import { REFRESH_FAILING_PAGE_SPAN_MS, type ConnectionLoginState, type NeedsReau
 import { RECOVERY_REARM_MINUTES } from './alert-recovery'
 import { describeDuration, measureIncidentSpan } from './incident-span'
 import type { ErrorType } from '../types'
+import type { MoneyHostSource } from './connection-money-targets'
 // Type-only, so this does not create a cycle with the module that calls the
 // alert below: the import is erased at build time.
 import { GITHUB_RATE_LIMIT_FIX } from './github-refusal'
@@ -4051,7 +4052,7 @@ export interface OpsConnectionLoginAlert {
 
 /** A service key as a reader says it: `salesforce` is "Salesforce". */
 export function serviceWords(service: string): string {
-  const known: Record<string, string> = { salesforce: 'Salesforce', snowflake: 'Snowflake', google: 'Google', slack: 'Slack', supabase: 'Supabase' }
+  const known: Record<string, string> = { salesforce: 'Salesforce', snowflake: 'Snowflake', google: 'Google', slack: 'Slack', supabase: 'Supabase', http: 'HTTP' }
   if (Object.hasOwn(known, service)) return known[service]
   const spaced = service.replace(/_/g, ' ')
   return spaced.charAt(0).toUpperCase() + spaced.slice(1)
@@ -4335,8 +4336,21 @@ export interface OpsConnectionOwnerAlert {
   firstReportedAt: string | null
 }
 
-/** How many workflows the page names before it counts the rest. */
+/** How many workflows a connection page names before it counts the rest. */
 export const OPS_CONNECTION_OWNER_WORKFLOWS_NAMED = 10
+
+/**
+ * The sentence a connection page says its workflows in, shared by the owner
+ * page and the HTTP money host page. Null is a read that failed, said as such,
+ * never as "none".
+ */
+export function workflowsUsingConnection(workflows: readonly { name: string; active: boolean }[] | null): string {
+  if (workflows === null) return 'The workflows that use it could not be read, so this page cannot name them.'
+  if (workflows.length === 0) return 'No workflow uses it.'
+  const named = workflows.slice(0, OPS_CONNECTION_OWNER_WORKFLOWS_NAMED).map((w) => `${slackText(w.name)}${w.active ? '' : ' (switched off)'}`)
+  const rest = workflows.length - named.length
+  return `Workflows that use it: ${named.join(', ')}${rest > 0 ? `, and ${rest} more` : ''}.`
+}
 
 /** The page's title and sentences, separate from the send so the words can be tested. */
 export function opsConnectionOwnerMessage(alert: OpsConnectionOwnerAlert): { title: string; sections: string[] } {
@@ -4345,16 +4359,7 @@ export function opsConnectionOwnerMessage(alert: OpsConnectionOwnerAlert): { tit
   const finding = alert.kind === 'owner_removed'
     ? `${capitalise(connection)} signs in as one person, ${alert.ownerName === null ? 'its owner' : slackText(alert.ownerName)}, who is no longer on the Access list. It keeps working until that login is revoked, so the workflows that use it act as someone who no longer has access to Bidspoke.`
     : `${capitalise(connection)} signs in as one person, but no owner is recorded for it, so nobody can tell whether that person still has access to Bidspoke.`
-  let used: string
-  if (alert.workflows === null) {
-    used = 'The workflows that use it could not be read, so this page cannot name them.'
-  } else if (alert.workflows.length === 0) {
-    used = 'No workflow uses it.'
-  } else {
-    const named = alert.workflows.slice(0, OPS_CONNECTION_OWNER_WORKFLOWS_NAMED).map((w) => `${slackText(w.name)}${w.active ? '' : ' (switched off)'}`)
-    const rest = alert.workflows.length - named.length
-    used = `Workflows that use it: ${named.join(', ')}${rest > 0 ? `, and ${rest} more` : ''}.`
-  }
+  const used = workflowsUsingConnection(alert.workflows)
   const fix = alert.kind === 'owner_removed'
     ? '*Fix:* move those workflows onto a connection whose owner still has access, then remove this one on the Connections page. If the owner was removed by mistake, add them back on the Access page.'
     : '*Fix:* remove it on the Connections page and connect it again as someone who has access, after moving its workflows onto the new connection.'
@@ -4396,6 +4401,84 @@ export async function sendOpsConnectionOwnerRecoveryAlert(
     connection,
     connection.default_channel,
     { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionOwnerRecoveryWording },
+    now,
+  )
+}
+
+// ── An HTTP connection whose host bidding now sends to (#2761) ──────────────
+
+/**
+ * What the daily HTTP money host check pages with (#2761): the connection by
+ * its name, the host it sends to, where bidding sends to that host, and the
+ * workflows whose definition names it, a switched off one marked. `workflows`
+ * is null when they could not be read, which the page says, never as "none".
+ */
+export interface HttpMoneyHostAlert {
+  name: string
+  host: string
+  source: MoneyHostSource
+  workflows: { name: string; active: boolean }[] | null
+  firstReportedAt: string | null
+}
+
+/** Where bidding sends to a host, in the words a reader knows each source by. */
+export const MONEY_HOST_SOURCE_WORDS: Record<MoneyHostSource, string> = {
+  SUPABASE_URL: 'it is the bidding database',
+  APP_URL: 'it is one of Bidspoke\'s own addresses',
+  SALESFORCE_INSTANCE_URL: 'it is the Salesforce bidding writes to',
+  ACHIEVE_HOSTS: 'the Achieve offers step calls it',
+  partner_configs: 'it is in a partner\'s settings',
+  'money workflows': 'it is written in a bidding workflow',
+}
+
+/**
+ * The page's title and sentences, separate from the send so the words can be
+ * tested, and the one place they are written (Dan approves an alert's copy).
+ * The fix depends on the workflows: a connection a workflow uses cannot be
+ * removed until each is moved onto another connection with Replace.
+ */
+export function httpMoneyHostMessage(alert: HttpMoneyHostAlert): { title: string; sections: string[] } {
+  const sections = [
+    `The HTTP connection named ${slackText(alert.name)} sends to ${slackText(alert.host)}, and bidding now sends there too: ${MONEY_HOST_SOURCE_WORDS[alert.source]}. A workflow connection may never reach a host bidding sends to, but this one still works until it is removed.`,
+    workflowsUsingConnection(alert.workflows),
+    alert.workflows !== null && alert.workflows.length === 0
+      ? '*Fix:* remove it on the Connections page.'
+      : '*Fix:* use Replace on the Connections page to move the workflows that use it onto an HTTP connection with another host, then remove this one.',
+  ]
+  if (alert.firstReportedAt !== null) sections.push(`First reported ${etTime(alert.firstReportedAt)}.`)
+  return { title: 'An HTTP connection reaches a host bidding sends to', sections }
+}
+
+/** Pages the connection's own organization, under its configuration alerts toggle. Returns whether it reached Slack. */
+export async function sendHttpMoneyHostAlert(supabase: SupabaseClient, orgId: string, alert: HttpMoneyHostAlert): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  const m = httpMoneyHostMessage(alert)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+}
+
+export const httpMoneyHostRecoveryWording: RecoveryWording = {
+  signal: 'HTTP connection host',
+  recoveredPhrase: 'no longer reaches a host bidding sends to',
+}
+
+/** The all clear once the connection's host is no longer one bidding sends to, or the connection is gone. Returns whether it reached Slack. */
+export async function sendHttpMoneyHostRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...httpMoneyHostRecoveryWording },
     now,
   )
 }

@@ -47,7 +47,11 @@ import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-u
  *   owner check. It reads no Slack row and no credential, config or target,
  *   and is not on an alert path: a read that fails judges nothing and pages
  *   that the check could not run.
- */
+ * - lib/http-money-host-check.ts reads every HTTP connection's id,
+ *   organization, name and target (its host, header name and check path) once
+ *   a day for the HTTP connection host check (#2761). It reads no Slack row and
+ *   no credential or config, and is not on an alert path: a read that fails
+ *   judges nothing and pages that the check could not run.
 
 /** Each allowed file outside routes/api, with why it may name the table. */
 const ALLOWED_WITH_REASON: Record<string, string> = {
@@ -57,6 +61,7 @@ const ALLOWED_WITH_REASON: Record<string, string> = {
   'lib/ops-gateway.ts': 'serves the ops_key rows (envelope, public config, target) to the ops tick, never a bidding_ring row (#2335)',
   'lib/ops-connection-logins.ts': 'reads only the name of one ops connection, by organization and id, for its login page, bounded at 10 s (#2340)',
   'lib/ops-connection-owner-check.ts': 'reads the person bound connections\' id, organization, name, service and owner once a day for the owner check, never a Slack row or a credential (#2340)',
+  'lib/http-money-host-check.ts': 'reads the HTTP connections\' id, organization, name and target (the host) once a day for the HTTP connection host check, never a Slack row or a credential (#2761)',
 }
 const ALLOWED = Object.keys(ALLOWED_WITH_REASON)
 const ALLOWED_DIRS = ['routes/api/']

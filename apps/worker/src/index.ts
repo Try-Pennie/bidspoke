@@ -678,6 +678,27 @@ const scheduledJobs = {
           }
         })().catch((e) => console.error('[ops-connection-owner] failed:', e))
       )
+      // Saved HTTP connections whose host bidding now sends to (#2761): the
+      // money hosts recomputed as the save computes them, and a page per caught
+      // connection, every day until it is removed. Alert only: the connection
+      // keeps working. Its own heartbeat and failure boundary (L71).
+      track(
+        (async () => {
+          const { runHttpMoneyHostCheckForEnv, HTTP_MONEY_HOST_JOB } = await import('./lib/http-money-host-check')
+          await writeHeartbeat(env.IDEMPOTENCY, HTTP_MONEY_HOST_JOB).catch((e) =>
+            console.error('[cron-heartbeat] http-money-host write failed:', e)
+          )
+          try {
+            const s = await runHttpMoneyHostCheckForEnv(supabase, env)
+            console.log(`[http-money-host] judged=${s.judged} connections=${s.connections} found=${s.found.length} paged=${s.paged.length} all_clear=${s.allClear.length}${s.unreadable.length ? ` unreadable=${s.unreadable.length}` : ''}`)
+            if (s.errors.length > 0) console.error(`[http-money-host] ${s.errors.length} fault(s): ${s.errors.join('; ')}`)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, HTTP_MONEY_HOST_JOB).catch((e) =>
+              console.error('[cron-heartbeat] http-money-host completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[http-money-host] failed:', e))
+      )
       // The Salesforce bulkhead limit the ops Salesforce lane was sized against
       // (#2336): pages when it resolves to anything else. Its own heartbeat and
       // failure boundary.
