@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fakePostgrest, type FakePostgrest, type Row } from '../../__tests__/helpers/postgrest-fake'
+import { connectionReferences, HOLDS_CONNECTION_IDS, workflowsTheTextMatchMisjudges } from '../../__tests__/helpers/connection-references-fake'
 import {
   OPS_CONNECTION_OWNER_JOB,
   OPS_CONNECTION_OWNER_SIGNAL,
@@ -41,7 +42,7 @@ const ORG = '11111111-1111-4111-8111-111111111111'
 const OTHER_ORG = '22222222-2222-4222-8222-222222222222'
 const OWNER = '33333333-3333-4333-8333-333333333333'
 const ADMIN = '44444444-4444-4444-8444-444444444444'
-const CONNECTION = '55555555-5555-4555-8555-555555555555'
+const CONNECTION = '55555555-5555-4555-8555-5555555555cd'
 const SLACK_ROW = '66666666-6666-4666-8666-666666666666'
 
 function memoryKv() {
@@ -82,18 +83,22 @@ function withPersonBound(): Record<string, Row[]> {
   })
   const wf = (id: string, organization_id: string, name: string, extra: Row) =>
     ({ id, organization_id, name, is_active: true, deleted_at: null, updated_at: '2026-10-19T12:00:00.000000+00:00', ...extra })
+  // Each states the ids its definition holds by definition_connection_ids (connection-references-fake.ts).
   t.workflows.push(
-    wf('wf-a', ORG, 'Daily lead sync', { definition: { nodes: [{ id: 'n1', type: 'code', config: { connection_id: CONNECTION } }] } }),
+    wf('wf-a', ORG, 'Daily lead sync', { [HOLDS_CONNECTION_IDS]: [CONNECTION], definition: { nodes: [{ id: 'n1', type: 'code', config: { connection_id: CONNECTION } }] } }),
     // Switched off, so marked: switching it on runs it as the removed owner at once.
-    wf('wf-b', ORG, 'Old export', { is_active: false, definition: { nodes: [{ id: 'n1', config: { connection: { id: CONNECTION } } }] } }),
-    wf('wf-c', ORG, 'Unrelated flow', { definition: { nodes: [{ id: 'n1', config: { connection_id: 'another-connection' } }] } }),
+    wf('wf-b', ORG, 'Old export', { is_active: false, [HOLDS_CONNECTION_IDS]: [CONNECTION], definition: { nodes: [{ id: 'n1', config: { connection: { id: CONNECTION } } }] } }),
+    wf('wf-c', ORG, 'Unrelated flow', { [HOLDS_CONNECTION_IDS]: [], definition: { nodes: [{ id: 'n1', config: { connection_id: 'another-connection' } }] } }),
     // Soft deleted: it cannot run, so it is not named.
-    wf('wf-e', ORG, 'Deleted flow', { deleted_at: '2026-10-01T00:00:00.000Z', definition: { nodes: [{ config: { connection_id: CONNECTION } }] } }),
+    wf('wf-e', ORG, 'Deleted flow', { deleted_at: '2026-10-01T00:00:00.000Z', [HOLDS_CONNECTION_IDS]: [CONNECTION], definition: { nodes: [{ config: { connection_id: CONNECTION } }] } }),
     // Another organization's workflow naming the same id is not this organization's to be told about.
-    wf('wf-d', OTHER_ORG, 'Someone else', { definition: { nodes: [{ config: { connection_id: CONNECTION } }] } }),
+    wf('wf-d', OTHER_ORG, 'Someone else', { [HOLDS_CONNECTION_IDS]: [CONNECTION], definition: { nodes: [{ config: { connection_id: CONNECTION } }] } }),
   )
   return t
 }
+
+/** The in memory PostgREST, answering connection_references as the database does. */
+const store = (t: Record<string, Row[]>) => fakePostgrest(t, { connection_references: connectionReferences })
 
 function deps(over: Partial<OpsConnectionOwnerDeps> = {}) {
   const kv = (over.kv as Kv | undefined) ?? memoryKv()
@@ -132,17 +137,23 @@ async function removeThroughAccess(email: string) {
   expect(res.status).toBe(200)
 }
 
-/** A client whose reads of one table fail as PostgREST answers a refused query; every other table is the fake's. */
+/**
+ * A client whose reads of one table, or calls of one function, fail as
+ * PostgREST answers a refused query; every other read and call is the fake's.
+ */
 function failingOn(table: string): SupabaseClient {
-  const refused = { data: null, error: { message: `permission denied for table ${table}`, code: '42501' } }
+  const refused = { data: null, error: { message: `permission denied for ${table === 'connection_references' ? 'function' : 'table'} ${table}`, code: '42501' } }
   const chain: Record<string, unknown> = {}
   for (const m of ['select', 'eq', 'neq', 'is', 'in', 'order', 'range', 'limit']) chain[m] = () => chain
   chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve(refused).then(resolve)
-  return { from: (t: string) => (t === table ? chain : db.client.from(t)) } as unknown as SupabaseClient
+  return {
+    from: (t: string) => (t === table ? chain : db.client.from(t)),
+    rpc: (name: string, args: Record<string, unknown>) => (name === table ? chain : db.client.rpc(name, args)),
+  } as unknown as SupabaseClient
 }
 
 beforeEach(() => {
-  db = fakePostgrest(todaysTables())
+  db = store(todaysTables())
 })
 
 describe('the registrations', () => {
@@ -170,7 +181,7 @@ describe('runOpsConnectionOwnerCheck', () => {
   })
 
   it('is quiet while the owner is still on the allowlist, comparing emails without case', async () => {
-    db = fakePostgrest(withPersonBound())
+    db = store(withPersonBound())
     const { d, sendAlert } = deps()
     const s = await runOpsConnectionOwnerCheck(d)
     expect(s).toMatchObject({ judged: true, personBound: 1, orphaned: [] })
@@ -178,7 +189,7 @@ describe('runOpsConnectionOwnerCheck', () => {
   })
 
   it('pages the connection\'s organization once the owner is removed through the Access route, naming the workflows', async () => {
-    db = fakePostgrest(withPersonBound())
+    db = store(withPersonBound())
     await removeThroughAccess('owner.person@trypennie.com')
     // The route removed only the allowlist row: the users row stays, as in production.
     expect(db.tables.user_allowlist.map((r) => r.email)).toEqual(['admin.person@trypennie.com'])
@@ -207,14 +218,14 @@ describe('runOpsConnectionOwnerCheck', () => {
   it('pages a person bound connection with no owner recorded as its own kind', async () => {
     const t = withPersonBound()
     t.service_connections[1].user_id = null
-    db = fakePostgrest(t)
+    db = store(t)
     const { d, sendAlert } = deps()
     await runOpsConnectionOwnerCheck(d)
     expect(sendAlert.mock.calls[0][1]).toMatchObject({ kind: 'owner_missing', ownerName: null })
   })
 
   it('pages again the next day, saying when it was first reported, without moving the incident\'s start', async () => {
-    db = fakePostgrest(withPersonBound())
+    db = store(withPersonBound())
     await removeThroughAccess('owner.person@trypennie.com')
     const first = deps()
     await runOpsConnectionOwnerCheck(first.d)
@@ -225,7 +236,7 @@ describe('runOpsConnectionOwnerCheck', () => {
   })
 
   it('arms nothing when the page did not reach Slack, and tries again the next day', async () => {
-    db = fakePostgrest(withPersonBound())
+    db = store(withPersonBound())
     await removeThroughAccess('owner.person@trypennie.com')
     const first = deps({ sendAlert: vi.fn(async () => false) })
     const s = await runOpsConnectionOwnerCheck(first.d)
@@ -237,18 +248,55 @@ describe('runOpsConnectionOwnerCheck', () => {
     expect(marker(first.kv)).toBe(new Date(NOW + DAY).toISOString())
   })
 
-  it('still pages, saying the workflows could not be read, when that read fails', async () => {
-    db = fakePostgrest(withPersonBound())
+  it('names the workflows the Used by list names, by the database\'s one predicate, never by a match on the definition\'s text (#2946)', async () => {
+    const t = withPersonBound()
+    t.workflows.push(...workflowsTheTextMatchMisjudges(ORG, CONNECTION))
+    db = store(t)
     await removeThroughAccess('owner.person@trypennie.com')
-    const { d, sendAlert } = deps({ reads: liveOwnerCheckReads(failingOn('workflows')) })
+    const { d, sendAlert } = deps()
+    await runOpsConnectionOwnerCheck(d)
+    // Lead notes only mentions the id inside a note; Typed by hand holds it in capitals with spaces, which the predicate counts.
+    expect(sendAlert.mock.calls[0][1].workflows).toEqual([
+      { name: 'Daily lead sync', active: true },
+      { name: 'Old export', active: false },
+      { name: 'Typed by hand', active: true },
+    ])
+    // Asked of connection_references, the function the Connections page's Used by list and the Remove refusal read.
+    const asked = db.requests.filter((r) => r.path === 'rpc/connection_references').map((r) => r.body)
+    expect(asked).toEqual([{ p_organization_id: ORG, p_connection_id: CONNECTION }])
+  })
+
+  it('names no workflow for a connection removed after it was read, since none can name a removed connection', async () => {
+    db = store(withPersonBound())
+    await removeThroughAccess('owner.person@trypennie.com')
+    const client = db.client
+    // The removal lands between the connections read and the page: the function answers connection_not_found.
+    const removedMeanwhile = {
+      from: (t: string) => client.from(t),
+      rpc: (name: string, args: Record<string, unknown>) => {
+        db.tables.service_connections = db.tables.service_connections.filter((r) => r.id !== CONNECTION)
+        return client.rpc(name, args)
+      },
+    } as unknown as SupabaseClient
+    const { d, sendAlert } = deps({ reads: liveOwnerCheckReads(removedMeanwhile) })
+    const s = await runOpsConnectionOwnerCheck(d)
+    expect(s.paged).toEqual([CONNECTION])
+    expect(sendAlert.mock.calls[0][1].workflows).toEqual([])
+    expect(s.errors).toEqual([])
+  })
+
+  it.each(['connection_references', 'workflows'])('still pages, saying the workflows could not be read, when the %s read fails', async (table) => {
+    db = store(withPersonBound())
+    await removeThroughAccess('owner.person@trypennie.com')
+    const { d, sendAlert } = deps({ reads: liveOwnerCheckReads(failingOn(table)) })
     const s = await runOpsConnectionOwnerCheck(d)
     expect(s.paged).toEqual([CONNECTION])
     expect(sendAlert.mock.calls[0][1].workflows).toBeNull()
-    expect(s.errors.join(' ')).toMatch(/workflows.*could not be read.*permission denied for table workflows/)
+    expect(s.errors.join(' ')).toMatch(new RegExp(`workflows.*could not be read.*permission denied for (table|function) ${table}`))
   })
 
   it.each(['service_connections', 'users', 'user_allowlist'])('pages as could not run when the %s read fails, never as quiet', async (table) => {
-    db = fakePostgrest(withPersonBound())
+    db = store(withPersonBound())
     await removeThroughAccess('owner.person@trypennie.com')
     const { d, sendAlert, reportUnreadable, reportReadable } = deps({ reads: liveOwnerCheckReads(failingOn(table)) })
     const s = await runOpsConnectionOwnerCheck(d)
@@ -260,7 +308,7 @@ describe('runOpsConnectionOwnerCheck', () => {
   })
 
   it('keeps an open incident, and sends no all clear, on a run whose reads fail', async () => {
-    db = fakePostgrest(withPersonBound())
+    db = store(withPersonBound())
     await removeThroughAccess('owner.person@trypennie.com')
     const first = deps()
     await runOpsConnectionOwnerCheck(first.d)
@@ -272,7 +320,7 @@ describe('runOpsConnectionOwnerCheck', () => {
   })
 
   it('sends the all clear once the owner is back on the allowlist, and forgets the incident', async () => {
-    db = fakePostgrest(withPersonBound())
+    db = store(withPersonBound())
     await removeThroughAccess('owner.person@trypennie.com')
     const first = deps()
     await runOpsConnectionOwnerCheck(first.d)
@@ -288,7 +336,7 @@ describe('runOpsConnectionOwnerCheck', () => {
   })
 
   it('sends the all clear once the connection itself is removed', async () => {
-    db = fakePostgrest(withPersonBound())
+    db = store(withPersonBound())
     await removeThroughAccess('owner.person@trypennie.com')
     const first = deps()
     await runOpsConnectionOwnerCheck(first.d)
@@ -299,7 +347,7 @@ describe('runOpsConnectionOwnerCheck', () => {
   })
 
   it('keeps the incident when its all clear does not reach Slack', async () => {
-    db = fakePostgrest(withPersonBound())
+    db = store(withPersonBound())
     await removeThroughAccess('owner.person@trypennie.com')
     const first = deps()
     await runOpsConnectionOwnerCheck(first.d)

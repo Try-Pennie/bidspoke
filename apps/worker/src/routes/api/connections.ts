@@ -51,6 +51,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { formatErr } from '../../lib/format-error'
 import { mapWithConcurrency } from '../../lib/timeout-audit'
+import { readConnectionReferences, type ConnectionReference, type ConnectionReferences } from '../../lib/connection-references'
 import { resolveSalesforceCredsFor } from '../../lib/salesforce-creds'
 import { moneyHostOf, moneyTargetIn, readMoneyHosts, readMoneyTargets } from '../../lib/connection-money-targets'
 import { liveMoneyHostReads } from '../../lib/money-host-reads'
@@ -259,16 +260,12 @@ connections.get('/', async (c) => {
   // Used by (R5): connection_references, the one predicate the Remove refusal
   // reads too, soft deleted workflows included and never by name. A connection
   // removed since the read above answers connection_not_found and is dropped.
-  type Using = { id: string; name: string; deleted: boolean }
+  type Using = ConnectionReference
   let counts: Array<Using[] | 'gone'>
   try {
     counts = await mapWithConcurrency(listed, CONNECTION_REFERENCES_CONCURRENCY, async (row) => {
-      const { data: refs, error: refsError } = await supabase.rpc('connection_references', { p_organization_id: orgId, p_connection_id: row.id })
-      if (refsError) {
-        if (refsError.code === 'P0002' && /connection_not_found/.test(refsError.message)) return 'gone' as const
-        throw refsError
-      }
-      return (Array.isArray(refs) ? refs : []).map((r: { workflow_id: string; name: string; deleted: boolean }) => ({ id: r.workflow_id, name: r.name, deleted: r.deleted === true }))
+      const refs = await readConnectionReferences(supabase, orgId, row.id)
+      return refs.found ? refs.workflows : 'gone' as const
     })
   } catch (err) {
     return listUnavailable(c, 'the use counts read', err)
@@ -1202,13 +1199,15 @@ connections.post('/:id/replace', async (c) => {
   if (replacement.service_type !== source.service_type) return refuse('replace_with_other_service', { names: [replacement.name], service: serviceNameOf(source.service_type) })
   if (replacement.person_bound && replacement.user_id !== userId) return refuse('replace_with_not_yours', { names: [replacement.name] })
 
-  const { data: refs, error: refsError } = await supabase.rpc('connection_references', { p_organization_id: orgId, p_connection_id: id })
-  if (refsError) {
-    if (refsError.code === 'P0002' && /connection_not_found/.test(refsError.message)) return refuse('connection_not_found')
-    console.error(JSON.stringify({ event: 'connection_replace_unreadable', organization_id: orgId, connection_id: id, what: 'connection_references', error: formatErr(refsError) }))
+  let refs: ConnectionReferences
+  try {
+    refs = await readConnectionReferences(supabase, orgId, id)
+  } catch (err) {
+    console.error(JSON.stringify({ event: 'connection_replace_unreadable', organization_id: orgId, connection_id: id, what: 'connection_references', error: formatErr(err) }))
     return refuse('replace_uses_unreadable')
   }
-  const using = new Map((Array.isArray(refs) ? refs as Array<{ workflow_id: string; name: string; deleted: boolean }> : []).map((r) => [r.workflow_id.toLowerCase(), r]))
+  if (!refs.found) return refuse('connection_not_found')
+  const using = new Map(refs.workflows.map((r) => [r.id.toLowerCase(), r]))
 
   const actor = { id: userId, email, name }
   const message = `Replaced ${source.name} with ${replacement.name}`

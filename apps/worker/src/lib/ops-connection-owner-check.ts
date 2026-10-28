@@ -16,10 +16,11 @@
  * WHAT PAGES. Each such connection, to its own organization's Slack alert
  * channel under the configuration alerts toggle, naming the connection by name
  * and service, its owner by display name when one is recorded (never an email),
- * and the workflows of that organization whose definition names the
- * connection's id anywhere (readOrgWorkflows: switched off ones included and
- * marked, since switching one on runs it at once; soft deleted ones left out,
- * since they cannot run). Every day while it stands. The signal is
+ * and the workflows of that organization that use the connection, the ones the
+ * Connections page's Used by list names (connection-references.ts, #2946:
+ * switched off ones included and marked, since switching one on runs it at
+ * once; soft deleted ones left out, since they cannot run). Every day while it
+ * stands. The signal is
  * ops-connection-owner (incident-signals.ts), keyed on the connection id: the
  * marker is armed only on a delivered page (markAlerted, then recordPaged), and
  * the all clear is sent once a complete read no longer finds it (the owner is
@@ -38,7 +39,8 @@
  * 2026-10-17: 0 of 1 service_connections rows), bounded by the connections an
  * organization makes. Owners and allowlist rows are read only for those, by id
  * and by email. Workflows are read only for an orphaned connection, inside its
- * organization, through the one scoped read (11 live workflows on 2026-10-15).
+ * organization, through connection_references and then by id (11 live
+ * workflows on 2026-10-15).
  *
  * Who may run it: the bidding Worker's daily cron only, as service_role. Whose
  * data: every organization's person bound connections, each page going only to
@@ -93,7 +95,7 @@ export interface OwnerCheckReads {
   owners(userIds: string[]): Promise<ConnectionOwner[]>
   /** The given (lowercased) emails that are on user_allowlist. */
   allowlisted(emails: string[]): Promise<Set<string>>
-  /** The workflows of `organizationId` whose definition names `connectionId`. */
+  /** The workflows of `organizationId` that use `connectionId`, by the Used by list's predicate (#2946). */
   workflowsNaming(organizationId: string, connectionId: string): Promise<{ name: string; active: boolean }[]>
 }
 

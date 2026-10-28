@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fakePostgrest, type FakePostgrest, type Row } from '../../__tests__/helpers/postgrest-fake'
+import { connectionReferences, HOLDS_CONNECTION_IDS, workflowsTheTextMatchMisjudges } from '../../__tests__/helpers/connection-references-fake'
 import {
   HTTP_MONEY_HOST_JOB,
   HTTP_MONEY_HOST_SIGNAL,
@@ -35,7 +36,7 @@ const DAY = 24 * 60 * 60_000
 const ORG = '11111111-1111-4111-8111-111111111111'
 const OTHER_ORG = '22222222-2222-4222-8222-222222222222'
 const REGAL = '33333333-3333-4333-8333-333333333333'
-const LENDER = '44444444-4444-4444-8444-444444444444'
+const LENDER = '44444444-4444-4444-8444-4444444444ab'
 const SLACK_ROW = '66666666-6666-4666-8666-666666666666'
 const PARTNER = '77777777-7777-4777-8777-777777777777'
 
@@ -70,13 +71,16 @@ function tables(): Record<string, Row[]> {
       { id: PARTNER, organization_id: ORG, slug: 'lendco', name: 'Lendco', api_endpoint: 'https://api.partner-one.example/leads', dedup_endpoint: null, click_url: null },
     ],
     workflows: [
-      wf('wf-money', ORG, 'Engine Bidding', { lane: 'money', definition: { nodes: [{ id: 'n1', type: 'http', config: { url: 'https://api.partner-two.example/bid' } }] } }),
-      wf('wf-a', ORG, 'Daily lead sync', { definition: { nodes: [{ id: 'n1', type: 'app_action', config: { connection_id: LENDER } }] } }),
-      wf('wf-b', ORG, 'Old export', { is_active: false, definition: { nodes: [{ id: 'n1', config: { connection: { id: LENDER } } }] } }),
-      wf('wf-c', ORG, 'Regal sync', { definition: { nodes: [{ id: 'n1', config: { connection_id: REGAL } }] } }),
+      wf('wf-money', ORG, 'Engine Bidding', { lane: 'money', [HOLDS_CONNECTION_IDS]: [], definition: { nodes: [{ id: 'n1', type: 'http', config: { url: 'https://api.partner-two.example/bid' } }] } }),
+      wf('wf-a', ORG, 'Daily lead sync', { [HOLDS_CONNECTION_IDS]: [LENDER], definition: { nodes: [{ id: 'n1', type: 'app_action', config: { connection_id: LENDER } }] } }),
+      wf('wf-b', ORG, 'Old export', { is_active: false, [HOLDS_CONNECTION_IDS]: [LENDER], definition: { nodes: [{ id: 'n1', config: { connection: { id: LENDER } } }] } }),
+      wf('wf-c', ORG, 'Regal sync', { [HOLDS_CONNECTION_IDS]: [REGAL], definition: { nodes: [{ id: 'n1', config: { connection_id: REGAL } }] } }),
     ],
   }
 }
+
+/** The in memory PostgREST, answering connection_references as the database does. */
+const store = (t: Record<string, Row[]>) => fakePostgrest(t, { connection_references: connectionReferences })
 
 /** The lender's host is now one bidding sends to: a partner's endpoint was changed to it after the connection was saved. */
 function lenderBecameAPartner(t = tables()): Record<string, Row[]> {
@@ -101,17 +105,23 @@ function deps(over: Partial<HttpMoneyHostDeps> = {}) {
 
 const marker = (kv: Kv, id = LENDER) => kv.store.get(recoveryKey(HTTP_MONEY_HOST_SIGNAL, id))
 
-/** A client whose reads of one table fail as PostgREST answers a refused query; every other table is the fake's. */
+/**
+ * A client whose reads of one table, or calls of one function, fail as
+ * PostgREST answers a refused query; every other read and call is the fake's.
+ */
 function failingOn(table: string): SupabaseClient {
-  const refused = { data: null, error: { message: `permission denied for table ${table}`, code: '42501' } }
+  const refused = { data: null, error: { message: `permission denied for ${table === 'connection_references' ? 'function' : 'table'} ${table}`, code: '42501' } }
   const chain: Record<string, unknown> = {}
   for (const m of ['select', 'eq', 'neq', 'is', 'in', 'order', 'range', 'limit']) chain[m] = () => chain
   chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve(refused).then(resolve)
-  return { from: (t: string) => (t === table ? chain : db.client.from(t)) } as unknown as SupabaseClient
+  return {
+    from: (t: string) => (t === table ? chain : db.client.from(t)),
+    rpc: (name: string, args: Record<string, unknown>) => (name === table ? chain : db.client.rpc(name, args)),
+  } as unknown as SupabaseClient
 }
 
 beforeEach(() => {
-  db = fakePostgrest(tables())
+  db = store(tables())
   vi.mocked(resolveSalesforceCredsFor).mockReset()
   vi.mocked(resolveSalesforceCredsFor).mockResolvedValue({
     creds: { instanceUrl: 'https://lendco.my.salesforce.com', clientId: 'cid', clientSecret: 'secret' } as never,
@@ -159,7 +169,7 @@ describe('runHttpMoneyHostCheck', () => {
   })
 
   it('pages the connection\'s organization once a partner endpoint names its host, naming the connection, the host, where bidding sends to it and the workflows', async () => {
-    db = fakePostgrest(lenderBecameAPartner())
+    db = store(lenderBecameAPartner())
     const { d, kv, sendAlert, reportUnreadable, reportReadable } = deps()
     const s = await runHttpMoneyHostCheck(d)
     expect(s).toMatchObject({ judged: true, connections: 2, found: [LENDER], paged: [LENDER] })
@@ -189,7 +199,7 @@ describe('runHttpMoneyHostCheck', () => {
     const t = tables()
     t.service_connections[1].target = { host: 'api.partner-two.example', header: 'Authorization', check_path: '/ping' }
     t.service_connections[2].target = { host: 'hooks.trypennie.dev', header: 'X-Key', check_path: '/ping' }
-    db = fakePostgrest(t)
+    db = store(t)
     const { d, sendAlert } = deps()
     const s = await runHttpMoneyHostCheck(d)
     expect(s.found.sort()).toEqual([REGAL, LENDER].sort())
@@ -204,7 +214,7 @@ describe('runHttpMoneyHostCheck', () => {
     const t = lenderBecameAPartner()
     // Another organization's connection to the same host: that organization's bidding does not send there.
     t.service_connections.push({ id: '88888888-8888-4888-8888-888888888888', organization_id: OTHER_ORG, name: 'Their hook', service_type: 'http', sealed_for: 'ops_key', target: { host: 'api.lender.example' } })
-    db = fakePostgrest(t)
+    db = store(t)
     const { d, sendAlert } = deps()
     const s = await runHttpMoneyHostCheck(d)
     expect(s.connections).toBe(3)
@@ -213,7 +223,7 @@ describe('runHttpMoneyHostCheck', () => {
   })
 
   it('pages again the next day, saying when it was first reported, without moving the incident\'s start', async () => {
-    db = fakePostgrest(lenderBecameAPartner())
+    db = store(lenderBecameAPartner())
     const first = deps()
     await runHttpMoneyHostCheck(first.d)
     const next = deps({ kv: first.kv, now: () => NOW + DAY })
@@ -224,7 +234,7 @@ describe('runHttpMoneyHostCheck', () => {
   })
 
   it('arms nothing when the page did not reach Slack, and tries again the next day', async () => {
-    db = fakePostgrest(lenderBecameAPartner())
+    db = store(lenderBecameAPartner())
     const first = deps({ sendAlert: vi.fn(async () => false) })
     const s = await runHttpMoneyHostCheck(first.d)
     expect(s.paged).toEqual([])
@@ -235,21 +245,41 @@ describe('runHttpMoneyHostCheck', () => {
     expect(marker(first.kv)).toBe(new Date(NOW + DAY).toISOString())
   })
 
-  it('still pages, saying the workflows could not be read, when only that read fails', async () => {
-    db = fakePostgrest(lenderBecameAPartner())
-    // The money workflows are read through the same table, so fail only the second workflows read.
+  it('names the workflows the Used by list names, by the database\'s one predicate, never by a match on the definition\'s text (#2946)', async () => {
+    const t = lenderBecameAPartner()
+    t.workflows.push(...workflowsTheTextMatchMisjudges(ORG, LENDER))
+    db = store(t)
+    const { d, sendAlert } = deps()
+    await runHttpMoneyHostCheck(d)
+    // Lead notes only mentions the id inside a note; Typed by hand holds it in capitals with spaces, which the predicate counts.
+    expect(sendAlert.mock.calls[0][1].workflows).toEqual([
+      { id: 'wf-a', name: 'Daily lead sync', active: true },
+      { id: 'wf-b', name: 'Old export', active: false },
+      { id: 'wf-caps', name: 'Typed by hand', active: true },
+    ])
+    // Asked of connection_references, the function the Connections page's Used by list and the Remove refusal read.
+    const asked = db.requests.filter((r) => r.path === 'rpc/connection_references').map((r) => r.body)
+    expect(asked).toEqual([{ p_organization_id: ORG, p_connection_id: LENDER }])
+  })
+
+  it.each(['connection_references', 'workflows'])('still pages, saying the workflows could not be read, when only the %s read of them fails', async (table) => {
+    db = store(lenderBecameAPartner())
+    // The money workflows are read through the same table, so fail only the workflows read after it.
     const client = db.client
     let workflowReads = 0
-    const flaky = { from: (t: string) => (t === 'workflows' && ++workflowReads > 1 ? failingOn('workflows').from(t) : client.from(t)) } as unknown as SupabaseClient
+    const flaky = {
+      from: (t: string) => (t === table && ++workflowReads > 1 ? failingOn(table).from(t) : client.from(t)),
+      rpc: (name: string, args: Record<string, unknown>) => failingOn(table).rpc(name, args),
+    } as unknown as SupabaseClient
     const { d, sendAlert } = deps({ reads: liveHttpMoneyHostReads(flaky, ENV) })
     const s = await runHttpMoneyHostCheck(d)
     expect(s.paged).toEqual([LENDER])
     expect(sendAlert.mock.calls[0][1].workflows).toBeNull()
-    expect(s.errors.join(' ')).toMatch(/workflows.*could not be read.*permission denied for table workflows/)
+    expect(s.errors.join(' ')).toMatch(new RegExp(`workflows.*could not be read.*permission denied for (table|function) ${table}`))
   })
 
   it('sends the all clear once the partner no longer names the host, and forgets the incident', async () => {
-    db = fakePostgrest(lenderBecameAPartner())
+    db = store(lenderBecameAPartner())
     const first = deps()
     await runHttpMoneyHostCheck(first.d)
     db.tables.partner_configs[0].api_endpoint = 'https://api.partner-one.example/leads'
@@ -272,7 +302,7 @@ describe('runHttpMoneyHostCheck', () => {
   })
 
   it('sends the all clear once the connection itself is removed', async () => {
-    db = fakePostgrest(lenderBecameAPartner())
+    db = store(lenderBecameAPartner())
     const first = deps()
     await runHttpMoneyHostCheck(first.d)
     db.tables.service_connections = db.tables.service_connections.filter((r) => r.id !== LENDER)
@@ -282,7 +312,7 @@ describe('runHttpMoneyHostCheck', () => {
   })
 
   it('pages as could not run when the connections cannot be read, never as quiet, and keeps an open incident', async () => {
-    db = fakePostgrest(lenderBecameAPartner())
+    db = store(lenderBecameAPartner())
     const first = deps()
     await runHttpMoneyHostCheck(first.d)
     const next = deps({ kv: first.kv, now: () => NOW + DAY, reads: liveHttpMoneyHostReads(failingOn('service_connections'), ENV) })
@@ -301,7 +331,7 @@ describe('runHttpMoneyHostCheck', () => {
     ['partner_configs', /partner endpoints could not be read/],
     ['workflows', /money workflows could not be read/],
   ])('pages as could not run when the %s source of the money hosts cannot be read, and judges none of that organization\'s connections', async (table, said) => {
-    db = fakePostgrest(lenderBecameAPartner())
+    db = store(lenderBecameAPartner())
     const first = deps()
     await runHttpMoneyHostCheck(first.d)
     const next = deps({ kv: first.kv, now: () => NOW + DAY, reads: liveHttpMoneyHostReads(failingOn(table), ENV) })
@@ -331,7 +361,7 @@ describe('runHttpMoneyHostCheck', () => {
   })
 
   it.each(['SUPABASE_URL', 'APP_URL'])('pages as could not run when %s gives no host, rather than judging against fewer hosts', async (name) => {
-    db = fakePostgrest(lenderBecameAPartner())
+    db = store(lenderBecameAPartner())
     const env = { ...ENV, [name]: '' } as unknown as Env
     const { d, reportUnreadable, reportReadable, sendAlert } = deps({ reads: liveHttpMoneyHostReads(db.client, env) })
     const s = await runHttpMoneyHostCheck(d)
@@ -344,7 +374,7 @@ describe('runHttpMoneyHostCheck', () => {
   it('still judges the other connections when one stored host cannot be read, and says which could not be checked', async () => {
     const t = lenderBecameAPartner()
     t.service_connections[1].target = { host: 'http://api.regal.io' }
-    db = fakePostgrest(t)
+    db = store(t)
     const { d, sendAlert, reportUnreadable, reportReadable } = deps()
     const s = await runHttpMoneyHostCheck(d)
     expect(s.paged).toEqual([LENDER])
@@ -358,7 +388,7 @@ describe('runHttpMoneyHostCheck', () => {
   it('reads no money host source while there is no HTTP connection, and is quiet', async () => {
     const t = tables()
     t.service_connections = t.service_connections.filter((r) => r.service_type !== 'http')
-    db = fakePostgrest(t)
+    db = store(t)
     const { d, sendAlert, reportReadable } = deps()
     const s = await runHttpMoneyHostCheck(d)
     expect(s).toMatchObject({ judged: true, connections: 0, found: [] })
