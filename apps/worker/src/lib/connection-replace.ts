@@ -70,6 +70,29 @@ export function replaceWorstMsPerWorkflow(): number {
  */
 export const REPLACE_WORKFLOWS_MAX = Math.floor((REPLACE_CLIENT_WAIT_MS - REPLACE_WORST_MS.before - REPLACE_WORST_MS.margin) / replaceWorstMsPerWorkflow())
 
+/**
+ * How long after it starts the route may still be answering (#2903): the
+ * page's wait less the request's own trip, the same reserve the cap keeps.
+ * The cap is worked out from measured call times, not a hard worst case, so
+ * one call hanging to its own 30 s timeout could otherwise carry a Replace past
+ * the page's wait, and the page would say it cannot tell whether the workflows
+ * moved while the route went on writing.
+ */
+export const REPLACE_DEADLINE_MS = REPLACE_CLIENT_WAIT_MS - REPLACE_WORST_MS.margin
+
+/** The clock the route keeps its deadline by. A test replaces `now`, so nothing waits for real (L524). */
+export const replaceClock: { now: () => number } = { now: () => Date.now() }
+
+/**
+ * Whether a workflow started at `now` still finishes, at its slowest measured
+ * run, by the deadline of a Replace that started at `startedAt`. Asked only
+ * before a workflow starts: one started is always finished, never stopped
+ * part way through its write.
+ */
+export function replaceHasTimeFor(startedAt: number, now: number): boolean {
+  return now + replaceWorstMsPerWorkflow() <= startedAt + REPLACE_DEADLINE_MS
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export type ReplaceBody = { ok: true; with: string; workflows: string[] } | { ok: false; code: 'replace_body_invalid' | 'replace_too_many' }
@@ -138,9 +161,11 @@ export type ReplaceOutcome = (typeof REPLACE_OUTCOMES)[number]
  *   removed, so no new version of it can be saved until that step is fixed;
  * - check_failed: the connection check could not be made;
  * - unreadable: the workflow could not be read;
- * - write_refused: write_workflow refused the call as malformed, a fault in Bidspoke.
+ * - write_refused: write_workflow refused the call as malformed, a fault in Bidspoke;
+ * - not_reached: the route stopped before it, since its slowest run could not
+ *   finish before the page stops waiting (#2903), so it was not read either.
  */
-export type ReplaceRefusal = 'replacement_removed' | 'names_removed_connection' | 'check_failed' | 'unreadable' | 'write_refused'
+export type ReplaceRefusal = 'replacement_removed' | 'names_removed_connection' | 'check_failed' | 'unreadable' | 'write_refused' | 'not_reached'
 
 export interface ReplacedWorkflow {
   id: string
