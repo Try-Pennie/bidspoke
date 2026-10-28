@@ -128,7 +128,7 @@ const refusedAs = (counts: Partial<Record<StoredCopyRefusal, number>>) => STORED
 
 const cleanSweep: SweepResult = { checked: 3, repaired: [], reconfirmed: [], failed: [] }
 
-interface Posted { channel: string; title: string; errors: string[]; context?: string; fixHint?: string; repeat?: string }
+interface Posted { channel: string; title: string; errors: string[]; context?: string; fixHint?: string; repeat?: string; alertKind?: string }
 
 function harness(opts: { db?: { client: SupabaseClient; asked: string[] }; sweep?: SweepResult; postOk?: boolean } = {}) {
   const clock = { now: T0 }
@@ -139,7 +139,7 @@ function harness(opts: { db?: { client: SupabaseClient; asked: string[] }; sweep
   // bounded and fall back to the last-good copy in this KV.
   registerScheduledSlack(db.client, { kv, secretKeys: KEY, sleep: (_ms, signal) => new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true })) })
   const posted: Posted[] = []
-  const recoveries: { channel: string; subject: string }[] = []
+  const recoveries: { channel: string; subject: string; alertKind?: string }[] = []
   const notified: { job: string; errors: string[]; remedy: unknown; keys?: readonly string[] }[] = []
   const claimsHeld = new Set<string>()
   const deps = (): StoredCopyCheckDeps => ({
@@ -153,13 +153,13 @@ function harness(opts: { db?: { client: SupabaseClient; asked: string[] }; sweep
       claim: async (key) => { if (claimsHeld.has(key)) return false; claimsHeld.add(key); return true },
       release: async (key) => { claimsHeld.delete(key) },
     },
-    post: async (slack, message) => {
+    post: async (slack, message, alertKind) => {
       if (opts.postOk === false) return false
-      posted.push({ channel: slack.default_channel, ...message })
+      posted.push({ channel: slack.default_channel, ...message, alertKind })
       return true
     },
-    postRecovery: async (_slack, channel, payload) => {
-      recoveries.push({ channel, subject: payload.subject })
+    postRecovery: async (_slack, channel, payload, alertKind) => {
+      recoveries.push({ channel, subject: payload.subject, alertKind })
       return true
     },
     notify: async (_supabase, job, errors, _kv, remedy, _now, meaning) => {
@@ -213,6 +213,8 @@ describe('while leads are being served from stored copies', () => {
     const [post] = h.posted
     expect(post.channel).toBe('C-ALERTS')
     expect(post.title).toBe('Leads are being served from stored copies')
+    // Logged under its fixed kind, serving or refusing (#2948).
+    expect(post.alertKind).toBe('stored-copy-serving')
     expect(post.errors.join('\n')).toContain('3 of the last 5 minutes')
     expect(post.errors).toContain('The workflow definition was served from a stored copy at least 100 times; the oldest was last confirmed 11 minutes ago.')
     expect(post.errors).toContain('The environment variables were served from a stored copy at least 30 times; the oldest was last confirmed 2 minutes ago.')
@@ -327,7 +329,7 @@ describe('while leads are being served from stored copies', () => {
 
     h.clock.now += RECOVERY_REARM_MINUTES * MINUTE
     expect((await runStoredCopyChecks(h.deps())).serving).toBe('recovered')
-    expect(h.recoveries).toEqual([{ channel: 'C-ALERTS', subject: 'Stored copy use' }])
+    expect(h.recoveries).toEqual([{ channel: 'C-ALERTS', subject: 'Stored copy use', alertKind: 'stored-copy-serving-all-clear' }])
     // Settled: the next healthy tick owes nothing.
     h.clock.now += MINUTE
     expect((await runStoredCopyChecks(h.deps())).serving).toBe('quiet')

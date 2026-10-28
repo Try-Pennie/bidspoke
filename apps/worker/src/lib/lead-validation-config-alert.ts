@@ -120,7 +120,7 @@ export async function reportLeadValidationEvent(
           endedAt,
           recoveredPhrase: 'reads every setting its checks need again',
           url: `${deps.appUrl}/workflows/${run.workflowId}`,
-        })
+        }, 'lead-validation-config-all-clear')
       },
       { now: nowMs, claim: { claims: deps.claims, key: allClearClaimKey(subject), ttlSeconds: ALERT_CLAIM_TTL_SECONDS } },
     )

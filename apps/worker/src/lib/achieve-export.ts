@@ -27,6 +27,7 @@ import {
 import { isNoRowMatchedError, requireRowsAffected, toThrowable } from './db-retry'
 import { formatErr } from './format-error'
 import { parseJson } from './json'
+import { salesforceQueryUrl } from './salesforce-api'
 import { resolveSalesforceCredentialOrg, requireSalesforceCreds } from './salesforce-creds'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { readSubmissionView, type SubmissionRecord, type SubmissionView } from './achieve-enrollment-view'
@@ -195,7 +196,7 @@ export async function backfillEnrollmentView(
   const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)
 
   const query = async (soql: string): Promise<SubmissionRecord[]> => {
-    const res = await fetch(`${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`, {
+    const res = await fetch(salesforceQueryUrl(instanceUrl, soql), {
       headers: { Authorization: `Bearer ${token}` },
     })
     if (!res.ok) {

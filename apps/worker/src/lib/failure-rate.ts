@@ -238,6 +238,7 @@ export async function runFailureRateCheck(
                 measuredWindowMinutes: signal.window_minutes,
                 url: `${appUrl}/workflows/${wfId}`,
               },
+              'failure-rate-all-clear',
             )
           },
           {

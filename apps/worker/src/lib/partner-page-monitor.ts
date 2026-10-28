@@ -411,7 +411,7 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
       signal,
       recoveredPhrase,
       items: [{ subject, alertedAt: due.alertedAt, endedAt: due.endedAt, firstHealthyAt: due.firstHealthyAt }],
-    }, nowMs))
+    }, 'partner-page-live-all-clear', nowMs))
     if (!delivered) {
       await release(claimKey)
       summary.errors.push(`the ${signal} all-clear was not delivered`)

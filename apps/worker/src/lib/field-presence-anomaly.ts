@@ -11,6 +11,7 @@ import { fetchAllPaged } from './paginate'
 import { formatErr } from './format-error'
 import { withJobRun, type JobRunEnding } from './job-run-record'
 import { etTime, getSlackConnection, postMessage, sendGroupedRecoveryAlert } from './slack'
+import type { SlackAlertKind } from './slack-post-outcome'
 import { notifyExportFailure, notifyExportRecovery, type TitledRemedy } from './export-alerts'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
 import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, recordPaged, refreshAlerted, type IncidentContext, type RecoveryDue, type RecoveryKv } from './alert-recovery'
@@ -1264,7 +1265,7 @@ export async function sendFieldDroughtAlert(
     fields.length === 1
       ? `Output field stopped: ${fields[0].workflowName} ${fields[0].state.field_path}`
       : `${fields.length} output fields stopped`
-  return postMessage(slack.bot_token, channel, blocks, summary)
+  return postMessage(slack.bot_token, channel, blocks, summary, 'field-presence-drought')
 }
 
 
@@ -1351,7 +1352,7 @@ export async function sendFieldDeadAlert(
     fields.length === 1
       ? `Output field not resolving: ${fields[0].workflowName} ${fields[0].state.field_path}`
       : `${fields.length} output fields not resolving`
-  return postMessage(slack.bot_token, channel, blocks, summary)
+  return postMessage(slack.bot_token, channel, blocks, summary, 'field-presence-dead')
 }
 
 /**
@@ -1395,7 +1396,7 @@ export async function sendFieldWrongPathAlert(
     fields.length === 1
       ? `Output field path not found: ${fields[0].workflowName} ${fields[0].state.field_path}`
       : `${fields.length} output field paths not found`
-  return postMessage(slack.bot_token, channel, blocks, summary)
+  return postMessage(slack.bot_token, channel, blocks, summary, 'field-presence-wrong-path')
 }
 
 /** `${workflow_id} ${field_path}`, the key both the silences and the KV use. */
@@ -1407,6 +1408,8 @@ interface TierConfig {
   /** KV/recovery prefix, so the two tiers never share an incident marker (L53). */
   prefix: RecoveryMarkerSignal
   signal: string
+  /** The fixed kind this tier's all-clear is logged under (#2948). */
+  allClearKind: SlackAlertKind
   /**
    * The window this tier judges, in minutes, so its all-clear reports what was
    * measured rather than the gap between the check's own ticks (#1101).
@@ -1591,7 +1594,7 @@ async function alertOnStates(
         firstHealthyAt: i.due.firstHealthyAt,
         url: `${appUrl}/workflows/${i.wf.id}`,
       })),
-    })
+    }, cfg.allClearKind)
     if (!sent) continue
     for (const item of group.items) {
       await settleRecovery(kv, cfg.prefix, item.id, item.cooldownKey, { ...fieldIncident(item), ...(cfg.endReason ?? { reason: 'all_clear' }) }, nowMs)
@@ -1640,6 +1643,7 @@ async function droughtRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: stri
   const { paged, recovered, unwatchable } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
     prefix: 'field-presence-drought',
     signal: 'output field stopped',
+    allClearKind: 'field-presence-drought-all-clear',
     measuredWindowMinutes: DROUGHT_WINDOW_MINUTES,
     send: (slack, channel, fields, url) => sendFieldDroughtAlert(slack, channel, fields, url),
   })
@@ -1722,6 +1726,7 @@ async function deadRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: string)
   const deadCfg: TierConfig = {
     prefix: 'field-presence-dead',
     signal: DEAD_SIGNAL,
+    allClearKind: 'field-presence-dead-all-clear',
     recoveredPhrase: DEAD_RECOVERED_PHRASE,
     measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
     send: sendFieldDeadAlert,
@@ -1738,6 +1743,7 @@ async function deadRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: string)
   const w = await alertOnStates(supabase, kv, appUrl, workflows, wrongPath, silenced, {
     prefix: 'field-presence-wrong-path',
     signal: WRONG_PATH_SIGNAL,
+    allClearKind: 'field-presence-wrong-path-all-clear',
     recoveredPhrase: WRONG_PATH_RECOVERED_PHRASE,
     measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
     send: sendFieldWrongPathAlert,

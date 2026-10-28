@@ -69,7 +69,7 @@ const outcomeLines = (): SlackPostOutcomeLine[] =>
 describe('deliverMessage logs one outcome line per post', () => {
   it('a delivered post: outcome delivered, the channel, the title, a fresh post id, and the ts returned as before', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '171.99' }))
-    expect(await postMessage(TOKEN, 'C0STATUS', blocks, 'fallback with the body')).toBe('171.99')
+    expect(await postMessage(TOKEN, 'C0STATUS', blocks, 'fallback with the body', 'execution-failure')).toBe('171.99')
     const lines = outcomeLines()
     expect(lines).toHaveLength(1)
     expect(lines[0]).toEqual({
@@ -81,60 +81,60 @@ describe('deliverMessage logs one outcome line per post', () => {
       channel: 'C0STATUS',
       retry_after: null,
       title: 'Workflow Execution Failed',
-      alert_kind: null,
+      alert_kind: 'execution-failure',
     })
   })
 
   it('two posts get two different post ids', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '1.1' }))
-    await postMessage(TOKEN, 'C0STATUS', blocks, 'x')
-    await postMessage(TOKEN, 'C0STATUS', blocks, 'x')
+    await postMessage(TOKEN, 'C0STATUS', blocks, 'x', 'execution-failure')
+    await postMessage(TOKEN, 'C0STATUS', blocks, 'x', 'execution-failure')
     const ids = outcomeLines().map((l) => l.post_id)
     expect(new Set(ids).size).toBe(2)
   })
 
   it('ok:false not_in_channel: refused, a destination refusal, null returned as before', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'not_in_channel' }))
-    expect(await postMessage(TOKEN, 'C0STATUS', blocks, 'x')).toBeNull()
+    expect(await postMessage(TOKEN, 'C0STATUS', blocks, 'x', 'execution-failure')).toBeNull()
     expect(outcomeLines()).toEqual([expect.objectContaining({ outcome: 'refused', reason: 'not_in_channel', status: 200, kind: 'destination', channel: 'C0STATUS', retry_after: null, title: 'Workflow Execution Failed' })])
   })
 
   it('a 429 with Retry-After: refused, transient, the status and the Retry-After, null returned', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'ratelimited' }, 429, { 'Retry-After': '30' }))
-    expect(await postMessage(TOKEN, 'C0STATUS', blocks, 'x')).toBeNull()
+    expect(await postMessage(TOKEN, 'C0STATUS', blocks, 'x', 'execution-failure')).toBeNull()
     expect(outcomeLines()).toEqual([expect.objectContaining({ outcome: 'refused', reason: null, status: 429, kind: 'transient', retry_after: '30' })])
   })
 
   it('a 503: refused, transient, the status, null returned', async () => {
     fetchMock.mockImplementation(async () => new Response('down', { status: 503 }))
-    expect(await postMessage(TOKEN, 'C0STATUS', blocks, 'x')).toBeNull()
+    expect(await postMessage(TOKEN, 'C0STATUS', blocks, 'x', 'execution-failure')).toBeNull()
     expect(outcomeLines()).toEqual([expect.objectContaining({ outcome: 'refused', reason: null, status: 503, kind: 'transient', retry_after: null })])
   })
 
   it('no answer (a network failure): logged as no_answer BEFORE the same error is rethrown', async () => {
     const down = new TypeError('fetch failed')
     fetchMock.mockImplementation(() => Promise.reject(down))
-    await expect(postMessage(TOKEN, 'C0STATUS', blocks, 'x')).rejects.toBe(down)
+    await expect(postMessage(TOKEN, 'C0STATUS', blocks, 'x', 'execution-failure')).rejects.toBe(down)
     expect(outcomeLines()).toEqual([expect.objectContaining({ outcome: 'no_answer', reason: null, status: null, kind: 'transient', channel: 'C0STATUS' })])
   })
 
   it('a 200 that is not JSON: logged as no_answer, and still throws the SyntaxError', async () => {
     fetchMock.mockImplementation(async () => new Response('<html>edge</html>', { status: 200 }))
-    await expect(postMessage(TOKEN, 'C0STATUS', blocks, 'x')).rejects.toBeInstanceOf(SyntaxError)
+    await expect(postMessage(TOKEN, 'C0STATUS', blocks, 'x', 'execution-failure')).rejects.toBeInstanceOf(SyntaxError)
     expect(outcomeLines()).toEqual([expect.objectContaining({ outcome: 'no_answer' })])
   })
 
   it('ok:false with no error code is refused with no reason, so it is judged as an unknown, temporary refusal', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false }))
-    expect(await postMessage(TOKEN, 'C0STATUS', blocks, 'x')).toBeNull()
+    expect(await postMessage(TOKEN, 'C0STATUS', blocks, 'x', 'execution-failure')).toBeNull()
     expect(outcomeLines()).toEqual([expect.objectContaining({ outcome: 'refused', reason: null, status: 200, kind: 'transient' })])
   })
 
   it('never writes the token, the body or the fallback text into any line', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'invalid_auth' }))
-    await postMessage(TOKEN, 'C0STATUS', blocks, `fallback ${BODY_SECRET}`)
+    await postMessage(TOKEN, 'C0STATUS', blocks, `fallback ${BODY_SECRET}`, 'execution-failure')
     fetchMock.mockImplementation(() => Promise.reject(new TypeError('fetch failed')))
-    await postMessage(TOKEN, 'C0STATUS', blocks, `fallback ${BODY_SECRET}`).catch(() => undefined)
+    await postMessage(TOKEN, 'C0STATUS', blocks, `fallback ${BODY_SECRET}`, 'execution-failure').catch(() => undefined)
     const all = everyLine.join('\n')
     expect(all).not.toContain(TOKEN)
     expect(all).not.toContain('Jane Roe')
@@ -143,13 +143,13 @@ describe('deliverMessage logs one outcome line per post', () => {
 
   it('a message with no header block has no title', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '1.1' }))
-    await postMessage(TOKEN, 'C0STATUS', [{ type: 'section', text: { type: 'mrkdwn', text: BODY_SECRET } }], 'x')
+    await postMessage(TOKEN, 'C0STATUS', [{ type: 'section', text: { type: 'mrkdwn', text: BODY_SECRET } }], 'x', 'execution-failure')
     expect(outcomeLines()[0].title).toBeNull()
   })
 
   it('the line it writes is the line the tail Worker copies (the real line, through the real parser)', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'not_in_channel' }))
-    await postMessage(TOKEN, 'C0STATUS', blocks, 'x')
+    await postMessage(TOKEN, 'C0STATUS', blocks, 'x', 'execution-failure')
     const line = logged.find((l) => l.startsWith(SLACK_POST_OUTCOME_PREFIX))!
     const trace = { scriptName: 'bidspoke-worker', logs: [{ timestamp: Date.parse('2026-10-23T03:00:00Z'), level: 'log', message: [line] }] } as unknown as TraceItem
     expect(slackPostsIn(trace)).toEqual([{
@@ -161,7 +161,7 @@ describe('deliverMessage logs one outcome line per post', () => {
       kind: 'destination',
       status: 200,
       title: 'Workflow Execution Failed',
-      alert_kind: null,
+      alert_kind: 'execution-failure',
     }])
   })
 })
@@ -174,7 +174,7 @@ describe('deliverMessage logs one outcome line per post', () => {
  * one fixed list, recorded on the outcome line whether or not a title is shown,
  * and copied by the tail Worker into slack_post_outcomes.alert_kind.
  */
-describe('an alert kind is logged with every post that names one', () => {
+describe('every post logs the kind its sender names', () => {
   const untitled = [{ type: 'section', text: { type: 'mrkdwn', text: BODY_SECRET } }]
 
   it('an untitled alert still logs its kind, delivered or refused', async () => {
@@ -200,10 +200,19 @@ describe('an alert kind is logged with every post that names one', () => {
     expect(outcomeLines()).toEqual([expect.objectContaining({ title: 'Workflow Execution Failed', alert_kind: 'http-money-host', kind: 'destination' })])
   })
 
-  it('a titled alert that names no kind logs exactly what it did before, with a null kind', async () => {
-    fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '1.1' }))
-    await postMessage(TOKEN, 'C0STATUS', blocks, 'x')
-    expect(outcomeLines()[0]).toMatchObject({ title: 'Workflow Execution Failed', alert_kind: null })
+  it('the compiler refuses a post that names no kind, or a kind built from a value', () => {
+    // Never called: each line only has to fail to compile. A kind made optional
+    // again, or widened to string, leaves an expect-error with no error, which
+    // fails the typecheck.
+    const neverSent = (slug: string) => {
+      // @ts-expect-error every post names its fixed kind (#2948)
+      void postMessage(TOKEN, 'C0STATUS', blocks, 'x')
+      // @ts-expect-error a kind is a name from SLACK_ALERT_KINDS, never built from a value
+      void postMessage(TOKEN, 'C0STATUS', blocks, 'x', `partner-${slug}`)
+      // @ts-expect-error a thread reply names the kind of the alert it replies under
+      void sendThreadReply({ channel: 'C0ALERTS', ts: '1.1', bot_token: TOKEN }, 'x')
+    }
+    expect(typeof neverSent).toBe('function')
   })
 
   it('the HTTP money host page, which has no title, logs the http-money-host kind', async () => {
@@ -263,16 +272,16 @@ describe('sendThreadReply logs through the same logger', () => {
 
   it('a delivered reply: one line, titled as a thread reply, never the reply text', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '1.2' }))
-    await sendThreadReply(HANDLE, `Summary: ${BODY_SECRET}`)
-    expect(outcomeLines()).toEqual([expect.objectContaining({ outcome: 'delivered', channel: 'C0ALERTS', title: THREAD_REPLY_TITLE })])
+    await sendThreadReply(HANDLE, `Summary: ${BODY_SECRET}`, 'execution-failure')
+    expect(outcomeLines()).toEqual([expect.objectContaining({ outcome: 'delivered', channel: 'C0ALERTS', title: THREAD_REPLY_TITLE, alert_kind: 'execution-failure' })])
     expect(everyLine.join('\n')).not.toContain('Jane Roe')
   })
 
   it('a refused reply and a reply with no answer each log one line, and it still never throws', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'not_in_channel' }))
-    await expect(sendThreadReply(HANDLE, 'x')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'x', 'execution-failure')).resolves.toBeUndefined()
     fetchMock.mockImplementation(() => Promise.reject(new TypeError('fetch failed')))
-    await expect(sendThreadReply(HANDLE, 'x')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'x', 'execution-failure')).resolves.toBeUndefined()
     expect(outcomeLines().map((l) => [l.outcome, l.reason, l.kind])).toEqual([
       ['refused', 'not_in_channel', 'destination'],
       ['no_answer', null, 'transient'],
@@ -321,7 +330,7 @@ describe('a stored title cannot carry applicant data', () => {
 
   it('a header carrying applicant data is stored redacted, end to end through deliverMessage', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'not_in_channel' }))
-    await postMessage(TOKEN, 'C0STATUS', [{ type: 'header', text: { type: 'plain_text', text: 'Lead jane.roe@example.com 123-45-6789' } }], 'x')
+    await postMessage(TOKEN, 'C0STATUS', [{ type: 'header', text: { type: 'plain_text', text: 'Lead jane.roe@example.com 123-45-6789' } }], 'x', 'execution-failure')
     expect(outcomeLines()[0].title).toBe('Lead [redacted] [redacted]')
   })
 })

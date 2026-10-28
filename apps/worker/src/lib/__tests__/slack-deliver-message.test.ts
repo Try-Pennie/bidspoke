@@ -41,7 +41,7 @@ describe('postMessage through the Slack client (#2331)', () => {
       return slackResponse({ ok: true, ts: '171.99' })
     })
     const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'body' } }]
-    expect(await postMessage(TOKEN, '#alerts', blocks, 'fallback')).toBe('171.99')
+    expect(await postMessage(TOKEN, '#alerts', blocks, 'fallback', 'execution-failure')).toBe('171.99')
     expect(seen).toHaveLength(1)
     expect(seen[0].url).toBe('https://slack.com/api/chat.postMessage')
     expect(seen[0].headers.get('Authorization')).toBe(`Bearer ${TOKEN}`)
@@ -54,24 +54,24 @@ describe('postMessage through the Slack client (#2331)', () => {
 
   it('returns null, not a throw, when Slack answers ok:false, and logs the Slack error code', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'channel_not_found' }))
-    expect(await postMessage(TOKEN, '#c', [], 'hi')).toBeNull()
+    expect(await postMessage(TOKEN, '#c', [], 'hi', 'execution-failure')).toBeNull()
     expect(errors.join('\n')).toContain('channel_not_found')
   })
 
   it('returns null when Slack answers ok:false with no error code', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false }))
-    expect(await postMessage(TOKEN, '#c', [], 'hi')).toBeNull()
+    expect(await postMessage(TOKEN, '#c', [], 'hi', 'execution-failure')).toBeNull()
   })
 
   it('returns null when Slack answers ok:true with no ts', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: true }))
-    expect(await postMessage(TOKEN, '#c', [], 'hi')).toBeNull()
+    expect(await postMessage(TOKEN, '#c', [], 'hi', 'execution-failure')).toBeNull()
   })
 
   it('returns null on a 429, in one request with no timer, and logs the Retry-After', async () => {
     const timer = vi.spyOn(globalThis, 'setTimeout')
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'ratelimited' }, 429, { 'Retry-After': '30' }))
-    expect(await postMessage(TOKEN, '#c', [], 'hi')).toBeNull()
+    expect(await postMessage(TOKEN, '#c', [], 'hi', 'execution-failure')).toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(timer).not.toHaveBeenCalled()
     expect(errors.join('\n')).toMatch(/HTTP error 429.*Retry-After 30/)
@@ -79,7 +79,7 @@ describe('postMessage through the Slack client (#2331)', () => {
 
   it('returns null on a 500', async () => {
     fetchMock.mockImplementation(async () => new Response('upstream down', { status: 500 }))
-    expect(await postMessage(TOKEN, '#c', [], 'hi')).toBeNull()
+    expect(await postMessage(TOKEN, '#c', [], 'hi', 'execution-failure')).toBeNull()
     expect(errors.join('\n')).toContain('HTTP error 500')
   })
 
@@ -89,7 +89,7 @@ describe('postMessage through the Slack client (#2331)', () => {
   // never a throw.
   it('returns null, not a ts and not a throw, for a 2xx other than 200 even when its body says ok:true', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '171.99' }, 201))
-    expect(await postMessage(TOKEN, '#c', [], 'hi')).toBeNull()
+    expect(await postMessage(TOKEN, '#c', [], 'hi', 'execution-failure')).toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(errors.join('\n')).toContain('HTTP error 201')
   })
@@ -97,17 +97,17 @@ describe('postMessage through the Slack client (#2331)', () => {
   it('throws the same error the fetch threw when there is no answer at all (a network failure), as before', async () => {
     const down = new TypeError('fetch failed')
     fetchMock.mockImplementation(() => Promise.reject(down))
-    await expect(postMessage(TOKEN, '#c', [], 'hi')).rejects.toBe(down)
+    await expect(postMessage(TOKEN, '#c', [], 'hi', 'execution-failure')).rejects.toBe(down)
   })
 
   it('throws, as before, when a 200 answer is not JSON', async () => {
     fetchMock.mockImplementation(async () => new Response('<html>edge</html>', { status: 200 }))
-    await expect(postMessage(TOKEN, '#c', [], 'hi')).rejects.toBeInstanceOf(SyntaxError)
+    await expect(postMessage(TOKEN, '#c', [], 'hi', 'execution-failure')).rejects.toBeInstanceOf(SyntaxError)
   })
 
   it('never puts the token in a log line', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'invalid_auth' }, 429, { 'Retry-After': '5' }))
-    await postMessage(TOKEN, '#c', [], 'hi')
+    await postMessage(TOKEN, '#c', [], 'hi', 'execution-failure')
     expect(errors.join('\n')).not.toContain(TOKEN)
   })
 })

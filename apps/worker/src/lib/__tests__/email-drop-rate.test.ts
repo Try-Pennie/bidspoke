@@ -216,6 +216,8 @@ describe('runEmailDropRateCheck: who gets told (#744)', () => {
     await runEmailDropRateCheck(db.client, kv)
     expect(postMessage).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(postMessage.mock.calls[0])).toContain('partner_a')
+    // Logged under its fixed kind (#2948).
+    expect((postMessage.mock.calls[0] as unknown[])[4]).toBe('email-drop-rate')
     // #835: the rule is a fixed rate, not a change against a baseline, so the
     // alert may not call it a sudden rise.
     expect(JSON.stringify(postMessage.mock.calls[0])).not.toMatch(/sudden rise/)

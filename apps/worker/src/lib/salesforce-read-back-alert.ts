@@ -18,6 +18,7 @@
  * file on that Submission's Lead. The read-back never groups posts with updates.
  */
 import { LAST_MODIFIED_MARGIN_MS } from './salesforce-field-conflict'
+import type { SlackAlertKind } from './slack-post-outcome'
 
 export type ReadBackAlertKind = 'resend_failed' | 'unknown' | 'conflict' | 'unread' | 'not_running'
 
@@ -405,7 +406,23 @@ function notRunning(p: SalesforceReadBackAlert): ComposedAlert {
   }
 }
 
-export function composeSalesforceReadBackAlert(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
+/**
+ * Each read back alert's fixed kind for the Slack post outcome line (#2948): one
+ * per alert, whatever its title says, so a refused one is told apart.
+ */
+export const READ_BACK_SLACK_KINDS = {
+  resend_failed: 'salesforce-read-back-resend-failed',
+  unknown: 'salesforce-read-back-unknown',
+  conflict: 'salesforce-read-back-conflict',
+  unread: 'salesforce-read-back-unread',
+  not_running: 'salesforce-read-back-not-running',
+} as const satisfies Record<ReadBackAlertKind, SlackAlertKind>
+
+export function composeSalesforceReadBackAlert(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert & { alertKind: SlackAlertKind } {
+  return { ...composeBody(p, appUrl), alertKind: READ_BACK_SLACK_KINDS[p.kind] }
+}
+
+function composeBody(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
   switch (p.kind) {
     case 'resend_failed':
       return p.writes.every((w) => w.inquiry_post) && p.writes.length > 0 ? postResendFailed(p, appUrl) : resendFailed(p, appUrl)

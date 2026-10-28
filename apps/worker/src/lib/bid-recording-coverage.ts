@@ -329,6 +329,7 @@ async function checkOrg(
         slack.default_channel,
         blocks,
         `No bids recorded: ${s.workflow_name}`,
+        'bid-recording-none',
       )
       // Only a CONFIRMED send sets the cooldown, or a brief Slack outage
       // swallows the one notification and then stays quiet for a day
@@ -538,6 +539,7 @@ async function checkRatios(
         slack.default_channel,
         blocks,
         `Bid attempts down to ${pct(c.ratio)}: ${c.workflow_name}`,
+        'bid-recording-ratio',
       )
       if (sent) await kv.put(key, '1', { expirationTtl: COOLDOWN_SECONDS })
       else console.error(`[bid-recording] event=bid_ratio_alert_not_sent workflow=${c.workflow_name}`)

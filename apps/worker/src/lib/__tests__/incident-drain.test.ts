@@ -89,7 +89,7 @@ function fakeDb(opts: {
 function harness(db = fakeDb()) {
   const clock = { now: T0 }
   const kv = fakeKv(clock)
-  const posted: Array<{ title: string; errors: string[]; repeat?: string }> = []
+  const posted: Array<{ title: string; errors: string[]; repeat?: string; alertKind?: string }> = []
   const held = new Set<string>()
   const deps = (): IncidentDrainDeps => ({
     kv,
@@ -100,7 +100,7 @@ function harness(db = fakeDb()) {
       release: async (k) => { held.delete(k) },
     },
     resolveSlack: async () => [{ bot_token: 'xoxb-test', default_channel: '#ops' }],
-    send: async (_s, message) => { posted.push(message); return true },
+    send: async (_s, message, alertKind) => { posted.push({ ...message, alertKind }); return true },
     log: () => {},
   })
   return { clock, kv, db, posted, deps }
@@ -339,6 +339,8 @@ describe('the drain\'s own alert', () => {
     h.clock.now += 5 * MIN
     await runIncidentDrain(h.deps())
     expect(h.posted.map((p) => p.title)).toEqual(['Incident record behind', 'Incident record caught up'])
+    // Each logged under its own fixed kind (#2948).
+    expect(h.posted.map((p) => p.alertKind)).toEqual(['incident-drain-behind', 'incident-drain-caught-up'])
     expect(await readCondition(h.kv, INCIDENT_DRAIN_ALERT_KEY)).toBeNull()
   })
 
