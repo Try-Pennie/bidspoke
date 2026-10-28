@@ -285,6 +285,11 @@
   "clientId": "3MVG9xk2Q7R1s0p0Lm"
  },
  "replaceWith": "TPL2 Salesforce",
+ "replaceMore": [
+  "Credit pull retry",
+  "Funding status update",
+  "Weekly bid summary"
+ ],
  "alerts": {
   "_about": "The Slack alerts login's alert settings (#2338 build PR 14, round 36): the channel the alerts post to and the four switches, all on as round 36 drew them. channels is what the channel search answers in the preview.",
   "channel": "#bidspoke-alerts",

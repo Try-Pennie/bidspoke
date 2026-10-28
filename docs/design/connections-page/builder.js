@@ -40,6 +40,10 @@
 //                                                        a deleted workflow left out of the list, with nothing said
 //   {state: "detail", chosen, inUse: [], dialog: "notice", notice: "<sentence>"}   the notice once every
 //                                                        ticked workflow moved (the Replace rounds 1 to 4, Dan 2026-10-27)
+//   {..., dialog: "replace", replace: {stage: "capped", all: [<workflow>], ticked: <n>}, inUse: [...all]}
+//                                                        more workflows than one Replace moves: the first <n> ticked, the
+//                                                        rest unticked, the grey line under the list, the button held past 7
+//                                                        (drawn as shipped, #2904, Dan 2026-10-27)
 //   extra: true adds the fixture's justSaved connection to the list (rounds 18 and 21).
 //
 // What a check reads is marked with data-part attributes (and roles for tabs and dialogs), never a
@@ -554,6 +558,8 @@ function replaceDialog(c) {
 }
 // The Replace rounds (build PR 12, Dan 2026-10-27): the states the dialog above never drew,
 // copied from those rounds' builder; replaceDialog above still draws the settled replace frame alone.
+// The most workflows one Replace moves (CONNECTION_REPLACE_MOST in apps/web/src/lib/api.ts, #2904).
+var REPLACE_MOST = 7;
 function workingLine(text) {
   var line = part(el("div", "ad-line"), "save-line"); line.setAttribute("data-state", "saving");
   var w = el("p", "outcome outcome-working"); w.setAttribute("role", "status");
@@ -573,6 +579,13 @@ function checkRow(name, state) {
     r.append(box, document.createTextNode(name + ", moved"));
     return r;
   }
+  // #2904, drawn as shipped: a workflow past the first 7 opens unticked, its box empty and outlined in navy, and ready.
+  if (state === "unticked") {
+    r.setAttribute("aria-checked", "false");
+    box.textContent = ""; box.style.background = "#fff"; box.style.border = "1px solid #1D212F";
+    r.append(box, document.createTextNode(name));
+    return r;
+  }
   r.setAttribute("aria-checked", "true");
   r.append(box, document.createTextNode(name));
   return r;
@@ -584,16 +597,27 @@ function replaceStateDialog(c, variant) {
   g.append(field("Replace with", pick(FX().replaceWith)));
   var lst = part(el("div"), "replace-workflows"); lst.append(el("span", "ad-label", "In these workflows"));
   // Round 3: a deleted workflow is left out of the list, with nothing said; it still counts in Used by.
-  var rows = rp.all.map(function (w) { return { name: w, state: rp.stage === "partial" && w !== rp.left ? "moved" : "ticked" }; });
+  var rows = rp.all.map(function (w, i) {
+    if (rp.stage === "capped") return { name: w, state: i < rp.ticked ? "ticked" : "unticked" };
+    return { name: w, state: rp.stage === "partial" && w !== rp.left ? "moved" : "ticked" };
+  });
   rows.forEach(function (r) { lst.append(checkRow(r.name, r.state)); });
   g.append(lst);
   var ticked = rows.filter(function (r) { return r.state === "ticked"; }).length;
+  // #2904, drawn as shipped (ConnectionDialogs.tsx replaceCapSentence): more workflows than one Replace
+  // moves, so one grey line under the list says so, and says how many to untick once too many are ticked.
+  if (rp.stage === "capped") {
+    var most = "Replace moves at most " + REPLACE_MOST + " workflows at a time";
+    g.append(part(el("p", "text-sm text-hint", ticked > REPLACE_MOST ? most + ". Untick " + (ticked - REPLACE_MOST) + " first." : most + ", so the first " + REPLACE_MOST + " are ticked. Replace again to move the rest."), "replace-cap"));
+  }
   g.append(el("div", null, "Each ticked workflow gets a new version with " + FX().replaceWith + "."));
   var go = el("button", "cx-btn-dangerfill", "Replace in " + ticked + (ticked === 1 ? " workflow" : " workflows"));
   var ft = el("div", "ad-foot"); ft.append(go, el("button", "cx-btn-quiet", "Cancel"));
   g.append(ft);
   // Round 1: the red button greys out and the working line under the buttons says what is moving where.
   if (rp.stage === "working") { go.disabled = true; g.append(workingLine(rp.working)); }
+  // #2904: more ticked than one Replace moves, so the red button is held.
+  if (rp.stage === "capped" && ticked > REPLACE_MOST) go.disabled = true;
   // Round 2: the red line names each workflow left and why, with no count of those moved.
   if (rp.stage === "partial") g.append(failedLine(rp.left + " was saved by someone else while this ran, so it still uses " + c.name + ". Replace again to move it."));
   dl.box.append(g);

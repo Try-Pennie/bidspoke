@@ -16,6 +16,8 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { coverageProblems, designPath as design, jsonBlock, loadChecks, type Decision } from './_settled-design'
+import { CONNECTION_REPLACE_MOST } from '@/lib/api'
+import { replaceCapSentence } from '@/components/connections/ConnectionDialogs'
 
 const DESIGNS = ['connections-page', 'connections-step-form']
 
@@ -87,6 +89,43 @@ describe('settled Connections designs (#2338)', () => {
       // D28 (round 27, 2026-10-21): the frame's open menu is the one drawing a highlighted row.
       // D35 (round 34, 2026-10-21): that menu sits over the fields below it.
       expect(covering).toEqual(['D15', 'D24', 'D25', 'D27', 'D28', 'D35'])
+    })
+  })
+
+  // #2904 (Dan, 2026-10-27): the Replace cap is drawn as shipped, so the frames and their checks must hold
+  // the page's own words and number, never a copy that drifts from ConnectionDialogs.tsx.
+  describe('#2904: the Replace cap frames hold the page\'s own sentences', () => {
+    const read = (rel: string) => readFileSync(design(rel), 'utf8')
+
+    it('D45 and D46: each check expects the sentence replaceCapSentence gives for 9 workflows', () => {
+      const checks = read('connections-page.checks.js')
+      expect(checks).toContain(`cappedProblem(doc, ctx, ${CONNECTION_REPLACE_MOST}, "${replaceCapSentence(9, CONNECTION_REPLACE_MOST)}", false)`)
+      expect(checks).toContain(`cappedProblem(doc, ctx, ${CONNECTION_REPLACE_MOST + 1}, "${replaceCapSentence(9, CONNECTION_REPLACE_MOST + 1)}", true)`)
+    })
+
+    it('the builder draws the cap at the page\'s number, in the page\'s words', () => {
+      const builder = read('connections-page/builder.js')
+      expect(/var REPLACE_MOST = (\d+);/.exec(builder)?.[1]).toBe(String(CONNECTION_REPLACE_MOST))
+      const most = `Replace moves at most ${CONNECTION_REPLACE_MOST} workflows at a time`
+      const drawn = (ticked: number) => (ticked > CONNECTION_REPLACE_MOST
+        ? `${most}. Untick ${ticked - CONNECTION_REPLACE_MOST} first.`
+        : `${most}, so the first ${CONNECTION_REPLACE_MOST} are ticked. Replace again to move the rest.`)
+      // The builder's own expression, with its pieces as written there.
+      expect(builder).toContain('var most = "Replace moves at most " + REPLACE_MOST + " workflows at a time";')
+      expect(builder).toContain('most + ". Untick " + (ticked - REPLACE_MOST) + " first." : most + ", so the first " + REPLACE_MOST + " are ticked. Replace again to move the rest."')
+      expect(drawn(7)).toBe(replaceCapSentence(9, 7))
+      expect(drawn(8)).toBe(replaceCapSentence(9, 8))
+    })
+
+    it('both frames list the fixture\'s nine by name, as the route orders them, the first 7 and then 8 ticked', () => {
+      const fixture = JSON.parse(read('connections-page.fixture.json')) as { connections: { name: string; workflows?: string[] }[]; replaceMore: string[] }
+      const six = fixture.connections.find((c) => c.name === 'Pennie Salesforce')?.workflows ?? []
+      const nine = [...six, ...fixture.replaceMore].sort((a, b) => a.localeCompare(b))
+      expect(nine).toHaveLength(9)
+      const spec = JSON.parse(read('connections-page/settled.json')) as { frames: { id: string; variant: { inUse?: string[]; replace?: { all: string[]; ticked: number } } }[] }
+      const frame = (id: string) => spec.frames.find((f) => f.id === id)?.variant
+      expect(frame('replace-capped')).toMatchObject({ inUse: nine, replace: { stage: 'capped', all: nine, ticked: CONNECTION_REPLACE_MOST } })
+      expect(frame('replace-over-cap')).toMatchObject({ inUse: nine, replace: { stage: 'capped', all: nine, ticked: CONNECTION_REPLACE_MOST + 1 } })
     })
   })
 
