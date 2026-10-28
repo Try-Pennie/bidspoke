@@ -105,6 +105,44 @@ describe('resolveStrandedExecution', () => {
     expect(resolved.completed_at).toBe('2026-07-01T01:00:00.000Z')
     expect(resolved.duration_ms).toBe(0)
   })
+
+  // The branch-skew check judges whether the precise branches CAN fire, so a row
+  // that gave them nothing to read must not count as one they failed to match.
+  // Measured 2026-10-28: all 21 rows the drain left unresolved in the 7 days held
+  // had zero step rows and no sighting outcome, and the check paged on them.
+  describe('tells a row with no evidence from one the precise branches could not settle', () => {
+    it('tallies a row with no step rows and no sighting as no_evidence, labelled exactly as unresolved', () => {
+      const resolved = resolveStrandedExecution([], '2026-10-28T15:54:20.186Z', buildStrandGraph(makeDefinition()), null)
+      expect(resolved.branch).toBe('no_evidence')
+      expect(resolved.status).toBe('failed')
+      expect(resolved.outcome).toBeNull()
+      expect(resolved.error_message).toBe(resolveStrandedExecution([
+        { status: 'completed', step_type: 'code', error_message: null, completed_at: '2026-10-28T15:54:21.000Z' },
+      ], '2026-10-28T15:54:20.186Z').error_message)
+    })
+
+    it('tallies a row whose sighting exists but carries no outcome as no_evidence', () => {
+      expect(resolveStrandedExecution([], '2026-10-28T15:54:20.186Z', undefined, { outcome: null }).branch).toBe('no_evidence')
+    })
+
+    it('tallies a row whose only steps never finished as no_evidence', () => {
+      const resolved = resolveStrandedExecution(
+        [{ status: 'running', step_type: 'code', error_message: null, completed_at: null }],
+        '2026-07-01T01:00:00.000Z',
+      )
+      expect(resolved.branch).toBe('no_evidence')
+    })
+
+    it('keeps unresolved for a row with finished steps that no precise branch settled', () => {
+      const resolved = resolveStrandedExecution(
+        [{ status: 'completed', step_type: 'code', error_message: null, completed_at: '2026-07-01T01:00:01.000Z', step_node_id: 'a' }],
+        '2026-07-01T01:00:00.000Z',
+        buildStrandGraph(makeDefinition()),
+        null,
+      )
+      expect(resolved.branch).toBe('unresolved')
+    })
+  })
 })
 
 describe('buildStrandGraph', () => {
@@ -491,7 +529,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
   it('does nothing and reports zero when no rows are stranded', async () => {
     const { client, updates } = makeSupabase({ stranded: [] })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 0, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 } })
+    expect(result).toEqual({ processed: 0, errors: 0, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0, no_evidence: 0 } })
     expect(updates).toHaveLength(0)
   })
 
@@ -533,7 +571,10 @@ describe('runReduceFinalizeStrandedExecutions', () => {
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
     expect(result).toEqual({ processed: 1, errors: 0, vanished: 0, byBranch: expect.any(Object) })
-    expect(result.byBranch.unresolved).toBe(1) // #1133: the fallback row is tallied to its branch
+    // A row with no steps gave the precise branches nothing to read, so it is
+    // tallied apart from the fallback the skew check judges.
+    expect(result.byBranch.no_evidence).toBe(1)
+    expect(result.byBranch.unresolved).toBe(0)
     expect(updates[0].payload.outcome).toBeNull()
     expect(updates[0].payload.error_message).toMatch(/recovered/i)
   })
@@ -541,8 +582,8 @@ describe('runReduceFinalizeStrandedExecutions', () => {
   it('counts a scan failure as an error and does not process anything', async () => {
     const { client, updates } = makeSupabase({ stranded: [], strandedError: { message: 'db down' } })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 } })
-    expect(result.byBranch).toEqual({ failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 }) // #1133: nothing resolved
+    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0, no_evidence: 0 } })
+    expect(result.byBranch).toEqual({ failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0, no_evidence: 0 }) // #1133: nothing resolved
     expect(updates).toHaveLength(0)
   })
 
@@ -552,8 +593,8 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       stepsError: { message: 'partition unavailable' },
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 } })
-    expect(result.byBranch).toEqual({ failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 }) // #1133: nothing resolved
+    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0, no_evidence: 0 } })
+    expect(result.byBranch).toEqual({ failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0, no_evidence: 0 }) // #1133: nothing resolved
     expect(updates).toHaveLength(0)
   })
 
@@ -564,7 +605,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       updateErrorForId: 'exec-4',
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 } })
+    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0, no_evidence: 0 } })
   })
 
   it('marks a stranded row completed when its last step landed on a graph dead end', async () => {
@@ -633,7 +674,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       definitionsByVersionId: {},
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 1 } })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 1, no_evidence: 0 } })
     expect(updates[0].payload).toMatchObject({ status: 'failed', outcome: null })
     expect(updates[0].payload.error_message).toMatch(/recovered/i)
   })
@@ -660,7 +701,8 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       updateErrorForId: 'exec-bad',
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 1, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 1 } })
+    // exec-good has no steps, so it is tallied as no_evidence (it was given nothing to read).
+    expect(result).toEqual({ processed: 1, errors: 1, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0, no_evidence: 1 } })
     expect(updates.map((u) => u.id)).toEqual(['exec-good', 'exec-bad'])
   })
 })
@@ -889,7 +931,7 @@ describe('restoring a stranded run from its answer journal (#1883)', () => {
       updateMatchesNoRowsForId: 'exec-j',
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never, { readJournal: async () => journal })
-    expect(result).toEqual({ processed: 0, errors: 0, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0 } })
+    expect(result).toEqual({ processed: 0, errors: 0, vanished: 0, byBranch: { failed_step: 0, graph_dead_end: 0, sighting_outcome: 0, unresolved: 0, no_evidence: 0 } })
   })
 
   it('ignores a journal whose start time is not the start of the row', async () => {

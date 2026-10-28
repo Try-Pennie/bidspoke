@@ -15,7 +15,9 @@
  * fired, alerts: the shape of a precise path that cannot match. It deliberately
  * does not flag a single precise branch merely being absent (graph_dead_end is
  * legitimately zero for a code-node-answering workflow); only the precise
- * evidence never once helping is the signal (see decideBranchSkew). It is a slow
+ * evidence never once helping is the signal (see decideBranchSkew). A row that
+ * gave the precise branches nothing to read (no finished step, no sighting
+ * verdict) is not judged at all: its silence says nothing about them. It is a slow
  * recalibration signal, not an incident, so it re-surfaces on a monthly cooldown.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -30,6 +32,13 @@ export const SKEW_MIN_SAMPLE = 50
 /** The fallback branch, and the precise branches that sit in front of it. */
 const FALLBACK_BRANCH: StrandBranch = 'unresolved'
 const PRECISE_BRANCHES: readonly StrandBranch[] = ['failed_step', 'graph_dead_end', 'sighting_outcome']
+/**
+ * The rows the verdict is about: those a precise branch could have read. A row
+ * with no finished step and no sighting verdict (`no_evidence`) is left out, so
+ * it can neither fill the sample nor read as a precise branch failing to match.
+ * Every row the drain left unresolved on 2026-10-28 was one, and it paged.
+ */
+const JUDGED_BRANCHES: readonly StrandBranch[] = [...PRECISE_BRANCHES, FALLBACK_BRANCH]
 
 export interface SkewVerdict {
   /** Whether the fallback resolved everything while no precise branch ever fired. */
@@ -61,7 +70,7 @@ export function decideBranchSkew(
   opts: { minSample?: number } = {},
 ): SkewVerdict {
   const minSample = opts.minSample ?? SKEW_MIN_SAMPLE
-  const total = STRAND_BRANCHES.reduce((sum, b) => sum + (counts[b] ?? 0), 0)
+  const total = JUDGED_BRANCHES.reduce((sum, b) => sum + (counts[b] ?? 0), 0)
   if (total < minSample) return { skewed: false, reason: null }
 
   const preciseTotal = PRECISE_BRANCHES.reduce((sum, b) => sum + (counts[b] ?? 0), 0)
@@ -137,11 +146,12 @@ export async function recordAndCheckBranchSkew(
   const nowIso = new Date(nowMs).toISOString()
   const minSample = deps.minSample ?? SKEW_MIN_SAMPLE
 
-  // A tick with no resolved rows (the common case: no stranded runs, or a scan
-  // that failed) has nothing to add, so it touches no KV at all, not on every one
-  // of the ~1,440 daily ticks. A part-full window is aged out on the next tick
-  // that does bring rows, which is the only tick whose judgement it could affect.
-  const added = STRAND_BRANCHES.reduce((sum, b) => sum + (byBranch[b] ?? 0), 0)
+  // A tick with no resolved rows the verdict judges (the common case: no
+  // stranded runs, a scan that failed, or only rows with no evidence) has nothing
+  // to add, so it touches no KV at all, not on every one of the ~1,440 daily
+  // ticks. A part-full window is aged out on the next tick that does bring rows,
+  // which is the only tick whose judgement it could affect.
+  const added = JUDGED_BRANCHES.reduce((sum, b) => sum + (byBranch[b] ?? 0), 0)
   if (added === 0) return false
 
   let window: SkewWindow
@@ -161,7 +171,7 @@ export async function recordAndCheckBranchSkew(
   for (const b of STRAND_BRANCHES) window.counts[b] += byBranch[b] ?? 0
 
   const freshWindow = () => JSON.stringify({ since: nowIso, counts: emptyBranchCounts() })
-  const total = STRAND_BRANCHES.reduce((sum, b) => sum + window.counts[b], 0)
+  const total = JUDGED_BRANCHES.reduce((sum, b) => sum + window.counts[b], 0)
   if (total < minSample) {
     // Still accumulating: keep filling the (possibly just-reset) window.
     await kv.put(WINDOW_KEY, JSON.stringify(window))

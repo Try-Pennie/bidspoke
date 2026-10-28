@@ -48,6 +48,20 @@ describe('decideBranchSkew (#1133)', () => {
     // failed. failed_step is precise, so this is not the fallback-hiding shape.
     expect(decideBranchSkew(counts({ failed_step: 50 })).skewed).toBe(false)
   })
+
+  it('stays quiet on rows that gave the precise checks nothing to read (the 2026-10-28 page)', () => {
+    // 51 rows, every one with no step rows and no sighting outcome: no precise
+    // check had any input, so their silence says nothing about whether they work.
+    expect(decideBranchSkew(counts({ no_evidence: 51 })).skewed).toBe(false)
+    expect(decideBranchSkew(counts({ no_evidence: 500, unresolved: SKEW_MIN_SAMPLE - 1 })).skewed).toBe(false)
+  })
+
+  it('judges only the rows that carried evidence, and counts only those in its sentence', () => {
+    const v = decideBranchSkew(counts({ no_evidence: 30, unresolved: 60 }))
+    expect(v.skewed).toBe(true)
+    expect(v.reason).toMatch(/all 60/)
+    expect(v.reason).not.toMatch(/no_evidence/)
+  })
 })
 
 function fakeKv(initial: Record<string, string> = {}) {
@@ -105,6 +119,15 @@ describe('recordAndCheckBranchSkew (#1133)', () => {
   it('suppresses a repeat while the monthly cooldown is set', async () => {
     const kv = fakeKv({ 'strand-branch-skew-cooldown': '1' })
     expect(await recordAndCheckBranchSkew(kv, counts({ unresolved: SKEW_MIN_SAMPLE }), { supabase: supa, appUrl: 'https://app.test' })).toBe(false)
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('never alerts on ticks that bring only rows with no evidence, however many', async () => {
+    const kv = fakeKv()
+    for (let i = 0; i < 60; i++) {
+      expect(await recordAndCheckBranchSkew(kv, counts({ no_evidence: 1 }), { supabase: supa, appUrl: 'https://app' })).toBe(false)
+    }
+    expect(kv.put).not.toHaveBeenCalled()
     expect(postMessage).not.toHaveBeenCalled()
   })
 
