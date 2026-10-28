@@ -674,6 +674,24 @@
         "source": "9e8ad38d-dabd-4c8e-8ced-759119168d27",
         "target": "759cb6a2-b8d5-498b-b684-54c32a703b80",
         "source_handle": "output"
+      },
+      {
+        "id": "768b8f21-8a1d-57b6-a6ec-0ebfcc4e014c",
+        "source": "b4a744e5-da32-4eec-a25d-bbd196b56b41",
+        "target": "082a9a96-7c9c-5fed-ac5b-00fcc32095c3",
+        "source_handle": "child-2"
+      },
+      {
+        "id": "f12893b7-09e1-59e8-a601-37fdf6f21ff6",
+        "source": "082a9a96-7c9c-5fed-ac5b-00fcc32095c3",
+        "target": "3089f8a6-b3dc-5869-a845-ac541394ffef",
+        "source_handle": "output"
+      },
+      {
+        "id": "e6165d88-9989-5f8b-aa67-e57ac55f9135",
+        "source": "3089f8a6-b3dc-5869-a845-ac541394ffef",
+        "target": "79bbb605-e023-4629-bf4c-4152b4d59443",
+        "source_handle": "output"
       }
     ],
     "nodes": [
@@ -811,6 +829,11 @@
             {
               "id": "child-1",
               "label": "send_salesforce_inquiry"
+            },
+            {
+              "id": "child-2",
+              "label": "collections",
+              "on_failure": "continue"
             }
           ],
           "wait_for": "all",
@@ -1265,10 +1288,12 @@
         "type": "salesforce",
         "label": "Send Salesforce",
         "config": {
-          "operation": "update",
-          "object": "Submission__c",
-          "record_id": "{{trigger.payload.Submission__c}}",
           "body": "{\n  \"ADV_SO__c\": \"{{steps.mutate_adv.output}}\",\n  \"XBC_SO__c\": \"{{steps.mutate_adv.output}}{{steps.mutate_bes.output}}{{trigger.payload.LEG}}\",\n  \"PDFlow_1__c\": \"{{execution.bidspoke_link}}\",\n  \"executionId\": \"{{execution.execution_id}}\",\n  \"submissionId\": \"{{trigger.payload.Submission__c}}\",\n  \"VantageScore__c\": \"{{steps.gen_vantage_score.output}}\",\n  \"EQXCreditPullStatus__c\": \"{{steps.calculate_pull_result_no_debt.output.equifaxPull}}\",\n  \"InternalDebtRouting__c\": \"{{steps.calculate_internal_debt.output}}\",\n  \"Credit_Pull_Result_ES__c\": \"{{steps.calculate_pull_result_no_debt.output.eligibilityPull}}\",\n  \"PD_Completed_Timestamp__c\": \"{{steps.timestamps.output.completedDate}}\",\n  \"Unsecured_Debt_Verified_ES__c\": \"{{steps.pennie_or_eligibility.output.eligibilityData.estimated_total_debt}}\",\n  \"Monthly_Creditor_Payment_ES__c\": \"{{steps.pennie_or_eligibility.output.eligibilityData.estimated_monthly_creditor_payment}}\",\n\"CreditFreeze__c\": {{steps.calculate_pull_result_no_debt.output.creditFreeze}}\n}",
+          "object": "Submission__c",
+          "retries": 0,
+          "operation": "update",
+          "record_id": "{{trigger.payload.Submission__c}}",
+          "timeout_ms": 5250,
           "omit_fields": [
             "executionId",
             "submissionId"
@@ -1281,8 +1306,6 @@
             "PDFlow_4__c": "{{execution.bidspoke_link}}"
           },
           "skip_when_empty": true,
-          "retries": 0,
-          "timeout_ms": 4500,
           "transient_errors": [
             {
               "code": "REQUEST_LIMIT_EXCEEDED",
@@ -2715,6 +2738,41 @@
           "y": 354
         },
         "namespace": "prescreen_query",
+        "variables": {}
+      },
+      {
+        "id": "082a9a96-7c9c-5fed-ac5b-00fcc32095c3",
+        "type": "code",
+        "label": "Collections Body",
+        "config": {
+          "script": "// The credit-collections Apex body, beside trades_body in parallel_1 (#2832).\nif (!payload.Submission__c) return null;\nconst report = steps.equifax_credit_report?.output?.data?.consumers?.equifaxUSConsumerCreditReport?.[0];\n// Equifax leaves the key out when the file has no collection items, so absent\n// (or null) is an empty list, which is sent (Geoff, 2026-10-27). Anything else\n// that is not a list is a report this was not written for, so the step fails.\nconst collections = report?.collections ?? [];\nif (!Array.isArray(collections)) throw new Error(`collections_body: the credit report's collections is a ${typeof collections}, not a list, so nothing was sent`);\ncollections.forEach((item, i) => {\n  if (item === null || typeof item !== 'object' || Array.isArray(item)) throw new Error(`collections_body: collection item ${i} is not an object, so nothing was sent`);\n});\n\n// Each item goes whole, accountNumber included, with only null valued keys\n// dropped, exactly as trades_body does. Dan, 2026-10-27: send everything until\n// Geoff answers the open question on #2832.\nconst removeNullValues = (obj) => Object.fromEntries(\n  Object.entries(obj).filter(([_, value]) => value !== null)\n);\n\nreturn {\n  submissionId: payload.Submission__c,\n  collectionsJSON: JSON.stringify({ collections: collections.map(removeNullValues) }),\n};",
+          "retries": 0,
+          "timeout_ms": 500
+        },
+        "position": {
+          "x": 9606,
+          "y": 1163
+        },
+        "namespace": "collections_body",
+        "variables": {}
+      },
+      {
+        "id": "3089f8a6-b3dc-5869-a845-ac541394ffef",
+        "type": "salesforce",
+        "label": "Credit Collections",
+        "config": {
+          "body": "{{steps.collections_body.output}}",
+          "retries": 0,
+          "apex_path": "/services/apexrest/credit-collections",
+          "operation": "apex",
+          "timeout_ms": 4500,
+          "skip_when_empty": true
+        },
+        "position": {
+          "x": 9606,
+          "y": 1320
+        },
+        "namespace": "collections_apex",
         "variables": {}
       }
     ],

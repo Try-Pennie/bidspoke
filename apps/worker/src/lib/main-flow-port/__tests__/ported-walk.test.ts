@@ -9,8 +9,9 @@
  * definition, from its response to its Achieve step.
  *
  * Before the answer: the collections post (#2832) is a slot of parallel_1 marked
- * on_failure: 'continue'. Over live Main Flow (the money gate's version 175) with
- * the collections stage applied, this walks parallel_1 and its three slots (the
+ * on_failure: 'continue'. Over live Main Flow (the money gate's version 177,
+ * which holds the collections stage since 2026-10-28; applying it again changes
+ * nothing), this walks parallel_1 and its three slots (the
  * trades chain, the inquiry relay, the collections pair) into its join and on to
  * an answer: the lead is answered whether the collections call succeeds, fails or
  * times out; a failed or timed out call is left for finalize to raise (the
@@ -162,7 +163,7 @@ describe('after the answer: the ported Tripoint win branch and its inquiry post'
 })
 
 describe('before the answer: parallel_1 with the collections slot, over live Main Flow (#2832)', () => {
-  /** parallel_1, its three slots and its join, from live Main Flow with the collections stage applied, then an answer. */
+  /** parallel_1, its three slots and its join, from live Main Flow with the collections stage applied (version 177 holds it), then an answer. */
   function block(collectionsTimeoutMs?: number) {
     const live = (JSON.parse(GATE_MAIN_FLOW_RAW as string) as { definition: Definition }).definition
     const withSlot = portMainFlow(live, PORT_STAGES.collections)

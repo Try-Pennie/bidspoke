@@ -22,6 +22,8 @@ import { runCanvasScript } from '../../../engine/scripts/__tests__/canvas-script
 import { stubFetch } from '../../../__tests__/helpers/fetch-mock'
 import { COLLECTIONS_APEX, COLLECTIONS_APEX_PATH, COLLECTIONS_BODY, COLLECTIONS_SLOT, INQUIRY_APEX_PATH, PORT_STAGES, portMainFlow, type DefNode, type Definition, type PortOptions } from '../transform'
 import { nodeByNamespace, productionMainFlow, relayUrls } from './production-fixture'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import GATE_MAIN_FLOW_RAW from '../../../../money-gate/fixtures/definitions/60e2e0bc-5aa2-47db-b333-3a8fe1c62e09.json?raw'
 
 const before = productionMainFlow()
 /** Everything the port does: every post native, the inquiry after each write, the collections slot in parallel_1. */
@@ -277,7 +279,7 @@ describe('the worst case after the answer fits the 12 s window', () => {
 })
 
 describe('the collections slot does not lengthen parallel_1, before the answer (#2832)', () => {
-  /** Live Main Flow (version 175 holds the same parallel_1 as version 169), with and without the collections stage. */
+  /** Version 169 with the canaries applied (the parallel_1 live Main Flow held until version 177), with and without the collections stage. */
   const without = portMainFlow(productionMainFlow(), PORT_STAGES.canary_send_salesforce)
   const withSlot = portMainFlow(productionMainFlow(), PORT_STAGES.collections)
 
@@ -300,6 +302,12 @@ describe('the collections slot does not lengthen parallel_1, before the answer (
     const collections = slots.find((s) => s.slot === COLLECTIONS_SLOT)!.worstMs
     expect(collections).toBeLessThan(Number(nodeByNamespace(withSlot, 'parallel_1').config.timeout_ms))
     expect(collections).toBeLessThan(slots.find((s) => s.slot === 'child-0')!.worstMs)
+  })
+
+  it('live Main Flow holds the slot since version 177 (2026-10-28), with the same steps and worst cases as built here', () => {
+    const live = (JSON.parse(GATE_MAIN_FLOW_RAW as string) as { definition: Definition }).definition
+    expect(slotsOf(live, 'parallel_1')).toEqual(slotsOf(withSlot, 'parallel_1'))
+    expect(blockWorstMs(live, 'parallel_1')).toBe(20_000)
   })
 
   it('the same holds once the inquiry relay has left parallel_1', () => {
