@@ -59,6 +59,7 @@ import {
   type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
 } from './ops-gateway-contract'
 import { formatErr } from './format-error'
+import { servedVersionVariables } from './version-variables'
 
 /** The tick's id in the heartbeat registry and the export alerter. Never rename it: it keys its KV state. */
 export const OPS_TICK_JOB = 'ops-tick'
@@ -252,6 +253,7 @@ interface VersionRow {
   workflow_id: string
   version_number: number
   definition: unknown
+  env_capture: unknown
   workflows: { organization_id: string; lane: string } | null
 }
 
@@ -269,13 +271,18 @@ interface VersionRow {
  * served, by the inner join's filter and again by the lane check below. One
  * read per version, each over the (workflow_id, version_number) key. Throws on
  * a failed read, never serving it as unserved.
+ *
+ * Each version is served with the variables kept with it at its save that its
+ * definition reads (#2702, version-variables.ts): a plain one by its value, a
+ * secret one by its name alone. Throws, naming the version, on kept variables
+ * it cannot read.
  */
 export async function readOpsWorkflowDefinitions(supabase: SupabaseClient, request: OpsDefinitionRequest): Promise<ServedOpsDefinitions> {
   const served: ServedOpsDefinitions = { definitions: [], unserved: [] }
   for (const want of request.versions) {
     const { data, error } = await supabase
       .from('workflow_versions')
-      .select('workflow_id, version_number, definition, workflows!inner(organization_id, lane)')
+      .select('workflow_id, version_number, definition, env_capture, workflows!inner(organization_id, lane)')
       .eq('workflow_id', want.workflow_id)
       .eq('version_number', want.version_number)
       .eq('workflows.lane', 'ops')
@@ -291,8 +298,10 @@ export async function readOpsWorkflowDefinitions(supabase: SupabaseClient, reque
       served.unserved.push({ workflow_id: want.workflow_id, version_number: want.version_number })
       continue
     }
+    const definition = row.definition as Record<string, unknown>
     served.definitions.push({
-      workflow_id: row.workflow_id, organization_id: row.workflows.organization_id, version_number: row.version_number, definition: row.definition as Record<string, unknown>,
+      workflow_id: row.workflow_id, organization_id: row.workflows.organization_id, version_number: row.version_number, definition,
+      variables: servedVersionVariables(row.env_capture, row.workflow_id, definition, `workflow ${row.workflow_id} version ${row.version_number}`),
     })
   }
   return served

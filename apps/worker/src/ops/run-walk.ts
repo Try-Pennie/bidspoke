@@ -14,8 +14,14 @@
  * refused that way until they send through ctx.send.
  *
  * WHAT IT REFUSES BEFORE RUNNING. A definition that is not nodes and edges, has
- * no step or no entry, names a type nothing runs, or reads an environment
- * variable (env.X): ops runs load none yet, so such a step would run on blanks.
+ * no step or no entry, or names a type nothing runs. And one reading an
+ * environment variable (env.X, {{env.X}}) it was not given, so no step ever
+ * runs on a blank (#2702, Dan's decisions of 2026-10-28): a run is given the
+ * plain variables kept with its version at its save (options.variables), and
+ * only those its definition reads. A secret variable is refused by name, since
+ * an ops run is never given a secret and a credential belongs in a connection;
+ * a variable the version did not keep is refused by name as missing; and any
+ * variable is refused when the version kept none (saved before they were kept).
  *
  * HOW IT ENDS. Done when a step has no next edge, an exit or a filter's exit
  * route is reached. Failed, naming the step, when a step reports an error or
@@ -57,7 +63,9 @@ import { executeBranchNode } from '../engine/nodes/branch'
 import { executeFilterNode } from '../engine/nodes/filter'
 import { executeResponseNode } from '../engine/nodes/response'
 import { executeTransformNode } from '../engine/nodes/transform'
+import { envReferences } from '../lib/definition-env-references'
 import { formatErr } from '../lib/format-error'
+import type { OpsVersionVariables } from '../lib/ops-gateway-contract'
 import type { EdgeDefinition, ExecutionContext, NodeDefinition, StepExecutionResult } from '../types'
 import type { CheckpointStep } from './checkpoint'
 import { observeBoundary, overBudget, type OpsWalkContinuation, type SliceSpend } from './continuation'
@@ -98,23 +106,35 @@ const IN_MEMORY: Readonly<Record<string, (node: NodeDefinition, ctx: ExecutionCo
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
 
-/** Every environment variable a definition reads: env.X as a path, or {{env.X}} in a template. */
-function envReferences(value: unknown, found = new Set<string>()): Set<string> {
-  if (typeof value === 'string') {
-    for (const m of value.matchAll(/(?:^|\{\{\s*)env\.([A-Za-z0-9_]+)/g)) found.add(`env.${m[1]}`)
-  } else if (Array.isArray(value)) {
-    for (const v of value) envReferences(v, found)
-  } else if (isRecord(value)) {
-    for (const v of Object.values(value)) envReferences(v, found)
-  }
-  return found
-}
-
 const failed = (error: string): Extract<RunBodyEnd, { outcome: 'failed' }> => ({ outcome: 'failed', error })
+
+const named = (keys: string[]) => keys.map((k) => `env.${k}`).join(', ')
+
+/**
+ * The values a run is given: the plain variables kept with its version that
+ * its definition reads, or why it can be given none, as the run's error.
+ */
+function runVariables(definition: Record<string, unknown>, variables: OpsVersionVariables | null, version: number): { env: Record<string, string> } | { refused: string } {
+  const reads = envReferences(definition)
+  if (reads.length === 0) return { env: {} }
+  if (variables === null) {
+    return { refused: `the definition reads ${named(reads)}, and version ${version} was saved before ops kept the values of its variables with it, so nothing was run; save the workflow again` }
+  }
+  const secret = reads.filter((k) => variables.secretKeys.includes(k))
+  const missing = reads.filter((k) => !secret.includes(k) && !Object.hasOwn(variables.values, k))
+  const secretSaid = `reads the secret ${secret.length === 1 ? 'variable' : 'variables'} ${named(secret)}, and an ops run is never given a secret: a credential an ops step uses belongs in a connection`
+  const missingSaid = `${named(missing)}, which ${missing.length === 1 ? 'was not a variable' : 'were not variables'} of this workflow when version ${version} was saved, so nothing was run`
+  if (secret.length > 0 && missing.length > 0) return { refused: `the definition ${secretSaid}; and it reads ${missingSaid}` }
+  if (secret.length > 0) return { refused: `the definition ${secretSaid}, so nothing was run` }
+  if (missing.length > 0) return { refused: `the definition reads ${missingSaid}; add ${missing.length === 1 ? 'it' : 'them'} and save the workflow again` }
+  return { env: Object.fromEntries(reads.map((k) => [k, variables.values[k]])) }
+}
 
 export interface OpsWalkOptions {
   /** Time sliced continuation (#1951): absent or off, the walk never stops at a boundary. */
   continuation?: OpsWalkContinuation
+  /** The variables kept with the run's version (#2702); absent or null, a definition reading any is refused. */
+  variables?: OpsVersionVariables | null
 }
 
 export async function walkOpsDefinition(
@@ -131,11 +151,9 @@ export async function walkOpsDefinition(
   if (unrunnable.length > 0) {
     return failed(`an ops run cannot take a step of type ${unrunnable.join(', ')} yet, so nothing was run`)
   }
-  // Steps and edge conditions alike: both resolve against the run's (empty) environment.
-  const env = [...envReferences(edges, envReferences(nodes))]
-  if (env.length > 0) {
-    return failed(`the definition reads ${env.join(', ')}, and ops runs load no environment variables yet, so nothing was run`)
-  }
+  // Steps and edge conditions alike resolve against the run's environment: only what the version kept.
+  const given = runVariables(definition, options.variables ?? null, run.run.workflowVersion)
+  if ('refused' in given) return failed(given.refused)
 
   let current: NodeDefinition | undefined
   try {
@@ -144,7 +162,7 @@ export async function walkOpsDefinition(
     return failed('the definition has no entry step, so nothing was run')
   }
 
-  const ctx = buildContext(run.run.payload, run.run.triggerKind, run.run.workflowId, run.executionId, {}, run.run.organizationId, run.executionId)
+  const ctx = buildContext(run.run.payload, run.run.triggerKind, run.run.workflowId, run.executionId, given.env, run.run.organizationId, run.executionId)
   // Time sliced continuation (#1951): what this slice has spent, and every completed step with the edge it left by.
   const continuation = options.continuation !== undefined && options.continuation.mode !== 'off' ? options.continuation : null
   // The clock is read only when slicing, so a walk with continuation off reads it exactly as before.

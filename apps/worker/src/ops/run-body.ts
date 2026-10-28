@@ -5,6 +5,7 @@
  * that reaches outside, through the ledgered send and connectionFetch, and the
  * walk's options: time sliced continuation (#1951, continuation.ts).
  */
+import type { OpsVersionVariables } from '../lib/ops-gateway-contract'
 import { appActionHandler, type AppActionDeps } from './app-action'
 import type { RunBody } from './run-invocation'
 import { walkOpsDefinition, type OpsStepHandler, type OpsWalkOptions } from './run-walk'
@@ -18,6 +19,13 @@ export function opsStepHandlers(deps: OpsStepHandlerDeps): Readonly<Record<strin
   return { app_action: appActionHandler(deps.appAction) }
 }
 
-export function runBodyFor(definition: Record<string, unknown>, handlers: Readonly<Record<string, OpsStepHandler>>, options: OpsWalkOptions = {}): RunBody {
-  return (ctx) => walkOpsDefinition(definition, ctx, handlers, options)
+/**
+ * The body for one version: its definition walked with the variables kept with
+ * it (#2702), which a live run always names, null for a version that kept none.
+ */
+export function runBodyFor(
+  definition: Record<string, unknown>, variables: OpsVersionVariables | null, handlers: Readonly<Record<string, OpsStepHandler>>,
+  options: Omit<OpsWalkOptions, 'variables'> = {},
+): RunBody {
+  return (ctx) => walkOpsDefinition(definition, ctx, handlers, { ...options, variables })
 }

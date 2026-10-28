@@ -60,7 +60,9 @@ import {
 import {
   OPS_STATEMENT_DEADLINE_MS, organizationIdFrom, readOpsRows, sendWithinOpsDeadline, type OpsDeadlineOptions, type OpsSupabaseClient, type OrganizationId,
 } from './ops-db'
-import { CONNECTION_SERVE_WINDOW_MS } from '../lib/ops-gateway-contract'
+import {
+  CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, parseOpsVersionVariables, servedVariablesOf, type OpsVersionVariables,
+} from '../lib/ops-gateway-contract'
 import { DELEGATION_LIST_LIMIT } from '../lib/ops-connections-contract'
 
 /** Past the ops project's 8 s statement timeout, so the database gives up first: the one deadline every ops request has (ops-db.ts). */
@@ -1515,26 +1517,35 @@ export async function purgeScheduleObservations(client: OpsSupabaseClient, limit
 }
 
 /**
- * One workflow version's definition, as the bidding Worker served it. conflict:
- * a different definition is held for the version and is kept, which is the
- * bidding side breaking its own rule, so the caller pages. no_copy: no saved
- * copy names the workflow yet.
+ * One workflow version's definition, as the bidding Worker served it, with the
+ * variables served beside it (#2702, ops migration 20261028200000). conflict:
+ * a different definition or different variables are held for the version and
+ * are kept, which is the bidding side breaking its own rule, so the caller
+ * pages. no_copy: no saved copy names the workflow yet. A version served with
+ * no variables names none, which is the call an ops database from before
+ * #2702 also answers.
  */
 export async function saveWorkflowDefinition(
-  client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, versionNumber: number, definition: Record<string, unknown>, options?: OpsRpcOptions,
+  client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, versionNumber: number, definition: Record<string, unknown>,
+  variables: OpsVersionVariables | null, options?: OpsRpcOptions,
 ): Promise<'saved' | 'already_saved' | 'conflict' | 'no_copy'> {
   const name = 'save_workflow_definition'
   const data = await callOpsRpc(client, name, {
     p_organization_id: organizationId, p_workflow_id: workflowId, p_version_number: versionNumber, p_definition: definition,
+    ...(variables === null ? {} : { p_variables: servedVariablesOf(variables) }),
   }, options)
   if (!oneOf(['saved', 'already_saved', 'conflict', 'no_copy'] as const)(data)) throw new OpsWriteError(`${name} returned something other than a save outcome`)
   return data
 }
 
-/** One version of one organization's workflow, or null when it is not held. */
+/**
+ * One version of one organization's workflow with the variables kept with it
+ * (#2702; null when none were, or from an ops database from before #2702,
+ * which answers no variables column), or null when it is not held.
+ */
 export async function readWorkflowDefinition(
   client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, versionNumber: number, options?: OpsRpcOptions,
-): Promise<{ definition: Record<string, unknown>; savedAt: string } | null> {
+): Promise<{ definition: Record<string, unknown>; savedAt: string; variables: OpsVersionVariables | null } | null> {
   const name = 'workflow_definition'
   const all = rows(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_workflow_id: workflowId, p_version_number: versionNumber }, options))
   if (all.length > 1) throw new OpsWriteError(`${name} returned ${all.length} rows, expected at most 1`)
@@ -1542,7 +1553,14 @@ export async function readWorkflowDefinition(
   const row = all[0]
   const definition = row.definition
   if (typeof definition !== 'object' || definition === null || Array.isArray(definition)) throw new OpsWriteError(`${name} returned a definition that is not an object`)
-  return { definition: definition as Record<string, unknown>, savedAt: field(name, row, 'saved_at', isString, 'a time') }
+  let variables: OpsVersionVariables | null
+  try {
+    variables = parseOpsVersionVariables(row.variables)
+  } catch (err) {
+    if (!(err instanceof OpsGatewayContractError)) throw err
+    throw new OpsWriteError(`${name} returned variables it cannot read: ${err.message}`)
+  }
+  return { definition: definition as Record<string, unknown>, savedAt: field(name, row, 'saved_at', isString, 'a time'), variables }
 }
 
 /** The saved copies whose current version has no definition held, at most limit, and whether the read was full. */
