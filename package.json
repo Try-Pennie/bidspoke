@@ -9,6 +9,7 @@
     "build:worker": "pnpm --filter worker build",
     "lint": "pnpm -r lint",
     "test:worker": "pnpm --filter worker test",
+    "convert": "node packages/pipedream-converter/src/main.ts",
     "typecheck": "pnpm -r typecheck",
     "prepare": "husky"
   },

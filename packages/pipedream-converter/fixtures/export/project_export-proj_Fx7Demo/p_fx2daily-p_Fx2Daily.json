@@ -1,0 +1,20 @@
+{
+  "schema": "workflow.json/2026.01",
+  "id": "p_Fx2Daily",
+  "name": "Demo daily sheet sync",
+  "triggers": [
+    { "type": "timer", "runtime": "nodejs20.x", "props": {} },
+    { "type": "source", "runtime": "nodejs20.x", "props": {}, "uses": { "registry": true, "key": "demo_sheets-new-row", "version": "0.1.0" } },
+    { "type": "carrier_pigeon", "runtime": "nodejs20.x", "props": {}, "disabled": true }
+  ],
+  "steps": [
+    {
+      "namespace": "tidy_rows",
+      "type": "CodeCell",
+      "lang": "nodejs20.x",
+      "component": true,
+      "uses": { "registry": false, "code": "export default defineComponent({\n  async run({ steps }) {\n    return steps.trigger.event\n  },\n})\n" }
+    }
+  ],
+  "settings": {}
+}
