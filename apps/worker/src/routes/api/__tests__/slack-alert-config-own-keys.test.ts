@@ -164,10 +164,10 @@ async function liveTable() {
     if (fn === 'save_slack_alert_settings') {
       const at = table.find((r) => r.id === args.p_connection_id && r.organization_id === args.p_organization_id && r.sealed_for !== 'ops_key')
       if (!at) return { data: [], error: null }
-      // The four argument form (20261027170000) leaves updated_by_email as the row holds it;
-      // the five argument form (20261027230000, #2870) writes the email it is given.
-      const email = 'p_actor_email' in args ? { updated_by_email: args.p_actor_email } : {}
-      Object.assign(at, { config: mergeConfig(at.config, args.p_settings as Config), updated_by: args.p_actor, ...email })
+      // Only the five argument form (20261027230000, #2870) is left once 20261028020000 dropped the
+      // four argument one (#2896), so a call without p_actor_email finds no function, as PostgREST answers it.
+      if (!('p_actor_email' in args)) return { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.save_slack_alert_settings with the arguments sent' } }
+      Object.assign(at, { config: mergeConfig(at.config, args.p_settings as Config), updated_by: args.p_actor, updated_by_email: args.p_actor_email })
       return { data: [{ id: at.id, config: at.config, credential_enc: at.credential_enc }], error: null }
     }
     return { data: null, error: { code: '42883', message: `no function ${fn}` } }
@@ -343,8 +343,7 @@ describe('each writer sends only the keys it owns', () => {
       const list = /ARRAY\[([^\]]*)\]/.exec(migration.slice(at))
       return (list?.[1] ?? '').split(',').map((s) => s.trim().replace(/^'|'$/g, '')).sort()
     }
-    // Both forms of the settings save, the four argument one (#2643) and the five argument one the route calls (#2870).
-    expect(arrayAfter(OWN_KEYS_MIGRATION as string, '-- settings keys')).toEqual([...SLACK_ALERT_SETTINGS_KEYS].sort())
+    // The settings save is the five argument form the route calls (#2870); the four argument one was dropped (#2896).
     expect(arrayAfter(CHANGED_BY_MIGRATION as string, '-- settings keys')).toEqual([...SLACK_ALERT_SETTINGS_KEYS].sort())
     expect(arrayAfter(OWN_KEYS_MIGRATION as string, '-- token save keys')).toEqual([...SLACK_ALERT_TOKEN_SAVE_KEYS].sort())
   })

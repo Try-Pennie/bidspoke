@@ -1,5 +1,6 @@
 -- save_slack_alert_settings names who changed a setting, not who saved the
--- token (#2870), migration 20261027230000.
+-- token (#2870), migration 20261027230000, and the four argument form it
+-- replaced is gone (#2896), migration 20261028020000.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
 -- by replaying every migration from empty, never production. The ciphertexts
@@ -10,20 +11,24 @@
 -- changed the alert settings, went on naming whoever last saved the bot token.
 --
 -- WHAT IT PROVES (each inside a block that is rolled back):
---   A. Control: the four argument settings save the Worker deployed before
---      this migration calls leaves the token saver's email on the row, so the
---      case after it measures the fix, not a row that never held a stale name.
+--   A. Control: the row every case starts from names the token saver in
+--      updated_by_email, so the cases after it measure the fix, not a row that
+--      never held a stale name.
 --   B. A settings save by a second person, through the five argument form,
 --      names that person in updated_by and updated_by_email, merges only its
 --      keys, and keeps the sealed token.
 --   C. A settings save whose email is not known clears the email rather than
 --      leaving the token saver's name on a change they did not make.
---   D. The five argument form refuses what the four argument form refuses (a
---      key it does not own, a missing actor) and writes nothing.
---   E. Expand safe: the four argument form the deployed Worker calls still
---      exists, and the fifth argument has no default, so a call naming four
---      arguments resolves to exactly one function and a call naming five to
---      the other. Both are service_role only, SECURITY DEFINER, search_path set.
+--   D. The five argument form refuses a key it does not own, a wrong type and
+--      a missing actor, and writes nothing.
+--   E. Contracted (#2896): only the five argument form exists, a call sending
+--      the four old arguments finds no function, and the fifth argument has no
+--      default, so a call that leaves the email out is refused rather than
+--      quietly clearing the changer's name. It is service_role only, SECURITY
+--      DEFINER, search_path set.
+--   F. The contract migration drops only the four argument form: run against a
+--      database that still has it, it removes that form and leaves the five
+--      argument form with its grants; run again, it changes nothing.
 --
 -- HOW IT ASSERTS: RAISE EXCEPTION inside DO blocks, one case per block, counted
 -- into a temp table and compared to the number at the bottom.
@@ -55,7 +60,7 @@ AS $$
     '22222222-2222-2222-2222-222222222870', 'token-saver-2870@example.test')
 $$;
 
--- ── A. Control: the four argument save leaves the token saver's email ───────
+-- ── A. Control: the starting row names the token saver ──────────────────────
 DO $do$
 DECLARE
   v_id uuid;
@@ -63,19 +68,16 @@ DECLARE
 BEGIN
   BEGIN
     v_id := pg_temp.sacb_row();
-    PERFORM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112870', v_id, '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-22222222287b');
-    SELECT updated_by, updated_by_email, config INTO s FROM public.service_connections WHERE id = v_id;
-    IF s.config -> 'volume_alerts_enabled' <> 'false'::jsonb OR s.updated_by IS DISTINCT FROM '22222222-2222-2222-2222-22222222287b'::uuid THEN
-      RAISE EXCEPTION 'control: the four argument save did not save (% by %)', s.config, s.updated_by;
-    END IF;
-    IF s.updated_by_email IS DISTINCT FROM 'token-saver-2870@example.test' THEN
-      RAISE EXCEPTION 'control: the four argument save changed the email to %, so case B proves nothing', s.updated_by_email;
+    SELECT updated_by, updated_by_email INTO s FROM public.service_connections WHERE id = v_id;
+    IF s.updated_by IS DISTINCT FROM '22222222-2222-2222-2222-222222222870'::uuid
+       OR s.updated_by_email IS DISTINCT FROM 'token-saver-2870@example.test' THEN
+      RAISE EXCEPTION 'control: the starting row names % (%), not the token saver, so cases B and C prove nothing', s.updated_by_email, s.updated_by;
     END IF;
     RAISE EXCEPTION 'sacb_rollback';
   EXCEPTION WHEN raise_exception THEN
     IF SQLERRM <> 'sacb_rollback' THEN RAISE; END IF;
   END;
-  INSERT INTO sacb_cases VALUES ('control: the four argument settings save leaves the token saver''s email on the row');
+  INSERT INTO sacb_cases VALUES ('control: the row every case starts from names the token saver');
 END
 $do$;
 
@@ -135,7 +137,7 @@ BEGIN
 END
 $do$;
 
--- ── D. The five argument form refuses what the four argument form refuses ──
+-- ── D. The five argument form refuses a key it does not own, a wrong type and a missing actor ──
 DO $do$
 DECLARE
   v_id uuid;
@@ -173,35 +175,106 @@ BEGIN
 END
 $do$;
 
--- ── E. Expand safe, and service_role only ───────────────────────────────────
+-- ── E. Contracted: only the five argument form, service_role only ──────────
 DO $do$
 DECLARE
-  fn text;
+  fn text := 'public.save_slack_alert_settings(uuid, uuid, jsonb, uuid, text)';
   r text;
   p record;
+  v_id uuid;
+  refused boolean;
 BEGIN
-  IF to_regprocedure('public.save_slack_alert_settings(uuid, uuid, jsonb, uuid)') IS NULL THEN
-    RAISE EXCEPTION 'the four argument settings save the deployed Worker calls is gone';
+  IF to_regprocedure('public.save_slack_alert_settings(uuid, uuid, jsonb, uuid)') IS NOT NULL THEN
+    RAISE EXCEPTION 'the four argument settings save is still there after the contract step (#2896)';
   END IF;
-  -- A default on the fifth argument would make a call naming four arguments
-  -- match both forms, which PostgREST refuses as ambiguous.
-  IF (SELECT pronargdefaults FROM pg_proc WHERE oid = to_regprocedure('public.save_slack_alert_settings(uuid, uuid, jsonb, uuid, text)')) IS DISTINCT FROM 0 THEN
-    RAISE EXCEPTION 'the five argument settings save is missing, or has a default that makes a four argument call ambiguous';
+  IF to_regprocedure(fn) IS NULL THEN
+    RAISE EXCEPTION 'the five argument settings save the Worker calls is gone';
   END IF;
-  IF (SELECT count(*) FROM pg_proc WHERE proname = 'save_slack_alert_settings' AND pronamespace = 'public'::regnamespace) <> 2 THEN
-    RAISE EXCEPTION 'expected exactly the four and five argument settings saves';
+  IF (SELECT count(*) FROM pg_proc WHERE proname = 'save_slack_alert_settings' AND pronamespace = 'public'::regnamespace) <> 1 THEN
+    RAISE EXCEPTION 'expected exactly one settings save, the five argument one';
   END IF;
-  FOREACH fn IN ARRAY ARRAY['public.save_slack_alert_settings(uuid, uuid, jsonb, uuid)', 'public.save_slack_alert_settings(uuid, uuid, jsonb, uuid, text)'] LOOP
-    FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
-      IF has_function_privilege(r, fn, 'EXECUTE') THEN RAISE EXCEPTION '% may call %', r, fn; END IF;
-    END LOOP;
-    IF NOT has_function_privilege('service_role', fn, 'EXECUTE') THEN RAISE EXCEPTION 'service_role may not call %', fn; END IF;
-    SELECT prosecdef, proconfig INTO p FROM pg_proc WHERE oid = to_regprocedure(fn);
-    IF NOT p.prosecdef OR NOT EXISTS (SELECT 1 FROM unnest(p.proconfig) c WHERE c LIKE 'search_path=%') THEN
-      RAISE EXCEPTION '% is not SECURITY DEFINER with its search_path set', fn;
+  -- A default on the email would let a call that leaves it out save and
+  -- write a NULL changer, instead of being refused as the old call shape.
+  IF (SELECT pronargdefaults FROM pg_proc WHERE oid = to_regprocedure(fn)) IS DISTINCT FROM 0 THEN
+    RAISE EXCEPTION 'the five argument settings save has a default, so a call without the email still saves';
+  END IF;
+  -- The four argument names, as the Worker deployed before #2870 sent them.
+  -- PostgREST picks a function by the names a call sends, as named notation does here.
+  BEGIN
+    v_id := pg_temp.sacb_row();
+    refused := false;
+    BEGIN
+      PERFORM public.save_slack_alert_settings(
+        p_organization_id => '11111111-1111-1111-1111-111111112870', p_connection_id => v_id,
+        p_settings => '{"volume_alerts_enabled": false}', p_actor => '22222222-2222-2222-2222-22222222287b');
+    EXCEPTION WHEN undefined_function THEN
+      refused := true;
+    END;
+    IF NOT refused THEN RAISE EXCEPTION 'a call sending the four old arguments still found a function'; END IF;
+    IF (SELECT config ? 'volume_alerts_enabled' FROM public.service_connections WHERE id = v_id) THEN
+      RAISE EXCEPTION 'a refused four argument call wrote the row';
     END IF;
+    RAISE EXCEPTION 'sacb_rollback';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'sacb_rollback' THEN RAISE; END IF;
+  END;
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    IF has_function_privilege(r, fn, 'EXECUTE') THEN RAISE EXCEPTION '% may call %', r, fn; END IF;
   END LOOP;
-  INSERT INTO sacb_cases VALUES ('both forms exist, a four argument call is unambiguous, and only service_role may call either');
+  IF NOT has_function_privilege('service_role', fn, 'EXECUTE') THEN RAISE EXCEPTION 'service_role may not call %', fn; END IF;
+  SELECT prosecdef, proconfig INTO p FROM pg_proc WHERE oid = to_regprocedure(fn);
+  IF NOT p.prosecdef OR NOT EXISTS (SELECT 1 FROM unnest(p.proconfig) c WHERE c LIKE 'search_path=%') THEN
+    RAISE EXCEPTION '% is not SECURITY DEFINER with its search_path set', fn;
+  END IF;
+  INSERT INTO sacb_cases VALUES ('only the five argument form exists, a four argument call finds nothing, and only service_role may call it');
+END
+$do$;
+
+-- ── F. The contract migration drops the four argument form and nothing else ──
+-- It runs the migration file itself, read from the migrations folder the
+-- harness copies into the container (scripts/sql-suite/project.sh).
+DO $do$
+DECLARE
+  v_file text := pg_read_file('/sql-suite-fixtures/supabase/20261028020000_drop_four_argument_slack_settings_save_2896.sql');
+  five text := 'public.save_slack_alert_settings(uuid, uuid, jsonb, uuid, text)';
+  five_oid oid := to_regprocedure('public.save_slack_alert_settings(uuid, uuid, jsonb, uuid, text)');
+BEGIN
+  BEGIN
+    -- The four argument form as production held it before the drop: its
+    -- signature and grants, with a stub body, since only the signature is
+    -- what the drop names.
+    CREATE FUNCTION public.save_slack_alert_settings(p_organization_id uuid, p_connection_id uuid, p_settings jsonb, p_actor uuid)
+    RETURNS TABLE (id uuid, config jsonb, credential_enc text)
+    LANGUAGE sql SECURITY DEFINER SET search_path TO 'public', 'pg_temp'
+    AS $f$ SELECT NULL::uuid, NULL::jsonb, NULL::text WHERE false $f$;
+    REVOKE ALL ON FUNCTION public.save_slack_alert_settings(uuid, uuid, jsonb, uuid) FROM PUBLIC, anon, authenticated;
+    GRANT EXECUTE ON FUNCTION public.save_slack_alert_settings(uuid, uuid, jsonb, uuid) TO service_role;
+    IF (SELECT count(*) FROM pg_proc WHERE proname = 'save_slack_alert_settings' AND pronamespace = 'public'::regnamespace) <> 2 THEN
+      RAISE EXCEPTION 'control: the four argument form was not put back, so this case proves nothing';
+    END IF;
+
+    EXECUTE v_file;
+    IF to_regprocedure('public.save_slack_alert_settings(uuid, uuid, jsonb, uuid)') IS NOT NULL THEN
+      RAISE EXCEPTION 'the contract migration left the four argument form';
+    END IF;
+    IF to_regprocedure(five) IS DISTINCT FROM five_oid THEN
+      RAISE EXCEPTION 'the contract migration dropped or recreated the five argument form';
+    END IF;
+    IF NOT has_function_privilege('service_role', five, 'EXECUTE') OR has_function_privilege('anon', five, 'EXECUTE') THEN
+      RAISE EXCEPTION 'the contract migration changed who may call the five argument form';
+    END IF;
+
+    -- Run again, on a database where the four argument form is already gone.
+    EXECUTE v_file;
+    IF to_regprocedure(five) IS DISTINCT FROM five_oid
+       OR (SELECT count(*) FROM pg_proc WHERE proname = 'save_slack_alert_settings' AND pronamespace = 'public'::regnamespace) <> 1 THEN
+      RAISE EXCEPTION 'running the contract migration again changed the settings saves';
+    END IF;
+    RAISE EXCEPTION 'sacb_rollback';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'sacb_rollback' THEN RAISE; END IF;
+  END;
+  INSERT INTO sacb_cases VALUES ('the contract migration drops only the four argument form, and runs again cleanly');
 END
 $do$;
 
@@ -212,7 +285,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-111111112870') THEN
     RAISE EXCEPTION 'a case''s rows were left behind';
   END IF;
-  IF n <> 5 THEN RAISE EXCEPTION 'expected 5 cases, % ran', n; END IF;
+  IF n <> 6 THEN RAISE EXCEPTION 'expected 6 cases, % ran', n; END IF;
   RAISE NOTICE 'slack_alert_settings_changed_by.test.sql: % cases passed', n;
 END
 $do$;
