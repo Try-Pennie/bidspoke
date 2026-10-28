@@ -52,6 +52,7 @@ import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-u
  *   a day for the HTTP connection host check (#2761). It reads no Slack row and
  *   no credential or config, and is not on an alert path: a read that fails
  *   judges nothing and pages that the check could not run.
+ */
 
 /** Each allowed file outside routes/api, with why it may name the table. */
 const ALLOWED_WITH_REASON: Record<string, string> = {
