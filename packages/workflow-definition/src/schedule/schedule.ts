@@ -6,8 +6,9 @@
  * exactly one of `cron` (weekdays by name, cron.ts) or `interval_seconds`; a
  * zone from the closed SCHEDULE_ZONES list; `overlap`; `catch_up`, with its
  * window and an optional re-attempt; and the most a fire's dispatch may be
- * spread after its slot (D7). It is exported for the TriggerConfig union of
- * #1947 to carry; until that union and the save path exist, nothing stores one.
+ * spread after its slot (D7). The TriggerConfig union (../trigger.ts) carries
+ * it, and the Worker's create and save routes refuse a schedule this validator
+ * finds problems with (scheduleRefusal in apps/worker/src/routes/api/workflows.ts).
  *
  * Overlap is a vocabulary here and an enforcement in the database (#1948): skip
  * is a partial unique index on a workflow's ACTIVE scheduled run, and queue is

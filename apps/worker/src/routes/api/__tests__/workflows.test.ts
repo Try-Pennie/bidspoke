@@ -119,7 +119,9 @@ const writesOf = (sb: { writes: WriteArgs[] }, op: string) => sb.writes.filter((
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const USER_ORG = 'org-abc'
-const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
+/** A schedule trigger whose settings are whole, for tests about something else (an invalid one is refused at save, #1952). */
+const OPS_SCHEDULE = { type: 'schedule', config: { cron: '0 13 * * *', timezone: 'America/New_York', overlap: 'skip', catch_up: 'none', jitter_max_seconds: 0 } }
+const testUser ={ id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
 // A stored row always carries its lane (NOT NULL, default money, #1707), and the
 // test and test-node routes refuse a row without one (#1725).
 const existingWorkflow = { id: 'wf-1', name: 'Lead Routing', organization_id: USER_ORG, definition: { nodes: [], edges: [] }, lane: 'money', version: 4 }
@@ -208,10 +210,10 @@ describe('PUT /workflows/:id', () => {
     const DAN = '00000000-0000-4000-8000-0000000023d1'
     const conn = '00000000-0000-4000-8000-0000000023c1'
     const step = (id: string, boundBy?: string) => ({ id, namespace: id, type: 'app_action', config: { service: 'google', action: 'google.gmail-send-email', actionVersion: 1, connection: conn, ...(boundBy ? { boundBy } : {}) } })
-    const stored = { ...existingWorkflow, definition: { trigger: { type: 'schedule', config: {} }, nodes: [step('mail', DAN)], edges: [] } }
+    const stored = { ...existingWorkflow, definition: { trigger: OPS_SCHEDULE, nodes: [step('mail', DAN)], edges: [] } }
     const sb = makeSupabase({ users: { single: testUser }, workflows: { single: stored } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const definition = { trigger: { type: 'schedule', config: {} }, nodes: [step('mail', 'user-1'), step('notify', DAN)], edges: [{ id: 'e', source: 'mail', target: 'notify' }] }
+    const definition = { trigger: OPS_SCHEDULE, nodes: [step('mail', 'user-1'), step('notify', DAN)], edges: [{ id: 'e', source: 'mail', target: 'notify' }] }
     const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
     expect(res.status).toBe(200)
     const written = writesOf(sb, 'save')[0].p_fields.definition as { nodes: Array<{ id: string; config: { boundBy: string } }> }
@@ -421,7 +423,7 @@ describe('PUT /workflows/:id', () => {
     const appDefinition = (config: Record<string, unknown>) => ({
       nodes: [{ id: 'post', namespace: 'post', type: 'app_action', config }],
       edges: [{ id: 'e0', source: 'trigger', target: 'post' }],
-      trigger: { type: 'schedule', config: { cron: '0 13 * * *', timezone: 'America/New_York' } },
+      trigger: OPS_SCHEDULE,
     })
     const unfinished = appDefinition({ service: 'slack', action: 'slack.send-message', actionVersion: 1, args: { channel: 'C0OPS', text: 'hi' } })
     const opsWorkflow = { ...existingWorkflow, lane: 'ops' }
@@ -2787,6 +2789,99 @@ describe('a malformed definition is refused by a named 400 on create and save, a
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New' } })
     expect(res.status).toBe(201)
+  })
+})
+
+// #1952: a schedule the tick could not fire is refused at save, never stored to
+// be dropped at fire time. Asked on create and save, the two routes a caller's
+// definition enters by, whether or not the workflow is switched on. The rules are
+// validateSchedule's (packages/workflow-definition); these prove the routes ask it.
+describe('an invalid schedule is refused by a named 400 on create and save (#1952)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  const validSchedule = { cron: '0 6 * * MON', timezone: 'America/New_York', overlap: 'skip', catch_up: 'none', jitter_max_seconds: 0 }
+  const scheduled = (config: unknown) => ({ nodes: [], edges: [], trigger: { type: 'schedule', config } })
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    app = await makeApp()
+  })
+
+  it.each([
+    ['a numeric weekday', { ...validSchedule, cron: '0 6 * * 1' }, 'cron_weekday_not_named'],
+    ['a cron that is not five fields', { ...validSchedule, cron: '0 6 * *' }, 'cron_not_five_fields'],
+    ['both a cron and an interval', { ...validSchedule, interval_seconds: 300 }, 'schedule_has_cron_and_interval'],
+    ['a zone no schedule fires in', { ...validSchedule, timezone: 'Europe/London' }, 'timezone_unsupported'],
+    ['no settings at all', {}, 'schedule_needs_cron_or_interval'],
+    ['settings that are not an object', 'every monday', 'schedule_needs_cron_or_interval'],
+  ])('PUT refuses %s by name and writes nothing', async (_, config, reason) => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, lane: 'ops' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: scheduled(config) } })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string; reason: string; problems: Array<{ reason: string; message: string }> }
+    expect(body.reason).toBe('schedule_invalid')
+    expect(body.error.startsWith('Nothing was saved. The workflow\'s schedule is not valid: ')).toBe(true)
+    expect(body.problems.map((p) => p.reason)).toContain(reason)
+    for (const p of body.problems) expect(body.error).toContain(p.message)
+    expect(definitionWrites(sb)).toEqual([])
+    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+  })
+
+  it('PUT refuses it on a switched off workflow too: a draft carrying it would page every tick once switched on', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, lane: 'ops', is_active: false } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: scheduled({ ...validSchedule, overlap: 'parallel' }) } })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { reason: string }).reason).toBe('schedule_invalid')
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('PUT saves a valid schedule', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, lane: 'ops' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: scheduled(validSchedule) } })
+    expect(res.status).toBe(200)
+    expect(writesOf(sb, 'save')).toHaveLength(1)
+  })
+
+  it('a save sending no definition is not judged by the stored one, so a rename still saves', async () => {
+    const stored = { ...existingWorkflow, lane: 'ops', definition: scheduled({ ...validSchedule, cron: '0 6 * * 1' }) }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: stored } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
+    expect(res.status).toBe(200)
+    expect(writesOf(sb, 'save')).toHaveLength(1)
+  })
+
+  it('POST refuses an invalid schedule by name and creates nothing', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { insertResult: { id: 'wf-new' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition: scheduled({ ...validSchedule, cron: '0 6 31 2 *' }) } })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { reason: string; problems: Array<{ reason: string }> }
+    expect(body.reason).toBe('schedule_invalid')
+    expect(body.problems.map((p) => p.reason)).toContain('cron_never_fires')
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('POST creates a workflow with a valid schedule', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { insertResult: { id: 'wf-new' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition: scheduled(validSchedule) } })
+    expect(res.status).toBe(201)
+    expect(writesOf(sb, 'create')).toHaveLength(1)
+  })
+
+  it('a trigger that is not a schedule is not judged as one', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [], edges: [], trigger: { type: 'http_webhook', config: {} } } } })
+    expect(res.status).toBe(200)
   })
 })
 
