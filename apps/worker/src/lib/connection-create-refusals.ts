@@ -171,14 +171,25 @@ export interface KeyScope {
   owner: string
 }
 
-/** "A", "A and B", "A, B and C". */
-function listed(names: readonly string[]): string {
-  if (names.length <= 1) return names[0] ?? 'A field'
+/**
+ * Whether a list reads as more than one thing. An empty list reads as the one
+ * thing listed's fallback names, so the verb and pronoun after it are singular
+ * too, never "A field are empty ... Fill them in" (#2926).
+ */
+const plural = (names: readonly string[]) => names.length > 1
+
+/**
+ * "A", "A and B", "A, B and C". No route passes an empty list, but each caller
+ * says what one reads as (`empty`), worded for its place in the sentence, so a
+ * new caller decides it rather than inheriting another sentence's noun (#2926).
+ */
+function listed(names: readonly string[], empty: string): string {
+  if (!plural(names)) return names[0] ?? empty
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
-const isAre = (names: readonly string[]) => (names.length === 1 ? 'is' : 'are')
-const itThem = (names: readonly string[]) => (names.length === 1 ? 'it' : 'them')
+const isAre = (names: readonly string[]) => (plural(names) ? 'are' : 'is')
+const itThem = (names: readonly string[]) => (plural(names) ? 'them' : 'it')
 const orgOf = (ctx: RefusalContext) => ctx.org ?? 'this connection names'
 
 const MONEY_WORDS: Readonly<Record<MoneyTargetKind, string>> = {
@@ -228,8 +239,8 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
     : `Bidspoke cannot connect to ${c.service} yet. Nothing was saved. ${c.targetFrom === 'form' ? 'Choose one of the services the form offers.' : 'Tell Dan.'}`,
   connection_name_missing: (c) => `The connection has no name. Nothing was saved. ${kept(c, 'Give it a name and save again.', `Give it a name and sign in with ${c.service} again.`)}`,
   connection_name_invalid: (c) => `The name is longer than ${CONNECTION_NAME_MAX} characters or holds a character a name cannot. Nothing was saved. ${kept(c, 'Shorten the name and save again.', `Shorten the name and sign in with ${c.service} again.`)}`,
-  connection_fields_missing: (c) => `${listed(c.names)} ${isAre(c.names)} empty. Nothing was saved. Fill ${itThem(c.names)} in and ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
-  connection_fields_undeclared: (c) => `The form sent ${listed(c.names)}, which a ${c.service} connection does not have. Nothing was saved. Reload the page and fill the form in again.`,
+  connection_fields_missing: (c) => `${listed(c.names, 'A field')} ${isAre(c.names)} empty. Nothing was saved. Fill ${itThem(c.names)} in and ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
+  connection_fields_undeclared: (c) => `The form sent ${listed(c.names, 'a field')}, which a ${c.service} connection does not have. Nothing was saved. Reload the page and fill the form in again.`,
   connection_name_reserved: (c) => `That name belongs to Bidspoke's own ${c.service} alert login. Nothing was saved. Choose another name and ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
   connection_name_taken: (c) => `Another ${c.service} connection already has that name. Nothing was saved. Choose another name and ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
   // A Slack alert bot is matched by its token, which a Reconnect replaces; every other bidding identity is what the stored connection names.
@@ -237,12 +248,13 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   connection_money_targets_unreadable: (c) => `Bidspoke could not check whether this is one of its own bidding logins. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
   connection_host_owned: (c) => `The host ${c.names[0] ?? 'entered'} belongs to ${c.names[1] ?? 'another service'}, which an HTTP connection may never reach. Nothing was saved. ${remedy(c, `Use another host, or a ${c.names[1] ?? 'service'} connection where Bidspoke offers one.`, `Add a new connection with another host, or a ${c.names[1] ?? 'service'} connection where Bidspoke offers one.`)}`,
   connection_money_host: (c) => `The host ${c.names[0] ?? 'entered'} is one Bidspoke's bidding sends to, which a workflow connection may never reach. Nothing was saved. ${remedy(c, 'Use another host.', 'Add a new connection with another host.')}`,
-  google_subject_not_listed: (c) => `${listed(c.names)} ${isAre(c.names)} not on the company list of mailboxes and drives. Nothing was saved. Add ${itThem(c.names)} to the list on this page, then ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
+  google_subject_not_listed: (c) => `${listed(c.names, 'That entry')} ${isAre(c.names)} not on the company list of mailboxes and drives. Nothing was saved. Add ${itThem(c.names)} to the list on this page, then ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
   google_subject_is_drive: (c) => `${c.names[0] ?? 'That'} is a shared drive, and a Google connection acts as a mailbox. Nothing was saved. ${remedy(c, 'Choose a mailbox under Acts as, tick the drive under Shared drives, then save again.', 'Add a new connection that acts as a mailbox, with the drive under Shared drives.')}`,
   google_list_unavailable: (c) => `The company list of mailboxes and drives could not be read. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
   connection_seal_failed: (c) => `Bidspoke could not lock the login away for safe keeping. Nothing was saved. ${kept(c, 'Save again, and tell Dan if it keeps happening.')}`,
   connections_unavailable: (c) => `Bidspoke's database did not answer. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
-  // A sign in's store fails on its insert or on a stored login it cannot read back, which a repeat does not mend: Dan then.
+  // A sign in answers it only when its insert fails; a Reconnect's stored login it cannot read back, before any login
+  // is tried, is the sign in's own google_sign_in_login_unreadable (#2926), since this one says the login worked.
   connection_store_failed: (c) => `The login worked, but Bidspoke could not store the connection. Nothing was saved. ${kept(c, 'Save again.')}`,
   verify_timed_out: (c) => `The login check with ${c.service} did not finish in time. Nothing was saved. ${kept(c, 'Save again.', signInNow(c))}`,
   verify_refused_unknown: (c) => `The login check with ${c.service} failed for a reason Bidspoke does not know. Nothing was saved. ${kept(c, 'Save again, and tell Dan if it keeps happening.')}`,
@@ -457,7 +469,7 @@ const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: Route
   slack_stored_token_refused: (c) =>
     `Slack no longer accepts the saved token${c.names[0] ? ` (${c.names[0]})` : ''}. Nothing was changed. Reconnect with a new token from the Slack app.`,
   slack_unanswered: () => 'Slack did not answer when Bidspoke asked about the token. Nothing was changed. Try again in a minute.',
-  reconnect_target_changed: (c) => `A Reconnect keeps what the connection names, so ${listed(c.names)} cannot change here. Nothing was saved. To use another, add a new connection.`,
+  reconnect_target_changed: (c) => `A Reconnect keeps what the connection names, so ${listed(c.names, 'that field')} cannot change here. Nothing was saved. To use another, add a new connection.`,
   reconnect_target_unreadable: () => 'Bidspoke cannot read back what this connection names, so it cannot be reconnected. Nothing was saved. Tell Dan.',
   reconnect_login_unreadable: (c) => `Bidspoke cannot read this connection's stored login, so there is nothing to check. Nothing was changed. Reconnect with a new ${c.secret}.`,
   reconnect_stale: () => 'Someone else changed this connection\'s login while yours was being checked. Nothing was saved. Reload the page, and reconnect again if it still needs it.',
@@ -466,8 +478,8 @@ const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: Route
     `The new ${c.secret} is saved, and workflows use it within a minute, but the workflows server could not record that its check passed, so a Needs reconnecting status stays until it does. Reconnect again to clear it.`,
   reauth_clear_unrecorded: () => 'The login check passed, but the workflows server could not record it, so the connection keeps its status. Nothing was changed. Reconnect again in a minute.',
   connection_in_use: (c) => {
-    const many = c.names.length > 1
-    return `${listed(c.names)} ${many ? 'use' : 'uses'} this connection, so it cannot be removed. Nothing was removed. Take it out of ${many ? 'each of them' : 'that workflow'} first${c.deleted ? ', and ask Dan about a deleted one' : ''}.`
+    const many = plural(c.names)
+    return `${listed(c.names, 'A workflow')} ${many ? 'use' : 'uses'} this connection, so it cannot be removed. Nothing was removed. Take it out of ${many ? 'each of them' : 'that workflow'} first${c.deleted ? ', and ask Dan about a deleted one' : ''}.`
   },
   connection_remove_unconfirmed: () => 'Bidspoke could not confirm whether the connection was removed. Reload the page to see, and remove it again if it is still there.',
   connection_removed_ops_not_told: () =>
@@ -477,8 +489,8 @@ const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: Route
   delegation_subject_listed_elsewhere: (c) => `${one(c, 'That entry')} is on another organization's list. Nothing was added. Tell Dan if this organization should use it.`,
   delegation_subject_not_listed: (c) => `${one(c, 'That entry')} is not on the list. Nothing was removed. Reload the list.`,
   delegation_subject_in_use: (c) => {
-    const many = c.names.length > 1
-    return `${listed(c.names)} ${many ? 'act' : 'acts'} as ${c.subject ?? 'it'}, so it cannot be taken off the list. Nothing was removed. Remove ${many ? 'those connections' : 'that connection'} first.`
+    const many = plural(c.names)
+    return `${listed(c.names, 'A connection')} ${many ? 'act' : 'acts'} as ${c.subject ?? 'it'}, so it cannot be taken off the list. Nothing was removed. Remove ${many ? 'those connections' : 'that connection'} first.`
   },
   delegation_use_unreadable: () => 'Bidspoke could not read which connections act as it, so it stays on the list. Nothing was removed. Try again in a minute.',
   delegation_change_failed: () => 'Bidspoke could not confirm the change to the list. Reload the list to see whether it was made.',
@@ -500,10 +512,12 @@ export function connectionRouteSentence(code: ConnectionRouteRefusalCode, ctx: R
   return ROUTE_SENTENCES[code](ctx)
 }
 
-const wasWere = (names: readonly string[]) => (names.length === 1 ? 'was' : 'were')
-const itThey = (names: readonly string[]) => (names.length === 1 ? 'it' : 'they')
-const useUses = (names: readonly string[]) => (names.length === 1 ? 'uses' : 'use')
-const nameNames = (names: readonly string[]) => (names.length === 1 ? 'names' : 'name')
+const wasWere = (names: readonly string[]) => (plural(names) ? 'were' : 'was')
+const itThey = (names: readonly string[]) => (plural(names) ? 'they' : 'it')
+const useUses = (names: readonly string[]) => (plural(names) ? 'use' : 'uses')
+const nameNames = (names: readonly string[]) => (plural(names) ? 'name' : 'names')
+/** Workflows named in an incomplete Replace: every part is guarded on a non empty list, so the fallback is never read. */
+const workflowsListed = (names: readonly string[]) => listed(names, 'A workflow')
 
 /**
  * What an incomplete Replace says (build PR 12; R20), or null when every
@@ -529,16 +543,16 @@ export function replaceIncompleteSentence(workflows: readonly ReplacedWorkflow[]
   if (replaceComplete(workflows)) return null
 
   const parts: string[] = []
-  if (gone.length) parts.push(`${replacement} was removed while this ran, so ${listed(gone)} still ${useUses(gone)} ${source}.`)
-  if (changed.length) parts.push(`${listed(changed)} ${wasWere(changed)} saved by someone else while this ran, so ${itThey(changed)} still ${useUses(changed)} ${source}.`)
-  if (unchecked.length) parts.push(`Bidspoke could not check the connections ${listed(unchecked)} ${nameNames(unchecked)}, so ${itThey(unchecked)} still ${useUses(unchecked)} ${source}.`)
-  if (unread.length) parts.push(`Bidspoke could not read ${listed(unread)}, so ${itThey(unread)} still ${useUses(unread)} ${source}.`)
+  if (gone.length) parts.push(`${replacement} was removed while this ran, so ${workflowsListed(gone)} still ${useUses(gone)} ${source}.`)
+  if (changed.length) parts.push(`${workflowsListed(changed)} ${wasWere(changed)} saved by someone else while this ran, so ${itThey(changed)} still ${useUses(changed)} ${source}.`)
+  if (unchecked.length) parts.push(`Bidspoke could not check the connections ${workflowsListed(unchecked)} ${nameNames(unchecked)}, so ${itThey(unchecked)} still ${useUses(unchecked)} ${source}.`)
+  if (unread.length) parts.push(`Bidspoke could not read ${workflowsListed(unread)}, so ${itThey(unread)} still ${useUses(unread)} ${source}.`)
   // #2903: the route stops before a workflow whose slowest run could not finish inside the page's wait.
-  if (late.length) parts.push(`Bidspoke stopped before ${listed(late)} so the page would not time out. ${late.length === 1 ? 'It' : 'They'} still ${useUses(late)} ${source}.`)
-  if (stale.length) parts.push(`${listed(stale)} also ${nameNames(stale)} a connection that was removed. Open ${stale.length === 1 ? 'it' : 'each'}, give that step a connection and save, then replace again.`)
-  if (malformed.length) parts.push(`The database would not take a new version of ${listed(malformed)}, so ${itThey(malformed)} still ${useUses(malformed)} ${source}. Tell Dan, since this is a fault in Bidspoke.`)
-  if (deleted.length) parts.push(`${listed(deleted)} ${wasWere(deleted)} deleted, so ${itThey(deleted)} cannot get a new version.`)
-  if (failed.length) parts.push(`Bidspoke could not confirm whether ${listed(failed)} got a new version.`)
+  if (late.length) parts.push(`Bidspoke stopped before ${workflowsListed(late)} so the page would not time out. ${late.length === 1 ? 'It' : 'They'} still ${useUses(late)} ${source}.`)
+  if (stale.length) parts.push(`${workflowsListed(stale)} also ${nameNames(stale)} a connection that was removed. Open ${stale.length === 1 ? 'it' : 'each'}, give that step a connection and save, then replace again.`)
+  if (malformed.length) parts.push(`The database would not take a new version of ${workflowsListed(malformed)}, so ${itThey(malformed)} still ${useUses(malformed)} ${source}. Tell Dan, since this is a fault in Bidspoke.`)
+  if (deleted.length) parts.push(`${workflowsListed(deleted)} ${wasWere(deleted)} deleted, so ${itThey(deleted)} cannot get a new version.`)
+  if (failed.length) parts.push(`Bidspoke could not confirm whether ${workflowsListed(failed)} got a new version.`)
 
   // What to do, said once. A save not known comes first: replacing again before reloading would be done blind.
   const again = [...changed, ...unchecked, ...unread, ...late]

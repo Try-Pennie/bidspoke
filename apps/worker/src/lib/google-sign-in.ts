@@ -180,6 +180,12 @@ export const SIGN_IN_REFUSAL_CODES = [
   'google_sign_in_wrong_account',
   /** The signed in person has no email address to sign in to Google as. */
   'google_sign_in_no_email',
+  /**
+   * A Reconnect's stored login (credential_enc) cannot be read back, so the
+   * exchange it is the candidate of is never tried: a fault in Bidspoke's stored
+   * data, which signing in again does not mend (#2926).
+   */
+  'google_sign_in_login_unreadable',
 ] as const
 export type SignInRefusalCode = (typeof SIGN_IN_REFUSAL_CODES)[number]
 
@@ -199,6 +205,7 @@ const SENTENCES: Readonly<Record<SignInRefusalCode, string>> = {
   google_sign_in_not_owner: 'Only the person this connection signs in as can reconnect it. Nothing was changed. Ask them to reconnect it, or add your own.',
   google_sign_in_wrong_account: 'You signed in to Google as another account than your Bidspoke one. Nothing was saved. Sign in with Google again as the account with your Bidspoke email address.',
   google_sign_in_no_email: 'Bidspoke has no email address for you to sign in to Google as. Nothing was saved. Tell Dan.',
+  google_sign_in_login_unreadable: 'Bidspoke cannot read the login it keeps for this connection, so it could not finish the sign in. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
 }
 
 export function signInRefusalSentence(code: SignInRefusalCode): string {

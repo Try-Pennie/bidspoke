@@ -537,6 +537,28 @@ describe('finishing a sign in: a Reconnect', () => {
     expect(asks).toEqual([])
   })
 
+  // No login was tried: the sentence claims only what was measured, that the stored login could not be read (L11, #2926).
+  it.each([
+    ['not JSON', 'not a sealed login'],
+    ['JSON that is not an object', 'null'],
+    ['missing', null],
+  ])('a Reconnect whose stored login is %s is refused as unreadable before any exchange, and changes nothing (#2926)', async (_what, stored) => {
+    const order: string[] = []
+    const db = store(order, { states: [state({ connection_id: OWN, reconnect: true, name: null })] })
+    db.table.find((r) => r.id === OWN)!.credential_enc = stored
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv(order)
+    const res = await finish(env, { state: STATE, code: CODE })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({
+      error: 'google_sign_in_login_unreadable',
+      message: 'Bidspoke cannot read the login it keeps for this connection, so it could not finish the sign in. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
+    })
+    expect(binding.exchangeOAuthCode).not.toHaveBeenCalled()
+    expect(order).toEqual(['rpc:claim_oauth_state'])
+    expect(db.table.find((r) => r.id === OWN)).toMatchObject({ acts_as: 'dan@trypennie.com', credential_generation: 4 })
+  })
+
   it('a Reconnect whose exchange is refused changes nothing on bidding', async () => {
     const order: string[] = []
     const db = store(order, { states: [state({ connection_id: OWN, reconnect: true, name: null })] })
