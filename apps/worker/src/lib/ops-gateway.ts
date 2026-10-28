@@ -56,7 +56,7 @@ import {
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
   servedConnectionProblem,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
-  type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
+  type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinition, type ServedOpsDefinitions,
 } from './ops-gateway-contract'
 import { formatErr } from './format-error'
 import { servedVersionVariables } from './version-variables'
@@ -274,11 +274,12 @@ interface VersionRow {
  *
  * Each version is served with the variables kept with it at its save that its
  * definition reads (#2702, version-variables.ts): a plain one by its value, a
- * secret one by its name alone. Throws, naming the version, on kept variables
- * it cannot read.
+ * secret one by its name alone. A version whose kept variables cannot be read
+ * is refused on its own, named with why, so it never fails the others asked
+ * for with it, and is never served without them.
  */
 export async function readOpsWorkflowDefinitions(supabase: SupabaseClient, request: OpsDefinitionRequest): Promise<ServedOpsDefinitions> {
-  const served: ServedOpsDefinitions = { definitions: [], unserved: [] }
+  const served: ServedOpsDefinitions = { definitions: [], unserved: [], refused: [] }
   for (const want of request.versions) {
     const { data, error } = await supabase
       .from('workflow_versions')
@@ -299,9 +300,16 @@ export async function readOpsWorkflowDefinitions(supabase: SupabaseClient, reque
       continue
     }
     const definition = row.definition as Record<string, unknown>
+    let variables: ServedOpsDefinition['variables']
+    try {
+      variables = servedVersionVariables(row.env_capture, row.workflow_id, definition, `workflow ${row.workflow_id} version ${row.version_number}`)
+    } catch (err) {
+      console.error(`[ops-gateway] not serving workflow ${row.workflow_id} version ${row.version_number}: ${formatErr(err)}`)
+      served.refused.push({ workflow_id: row.workflow_id, version_number: row.version_number, reason: formatErr(err) })
+      continue
+    }
     served.definitions.push({
-      workflow_id: row.workflow_id, organization_id: row.workflows.organization_id, version_number: row.version_number, definition,
-      variables: servedVersionVariables(row.env_capture, row.workflow_id, definition, `workflow ${row.workflow_id} version ${row.version_number}`),
+      workflow_id: row.workflow_id, organization_id: row.workflows.organization_id, version_number: row.version_number, definition, variables,
     })
   }
   return served

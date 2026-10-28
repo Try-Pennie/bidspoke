@@ -163,11 +163,18 @@ export interface ServedOpsDefinition {
  * The answer: each version served, and each one asked for that the bidding
  * database holds no ops lane row of (unserved), named rather than left out, so
  * the tick can tell a version that does not exist from one not yet answered.
+ * And each one the bidding Worker holds and would not serve (refused, #2702:
+ * variables kept with it that it cannot read), with why, so one bad version
+ * is named on its own and never fails the rest of the request.
  */
 export interface ServedOpsDefinitions {
   definitions: ServedOpsDefinition[]
   unserved: Array<{ workflow_id: string; version_number: number }>
+  refused: Array<{ workflow_id: string; version_number: number; reason: string }>
 }
+
+/** The longest reason a refused version carries: a sentence for a page, never a payload. */
+export const MAX_REFUSED_REASON = 300
 
 /**
  * How long a served connection copy may be used: Dan's decision 3 (2026-10-17,
@@ -972,6 +979,20 @@ export function parseServedOpsDefinitions(
     }
     unserved.push({ workflowId, versionNumber: u.version_number })
   })
+  // Absent from a bidding Worker from before #2702.
+  if (raw.refused !== undefined) {
+    if (!Array.isArray(raw.refused)) throw new OpsGatewayContractError('the bidding Worker answered the definition request with a refused list that is not a list')
+    raw.refused.forEach((r: unknown, i: number) => {
+      const workflowId = isRecord(r) && typeof r.workflow_id === 'string' && UUID.test(r.workflow_id) ? r.workflow_id : null
+      if (!isRecord(r) || workflowId === null || !isVersionNumber(r.version_number) || !wanted.has(`${workflowId}:${r.version_number}`)
+        || typeof r.reason !== 'string' || r.reason === '') {
+        const name = workflowId === null ? `refused row ${i}` : `workflow ${workflowId} version ${String(isRecord(r) ? r.version_number : '')}`
+        refused.push({ workflowId, text: `The bidding Worker said it would not serve ${name}, which the ops tick did not ask about or did not say why, so nothing was saved for it.` })
+        return
+      }
+      refused.push({ workflowId, text: `The bidding Worker could not serve workflow ${workflowId} version ${r.version_number} (${r.reason.slice(0, MAX_REFUSED_REASON)}), so it was not saved.` })
+    })
+  }
   return { definitions, unserved, refused }
 }
 

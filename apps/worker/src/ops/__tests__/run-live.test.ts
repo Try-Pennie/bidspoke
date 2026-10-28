@@ -136,6 +136,14 @@ describe('OpsInternal.run', () => {
     expect(String(db.calls.find((c) => c.name === 'complete_run_request')?.body.p_error)).toMatch(/secret variable env\.TOKEN.*connection/)
   })
 
+  it('a version the bidding Worker refused to serve returns the run to the queue, naming why (#2702)', async () => {
+    const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [], unserved: [], refused: [{ workflow_id: WF, version_number: 3, reason: 'its kept variables cannot be read' }] }) }
+    const db = opsDb({ ...LIFECYCLE, workflow_definition: [], complete_run_request: [{ outcome: 'completed', run_status: 'queued', state_version: 3 }] })
+    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))).toMatchObject({ outcome: 'definition_unavailable' })
+    expect(db.names()).not.toContain('start_run_execution')
+    expect(String(db.calls.find((c) => c.name === 'complete_run_request')?.body.p_error)).toMatch(/its kept variables cannot be read/)
+  })
+
   it('a definition it cannot have returns the run to the queue a minute on, without starting it', async () => {
     const gateway = { opsWorkflowDefinitions: async () => { throw new Error('the bidding Worker did not answer') } }
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [], complete_run_request: [{ outcome: 'completed', run_status: 'queued', state_version: 3 }] })

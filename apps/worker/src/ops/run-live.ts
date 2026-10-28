@@ -132,7 +132,11 @@ async function definitionOf(env: OpsEnv, client: OpsSupabaseClient, run: Claimed
   if (r.kind === 'threw') throw r.error
   const served = parseServedOpsDefinitions(r.value, asked)
   const def = served.definitions.find((d) => d.workflowId === run.workflowId && d.versionNumber === run.workflowVersion)
-  if (def === undefined) throw new Error(`the bidding Worker holds no ops lane version ${run.workflowVersion} of workflow ${run.workflowId}`)
+  if (def === undefined) {
+    // A version it holds and would not serve says why (#2702), rather than reading as one it lacks.
+    const refused = served.refused.find((r) => r.workflowId === run.workflowId)
+    throw new Error(refused?.text ?? `the bidding Worker holds no ops lane version ${run.workflowVersion} of workflow ${run.workflowId}`)
+  }
   if (def.organizationId !== run.organizationId) throw new Error(`the bidding Worker served workflow ${run.workflowId} under another organization than its run`)
   const saved = await saveWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion, def.definition, def.variables)
   // A conflict keeps ops's own copy, which is the one to run; read it back.

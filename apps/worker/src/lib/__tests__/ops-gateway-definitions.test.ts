@@ -56,7 +56,7 @@ describe('readOpsWorkflowDefinitions (the bidding Worker)', () => {
   it('reads each version of an ops lane workflow by its workflow and number, and serves its definition with its organization', async () => {
     const { client, queries } = versionsDb(() => [versionRow()])
     const served = await readOpsWorkflowDefinitions(client, { versions: [{ workflow_id: WF, version_number: 3 }] })
-    expect(served).toEqual({ definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: DEF, variables: null }], unserved: [] })
+    expect(served).toEqual({ definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: DEF, variables: null }], unserved: [], refused: [] })
     const q = queries[0]
     expect(q.pathname).toBe('/rest/v1/workflow_versions')
     expect(q.searchParams.get('workflow_id')).toBe(`eq.${WF}`)
@@ -78,9 +78,14 @@ describe('readOpsWorkflowDefinitions (the bidding Worker)', () => {
     expect(served.definitions[0].variables).toEqual({ values: { API_BASE: 'https://api.example.test' }, secret_keys: ['TOKEN'] })
   })
 
-  it('throws, naming the version, on variables kept in a shape it cannot read, rather than serving none', async () => {
-    const { client } = versionsDb(() => [versionRow({ env_capture: [{ key: 'K', value: 7 }] })])
-    await expect(readOpsWorkflowDefinitions(client, { versions: [{ workflow_id: WF, version_number: 3 }] })).rejects.toThrow(new RegExp(`workflow ${WF} version 3`))
+  it('refuses, by name, only a version whose kept variables it cannot read, and serves the rest of the request (#2702)', async () => {
+    const { client } = versionsDb((url) => (url.searchParams.get('workflow_id') === `eq.${WF}`
+      ? [versionRow({ env_capture: [{ key: 'K', value: 7 }] })]
+      : [versionRow({ workflow_id: WF2, version_number: 1 })]))
+    const served = await readOpsWorkflowDefinitions(client, { versions: [{ workflow_id: WF, version_number: 3 }, { workflow_id: WF2, version_number: 1 }] })
+    expect(served.definitions.map((d) => d.workflow_id)).toEqual([WF2])
+    expect(served.unserved).toEqual([])
+    expect(served.refused).toEqual([{ workflow_id: WF, version_number: 3, reason: expect.stringMatching(new RegExp(`variables kept with workflow ${WF} version 3`)) }])
   })
 
   it('names a version it has no row for, and a row of another lane the filter let through, as unserved', async () => {
@@ -122,6 +127,25 @@ describe('parseServedOpsDefinitions (the ops Worker)', () => {
     }, asked)
     expect(parsed.refused).toEqual([])
     expect(parsed.definitions.map((d) => d.variables)).toEqual([{ values: { API_BASE: 'https://api.example.test' }, secretKeys: ['TOKEN'] }, null])
+  })
+
+  it('passes on, by name and with its reason, a version the bidding Worker refused to serve (#2702)', () => {
+    const parsed = parseServedOpsDefinitions({
+      definitions: [], unserved: [],
+      refused: [
+        { workflow_id: WF, version_number: 3, reason: 'the variables kept with it hold a row that is not a saved variable' },
+        { workflow_id: WF2, version_number: 9, reason: 'not asked' },
+        { workflow_id: WF2, version_number: 1 },
+      ],
+    }, asked)
+    expect(parsed.refused).toEqual([
+      { workflowId: WF, text: `The bidding Worker could not serve workflow ${WF} version 3 (the variables kept with it hold a row that is not a saved variable), so it was not saved.` },
+      { workflowId: WF2, text: expect.stringMatching(/did not ask about/) },
+      { workflowId: WF2, text: expect.stringMatching(/did not ask about/) },
+    ])
+    // A bidding Worker from before #2702 sends no refused list.
+    expect(parseServedOpsDefinitions({ definitions: [], unserved: [] }, asked).refused).toEqual([])
+    expect(() => parseServedOpsDefinitions({ definitions: [], unserved: [], refused: 'x' }, asked)).toThrow(OpsGatewayContractError)
   })
 
   it('refuses, by name and unsaved, a version whose variables it cannot read (#2702)', () => {
