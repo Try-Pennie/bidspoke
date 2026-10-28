@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   sendBuyerClickAlert,
+  sendCircuitAlert,
   sendCronHeartbeatAlert,
   sendCronHeartbeatGroupAlert,
   sendDatabaseUnreachableAlert,
@@ -130,6 +131,12 @@ describe('the shared senders log the kind their caller names', () => {
     await sendRecoveryAlert(SLACK, 'C0ALERTS', { signal: 'volume cliff', ...item }, 'volume-cliff-all-clear')
     await sendGroupedRecoveryAlert(SLACK, 'C0ALERTS', { signal: 'output field stopped', items: [item] }, 'field-presence-drought-all-clear')
     expect(kinds()).toEqual(['stored-copy-serving', 'volume-cliff-all-clear', 'field-presence-drought-all-clear'])
+  })
+
+  it('a circuit opening and closing are a page and its all-clear', async () => {
+    await sendCircuitAlert({} as never, 'org-1', null, { service_name: 'lendswift', state: 'opened' }, async () => SLACK)
+    await sendCircuitAlert({} as never, 'org-1', null, { service_name: 'lendswift', state: 'closed' }, async () => SLACK)
+    expect(kinds()).toEqual(['circuit-breaker', 'circuit-breaker-all-clear'])
   })
 
   it('the database outage page is one kind whether or not Cloudflare answered for the database', async () => {

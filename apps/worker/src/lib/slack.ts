@@ -3441,7 +3441,7 @@ export async function sendCircuitAlert(
     ? `Circuit breaker opened for ${payload.service_name}`
     : `Circuit breaker recovered for ${payload.service_name}`
 
-  await postMessage(connection.bot_token, channel, blocks, fallback, 'circuit-breaker')
+  await postMessage(connection.bot_token, channel, blocks, fallback, isOpen ? 'circuit-breaker' : 'circuit-breaker-all-clear')
 }
 
 /** One recovered subject: what paged, when, and where to look. */

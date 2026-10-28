@@ -80,6 +80,7 @@ export const SLACK_ALERT_KINDS = [
   'partner-error-rate',
   'partner-error-rate-all-clear',
   'circuit-breaker',
+  'circuit-breaker-all-clear',
   'volume-cliff',
   'volume-cliff-all-clear',
   'volume-anomaly',
