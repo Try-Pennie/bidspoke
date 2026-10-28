@@ -10,9 +10,9 @@
  * no string, and a Remove that follows is not refused by a string the rewrite
  * left behind.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  readReplaceBody, replaceConnectionId, replaceHasTimeFor, replaceWorstMsPerWorkflow, REPLACE_CLIENT_WAIT_MS, REPLACE_DEADLINE_MS, REPLACE_SAVE_ATTEMPTS, REPLACE_WORKFLOWS_MAX, REPLACE_WORST_MS,
+  readReplaceBody, replaceArrivedAt, replaceClock, replaceConnectionId, replaceHasTimeFor, stampReplaceArrival, replaceWorstMsPerWorkflow, REPLACE_CLIENT_WAIT_MS, REPLACE_DEADLINE_MS, REPLACE_SAVE_ATTEMPTS, REPLACE_WORKFLOWS_MAX, REPLACE_WORST_MS,
   type ReplacedWorkflow,
 } from '../connection-replace'
 import { replaceIncompleteSentence } from '../connection-create-refusals'
@@ -119,6 +119,24 @@ describe('replaceHasTimeFor', () => {
     for (let n = 0; n < REPLACE_WORKFLOWS_MAX; n += 1) {
       expect(replaceHasTimeFor(0, REPLACE_WORST_MS.before + n * replaceWorstMsPerWorkflow())).toBe(true)
     }
+  })
+})
+
+describe('the Replace arrival stamp (#2920)', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('stamps the time by the Replace clock before anything after it runs', async () => {
+    vi.spyOn(replaceClock, 'now').mockReturnValue(1_800_000_000_000)
+    const set = vi.fn()
+    let stampedBeforeNext = false
+    await stampReplaceArrival({ set }, async () => { stampedBeforeNext = set.mock.calls.length === 1 })
+    expect(set).toHaveBeenCalledWith('replaceArrivedAt', 1_800_000_000_000)
+    expect(stampedBeforeNext).toBe(true)
+  })
+
+  it('a route reached without the stamp throws rather than start the clock late', () => {
+    expect(() => replaceArrivedAt(undefined)).toThrow(/replace_arrival_not_stamped/)
+    expect(replaceArrivedAt(42)).toBe(42)
   })
 })
 
