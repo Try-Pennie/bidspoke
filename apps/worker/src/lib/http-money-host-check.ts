@@ -48,8 +48,9 @@
  * DATA VOLUME (L24). HTTP connections: bounded by the connections an
  * organization makes (none on 2026-10-28, the service shipped that week),
  * read paged under a full order. The money host sources are read once per
- * organization holding an HTTP connection, and the workflows once per caught
- * connection.
+ * organization holding an HTTP connection. Each caught connection costs one
+ * connection_references call, plus one read by id of whether its workflows
+ * are switched on per 100 workflows using it (standing-connection-incidents.ts).
  *
  * Who may run it: the bidding Worker's daily cron only, as service_role. Whose
  * data: every organization's HTTP connections (id, organization, name and
