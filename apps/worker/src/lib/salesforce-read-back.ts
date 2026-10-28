@@ -57,6 +57,10 @@
  *    was sent) is never sent, whatever the record's stamp or history, and is no
  *    conflict: it is counted as later_states and logged, never alerted. A write
  *    whose every field is at a later state is settled without a send.
+ *  - A moved field nobody needs to decide (QUIET_MOVED_FIELDS, a Submission's
+ *    PDFlow_4__c run link) is left out and counted like any moved field, but a
+ *    write whose only moved fields are such is settled with a log line, never
+ *    an alert.
  *  - Nothing is sent while Salesforce's bulkhead is full or cannot be asked
  *    (fail closed), and the first call that gets no answer stops the tick's
  *    Salesforce traffic, which is this job's circuit: no Salesforce circuit
@@ -123,7 +127,7 @@ import { formatErr } from './format-error'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { getSlackConnection, sendSalesforceReadBackAlert, type SlackConnection } from './slack'
 import { BulkheadClient, salesforceBulkheadLimit } from './bulkhead-client'
-import { fieldsMovedSince, LAST_MODIFIED_MARGIN_MS, laterStateFields, movedFieldValues, readFieldHistory, sameSalesforceValue, type FieldHistory, type MovedFieldValues } from './salesforce-field-conflict'
+import { fieldsMovedSince, LAST_MODIFIED_MARGIN_MS, laterStateFields, movedFieldsToAlert, movedFieldValues, readFieldHistory, sameSalesforceValue, type FieldHistory, type MovedFieldValues } from './salesforce-field-conflict'
 import type { ReadBackAlertWrite, SalesforceReadBackAlert, UnreadReason } from './salesforce-read-back-alert'
 
 export const SF_READ_BACK_JOB = 'salesforce-read-back'
@@ -613,6 +617,16 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     console.log(`[${SF_READ_BACK_JOB}] ${h.id} left ${later.join(', ')} of ${h.entry.sf_object} ${h.entry.sf_record_id} at a later state of the value it was sending`)
   }
 
+  /** A write settled with fields left out as moved: alerted, unless every one is a field nobody needs to decide (QUIET_MOVED_FIELDS), which is logged. */
+  const settleMoved = async (h: Held, conflicts: string[], conflictValues: MovedFieldValues[], resent: boolean) => {
+    if (movedFieldsToAlert(h.entry.sf_object, conflicts).length > 0) {
+      await finish(h, { kind: 'conflict', conflict_fields: conflicts, resent }, { conflict_values: conflictValues })
+      return
+    }
+    console.log(`[${SF_READ_BACK_JOB}] ${h.id} left ${conflicts.join(', ')} of ${h.entry.sf_object} ${h.entry.sf_record_id} as moved, which nobody needs to decide${resent ? ', and resent the rest' : ''}`)
+    await forget(h)
+  }
+
   /**
    * The claim, then the attempt counted, before anything is sent. Only a won
    * claim spends an attempt. One the object could not answer sends nothing and
@@ -665,7 +679,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     }
     if (answer.status >= 200 && answer.status < 300) {
       s.resent_confirmed++
-      if (d.conflicts.length > 0) await finish(h, { kind: 'conflict', conflict_fields: d.conflicts, resent: true }, { conflict_values: d.conflictValues })
+      if (d.conflicts.length > 0) await settleMoved(h, d.conflicts, d.conflictValues, true)
       else await forget(h)
       return null
     }
@@ -850,7 +864,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
         laterState(h, d.later)
         count(h, d.candidates, d.conflicts)
         s.conflicts++
-        await finish(h, { kind: 'conflict', conflict_fields: d.conflicts, resent: false }, { conflict_values: d.conflictValues })
+        await settleMoved(h, d.conflicts, d.conflictValues, false)
       } else {
         const stop = await resend(h, d, port, path)
         if (stop) return { stop }
