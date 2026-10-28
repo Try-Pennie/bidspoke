@@ -665,6 +665,29 @@ export interface ConnectionList {
   statuses: { as_of: string | null; stale: boolean; unavailable: { cause: string; detail: string } | null }
 }
 
+/**
+ * What POST /api/connections/:id/replace answers (#2338, build PR 12): what
+ * each ticked workflow came to, and the sentence an incomplete one says
+ * (apps/worker lib/connection-replace.ts has the outcomes).
+ */
+export interface ConnectionReplaceAnswer {
+  outcome: 'replaced' | 'incomplete'
+  connection: { id: string }
+  with: { id: string; name: string }
+  workflows: Array<{
+    id: string
+    /** Null for a workflow that does not name the connection, which the route never reads. */
+    name: string | null
+    outcome: 'replaced' | 'not_using' | 'deleted' | 'changed' | 'refused' | 'failed'
+    version?: number
+    why?: string
+  }>
+  /** Said when incomplete: what was done, each workflow left and why, and what to do. */
+  message?: string
+  /** A stored copy that could not be refreshed: the Replace stands, and this says what follows. */
+  stored_copy_warning?: string
+}
+
 /** An ops step's kept test result, as GET /api/workflows/:id/test-results/:nodeId answers it (#2339). */
 export interface StepTestResult {
   node_id: string
@@ -811,6 +834,15 @@ const CONNECTION_LOOKUP_TIMEOUT_MS = 45_000
 // the check stalled only when the route can no longer answer (#2338 R13).
 export const CONNECTION_SAVE_TIMEOUT_MS = 120_000
 export const CONNECTION_REMOVE_TIMEOUT_MS = 50_000
+// A Replace saves each ticked workflow in turn, so how long it may take is set
+// by how many it is given: the route allows only as many as its slowest
+// measured run moves inside this wait (REPLACE_WORKFLOWS_MAX in
+// apps/worker/src/lib/connection-replace.ts, Dan 2026-10-27), and the dialog
+// ticks no more than CONNECTION_REPLACE_MOST. A guard holds the three equal
+// (lib/__tests__/replace-cap-fits-the-wait.test.ts).
+export const CONNECTION_REPLACE_TIMEOUT_MS = 120_000
+/** The most workflows one Replace moves: the route's REPLACE_WORKFLOWS_MAX, which the web build cannot import. */
+export const CONNECTION_REPLACE_MOST = 7
 
 type ReqInit = RequestInit & { timeoutMs?: number }
 
@@ -1427,6 +1459,13 @@ export const api = {
       req<{ outcome: 'removed'; connection: { id: string; generation: number }; ops: { told: true } | { told: false; cause: string; message: string } }>(`/api/connections/${encodeURIComponent(id)}`, {
         method: 'DELETE',
         timeoutMs: CONNECTION_REMOVE_TIMEOUT_MS,
+      }),
+    // Replace (build PR 12, R20): each ticked workflow gets a new version naming `with` in place of this connection.
+    replace: (id: string, body: { with: string; workflows: string[] }) =>
+      req<ConnectionReplaceAnswer>(`/api/connections/${encodeURIComponent(id)}/replace`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        timeoutMs: CONNECTION_REPLACE_TIMEOUT_MS,
       }),
     // Sign in with your own Google account (build PR 13, R17): the link to Google for a new connection or a
     // Reconnect of one, then the finish the Connections page posts once the callback route hands Google's answer back

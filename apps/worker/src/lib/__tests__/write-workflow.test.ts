@@ -1,6 +1,12 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { writeWorkflow, type WriteWorkflowCall } from '../write-workflow'
 import type { createSupabaseClient } from '../supabase'
+import { recordingContext } from '../../test-setup/wait-until'
+
+vi.mock('../github')
+vi.mock('../github-backup-alert')
+import { pushWorkflowToGitHub } from '../github'
+import { recordBackupFailure, recordBackupSuccess } from '../github-backup-alert'
 
 // writeWorkflow (#1947): the Worker's one way to write a workflow, through the
 // write_workflow database function. These pin the call it makes and how each
@@ -12,6 +18,9 @@ const client = (answer: { data: unknown; error: unknown }) => {
   return { rpc, supabase: { rpc } as unknown as Client }
 }
 
+// The context a call hands the backup when a test does not watch it.
+const fixtureCtx = recordingContext()
+
 const call: WriteWorkflowCall = {
   op: 'save',
   orgId: 'org-1',
@@ -21,7 +30,16 @@ const call: WriteWorkflowCall = {
   saveId: 'save-1',
   actor: { id: 'user-1', email: 'dan@pennie.com', name: 'Dan' },
   storedDefinition: null,
+  backup: { env: { GITHUB_TOKEN: 'gh-tok', GITHUB_REPO: 'Try-Pennie/backups', IDEMPOTENCY: {} as KVNamespace, APP_URL: 'https://app.test' }, waitUntil: fixtureCtx.waitUntil },
 }
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  // Backup not configured, unless a test says otherwise, so a write's push does nothing more.
+  vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+  vi.mocked(recordBackupSuccess).mockResolvedValue(undefined)
+  vi.mocked(recordBackupFailure).mockResolvedValue(false)
+})
 
 describe('writeWorkflow', () => {
   it('calls write_workflow with every argument named, and answers the written row', async () => {
@@ -98,5 +116,97 @@ describe('writeWorkflow', () => {
     const rpc = vi.fn().mockRejectedValue(new Error('fetch failed'))
     const result = await writeWorkflow({ rpc } as unknown as Client, call)
     expect(result.kind).toBe('failed')
+  })
+})
+
+// #2868: the GitHub backup is pushed by writeWorkflow itself, for every write
+// that writes a version snapshot (save and restore), so no route can write a
+// version and leave the backup holding the one before it. It runs after the
+// write is answered, through the caller's waitUntil, and its failure is
+// alerted as the save route always alerted it.
+describe('writeWorkflow pushes the GitHub backup of every version it writes (#2868)', () => {
+  const WRITTEN = { id: 'wf-1', name: 'Lead Routing', definition: { nodes: [{ id: 'a' }], edges: [] }, version: 5 }
+
+  /** A client answering write_workflow with `answer`, and the commit stamp update with `stamped` rows. */
+  const backed = (answer: { data: unknown; error: unknown }, stamped: Array<{ id: string }> = [{ id: 'ver-9' }]) => {
+    const updates: Array<{ values: unknown; id: unknown }> = []
+    const from = vi.fn((table: string) => ({
+      update: (values: unknown) => ({
+        eq: (_col: string, id: unknown) => ({
+          select: () => {
+            updates.push({ values, id })
+            return Promise.resolve({ data: table === 'workflow_versions' ? stamped : [], error: null })
+          },
+        }),
+      }),
+    }))
+    const rpc = vi.fn().mockResolvedValue(answer)
+    const ctx = recordingContext()
+    return { supabase: { rpc, from } as unknown as Client, ctx, updates, backup: { ...call.backup, waitUntil: ctx.waitUntil } }
+  }
+
+  it('pushes a restore\'s definition as the version it wrote, and stamps the commit on that version row', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-abc')
+    const { supabase, ctx, updates, backup } = backed({ data: { workflow: WRITTEN, version_id: 'ver-9', version_number: 9, restored_from: 2 }, error: null })
+    const result = await writeWorkflow(supabase, { ...call, op: 'restore', fields: { version_id: 'ver-2', definition: WRITTEN.definition }, backup })
+    expect(result.kind).toBe('written')
+    await ctx.settle()
+    expect(vi.mocked(pushWorkflowToGitHub)).toHaveBeenCalledWith('gh-tok', 'Try-Pennie/backups', 'wf-1', 'Lead Routing', WRITTEN.definition, 9, expect.stringMatching(/restore.*v2/i))
+    expect(updates).toEqual([{ values: { commit_sha: 'commit-abc' }, id: 'ver-9' }])
+    expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalledWith(call.backup.env.IDEMPOTENCY, 'org-1')
+    expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
+  })
+
+  it('pushes a save\'s stored definition with the message it was saved with', async () => {
+    const { supabase, ctx, backup } = backed({ data: { workflow: WRITTEN, version_id: 'ver-9', version_number: 9 }, error: null })
+    await writeWorkflow(supabase, { ...call, fields: { definition: WRITTEN.definition, message: 'fix: the filter' }, backup })
+    await ctx.settle()
+    expect(vi.mocked(pushWorkflowToGitHub)).toHaveBeenCalledWith('gh-tok', 'Try-Pennie/backups', 'wf-1', 'Lead Routing', WRITTEN.definition, 9, 'fix: the filter')
+  })
+
+  it.each(['create', 'duplicate', 'patch', 'delete'] as const)('pushes nothing for a %s, which writes no version of its own', async (op) => {
+    const { supabase, ctx, backup } = backed({ data: { workflow: WRITTEN }, error: null })
+    await writeWorkflow(supabase, { ...call, op, backup })
+    await ctx.settle()
+    expect(ctx.waitUntil).not.toHaveBeenCalled()
+    expect(vi.mocked(pushWorkflowToGitHub)).not.toHaveBeenCalled()
+  })
+
+  it('pushes nothing when nothing was written', async () => {
+    const { supabase, ctx, backup } = backed({ data: null, error: { code: 'BP409', message: 'stale_version', details: '{}' } })
+    expect((await writeWorkflow(supabase, { ...call, op: 'restore', backup })).kind).toBe('stale')
+    await ctx.settle()
+    expect(vi.mocked(pushWorkflowToGitHub)).not.toHaveBeenCalled()
+  })
+
+  it('answers the write as written when the push fails, and records the failure for the alert', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const failure = new Error('GitHub push failed (401): Bad credentials')
+    vi.mocked(pushWorkflowToGitHub).mockRejectedValue(failure)
+    const { supabase, ctx, updates, backup } = backed({ data: { workflow: WRITTEN, version_id: 'ver-9', version_number: 9, restored_from: 2 }, error: null })
+    const result = await writeWorkflow(supabase, { ...call, op: 'restore', backup })
+    expect(result.kind).toBe('written')
+    await ctx.settle()
+    expect(vi.mocked(recordBackupFailure)).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-1', workflowId: 'wf-1', workflowName: 'Lead Routing', error: failure, appUrl: 'https://app.test' }))
+    expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
+    expect(updates).toEqual([])
+  })
+
+  it('answers the write as written when the push throws before it returns a promise', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(pushWorkflowToGitHub).mockImplementation(() => { throw new Error('btoa refused the definition') })
+    const { supabase, ctx, backup } = backed({ data: { workflow: WRITTEN, version_id: 'ver-9', version_number: 9 }, error: null })
+    expect((await writeWorkflow(supabase, { ...call, backup })).kind).toBe('written')
+    await ctx.settle()
+    expect(vi.mocked(recordBackupFailure)).toHaveBeenCalledWith(expect.objectContaining({ workflowId: 'wf-1' }))
+  })
+
+  it('records no failure from a local dev process, which shares production\'s Slack', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(pushWorkflowToGitHub).mockRejectedValue(new Error('GitHub backup misconfigured: GITHUB_TOKEN is not set (GITHUB_REPO is configured)'))
+    const { supabase, ctx, backup } = backed({ data: { workflow: WRITTEN, version_id: 'ver-9', version_number: 9 }, error: null })
+    await writeWorkflow(supabase, { ...call, backup: { ...backup, env: { ...backup.env, LOCAL_DEV: 'true' } } })
+    await ctx.settle()
+    expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
   })
 })

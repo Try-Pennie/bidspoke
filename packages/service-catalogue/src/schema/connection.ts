@@ -87,10 +87,19 @@ export function connectionFormLabels(connection: ConnectionDeclaration): string[
  * What a sentence calls the service's secret ("client secret"), or "login"
  * when it declares none. The save route's refusals and the Connections page's
  * problem notice both word it from here (#2338), so they cannot disagree.
+ * Only an ordinary word is lower cased for the middle of a sentence ("Client
+ * secret" reads "client secret"); a word holding more than one capital keeps
+ * them, so "API key" stays "API key" (#2889). Every sentence that uses it
+ * places it mid sentence, never first.
  */
 export function connectionSecretLabel(connection: ConnectionDeclaration): string {
   const secret = connection.fields.find((f) => SECRET_INPUTS.has(f.input))
-  return secret ? secret.label.toLowerCase() : 'login'
+  return secret ? secret.label.split(' ').map(inSentence).join(' ') : 'login'
+}
+
+/** A word as it reads mid sentence: lower cased unless it holds more than one capital (API, JSON, OAuth). */
+function inSentence(word: string): string {
+  return (word.match(/[A-Z]/g) ?? []).length > 1 ? word : word.toLowerCase()
 }
 
 /** The login's field names, in form order. */
