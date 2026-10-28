@@ -1,9 +1,12 @@
-import { execFileSync } from 'node:child_process'
-import { readdirSync, readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { execFile, execFileSync } from 'node:child_process'
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
-import { listFiles, REPO_ROOT } from '../../__tests__/_scan-utils'
+import { consumeParens, listFiles, REPO_ROOT } from '../../__tests__/_scan-utils'
 
 /**
  * Issue #764. `deploy.yml` checks that migrations are APPLIED, never that the
@@ -188,6 +191,182 @@ function rpcsCalledByTheApp(): Set<string> {
   return found
 }
 
+/**
+ * One `.rpc('name', ...)` call in shipping source, with the argument names it
+ * sends, or null when they cannot be read from the source (a variable, a spread,
+ * a computed key). Read through the TypeScript parser rather than a pattern,
+ * because the names sit inside an object literal that spans lines and can hold
+ * nested objects of its own (#2930).
+ */
+interface RpcCall {
+  name: string
+  args: string[] | null
+  at: string
+}
+
+function unwrapped(node: ts.Expression): ts.Expression {
+  let n = node
+  while (ts.isParenthesizedExpression(n) || ts.isAsExpression(n) || ts.isSatisfiesExpression(n)) n = n.expression
+  return n
+}
+
+function argumentNames(arg: ts.Expression | undefined): string[] | null {
+  if (arg === undefined) return []
+  const obj = unwrapped(arg)
+  if (!ts.isObjectLiteralExpression(obj)) return null
+  const names: string[] = []
+  for (const p of obj.properties) {
+    if (ts.isShorthandPropertyAssignment(p)) names.push(p.name.text)
+    else if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))) names.push(p.name.text)
+    else return null
+  }
+  return names
+}
+
+function rpcCallsIn(file: string, src: string): RpcCall[] {
+  const kind = file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, kind)
+  const calls: RpcCall[] = []
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'rpc') {
+      const [first, second] = node.arguments
+      if (first && (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first))) {
+        const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1
+        calls.push({ name: first.text, args: argumentNames(second), at: `${path.relative(REPO_ROOT, file)}:${line}` })
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  return calls
+}
+
+function rpcCallsByTheApp(): RpcCall[] {
+  const roots = [path.join(REPO_ROOT, 'apps/worker/src'), path.join(REPO_ROOT, 'apps/web/src')]
+  return roots.flatMap((root) => listFiles(root, { exts: ['.ts', '.tsx'] }).flatMap((f) => rpcCallsIn(f, readFileSync(f, 'utf8'))))
+}
+
+/**
+ * Whether a call could be answered by an overload with these parameters.
+ *
+ * PostgREST picks an overload by the argument NAMES a call sends (its
+ * `matchesParams` in src/library/PostgREST/Plan.hs, read 2026-10-28): a function
+ * matches when the names sent, less its parameters that have a default, equal its
+ * parameters without one. So a call can only reach an overload whose parameters
+ * include every name it sends. An absent entry names that overload's parameters
+ * but not which of them have defaults, so a call whose names are all among them
+ * is taken as reaching it, and a call whose names cannot be read reaches any.
+ */
+function callCanReach(sent: string[] | null, params: string[]): boolean {
+  return sent === null || sent.every((n) => params.includes(n))
+}
+
+/** Each absent entry the app could still call, keyed on the name plus the argument names (#2930). */
+function absentButCalled(entries: ManifestEntry[], calls: RpcCall[]): string[] {
+  return entries
+    .filter((e) => e.anon === 'absent')
+    .flatMap((e) => {
+      const params = Object.keys(e.args)
+      return calls
+        .filter((c) => c.name === e.name && callCanReach(c.args, params))
+        .map((c) => `${e.name}(${params.join(', ')}) is called at ${c.at}`)
+    })
+}
+
+/** The parameter list of a function as a migration creates it: each name and whether it has a default. */
+function createdParams(migration: string, fn: string): Array<{ name: string; hasDefault: boolean }> {
+  const sql = readFileSync(path.join(REPO_ROOT, 'supabase/migrations', migration), 'utf8')
+  const head = new RegExp(`CREATE\\s+(?:OR\\s+REPLACE\\s+)?FUNCTION\\s+public\\.${fn}\\s*\\(`, 'i').exec(sql)
+  if (!head) throw new Error(`${migration} does not create ${fn}`)
+  const open = head.index + head[0].length - 1
+  const list = sql.slice(open + 1, consumeParens(sql, open) - 1)
+  return list.split(',').map((p) => p.trim()).filter(Boolean).map((p) => ({
+    name: p.split(/\s+/)[0],
+    hasDefault: /\bDEFAULT\b|=/i.test(p),
+  }))
+}
+
+const SLACK_SAVE = 'save_slack_alert_settings'
+// The four argument form #2896 dropped, and the five argument form the Worker calls.
+const SLACK_SAVE_FOUR = '20261027170000_slack_alert_config_own_keys_2643.sql'
+const SLACK_SAVE_FIVE = '20261027230000_slack_alert_settings_changed_by_2870.sql'
+
+function absentEntry(name: string, args: string[]): ManifestEntry {
+  return { name, args: Object.fromEntries(args.map((a) => [a, null])), anon: 'absent', note: 'planted by the test' }
+}
+
+describe('an absent entry is keyed on the overload, not the name alone (#2930)', () => {
+  const calls = rpcCallsByTheApp()
+  const four = createdParams(SLACK_SAVE_FOUR, SLACK_SAVE)
+  const five = createdParams(SLACK_SAVE_FIVE, SLACK_SAVE)
+
+  it('reads the migrations as four and five arguments, so the cases below are the real ones', () => {
+    expect(four.map((p) => p.name)).toEqual(['p_organization_id', 'p_connection_id', 'p_settings', 'p_actor'])
+    expect(five.map((p) => p.name)).toEqual([...four.map((p) => p.name), 'p_actor_email'])
+  })
+
+  it('finds every rpc the name scan finds, so keying on arguments drops no call', () => {
+    const read = new Set(calls.map((c) => c.name))
+    expect([...rpcsCalledByTheApp()].filter((n) => !read.has(n))).toEqual([])
+  })
+
+  it('reads the argument names the Worker sends to the Slack settings save', () => {
+    const sent = calls.filter((c) => c.name === SLACK_SAVE).map((c) => c.args)
+    expect(sent).toEqual([five.map((p) => p.name)])
+  })
+
+  it('refuses an absent entry for the overload the app calls', () => {
+    const planted = absentEntry(SLACK_SAVE, five.map((p) => p.name))
+    expect(absentButCalled([planted], calls)).toHaveLength(1)
+  })
+
+  it('accepts an absent entry for an overload of the same name that nothing calls', () => {
+    const planted = absentEntry(SLACK_SAVE, four.map((p) => p.name))
+    expect(absentButCalled([planted], calls)).toEqual([])
+  })
+
+  it("refuses when the call sends only some of the entry's names, since defaults could fill the rest", () => {
+    const call: RpcCall = { name: 'f', args: ['p_a'], at: 'planted' }
+    expect(absentButCalled([absentEntry('f', ['p_a', 'p_b'])], [call])).toHaveLength(1)
+  })
+
+  it("refuses when a call's argument names cannot be read", () => {
+    const call: RpcCall = { name: 'f', args: null, at: 'planted' }
+    expect(absentButCalled([absentEntry('f', ['p_a'])], [call])).toHaveLength(1)
+  })
+
+  it('reads a call passing a variable as unreadable, and a call with no arguments as sending none', () => {
+    const src = "db.rpc('f', args)\ndb.rpc('g')\ndb.rpc('h', { p_a: 1, p_b } as X)\ndb.rpc('i', { ...base, p_a: 1 })\n"
+    expect(rpcCallsIn('planted.ts', src).map((c) => [c.name, c.args])).toEqual([
+      ['f', null],
+      ['g', []],
+      ['h', ['p_a', 'p_b']],
+      ['i', null],
+    ])
+  })
+
+  it('asserts the four argument Slack settings save absent, probed with exactly its own names', () => {
+    // The probe has to send the dropped form's names: PostgREST answers PGRST202
+    // to a call no overload matches, so a probe with any other names would report
+    // an absence it never measured.
+    const entries = manifest().filter((e) => e.name === SLACK_SAVE)
+    expect(entries.map((e) => [e.anon, Object.keys(e.args)])).toEqual([
+      ['denied', five.map((p) => p.name)],
+      ['absent', four.map((p) => p.name)],
+    ])
+  })
+
+  it('cannot have the four name probe answered by the five argument form', () => {
+    // The five argument form matches a call only when every parameter without a
+    // default is sent. p_actor_email has none, so a call sending the four names
+    // misses it, and the probe can only be answered by a four argument form.
+    const required = five.filter((p) => !p.hasDefault).map((p) => p.name)
+    const probe = Object.keys(manifest().find((e) => e.name === SLACK_SAVE && e.anon === 'absent')?.args ?? {})
+    expect(required).toContain('p_actor_email')
+    expect(required.every((n) => probe.includes(n))).toBe(false)
+  })
+})
+
 describe('the required-objects manifest is derived, not remembered (#764)', () => {
   it('finds the app RPC calls at all, so this cannot pass vacuously', () => {
     // A broken matcher would report an empty set and every completeness check
@@ -212,9 +391,10 @@ describe('the required-objects manifest is derived, not remembered (#764)', () =
     // shape it takes: a routine dropped as unsafe, then reached for again by
     // name from shipping code. The deploy would report it absent, which is true
     // and reads as a database fault rather than as the caller being wrong.
-    const called = rpcsCalledByTheApp()
-    const contradictions = manifest().filter((e) => e.anon === 'absent' && called.has(e.name))
-    expect(contradictions.map((e) => e.name), 'the manifest says these must not exist, but the app calls them').toEqual([])
+    // Keyed on the name plus the argument names a call sends, since that is how
+    // PostgREST picks an overload, so a dropped overload of a function the app
+    // still calls in another form can be asserted absent (#2930).
+    expect(absentButCalled(manifest(), rpcCallsByTheApp()), 'the manifest says these must not exist, but the app calls them').toEqual([])
   })
 
   it('carries an argument shape for every entry, since an empty body reads as missing', () => {
@@ -335,5 +515,49 @@ describe('the assertion refuses a manifest it cannot read (#764)', () => {
       code = (e as { status?: number }).status ?? -1
     }
     expect(code).not.toBe(0)
+  })
+})
+
+describe('the assertion names the overload it probed (#2930)', () => {
+  // Two entries can now share a function name, one present and one asserted
+  // absent, so a line naming only the function would not say which form
+  // answered. Run against a local server answering as the live database does
+  // for a function that exists with anon refused.
+  const assertScript = path.join(REPO_ROOT, '.github/scripts/assert-live-db-objects.sh')
+
+  it('keeps each run\'s probe answers in a file of its own, never a fixed path', () => {
+    // A fixed /tmp path is shared with every other run and user on the machine.
+    // On the self hosted runner Mac one left by the runner user could not be
+    // overwritten, so curl failed and that run's stale 42501 body was read as
+    // this probe's answer. The test below caught it there; on a fresh Linux
+    // runner it cannot, so the shape is held here as well.
+    const code = readFileSync(assertScript, 'utf8').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+    expect(code).toMatch(/BODY=\$\(mktemp /)
+    expect(code).not.toMatch(/-o \/tmp\//)
+    expect(code).toContain('${http:-000}')
+  })
+
+  it('prints the argument names of a recreated overload in its verdict and its error', async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ code: '42501' }))
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as AddressInfo
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'dbobj-'))
+    const file = path.join(dir, 'manifest.json')
+    writeFileSync(file, JSON.stringify([absentEntry('f', ['p_a', 'p_b'])]))
+    try {
+      const result = await new Promise<{ code: number; stdout: string }>((resolve) => {
+        execFile('bash', [assertScript, file], {
+          env: { ...process.env, SUPABASE_URL: `http://127.0.0.1:${port}`, SUPABASE_ANON_KEY: 'x' },
+        }, (err, stdout) => resolve({ code: err ? (typeof err.code === 'number' ? err.code : -1) : 0, stdout }))
+      })
+      expect(result.code).toBe(1)
+      expect(result.stdout).toMatch(/^f\(p_a, p_b\)\s+expect_anon=absent .*-> still_present$/m)
+      expect(result.stdout).toContain('::error::f(p_a, p_b) answered a probe')
+    } finally {
+      server.close()
+    }
   })
 })
