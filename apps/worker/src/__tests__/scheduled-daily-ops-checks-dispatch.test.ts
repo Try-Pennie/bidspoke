@@ -5,13 +5,14 @@ import { loadWorker } from '../test-setup/load-worker'
 
 /**
  * The daily checks on the bidding Worker: the ops connection owner check
- * (#2340), the Salesforce bulkhead limit check (#2336) and the lead validation
- * script guard (#2595). Each runs on the
+ * (#2340), the HTTP connection host check (#2761), the Salesforce bulkhead
+ * limit check (#2336) and the lead validation script guard (#2595). Each runs on the
  * 13:00 batch and nowhere else, and stamps its own heartbeat, started and then
  * completed whichever way its run ended (L514). Invokes the real scheduled
  * handler rather than reading the source.
  */
 const runOpsConnectionOwnerCheckForEnv = vi.fn().mockResolvedValue({ judged: true, personBound: 0, orphaned: [], paged: [], allClear: [], unreadable: [], errors: [] })
+const runHttpMoneyHostCheckForEnv = vi.fn().mockResolvedValue({ judged: true, connections: 0, found: [], paged: [], allClear: [], unreadable: [], errors: [] })
 const runSalesforceBulkheadCheckForEnv = vi.fn().mockResolvedValue({ limit: 20, sizedFor: 20, verdict: 'matches', paged: 0, toldNobody: false, allClear: false, errors: [] })
 const runValidationScriptGuardForEnv = vi.fn().mockResolvedValue({ findings: [], newFindings: [], staleExceptions: [], unreadable: [], scanned: 9, alerted: false })
 const writeHeartbeat = vi.fn().mockResolvedValue(undefined)
@@ -20,6 +21,10 @@ const writeHeartbeatCompleted = vi.fn().mockResolvedValue(undefined)
 vi.mock('../lib/ops-connection-owner-check', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/ops-connection-owner-check')>()),
   runOpsConnectionOwnerCheckForEnv: (...args: unknown[]) => runOpsConnectionOwnerCheckForEnv(...args),
+}))
+vi.mock('../lib/http-money-host-check', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/http-money-host-check')>()),
+  runHttpMoneyHostCheckForEnv: (...args: unknown[]) => runHttpMoneyHostCheckForEnv(...args),
 }))
 vi.mock('../lib/salesforce-bulkhead-check', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/salesforce-bulkhead-check')>()),
@@ -59,6 +64,7 @@ async function fire(cron: string) {
 
 const CHECKS = [
   { id: 'ops-connection-owner', run: runOpsConnectionOwnerCheckForEnv },
+  { id: 'http-money-host', run: runHttpMoneyHostCheckForEnv },
   { id: 'salesforce-bulkhead-check', run: runSalesforceBulkheadCheckForEnv },
   { id: 'validation-script-guard', run: runValidationScriptGuardForEnv },
 ] as const

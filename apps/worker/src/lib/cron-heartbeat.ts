@@ -238,6 +238,21 @@ export const CRON_JOBS: CronJob[] = [
       'nobody is told when the person a person bound ops connection signs in as is removed from Bidspoke, so its workflows go on acting as someone who no longer has access (#2340)',
   },
   {
+    // Saved HTTP connections whose host bidding now sends to (#2761,
+    // http-money-host-check.ts).
+    id: 'http-money-host',
+    label: 'HTTP connection host check',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // One paged read of the HTTP connections, then per organization holding
+    // one its Salesforce credentials, partner rows and money workflows, and a
+    // workflows read per caught connection.
+    maxRunMs: 30 * MIN,
+    dependents:
+      'nobody is told when bidding starts sending to a host a saved HTTP connection already reaches, so ops workflows can go on sending to a bidding partner or to the bidding Worker itself (#2761)',
+  },
+  {
     // The bulkhead limit the ops Salesforce lane was sized against (#2336,
     // salesforce-bulkhead-check.ts).
     id: 'salesforce-bulkhead-check',

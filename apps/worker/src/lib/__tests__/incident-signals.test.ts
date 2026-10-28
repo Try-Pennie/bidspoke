@@ -14,6 +14,7 @@ import { CRON_HEARTBEAT_RECOVERY_WORDS } from '../slack'
 import { SLACK_TOKEN_SIGNAL } from '../slack-token-health'
 import { OPS_CONNECTION_LOGIN_SIGNAL } from '../ops-connection-logins'
 import { OPS_CONNECTION_OWNER_SIGNAL } from '../ops-connection-owner-check'
+import { HTTP_MONEY_HOST_SIGNAL } from '../http-money-host-check'
 import { SALESFORCE_BULKHEAD_SIGNAL } from '../salesforce-bulkhead-check'
 import { MINUTE_JOB_FAILING_SIGNAL } from '../minute-job-failures'
 import { SLACK_REFUSED_SIGNAL } from '../slack-refusal-watch'
@@ -29,7 +30,7 @@ import { LEAD_VALIDATION_REJECTION_RECOVERY_WORDS, LEAD_VALIDATION_REJECTION_SIG
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the twenty eight signals in use, each once', () => {
+  it('names the twenty nine signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -40,6 +41,7 @@ describe('INCIDENT_SIGNALS', () => {
       'field-presence-dead',
       'field-presence-drought',
       'field-presence-wrong-path',
+      'http-money-host',
       'lead-validation-config',
       'lead-validation-rejection-rate',
       'minute-job-failing',
@@ -148,6 +150,12 @@ describe('INCIDENT_SIGNALS', () => {
     expect(incidentSignal(OPS_CONNECTION_OWNER_SIGNAL).signal).toBe('ops-connection-owner')
     expect(incidentSignal('ops-connection-owner')).toMatchObject({ scope: 'org', subject: 'connection', windowMinutes: null, label: 'Ops connection owner' })
     expect(incidentSignal('ops-connection-owner').kinds).toEqual(['owner_removed', 'owner_missing'])
+  })
+
+  // #2761: one organization's HTTP connection, keyed on its id, a state with no window.
+  it('scopes the HTTP money host signal to the connection\'s organization, keyed on the connection', () => {
+    expect(incidentSignal(HTTP_MONEY_HOST_SIGNAL).signal).toBe('http-money-host')
+    expect(incidentSignal('http-money-host')).toMatchObject({ scope: 'org', subject: 'connection', windowMinutes: null, label: 'HTTP connection to a bidding host' })
   })
 
   // #2336: one Worker setting every organization's leads share, keyed on the bulkhead's own fixed id.

@@ -254,6 +254,19 @@ export const INCIDENT_SIGNALS = [
     windowMinutes: null,
     kinds: ['owner_removed', 'owner_missing'],
   },
+  // #2761. A saved HTTP connection whose host is now one bidding sends to, as
+  // the daily HTTP money host check judged it against its organization's money
+  // hosts. One organization's connection, keyed on its id and labelled with its
+  // name and service. It judges a state, so it has no window. Paged by
+  // http-money-host-check.ts.
+  {
+    signal: 'http-money-host',
+    label: 'HTTP connection to a bidding host',
+    scope: 'org',
+    subject: 'connection',
+    startMeans: FIRST_PAGE,
+    windowMinutes: null,
+  },
   // #2336. The bidding Worker's Salesforce bulkhead limit resolving to anything
   // other than the value the ops Salesforce lane's cap was sized against. One
   // Worker setting shared by every organization's leads, so the platform's,

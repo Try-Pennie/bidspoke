@@ -52,8 +52,8 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { formatErr } from '../../lib/format-error'
 import { mapWithConcurrency } from '../../lib/timeout-audit'
 import { resolveSalesforceCredsFor } from '../../lib/salesforce-creds'
-import { moneyHostOf, moneyTargetIn, readMoneyHosts, readMoneyTargets, type MoneyHostReads } from '../../lib/connection-money-targets'
-import { readOrgWorkflows } from '../../lib/org-workflows'
+import { moneyHostOf, moneyTargetIn, readMoneyHosts, readMoneyTargets } from '../../lib/connection-money-targets'
+import { liveMoneyHostReads } from '../../lib/money-host-reads'
 import {
   connectionRouteSentence, createRefusalSentence, isCreateRefusalCode, replaceIncompleteSentence, type ConnectionRouteRefusalCode, type CreateRefusalCode, type CreateRouteRefusalCode,
   type RefusalContext, type RouteRefusalContext, type VerifyRefusalCode,
@@ -427,35 +427,6 @@ const VERIFY_STATUS: Partial<Record<VerifyRefusalCode, 503 | 504>> = {
   ops_connections_timeout: 504,
 }
 
-/** At most this many partner rows are read; a read that reaches it is not known to be whole, so it refuses. */
-const MONEY_HOST_READ_LIMIT = 1000
-
-/**
- * The organization's money hosts sources (lib/connection-money-targets.ts,
- * readMoneyHosts), read only for an HTTP save. Each read is scoped to the
- * organization; one that comes back at its limit throws, so the save is
- * refused rather than checked against part of a list. Measured 2026-10-23: 10
- * money workflows (440 KB of definitions) and a handful of partner rows.
- */
-function moneyHostReads(supabase: ReturnType<typeof createSupabaseClient>, env: Env): MoneyHostReads {
-  return {
-    salesforce: (organizationId) => resolveSalesforceCredsFor(env, supabase, organizationId),
-    partnerUrls: async (organizationId) => {
-      const { data, error } = await supabase
-        .from('partner_configs')
-        .select('api_endpoint, dedup_endpoint, click_url')
-        .eq('organization_id', organizationId)
-        .order('id')
-        .limit(MONEY_HOST_READ_LIMIT)
-      if (error) throw new Error('partner_configs read failed')
-      if (data.length >= MONEY_HOST_READ_LIMIT) throw new Error('partner_configs read reached its limit')
-      return data.flatMap((r) => [r.api_endpoint, r.dedup_endpoint, r.click_url].filter((v): v is string => typeof v === 'string'))
-    },
-    // The one organization workflows read (lib/org-workflows.ts): scoped, not soft deleted, paged; it throws rather than truncating.
-    moneyDefinitions: async (organizationId) => (await readOrgWorkflows(supabase, organizationId, { lane: 'money' })).map((w) => JSON.stringify(w.definition)),
-  }
-}
-
 /**
  * What a create that could not withdraw its verified id leaves on ops, and what
  * removes it (#2573): for an id bidding never stored, the ops tick's first
@@ -590,7 +561,7 @@ connections.post('/', async (c) => {
       if (declared.problem === 'service_owned') return refuse('connection_host_owned', { ...words, names: [declared.host, declared.service] }, { owned_by: declared.service })
       return refuse('connection_target_invalid', words, { detail: declared.problem })
     }
-    const hosts = await readMoneyHosts(c.env as unknown as Record<string, unknown>, orgId, moneyHostReads(supabase, c.env))
+    const hosts = await readMoneyHosts(c.env as unknown as Record<string, unknown>, orgId, liveMoneyHostReads(supabase, c.env))
     if (!hosts.ok) {
       console.error(JSON.stringify({ event: 'connection_money_targets_unreadable', organization_id: orgId, detail: hosts.detail }))
       return refuse('connection_money_targets_unreadable', words)
