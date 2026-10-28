@@ -53,7 +53,7 @@
  * Each connection is its own failure boundary, and nothing here throws to the
  * minute cron.
  */
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, recoveryKey, refreshAlerted, RECOVERY_REARM_MINUTES, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, RECOVERY_REARM_MINUTES, type RecoveryKv } from './alert-recovery'
 import { backoffCooldownKey, clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
 import { minuteAllClearClaim, postMinutePage } from './alert-fanout'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -63,6 +63,9 @@ import {
   CONNECTION_LOGIN_STATES, parseOpsTickReport, parseWriteBacks, type ConnectionLoginAlert, type ConnectionLoginsReport, type WriteBackAlert, type WriteBacksReport,
 } from './ops-gateway-contract'
 import { OPS_TICK_REPORT_FRESH_MS, OPS_TICK_REPORT_KEY, OPS_TICK_WRITE_BACKS_FRESH_MS, OPS_TICK_WRITE_BACKS_KEY } from './ops-gateway'
+import {
+  connectionIncident, settleConnectionIncidents, type ConnectionIncidentFinding, type ConnectionIncidentsOptions, type OpenConnectionIncident, type StandingConnectionsOutcome,
+} from './standing-connection-incidents'
 import {
   opsConnectionLabel, sendOpsConnectionLoginAlert, sendOpsConnectionLoginRecoveryAlert, sendOpsConnectionWriteBackAlert, sendOpsConnectionWriteBackRecoveryAlert,
   type OpsConnectionLoginAlert, type OpsConnectionWriteBackAlert,
@@ -94,43 +97,30 @@ export const OPS_CONNECTION_WRITE_BACK_STATE_KEY = 'ops-connection-write-back:st
 
 type ConnectionSignal = typeof OPS_CONNECTION_LOGIN_SIGNAL | typeof OPS_CONNECTION_WRITE_BACK_SIGNAL
 
-interface OpenEntry {
-  organization_id: string
+/**
+ * What either page keeps with each open incident (the shape of its state
+ * record, which must stay readable across releases): whose connection it is,
+ * its service, and its state, which decides how long its all clear waits.
+ */
+interface OpenEntry extends OpenConnectionIncident {
   service: string
   state: string
 }
 
-interface OpenState {
-  open: Record<string, OpenEntry>
-}
-
 /**
- * The stored record, and how many of its entries could not be read. Nothing
- * can be recovered from an entry that cannot be read (it is the only copy of
- * whose incident it was), so the record is written over all the same: refusing
- * to would leave the check unable to keep any incident again. Each lost
- * incident's marker lapses at its expiry, and the drain closes it as lapsed,
- * which says truthfully that no all clear was sent. The count is reported.
+ * One stored entry, or null when it cannot be read, a state this page does not
+ * record included. Nothing can be recovered from such an entry (it is the only
+ * copy of whose incident it was), so the shared bookkeeping counts and drops
+ * it, and writes the record over all the same: refusing to would leave the
+ * check unable to keep any incident again. The lost incident's marker lapses
+ * at its expiry, and the drain closes it as lapsed, which says truthfully that
+ * no all clear was sent.
  */
-function parseState(raw: string | null, states: readonly string[]): { state: OpenState; unreadable: number } {
-  if (!raw) return { state: { open: {} }, unreadable: 0 }
-  try {
-    const v = JSON.parse(raw) as { open?: unknown }
-    const open: Record<string, OpenEntry> = {}
-    if (!v.open || typeof v.open !== 'object' || Array.isArray(v.open)) return { state: { open }, unreadable: 1 }
-    let unreadable = 0
-    for (const [id, e] of Object.entries(v.open as Record<string, unknown>)) {
-      const o = e as Partial<OpenEntry> | null
-      if (o && typeof o.organization_id === 'string' && typeof o.service === 'string' && typeof o.state === 'string' && states.includes(o.state)) {
-        open[id] = { organization_id: o.organization_id, service: o.service, state: o.state }
-      } else {
-        unreadable++
-      }
-    }
-    return { state: { open }, unreadable }
-  } catch {
-    return { state: { open: {} }, unreadable: 1 }
-  }
+function readOpenEntry(value: unknown, states: readonly string[]): OpenEntry | null {
+  const o = value as Partial<OpenEntry>
+  return typeof o.organization_id === 'string' && typeof o.service === 'string' && typeof o.state === 'string' && states.includes(o.state)
+    ? { organization_id: o.organization_id, service: o.service, state: o.state }
+    : null
 }
 
 export type KeptLogins = { judged: true; report: ConnectionLoginsReport } | { judged: false; why: string }
@@ -236,9 +226,9 @@ interface DueItem {
 
 /**
  * What tells one page from the other: its signal and record, its states, how
- * it words a page and an all clear, how long an all clear waits, and the
- * arming of its marker, written per signal with its own constant so the
- * registry's armed guard (incident-signals-armed.test.ts) sees each one.
+ * it words a page and an all clear, and how long an all clear waits. The
+ * shared bookkeeping is called per signal with its own constant (`settle`),
+ * so the registry's armed guard (incident-signals-armed.test.ts) sees each one.
  */
 interface ConnectionSignalRules<I extends DueItem> {
   signal: ConnectionSignal
@@ -246,7 +236,7 @@ interface ConnectionSignalRules<I extends DueItem> {
   /** The states its open record may hold, each one a problem a change to which posts at once (#1768). */
   states: readonly string[]
   stateOf(item: I): string
-  arm(kv: RecoveryKv, id: string, incident: IncidentContext, nowMs: number): Promise<void>
+  settle(o: Omit<ConnectionIncidentsOptions<OpenEntry>, 'signal'>): Promise<StandingConnectionsOutcome>
   send(organizationId: string, item: I, name: string | null, repeat: string | undefined): Promise<boolean>
   recover(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt: string | null }): Promise<boolean>
   /** How long a state must have stayed clear before its all clear goes. */
@@ -264,21 +254,15 @@ async function nameOf(deps: ConnectionSignalDeps, organizationId: string, connec
   }
 }
 
-const incidentFor = (organizationId: string, label: string, errors: string[]): IncidentContext => ({
-  scope: { kind: 'org', organizationId },
-  subjectLabel: label,
-  onRecordError: (message) => errors.push(message),
-})
-
-/** One due item: page it unless its reminder interval runs. Returns whether it was paged. */
-async function pageItem<I extends DueItem>(rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, item: I, nowMs: number, errors: string[]): Promise<boolean> {
+/**
+ * One due item's page on the minute schedule: at once when it is new or its
+ * state changed, otherwise only when its reminder interval has run, and under
+ * the minute claims, so two overlapping ticks post it once. Returns whether it
+ * reached Slack; the shared bookkeeping arms its incident only then.
+ */
+async function sendPage<I extends DueItem>(rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, item: I, name: string | null, nowMs: number): Promise<boolean> {
   const { kv } = deps
-  const id = item.connection_id
-  const name = await nameOf(deps, item.organization_id, id, errors)
-  const incident = incidentFor(item.organization_id, opsConnectionLabel(name, item.service), errors)
-  const key = `${rules.signal}:${id}`
-  await markSpikeSeen(kv, rules.signal, id, nowMs)
-  const marker = await kv.get(recoveryKey(rules.signal, id))
+  const key = `${rules.signal}:${item.connection_id}`
   const standing = await readCondition(kv, key)
   // The state is the problem: a change of state is a new one and posts at once (#1768).
   const state = rules.stateOf(item)
@@ -295,115 +279,82 @@ async function pageItem<I extends DueItem>(rules: ConnectionSignalRules<I>, deps
       reminderOf ? describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged) ?? undefined : undefined,
     ),
   })
-  if (posted !== 'sent') {
-    // Armed only on delivery, so a Slack outage does not buy silence, and an all clear never follows an unseen page.
-    if (marker !== null) await refreshAlerted(kv, rules.signal, id)
-    return false
-  }
+  if (posted !== 'sent') return false
   await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
-  await rules.arm(kv, id, incident, nowMs)
-  await recordPaged(kv, rules.signal, id, incident, nowMs)
   return true
 }
 
-/** One open incident no longer listed: its all clear. Returns whether its incident is still open afterwards. */
-async function clearItem<I extends DueItem>(
-  rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, id: string, open: OpenEntry, nowMs: number, errors: string[], allClear: string[],
+/**
+ * One open incident's all clear, named by the connection's name as it is now
+ * and the service kept with it, held for its state's re-arm window and taken
+ * under the minute claims. Returns whether it reached Slack.
+ */
+async function sendAllClear<I extends DueItem>(
+  rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, id: string, open: OpenEntry, nowMs: number, errors: string[],
 ): Promise<boolean> {
-  const { kv } = deps
-  if ((await kv.get(recoveryKey(rules.signal, id))) === null) {
-    // Never paged (its page did not deliver), or already settled: nothing is owed.
-    await clearCondition(kv, `${rules.signal}:${id}`)
-    return false
-  }
   const name = await nameOf(deps, open.organization_id, id, errors)
   const label = opsConnectionLabel(name, open.service)
-  const delivered = await announceRecovery(
-    kv,
+  return announceRecovery(
+    deps.kv,
     rules.signal,
     id,
     backoffCooldownKey(`${rules.signal}:${id}`),
-    incidentFor(open.organization_id, label, errors),
+    connectionIncident(open.organization_id, label, errors),
     (alertedAt, endedAt, firstHealthyAt) => rules.recover(open.organization_id, { subject: label, alertedAt, endedAt, firstHealthyAt }),
     { now: nowMs, rearmMinutes: rules.rearmMinutes(open.state), claim: minuteAllClearClaim(deps.claims, rules.signal, id) },
   )
-  if (!delivered) return true
-  await clearCondition(kv, `${rules.signal}:${id}`)
-  allClear.push(id)
-  return false
 }
 
-/** Either page's minute check: page what is listed, clear what a complete list no longer names, keep the rest. */
+/**
+ * Either page's minute check: page what is listed, clear what a complete list
+ * no longer names, keep the rest. The open incident bookkeeping is the shared
+ * one (standing-connection-incidents.ts, #2947); what is this page's own is
+ * its reminder schedule, its all clear's wording and wait, and the list's
+ * completeness.
+ */
 async function runConnectionSignalCheck<I extends DueItem>(
   rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, read: () => Promise<JudgedItems<I>>,
 ): Promise<OpsConnectionLoginSummary> {
   const nowMs = deps.now()
   const errors: string[] = []
   const summary: OpsConnectionLoginSummary = { judged: false, paged: [], allClear: [], errors }
-  let rawState: string | null = null
-  // A record that could not be read is not an empty one: writing over it would
-  // drop every incident it holds, and with it the all clear each is owed.
-  let stateRead = true
-  try {
-    rawState = await deps.kv.get(rules.stateKey)
-  } catch (err) {
-    stateRead = false
-    errors.push(`the open incidents could not be read, so they are left as stored: ${formatErr(err)}`)
-  }
-  const parsed = parseState(rawState, rules.states)
-  const previous = parsed.state
-  if (parsed.unreadable > 0) {
-    errors.push(`${parsed.unreadable} open incident record${parsed.unreadable === 1 ? '' : 's'} could not be read, so ${parsed.unreadable === 1 ? 'its' : 'their'} all clear cannot be sent; each closes as lapsed when its marker expires`)
-  }
   const judged = await read()
 
-  if (!judged.judged) {
+  let findings: ConnectionIncidentFinding<OpenEntry>[] | null = null
+  let complete = false
+  if (judged.judged) {
+    summary.judged = true
+    complete = judged.complete
+    findings = []
+    // One page per connection, its last listing winning.
+    for (const item of new Map(judged.items.map((i) => [i.connection_id, i])).values()) {
+      const name = await nameOf(deps, item.organization_id, item.connection_id, errors)
+      findings.push({
+        id: item.connection_id,
+        label: opsConnectionLabel(name, item.service),
+        open: { organization_id: item.organization_id, service: item.service, state: rules.stateOf(item) },
+        send: () => sendPage(rules, deps, item, name, nowMs),
+      })
+    }
+  } else {
     summary.why = judged.why
-    for (const id of Object.keys(previous.open)) {
-      try {
-        await refreshAlerted(deps.kv, rules.signal, id)
-      } catch (err) {
-        errors.push(`${id}: the open incident could not be kept: ${formatErr(err)}`)
-      }
-    }
-    return summary
-  }
-  summary.judged = true
-
-  const next: OpenState = { open: {} }
-  const due = new Map(judged.items.map((item) => [item.connection_id, item]))
-  for (const item of due.values()) {
-    // Listed whatever the page does, so its all clear is asked for once it clears.
-    next.open[item.connection_id] = { organization_id: item.organization_id, service: item.service, state: rules.stateOf(item) }
-    try {
-      if (await pageItem(rules, deps, item, nowMs, errors)) summary.paged.push(item.connection_id)
-    } catch (err) {
-      errors.push(`${item.connection_id}: the page failed: ${formatErr(err)}`)
-    }
-  }
-  for (const [id, open] of Object.entries(previous.open)) {
-    if (due.has(id)) continue
-    try {
-      if (!judged.complete) {
-        // Past the list's limit, or not answered, so unknown, not cleared: keep it.
-        await refreshAlerted(deps.kv, rules.signal, id)
-        next.open[id] = open
-        continue
-      }
-      if (await clearItem(rules, deps, id, open, nowMs, errors, summary.allClear)) next.open[id] = open
-    } catch (err) {
-      errors.push(`${id}: the all clear failed: ${formatErr(err)}`)
-      next.open[id] = open
-    }
   }
 
-  if (stateRead && JSON.stringify(next) !== JSON.stringify(previous)) {
-    try {
-      await deps.kv.put(rules.stateKey, JSON.stringify(next))
-    } catch (err) {
-      errors.push(`the open incidents could not be kept for the next check: ${formatErr(err)}`)
-    }
-  }
+  const outcome = await rules.settle({
+    kv: deps.kv,
+    stateKey: rules.stateKey,
+    nowMs,
+    findings,
+    readOpen: (value) => readOpenEntry(value, rules.states),
+    // Past the list's limit, or not answered, so unknown, not cleared: keep it.
+    unjudged: () => !complete,
+    announce: (id, open) => sendAllClear(rules, deps, id, open, nowMs, errors),
+    // Its reminder schedule goes with the incident, so a relapse pages at once.
+    settled: (id) => clearCondition(deps.kv, `${rules.signal}:${id}`),
+    errors,
+  })
+  summary.paged.push(...outcome.paged)
+  summary.allClear.push(...outcome.allClear)
   return summary
 }
 
@@ -413,7 +364,7 @@ export async function runOpsConnectionLoginCheck(deps: OpsConnectionLoginDeps): 
     stateKey: OPS_CONNECTION_LOGIN_STATE_KEY,
     states: CONNECTION_LOGIN_STATES,
     stateOf: (login) => login.state,
-    arm: (kv, id, incident, nowMs) => markAlerted(kv, OPS_CONNECTION_LOGIN_SIGNAL, id, incident, nowMs),
+    settle: (o) => settleConnectionIncidents({ signal: OPS_CONNECTION_LOGIN_SIGNAL, ...o }),
     send: (organizationId, login, name, repeat) => deps.sendAlert(organizationId, {
       name, service: login.service, state: login.state, reason: login.reason, since: login.since, failures: login.failures,
       ...(repeat ? { repeat } : {}),
@@ -437,7 +388,7 @@ export async function runOpsConnectionWriteBackCheck(deps: OpsConnectionWriteBac
     states: [WRITE_BACK_PENDING],
     // One state, whatever the count of tries: a growing count is the same problem, which the reminder schedule repeats.
     stateOf: () => WRITE_BACK_PENDING,
-    arm: (kv, id, incident, nowMs) => markAlerted(kv, OPS_CONNECTION_WRITE_BACK_SIGNAL, id, incident, nowMs),
+    settle: (o) => settleConnectionIncidents({ signal: OPS_CONNECTION_WRITE_BACK_SIGNAL, ...o }),
     send: (organizationId, wb, name, repeat) => deps.sendAlert(organizationId, {
       name, service: wb.service, since: wb.since, attempts: wb.attempts, ...(repeat ? { repeat } : {}),
     }),
