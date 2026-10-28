@@ -125,6 +125,8 @@ describe('a counted job stamped through completeAfter hands its failures to it (
       'buyer-sale-drain',
       'ops-connection-logins',
       'ops-connection-write-backs',
+      // #2486: the ops key reseal page.
+      'ops-key-reseal',
       'ops-tick-report',
       // #2582: the partner ping failure page.
       'partner-error-rate',

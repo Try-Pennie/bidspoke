@@ -38,6 +38,9 @@ const MINUTE_CLAIMANTS: Record<string, string[]> = {
   // #2340 phase 10 item 4: the write back page, judged every minute from the
   // judgement the bidding Worker keeps, so the same holds.
   'ops-connection-logins.ts': ['runOpsConnectionLoginCheckForEnv', 'runOpsConnectionWriteBackCheckForEnv'],
+  // #2486: the ops key reseal page, judged every minute from the ops tick's
+  // kept report, so two overlapping ticks could both post it.
+  'ops-key-reseal.ts': ['runOpsKeyResealCheckForEnv'],
   // #2523: the failing minute job page, judged as each minute job's run settles
   // inside completeAfter, so two overlapping ticks could both post it.
   'minute-job-failures.ts': ['minuteJobFailingDepsForEnv'],
