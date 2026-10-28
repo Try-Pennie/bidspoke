@@ -26,8 +26,9 @@
  * asked about there (readFieldHistory): a tracked field with no change recorded
  * since the margin before the write began still holds its value from before the
  * write, and is sent. A recorded change, a field Salesforce keeps no history
- * of, or a history that cannot be read leaves the field moved: the history can
- * only clear a field, never accuse one. It costs a resender up to two queries,
+ * of (apart from an untracked checkbox at false, below), or a history that
+ * cannot be read leaves the field moved: the history can only clear a field,
+ * never accuse one. It costs a resender up to two queries,
  * only for a record whose fields the rule above called moved, and nothing on
  * the run's own path, so the reject patch's 1,500 ms budget is untouched.
  *
