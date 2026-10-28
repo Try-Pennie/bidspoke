@@ -10,17 +10,16 @@
  *
  * What it writes (packages/porting-evidence/src/inventory/plan-load.ts):
  * pipedream_state and the export fields, upserted on the hashid. It never writes
- * porting_stage. A workflow a newer export of its project no longer lists is
- * stamped absent and reported, never deleted. An export older than what is stored
- * is refused.
+ * porting_stage or a person's decision (a retirement or a dropped step, #2979,
+ * recorded by record-decision.ts), so a reload keeps them. A workflow a newer
+ * export of its project no longer lists is stamped absent and reported, never
+ * deleted. An export older than what is stored is refused.
  *
  * Credentials: SUPABASE_URL and SUPABASE_SECRET_KEY from the environment, else
- * from apps/worker/.dev.vars. Nothing here prints a value.
+ * from apps/worker/.dev.vars (credentials.ts). Nothing here prints a value.
  *
  * Runs on Node's own TypeScript type stripping (Node 23.6 or later).
  */
-import { existsSync, readFileSync } from 'node:fs'
-import path from 'node:path'
 import {
   differencesAfterWrite,
   planLoad,
@@ -28,34 +27,11 @@ import {
   readStoredRows,
   writeRows,
 } from '../../packages/porting-evidence/src/inventory/index.ts'
-
-const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..')
-
-function fail(message: string): never {
-  process.stderr.write(`${message}\n`)
-  process.exit(1)
-}
+import { credentials, fail } from './credentials.ts'
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name)
   return i === -1 ? undefined : process.argv[i + 1]
-}
-
-function credentials(): { url: string; key: string } {
-  let url = process.env.SUPABASE_URL
-  let key = process.env.SUPABASE_SECRET_KEY
-  const devVars = path.join(REPO_ROOT, 'apps', 'worker', '.dev.vars')
-  if ((!url || !key) && existsSync(devVars)) {
-    for (const line of readFileSync(devVars, 'utf8').split('\n')) {
-      const m = /^\s*(SUPABASE_URL|SUPABASE_SECRET_KEY)\s*=\s*(.*)\s*$/.exec(line)
-      if (!m) continue
-      const value = m[2].replace(/^(["'])(.*)\1$/, '$2')
-      if (m[1] === 'SUPABASE_URL') url ??= value
-      else key ??= value
-    }
-  }
-  if (!url || !key) fail('SUPABASE_URL and SUPABASE_SECRET_KEY are required, in the environment or in apps/worker/.dev.vars')
-  return { url: url.replace(/\/$/, ''), key }
 }
 
 const dir = process.argv[2]

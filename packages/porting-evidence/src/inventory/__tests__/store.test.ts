@@ -1,26 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { InventoryRow } from '../plan-load.ts'
 import { PAGE, differencesAfterWrite, readStoredRows, writeRows } from '../store.ts'
+import { fakeFetch } from './fake-fetch.ts'
 
 const URL_ = 'https://example.supabase.co'
 const KEY = 'service-key'
-
-interface Call { url: string; method: string; headers: Record<string, string>; body: unknown }
-
-function fakeFetch(answer: (call: Call) => Response) {
-  const calls: Call[] = []
-  const f = (async (input: string | URL | Request, init?: RequestInit) => {
-    const call: Call = {
-      url: input instanceof Request ? input.url : input.toString(),
-      method: init?.method ?? 'GET',
-      headers: Object.fromEntries(new Headers(init?.headers).entries()),
-      body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
-    }
-    calls.push(call)
-    return answer(call)
-  }) as typeof fetch
-  return { f, calls }
-}
 
 const row = (h: string): InventoryRow => ({
   organization_id: 'o', pipedream_hashid: h, project_hashid: 'proj_A', name: h, pipedream_state: 'on', definition_sha256: null,

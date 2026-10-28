@@ -16,6 +16,38 @@ export type Database = {
   }
   porting: {
     Tables: {
+      dropped_steps: {
+        Row: {
+          dropped_at: string
+          dropped_by: string
+          pipedream_hashid: string
+          reason: string
+          step: string
+        }
+        Insert: {
+          dropped_at?: string
+          dropped_by: string
+          pipedream_hashid: string
+          reason: string
+          step: string
+        }
+        Update: {
+          dropped_at?: string
+          dropped_by?: string
+          pipedream_hashid?: string
+          reason?: string
+          step?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "dropped_steps_pipedream_hashid_fkey"
+            columns: ["pipedream_hashid"]
+            isOneToOne: false
+            referencedRelation: "pipedream_inventory"
+            referencedColumns: ["pipedream_hashid"]
+          },
+        ]
+      }
       pipedream_inventory: {
         Row: {
           absent_since_export_at: string | null
@@ -30,6 +62,9 @@ export type Database = {
           pipedream_state: string
           porting_stage: string
           project_hashid: string
+          retired_at: string | null
+          retired_by: string | null
+          retired_reason: string | null
           step_count: number
           trigger_types: string[]
           updated_at: string
@@ -47,6 +82,9 @@ export type Database = {
           pipedream_state: string
           porting_stage?: string
           project_hashid: string
+          retired_at?: string | null
+          retired_by?: string | null
+          retired_reason?: string | null
           step_count: number
           trigger_types?: string[]
           updated_at?: string
@@ -64,6 +102,9 @@ export type Database = {
           pipedream_state?: string
           porting_stage?: string
           project_hashid?: string
+          retired_at?: string | null
+          retired_by?: string | null
+          retired_reason?: string | null
           step_count?: number
           trigger_types?: string[]
           updated_at?: string

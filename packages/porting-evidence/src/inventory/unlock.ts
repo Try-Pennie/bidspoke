@@ -8,7 +8,9 @@
  * request step whose settings the export redacted, which cannot convert until
  * those settings are read off Pipedream: that column is the real ceiling.
  */
-import type { Capability } from './needs.ts'
+import { workflowNeeds, type Capability } from './needs.ts'
+import { stateOf } from './plan-load.ts'
+import type { ExportedWorkflow } from './read-export.ts'
 
 /** The plan's derived order (Discussion #1684, 0.5): Phases 2 and 3, then 1, 4, 7, 5, 6, 8. */
 export const PLAN_ORDER: readonly Capability[] = ['code_runtime', 'connections', 'schedules', 'data_stores', 'long_runs', 'request_access', 'non_http_triggers', 'runner']
@@ -40,6 +42,27 @@ export interface UnlockRow {
 }
 
 export type UnlockTable = UnlockRow[] & { stillBlocked: string[] }
+
+/**
+ * The unlock table's items: every switched on workflow with a file, and what it
+ * needs. Give it the export after applyDecisions (#2979), so a retired workflow is
+ * not counted and a dropped step raises no need.
+ */
+export function unlockItems(workflows: ExportedWorkflow[]): UnlockItem[] {
+  return workflows.flatMap((w) => {
+    if (w.workflow === null || stateOf(w) !== 'on') return []
+    const n = workflowNeeds(w.workflow)
+    return [{
+      hashid: w.hashid,
+      needs: new Set(n.needs.keys()),
+      redactedHttpSteps: n.redactedHttpSteps,
+      filterRules: n.filterRules,
+      multiTrigger: n.multiTrigger,
+      bidding: n.biddingSignals.length > 0,
+      raisedTimeout: n.raisedTimeoutSeconds !== null,
+    }]
+  })
+}
 
 const met = (it: UnlockItem, have: Set<Capability>) => [...it.needs].every((c) => have.has(c))
 
