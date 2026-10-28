@@ -1278,3 +1278,148 @@ describe('the request hash in live mode (#2543)', () => {
     expect(out(r).would_send_body_sha256).toHaveLength(64)
   })
 })
+
+// ── A claim that misses the deadline hands the lead on (#2933) ────────────────
+
+/**
+ * The lead sale record as the real object keeps it (durable-objects/lead-sale.ts),
+ * shared by every execution of one lead: a claim on a free record takes it for
+ * that execution, the same execution claiming again gets it back, and another
+ * execution finds it in flight. `silentOnce` makes the first claim land at the
+ * record and then lose its answer, which is what the node sees as a deadline:
+ * the record holds the lead for this execution, and this execution does not know.
+ */
+class SharedClaim implements SaleApi {
+  state: { kind: 'free' } | { kind: 'in_flight'; execution_id: string } | { kind: 'sold'; outcome: SaleOutcomeRecord } = { kind: 'free' }
+  generation = 0
+  calls: string[] = []
+  constructor(private silentOnce: { operation: string; ms: number } | null = null) {}
+  async claim(body: ClaimBody): Promise<ClaimResult> {
+    this.calls.push(`claim:${body.execution_id}`)
+    const s = this.state
+    let answer: ClaimResult
+    if (s.kind === 'sold') answer = { state: 'sold', partner_id: body.partner_id, outcome: s.outcome, generation: this.generation }
+    else if (s.kind === 'in_flight' && s.execution_id !== body.execution_id) answer = { state: 'in_flight', holder_execution_id: s.execution_id, since: NOW, generation: this.generation }
+    else {
+      if (s.kind === 'free') { this.state = { kind: 'in_flight', execution_id: body.execution_id }; this.generation += 1 }
+      answer = { state: 'claimed', generation: this.generation }
+    }
+    const silent = this.silentOnce
+    if (silent) {
+      this.silentOnce = null
+      throw new DeadlineError(silent.operation, silent.ms)
+    }
+    return answer
+  }
+  async sold(generation: number, outcome: SaleOutcomeRecord): Promise<number> { this.calls.push(`sold:${generation}`); this.state = { kind: 'sold', outcome }; return ++this.generation }
+  async free(generation: number): Promise<number> { this.calls.push(`free:${generation}`); this.state = { kind: 'free' }; return ++this.generation }
+  async heal(generation: number, outcome: SaleOutcomeRecord): Promise<number> { this.calls.push(`heal:${generation}`); this.state = { kind: 'sold', outcome }; return ++this.generation }
+}
+
+describe('a live claim that misses its deadline hands the lead to the deferred route (#2933)', () => {
+  // The Engine topology of Stage B: the live share is configured, so the node's
+  // deferred handle is wired to tripoint_ping, which offers the lead itself.
+  const stageB = node({ live_percent_env: 'BUYER_SELECT_LIVE_PERCENT' })
+  const inShare = (executionId = 'exec-1') => {
+    const c = ctx({ env: { BUYER_SELECT_LIVE_PERCENT: '100' } })
+    c.trigger.execution_id = executionId
+    return c
+  }
+  const SILENT_CLAIM = { operation: 'lead sale claim', ms: 1805 }
+
+  it('a claim that does not answer routes deferred with object_deadline, so the legacy route offers the lead, and no buyer is called here', async () => {
+    const h = harness()
+    const claim = new SharedClaim(SILENT_CLAIM)
+    h.deps.saleClient = () => claim
+    const r = await run(h, inShare(), stageB)
+    expect(out(r)).toMatchObject({ _route: 'deferred', reason: 'object_deadline', detail: 'lead sale claim did not answer within 1805 ms', mode_effective: 'live', live_percent_in_force: 100 })
+    expect(out(r).sale).toMatchObject({ skipped: true })
+    expect(out(r).considered).toEqual([expect.objectContaining({ partner: 'tripoint', outcome: 'skipped', reason: 'object_deadline' })])
+    expect(h.buyerCalls).toEqual([])
+    expect(h.ledgers.get('p-1')?.calls ?? []).toEqual([])
+    expect(r.failure).toBeUndefined()
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_reason', route: 'deferred', reason: 'object_deadline' }))
+  })
+
+  it('a claim that landed although its answer was lost is left holding the lead, so a second execution of the same lead neither sells it nor hands it on: one send in all', async () => {
+    const h = harness()
+    const claim = new SharedClaim(SILENT_CLAIM)
+    h.deps.saleClient = () => claim
+    const first = await run(h, inShare('exec-1'), stageB)
+    expect(out(first)._route).toBe('deferred')
+    // The record took the lead for exec-1 and nothing freed it: exec-1 never learned it held it.
+    expect(claim.state).toEqual({ kind: 'in_flight', execution_id: 'exec-1' })
+    expect(claim.calls).toEqual(['claim:exec-1'])
+
+    // A duplicate of the same lead arrives while exec-1's legacy route is offering it.
+    const second = await run(h, inShare('exec-2'), stageB)
+    expect(out(second)).toMatchObject({ _route: 'no_sale', reason: 'sale_in_flight' })
+    // buyer_select called the buyer for neither execution; only exec-1's deferred route sends.
+    expect(h.buyerCalls).toEqual([])
+  })
+
+  it('a claim re-read that times out after another execution was seen holding the lead stays no_sale: that holder may be calling the buyer now', async () => {
+    const h = harness()
+    const sale = new ScriptedSale([{ state: 'in_flight', holder_execution_id: 'exec-0', since: NOW, generation: 4 }, new DeadlineError('lead sale claim', 300)])
+    withSale(h, sale)
+    const r = await run(h, inShare(), stageB)
+    expect(out(r)).toMatchObject({ _route: 'no_sale', reason: 'object_deadline', detail: 'lead sale claim did not answer within 300 ms' })
+    expect(h.buyerCalls).toEqual([])
+  })
+
+  it('a heal that times out on a lead the ledger says was already sold stays no_sale, never offered a second time', async () => {
+    const h = harness()
+    const sale = new ScriptedSale([ALREADY_IN_DOUBT])
+    sale.heal = async () => { throw new DeadlineError('lead sale heal', 400) }
+    withSale(h, sale)
+    const ledger = new FakeLedger('p-1')
+    ledger.entries.set('lead-1|engine|live', {
+      lead_key: 'lead-1', population: 'engine', kind: 'live', payout_cents: 2190, status: 'accepted', et_day: '2027-09-20', hour_bucket: 0, reserved_at: NOW - 60_000,
+      resolved_at: NOW - 59_000, mirrored: true, execution_id: 'exec-0', outcome: { buyer_reference: 'L-0', result_code: '1001', http_status: 200, payout_cents: 2190 },
+      resolution_source: null, resolved_by: null,
+    })
+    h.ledgers.set('p-1', ledger)
+    const r = await run(h, inShare(), stageB)
+    expect(out(r)).toMatchObject({ _route: 'no_sale', reason: 'object_deadline' })
+    expect(h.buyerCalls).toEqual([])
+  })
+
+  it('a reserve that times out releases the reservation it may have landed and frees the claim, then hands the lead on', async () => {
+    const h = harness({ slowReserveMs: 5_000 })
+    const r = await run(h, inShare(), stageB)
+    expect(out(r)).toMatchObject({ _route: 'deferred', reason: 'object_deadline' })
+    expect(h.ledgers.get('p-1')?.calls).toEqual(['release:released'])
+    expect(h.sales[0].state).toBe('free')
+    expect(h.buyerCalls).toEqual([])
+  })
+
+  it('profiles that take the whole pre-call budget hand the lead on too: no claim was made', async () => {
+    const h = harness()
+    h.deps.loadProfiles = async () => { h.clockMs += BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS + 1; return snapshot(buyer('p-1', 'tripoint', 1)) }
+    const r = await run(h, inShare(), stageB)
+    expect(out(r)).toMatchObject({ _route: 'deferred', reason: 'object_deadline' })
+    expect(h.sales).toHaveLength(0)
+    expect(h.buyerCalls).toEqual([])
+  })
+
+  it('a second buyer whose claim times out after the first declined stays no_sale: a buyer was already called for this lead', async () => {
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [DUPLICATE] } })
+    let n = 0
+    h.deps.saleClient = (key) => {
+      n += 1
+      if (n === 1) { const s = new FakeSale(key); h.sales.push(s); return s }
+      return new SharedClaim(SILENT_CLAIM)
+    }
+    const r = await run(h, inShare(), stageB)
+    expect(h.buyerCalls.map((c) => c.slug)).toEqual(['tripoint'])
+    expect(out(r)).toMatchObject({ _route: 'no_sale', reason: 'object_deadline' })
+  })
+
+  it('control: without a live share the deferred handle is not part of the topology, so a claim deadline stays no_sale', async () => {
+    const h = harness()
+    h.deps.saleClient = () => new SharedClaim(SILENT_CLAIM)
+    const r = await run(h)
+    expect(out(r)).toMatchObject({ _route: 'no_sale', reason: 'object_deadline' })
+    expect(h.buyerCalls).toEqual([])
+  })
+})

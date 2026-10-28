@@ -108,7 +108,7 @@ describe('an attempt killed after each step, and what the next run does (L151)',
     expect(await entryStatus(s)).toBe('reserved')
 
     await s.setObjectClocks(NOW + BUYER_TIMEOUT_MS)
-    expect(await s.run('exec-2')).toEqual({ result: 'no_sale', reason: 'outcome_unknown', page: true, detail: `${s.input.partner_id} ledger entry is reserved` })
+    expect(await s.run('exec-2')).toEqual({ result: 'no_sale', reason: 'outcome_unknown', page: true, detail: `${s.input.partner_id} ledger entry is reserved`, claim_contended: true })
     expect(await s.sale.read()).toMatchObject({ state: 'in_doubt' })
 
     await s.setObjectClocks(NOW + PENDING_GRACE_MS)
@@ -117,14 +117,14 @@ describe('an attempt killed after each step, and what the next run does (L151)',
     expect((await s.ledger.peek('live')).hour_leads).toBe(1)
     expect((await s.ledger.unresolved()).map((e) => e.lead_key)).toEqual([s.input.lead_key])
     expect((await s.ledger.unmirrored()).entries.map((e) => e.lead_key)).toEqual([s.input.lead_key])
-    expect(await s.run('exec-3')).toEqual({ result: 'no_sale', reason: 'outcome_unknown', page: true, detail: `${s.input.partner_id} ledger entry is unresolved` })
+    expect(await s.run('exec-3')).toEqual({ result: 'no_sale', reason: 'outcome_unknown', page: true, detail: `${s.input.partner_id} ledger entry is unresolved`, claim_contended: true })
 
     // A person settles it as released: the slot frees and the next run proceeds.
     await s.ledger.settle({ lead_key: s.input.lead_key, population: 'engine', kind: 'live' }, 'released')
     expect((await s.ledger.peek('live')).hour_leads).toBe(0)
     // The claim is still in doubt; the ledger now says released, so the run frees it and re-claims,
     // then meets the released entry as a repeat and reports the earlier answer without a second buyer call.
-    expect(await s.run('exec-4')).toEqual({ result: 'no_sale', reason: 'buyer_error', detail: 'earlier attempt released' })
+    expect(await s.run('exec-4')).toEqual({ result: 'no_sale', reason: 'buyer_error', detail: 'earlier attempt released', claim_contended: true })
     expect(s.buyerCalls).toBe(killAfter === 'buyer_called' ? 1 : 0)
   })
 

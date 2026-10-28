@@ -100,7 +100,10 @@ export const BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS = 800
  * BUYER_CALL_TIMEOUT_MS), and neither is anything after it: commit and mark
  * sold keep OBJECT_CALL_DEADLINE_MS and the outcome_unknown page, because an
  * accepted answer must be recorded whatever the clock says. A spent budget
- * routes no_sale with object_deadline, holding nothing.
+ * ends the attempt with object_deadline, holding nothing. While the live share
+ * is configured (Stage B, where the deferred handle goes to tripoint_ping) the
+ * lead is handed to the deferred route so it is still offered (#2933); see
+ * `Run.mayHandOn` for when it is held as no_sale instead.
  *
  * The value is proposed from Stage A day 2 (2026-09-24, on #1508) and is Dan's
  * to confirm before the 1 percent step: the rehearsal, which runs the same steps
@@ -358,6 +361,8 @@ class Run {
   private buyerCallStarted = false
   /** Every claim answer and heal across this execution's attempts (#1643). */
   private readonly claims = new ClaimTally()
+  /** Set once an attempt was told another execution held, had held or had sold this lead (#2933). */
+  private claimContended = false
 
   constructor(private readonly node: NodeDefinition, private readonly ctx: ExecutionContext, private readonly deps: BuyerSelectDeps) {
     this.config = node.config as unknown as BuyerSelectConfig
@@ -789,6 +794,7 @@ class Run {
       // The orchestrator enumerates every answer; a throw here is a defect in a dependency, not a buyer outcome.
       result = { result: 'no_sale', reason: 'cap_check_error', detail: messageOf(err) }
     }
+    if (result.result === 'no_sale' && result.claim_contended === true) this.claimContended = true
 
     if (breaker && probeClaimed && !buyerCalled) await breaker.releaseProbe().catch(() => undefined)
 
@@ -854,10 +860,11 @@ class Run {
       case 'object_deadline': {
         // An object did not answer before the buyer was called, or the live pre-call budget ran out
         // (#1508): the attempt released and freed what it held, the buyer was never contacted, and the
-        // cascade stops because the time is gone for every buyer after this one too.
+        // cascade stops because the time is gone for every buyer after this one too. A live lead
+        // nobody else is known to be selling is handed on rather than dropped (#2933).
         this.consider(c, 'skipped', reason, detail)
         this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, 'completed', { outcome: 'skipped', detail }, null, null))
-        return { kind: 'stop', result: this.done(live ? 'no_sale' : 'deferred', reason, detail) }
+        return { kind: 'stop', result: this.done(!live || this.mayHandOn() ? 'deferred' : 'no_sale', reason, detail) }
       }
       default: {
         // A cap, cap_check_error, or anything else the ledger said: this buyer was never contacted.
@@ -979,11 +986,34 @@ class Run {
     return this.modeEffective === 'live' ? 'object_deadline' : 'rehearsal_deadline'
   }
 
-  /** The budget ran out between steps: a rehearsal hands the lead to the workflow, a live node sells nothing. */
+  /** The budget ran out between steps: a rehearsal hands the lead to the workflow, and so does a live node that may hand it on (#2933). */
   private budgetEnded(detail: string): BuyerSelectResult {
-    return this.modeEffective === 'live'
-      ? this.done('no_sale', 'object_deadline', detail)
-      : this.done('deferred', 'rehearsal_deadline', detail)
+    if (this.modeEffective !== 'live') return this.done('deferred', 'rehearsal_deadline', detail)
+    return this.done(this.mayHandOn() ? 'deferred' : 'no_sale', 'object_deadline', detail)
+  }
+
+  /**
+   * Whether a live lead whose time ran out before a buyer was called may take the
+   * deferred route, where the Stage B canvas offers it through tripoint_ping, rather
+   * than end as no_sale (#2933). On 2026-10-22 to 10-28, 6 of 569 canary leads lost
+   * their lead sale claim's answer this way and were never offered to anyone.
+   *
+   * Handing on can send the lead to a buyer, so it is allowed only when nothing
+   * here can have sent it already and nothing else is known to be sending it:
+   *   - the live share is configured, so the deferred handle is part of the
+   *     topology (Stage B). Without it the node has no edge that offers the lead,
+   *     and Stage C removes the share and that edge together.
+   *   - no buyer call started in this run. One that did may have reached the buyer,
+   *     and the buyer behind the deferred route may be that same buyer.
+   *   - no claim answer named another execution (`claim_contended`). One holding the
+   *     lead may be calling the buyer now, and one that sold it has sold it.
+   * A claim that timed out on this side but landed at the record holds the lead for
+   * THIS execution, which never called the buyer, so the deferred route's send is the
+   * only one. The record is left holding it, as before, so a duplicate execution of
+   * the lead waits on it and ends sale_in_flight rather than selling beside it.
+   */
+  private mayHandOn(): boolean {
+    return this.modeEffective === 'live' && Boolean(this.config.live_percent_env) && !this.buyerCallStarted && !this.claimContended
   }
 
   /** Every await on the path is bounded (L110); under a budget by what is left of it. */

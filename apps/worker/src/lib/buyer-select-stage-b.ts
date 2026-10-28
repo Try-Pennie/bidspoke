@@ -109,11 +109,28 @@ export type StageBBidRows =
     }
   | { unmeasured: string }
 
+/**
+ * Canary leads whose time ran out before the buyer was called (#2933), reason
+ * object_deadline. On 2026-10-22 to 10-28 every one of them (6 of 569) ended
+ * no_sale and was offered to nobody. A handed on lead takes the deferred route,
+ * so tripoint_ping offers it; `handed_on_accepted` is how many of those Tripoint
+ * accepted. A held lead is one the node kept back because another execution was
+ * holding or had sold it, or a buyer had already been called. The rate is these
+ * over the canary leads: canary attempts plus handed on plus held. Neither kind
+ * is in either arm, so the legacy arm stays the leads outside the share.
+ */
+export interface StageBClaimDeadline {
+  handed_on: number
+  handed_on_accepted: number
+  held: number
+}
+
 export interface StageBCounts {
   /** Every live percent the node recorded that day, ascending: more than one means the step changed mid day. */
   live_percent_seen: number[]
   canary: StageBCanary
   legacy: StageBArm
+  claim_deadline: StageBClaimDeadline
   /** Canary duration minus legacy step duration at the same percentile; null when either arm has none. */
   added_p50_ms: number | null
   added_p95_ms: number | null
@@ -144,9 +161,16 @@ function isCanaryAttempt(e: ParityExecution): boolean {
   return e.node?.mode_effective === 'live' && isRecord(sale) && sale.skipped === false
 }
 
-/** A legacy attempt: tripoint_ping ran for the lead rather than bailing. */
+/** A canary lead that ran out of time before a buyer was called (#2933): handed on when it took the deferred route, held when it ended no_sale. */
+function claimDeadlineOf(e: ParityExecution): 'handed_on' | 'held' | null {
+  if (e.node?.mode_effective !== 'live' || e.node.reason !== 'object_deadline') return null
+  if (e.node._route === 'deferred') return 'handed_on'
+  return e.node._route === 'no_sale' ? 'held' : null
+}
+
+/** A legacy attempt: tripoint_ping ran for the lead rather than bailing, for a lead outside the share. */
 function isLegacyAttempt(e: ParityExecution): boolean {
-  return e.incumbent !== null && e.incumbent.skipped === false
+  return e.incumbent !== null && e.incumbent.skipped === false && claimDeadlineOf(e) === null
 }
 
 export function summariseStageB(executions: ParityExecution[], bids: StageBBids, settleBeforeMs: number, windowComplete: boolean, timing: StageBTiming): StageBCounts {
@@ -163,6 +187,7 @@ export function summariseStageB(executions: ParityExecution[], bids: StageBBids,
   let legacyAttempts = 0
   let legacyAccepted = 0
   const bidCheck = { canary_missing: 0, canary_multiple: 0, legacy_missing: 0, legacy_multiple: 0, settling: 0, window_complete: windowComplete }
+  const claimDeadline: StageBClaimDeadline = { handed_on: 0, handed_on_accepted: 0, held: 0 }
 
   const checkBid = (e: ParityExecution, arm: 'canary' | 'legacy') => {
     if (!('rows' in bids)) return
@@ -192,6 +217,15 @@ export function summariseStageB(executions: ParityExecution[], bids: StageBBids,
         }
       }
       checkBid(e, 'canary')
+    }
+
+    const deadline = claimDeadlineOf(e)
+    if (deadline === 'held') claimDeadline.held += 1
+    if (deadline === 'handed_on') {
+      claimDeadline.handed_on += 1
+      if (e.incumbent?.qualified === true) claimDeadline.handed_on_accepted += 1
+      // tripoint_ping writes its bid row for the lead as it does for any lead it sends.
+      if (e.incumbent !== null && e.incumbent.skipped === false) checkBid(e, 'legacy')
     }
 
     if (isLegacyAttempt(e)) {
@@ -230,6 +264,7 @@ export function summariseStageB(executions: ParityExecution[], bids: StageBBids,
       duration_p50_ms: legacyP50,
       duration_p95_ms: legacyP95,
     },
+    claim_deadline: claimDeadline,
     added_p50_ms: minus(canaryP50, legacyP50),
     added_p95_ms: minus(canaryP95, legacyP95),
     bid_rows: 'rows' in bids ? bidCheck : { unmeasured: bids.unmeasured },
