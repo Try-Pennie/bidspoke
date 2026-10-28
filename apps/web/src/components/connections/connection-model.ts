@@ -91,6 +91,21 @@ export function statusWord(status: ConnectionPageStatus | null): string | null {
   return status ? CONNECTION_STATUS_WORDS[status] : null
 }
 
+/**
+ * A Google company mailbox (#2727): a Google connection acting as a mailbox through the ops Worker's own
+ * delegation key (the catalogue's service_account_delegation login), never a person's own sign in. Its login
+ * holds nothing a person types, so its Reconnect checks it again in one click with no dialog, it offers no
+ * Replace (another mailbox is a new connection), and a refused one's notice sends the person to the Workspace
+ * admin (Dan, 2026-10-28, docs/design/google-mailbox-reconnect.html). The one reading of all three.
+ */
+export function isCompanyMailbox(c: Pick<ConnectionView, 'service' | 'ownAccount' | 'alertLogin'>): boolean {
+  if (c.alertLogin || c.ownAccount) return false
+  return CATALOGUE.find((s) => s.key === c.service)?.connection.auth === 'service_account_delegation'
+}
+
+/** What fixes a company mailbox Google refused (D4): the Workspace admin restores the grant; nothing is entered. */
+export const COMPANY_MAILBOX_FIX = "Ask the Google Workspace admin to check Bidspoke's access to this mailbox, then Reconnect."
+
 export function isProblem(c: Pick<ConnectionView, 'status'>): boolean {
   return c.status !== null && isConnectionProblem(c.status)
 }
@@ -227,7 +242,10 @@ export function problemNotice(c: ConnectionView, now: number, orgNames: Readonly
   const orgName = c.org ? orgNames[c.org] : undefined
   const from = orgName ? `${orgName}'s ${c.serviceName} admin` : c.org ? `the ${c.serviceName} admin of ${c.org}` : `the ${c.serviceName} admin`
   const fix = c.status === 'reauth'
-    ? c.alertLogin ? 'Reconnect with a new token from the Slack app.' : c.ownAccount ? `Reconnect to sign in with ${c.serviceName} again.` : `Reconnect with a new ${secret} from ${from}.`
+    ? c.alertLogin ? 'Reconnect with a new token from the Slack app.'
+      : c.ownAccount ? `Reconnect to sign in with ${c.serviceName} again.`
+        : isCompanyMailbox(c) ? COMPANY_MAILBOX_FIX
+          : `Reconnect with a new ${secret} from ${from}.`
     : 'Reconnect to check the login again.'
   return { cause: said(cause), effect, fix }
 }

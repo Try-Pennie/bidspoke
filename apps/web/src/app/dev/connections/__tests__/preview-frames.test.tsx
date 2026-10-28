@@ -99,6 +99,8 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   // #2337: Google, the catalogue's own entry: verify's mailbox refusal, and a company mailbox's panel.
   'add-google-mailbox-mismatch': ['Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.'],
   'google-ops-mailbox': ['Ops mailbox', 'ops@trypennie.com'],
+  // #2727: the company mailbox Google refused, the settled design's refused frame (docs/design/google-mailbox-reconnect.html).
+  'google-ops-mailbox-refused': ['Ops mailbox', 'Since 9:12 AM ET, Google has refused its login.', "Ask the Google Workspace admin to check Bidspoke's access to this mailbox, then Reconnect."],
   'add-google-own-finishing': ['Finishing the sign in with Google, 3 s', 'Sign in with Google'],
   'add-google-own-declined': ['You did not allow Bidspoke into your Google account. Nothing was saved. Sign in with Google again and allow it to connect.'],
 }

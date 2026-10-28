@@ -498,6 +498,60 @@ describe('Reconnect never asks the person to check what the connection names (#2
   })
 })
 
+// A Google connection acts through the ops Worker's own delegation key (a company mailbox) or a person's own
+// sign in, so its login holds nothing a person types: a Reconnect of one only checks it again (#2727, Dan
+// 2026-10-28). A body carrying a new login would seal an empty one at the next generation, so it is refused by
+// name before anything is sealed, verified or committed.
+describe('Reconnect of a Google connection takes no new login (#2727)', () => {
+  const MAILBOX = 'c0000000-0000-4000-8000-000000000008'
+  const MAILBOX_TARGET = { subject: 'ops@trypennie.com', drives: [] }
+  function mailboxWorld(order: string[]) {
+    const db = storeDouble(order)
+    db.table.push({
+      id: MAILBOX, organization_id: ORG, service_type: 'google', name: 'Ops mailbox', sealed_for: 'ops_key', credential_generation: 2,
+      credential_enc: JSON.stringify(STORED_ENVELOPE), config: {}, target: MAILBOX_TARGET, acts_as: 'ops@trypennie.com', person_bound: false,
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    return db
+  }
+
+  it('a body carrying a login, even an empty one or the mailbox it already names, is refused by name and nothing is sealed or sent', async () => {
+    for (const body of [{ fields: {} }, { fields: { subject: 'ops@trypennie.com' } }]) {
+      const order: string[] = []
+      const db = mailboxWorld(order)
+      const { env } = makeEnv(order)
+      const res = await reconnect(env, MAILBOX, body)
+      expect(res.status).toBe(422)
+      expect(await res.json()).toMatchObject({
+        error: 'reconnect_no_login_to_enter',
+        message: 'This connection has no login to enter, so Reconnect only checks it again. Nothing was changed. Reload the page and press Reconnect.',
+      })
+      expect(order).toEqual([])
+      expect(db.rpcs).toEqual([])
+      expect(db.table.find((r) => r.id === MAILBOX)?.credential_generation).toBe(2)
+    }
+  })
+
+  it('with no login sent, checks the stored one again at its own generation', async () => {
+    const order: string[] = []
+    const db = mailboxWorld(order)
+    const { env, binding } = makeEnv(order)
+    const res = await reconnect(env, MAILBOX)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ outcome: 'checked', connection: { id: MAILBOX, generation: 2, acts_as: 'ops@trypennie.com' } })
+    expect(order).toEqual(['clearReauth'])
+    expect(parseClearReauthRequest(binding.clearReauth.mock.calls[0][0]).candidate).toMatchObject({ service: 'google', generation: 2, envelope: STORED_ENVELOPE, target: MAILBOX_TARGET })
+    expect(writeAuditLog).toHaveBeenCalledWith(db, ORG, 'service_connection', MAILBOX, 'connection_rechecked', USER, { generation: 2 })
+  })
+
+  it('a service whose login has fields to type still takes a new one: Salesforce is not refused this way', async () => {
+    const order: string[] = []
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(order) as never)
+    const { env } = makeEnv(order)
+    expect((await reconnect(env, CONN, { fields: { client_secret: NEW_SECRET } })).status).toBe(200)
+  })
+})
+
 describe('Reconnect without a new login: clearReauth alone', () => {
   it('checks the row\'s own envelope at its own generation, commits nothing, and audits who asked', async () => {
     const order: string[] = []
