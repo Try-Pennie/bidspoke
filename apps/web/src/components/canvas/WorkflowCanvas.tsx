@@ -1086,12 +1086,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     }
     return result
   })()
-  const nodeOptions = nodes
+  // Made once per change of the nodes, so the panel's memos that read it hold across renders (#2782).
+  const nodeOptions = useMemo(() => nodes
     .filter((n) => n.id !== 'trigger' && n.type !== 'parallel_end')
     .map((n) => {
       const d = n.data as unknown as CanvasNodeData
       return { id: n.id, namespace: d.namespace, label: d.label, type: n.type }
-    })
+    }), [nodes])
 
   // Compute validation errors for all attached, unconfigured nodes (edit mode only)
   const validationErrors: Map<string, ValidationError> = useMemo(

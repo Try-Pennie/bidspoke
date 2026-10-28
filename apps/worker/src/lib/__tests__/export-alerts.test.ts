@@ -57,6 +57,8 @@ describe('notifyExportFailure', () => {
   it('classifies the message as an export error when the caller says export-job', async () => {
     await notifyExportFailure(makeSupabase(['org-1']), 'an-export', ['Snowflake 401 unauthorized'], makeKv(), 'export-job')
     const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
+    // Every export and scheduled check page is logged under the export alert kind (#2948).
+    expect(vi.mocked(sendExportFailureAlert).mock.calls[0][4]).toBe('export-alert')
     expect(payload.fixHint).toContain('credential')
     expect(payload.headlineVerb).toBeUndefined()
   })

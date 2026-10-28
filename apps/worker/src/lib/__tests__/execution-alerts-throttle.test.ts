@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   sendFailureAlert: vi.fn<(...a: unknown[]) => Promise<unknown>>(async () => ({ ts: '1.23' })),
   sendDurationAlert: vi.fn(async () => ({ ts: '1.23' })),
   sendThreadReply: vi.fn(async () => undefined),
+  getAnthropicKey: vi.fn<() => Promise<string | null>>(async () => null),
 }))
 
 vi.mock('../slack', () => ({
@@ -19,7 +20,8 @@ vi.mock('../slack', () => ({
   sendThreadReply: h.sendThreadReply,
 }))
 // Keep the Claude summary path inert so the test exercises only the send gate.
-vi.mock('../changelog-drafter', () => ({ getAnthropicKey: vi.fn(async () => null) }))
+vi.mock('../changelog-drafter', () => ({ getAnthropicKey: h.getAnthropicKey }))
+vi.mock('../alert-summarizer', () => ({ draftAlertSummary: vi.fn(async () => 'A summary of the failure.') }))
 
 import { fireExecutionAlert, type ExecutionAlertArgs } from '../execution-alerts'
 
@@ -139,5 +141,27 @@ describe('fireExecutionAlert burst throttle (#693)', () => {
     )
     expect(h.sendDurationAlert).toHaveBeenCalledOnce()
     expect(kv.get).not.toHaveBeenCalled()
+  })
+})
+
+describe('the summary thread reply names the alert it replies under (#2948)', () => {
+  it('under a failure alert it is logged as the failure alert, under a slow run as the slow run alert', async () => {
+    h.getAnthropicKey.mockResolvedValue('sk-test')
+    h.sendThreadReply.mockClear()
+    const failure = baseArgs({})
+    await fireExecutionAlert(failure)
+    await (failure.executionCtx as ReturnType<typeof recordingContext>).settle()
+    const slow = baseArgs({
+      alertType: 'duration',
+      thresholdMs: 50,
+      failedStep: undefined,
+      errorMessage: undefined,
+      errorType: undefined,
+      stepLogQueue: [{ step_namespace: 'slow', step_type: 'code', duration_ms: 999, status: 'success' } as never],
+    })
+    await fireExecutionAlert(slow)
+    await (slow.executionCtx as ReturnType<typeof recordingContext>).settle()
+    expect(h.sendThreadReply.mock.calls.map((c) => (c as unknown[])[2])).toEqual(['execution-failure', 'slow-execution'])
+    h.getAnthropicKey.mockResolvedValue(null)
   })
 })

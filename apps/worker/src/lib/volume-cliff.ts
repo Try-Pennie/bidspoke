@@ -348,6 +348,7 @@ export async function runVolumeCliffCheck(
             // Judges the trailing RECENT_WINDOW_MINUTES, so a one-tick cliff has a
             // zero span: name the window it measured, not a gap it did not (#1108).
             { signal: 'volume cliff', subject: wf.name, alertedAt, endedAt, firstHealthyAt, measuredWindowMinutes: RECENT_WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
+            'volume-cliff-all-clear',
           )
         },
         { hasEvidence: () => isVolumeRecovered(bucket) },
@@ -532,5 +533,5 @@ export async function sendCliffAlert(
     { type: 'section', text: { type: 'mrkdwn', text: `<${workflowUrl}|Open workflow →>` } },
   ]
 
-  return postMessage(slack.bot_token, channel, blocks, `Workflow volume cliff: ${cliff.workflow_name}`)
+  return postMessage(slack.bot_token, channel, blocks, `Workflow volume cliff: ${cliff.workflow_name}`, 'volume-cliff')
 }

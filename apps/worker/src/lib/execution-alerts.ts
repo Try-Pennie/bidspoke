@@ -235,7 +235,7 @@ async function summarizeAndAttach(args: ExecutionAlertArgs & {
     'attach summary',
   )
 
-  if (args.handle) await sendThreadReply(args.handle, summary)
+  if (args.handle) await sendThreadReply(args.handle, summary, args.alertType === 'duration' ? 'slow-execution' : 'execution-failure')
 }
 
 function pickBottleneck(args: ExecutionAlertArgs): AlertSummaryStep | null {

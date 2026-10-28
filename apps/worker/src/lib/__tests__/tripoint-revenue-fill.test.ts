@@ -541,3 +541,48 @@ describe('pickSalesforceCreds', () => {
     expect(out.missing).toEqual(['SALESFORCE_INSTANCE_URL'])
   })
 })
+
+// #2394: the reader's urls are built by the shared salesforce-api module now, and
+// must be byte for byte the urls the hand built templates sent. The expected
+// values are those templates written out: the query over the one query this read
+// sends, then the instance url followed by the relative next page path Salesforce
+// returns. Credentials and the token are mocked; pickSalesforceCreds keeps its
+// real implementation.
+import { salesforceRevenueFetcher } from '../tripoint-revenue-fill'
+import type { Env } from '../../index'
+
+vi.mock('../salesforce-creds', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../salesforce-creds')>()),
+  resolveSalesforceCredsFor: vi.fn(async () => ({ creds: { instanceUrl: 'https://sf.test', clientId: 'id', clientSecret: 'secret' }, missing: [] })),
+}))
+vi.mock('../../engine/nodes/salesforce', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../engine/nodes/salesforce')>()),
+  getSalesforceToken: vi.fn(async () => 'token'),
+}))
+
+describe('salesforceRevenueFetcher', () => {
+  it('asks for the query and its next page at exactly the urls the hand built templates sent', async () => {
+    const urls: string[] = []
+    const pages = [
+      { records: [{ Id: 'a0Ab000000000001', ExternalExchangeRevenue__c: 35.84 }], done: false, nextRecordsUrl: '/services/data/v60.0/query/01gAb00000ABCDEFGH-2000' },
+      { records: [{ Id: 'a0Ab000000000002', ExternalExchangeRevenue__c: 12 }], done: true },
+    ]
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      return new Response(JSON.stringify(pages[urls.length - 1]), { status: 200 })
+    }))
+    try {
+      const env = {} as unknown as Env
+      const supabase = {} as unknown as SupabaseClient
+      const records = await salesforceRevenueFetcher(env, 'org-1', supabase)(['a0Ab000000000001', 'a0Ab000000000002'])
+      const soql = "SELECT Id, ExternalExchangeRevenue__c FROM Prospect__c WHERE Id IN ('a0Ab000000000001','a0Ab000000000002')"
+      expect(urls).toEqual([
+        `https://sf.test/services/data/v60.0/query?q=${encodeURIComponent(soql)}`,
+        'https://sf.test/services/data/v60.0/query/01gAb00000ABCDEFGH-2000',
+      ])
+      expect(records.map((r) => r.Id)).toEqual(['a0Ab000000000001', 'a0Ab000000000002'])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
