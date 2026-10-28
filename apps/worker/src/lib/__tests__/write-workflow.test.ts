@@ -120,7 +120,8 @@ describe('writeWorkflow', () => {
 })
 
 // #2868: the GitHub backup is pushed by writeWorkflow itself, for every write
-// that writes a version snapshot (save and restore), so no route can write a
+// that writes a version snapshot (save, restore, and since #2879 create and
+// duplicate), so no route can write a
 // version and leave the backup holding the one before it. It runs after the
 // write is answered, through the caller's waitUntil, and its failure is
 // alerted as the save route always alerted it.

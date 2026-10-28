@@ -7,8 +7,9 @@
  * on or off, move to a folder) and soft delete. Lane is written by none of its
  * ops: a create takes the money default and a duplicate the source's lane. The function locks the row,
  * compares the version the caller read with the stored one and refuses a stale
- * write by name, writes a save's or restore's snapshot in the same
- * transaction, and decides a copied definition's stamp itself. A database
+ * write by name, writes a save's or restore's snapshot, a create's first
+ * version and a duplicate's copied history in the same transaction, and
+ * decides a copied definition's stamp itself. A database
  * guard, not this module, is what keeps any other writer out (the contract
  * migration that follows revokes service_role's direct writes).
  *
