@@ -121,14 +121,14 @@ order the stages are applied.
 |---|---|---|
 | `canary_invalid_state` | 4 | ports `invalid_state_sf_post` |
 | `canary_send_salesforce` | 5 | also ports `send_salesforce` |
-| `collections` | #2832 | adds the collections post to `parallel_1`, before the answer (built, not applied: waits for the Salesforce endpoint in production) |
+| `collections` | #2832 | adds the collections post to `parallel_1`, before the answer (applied on 2026-10-28 as version 177) |
 | `outcome_posts` | 6 | ports the other seven (gated on #2163 and #2023, D6) |
 | `inquiry` | 7 | moves the inquiry post after the answer (gated on #2172) |
 
-**The collections stage is independent of the rest of #1680.** It can be applied
-now, over live Main Flow (`canary_send_salesforce`, version 175): it ports the
-same two posts that stage did, so over the live definition it ports nothing and
-adds the collections body and Apex call alone. `outcome_posts` and `inquiry`,
+**The collections stage is independent of the rest of #1680.** It was applied on
+2026-10-28 over live Main Flow (version 176, which holds `canary_send_salesforce`),
+as version 177: it ports the same two posts that stage did, so over the live
+definition it ported nothing and added the collections body and Apex call alone. `outcome_posts` and `inquiry`,
 applied after it, keep its slot exactly as it is, and when `inquiry` takes the
 inquiry relay out of `parallel_1` the collections slot stays there. Applied
 before it, they never add the slot. It may equally be applied after either of
@@ -238,7 +238,8 @@ the slot can take. The block already waits for the inquiry relay beside the
 trades chain until the `inquiry` stage.
 
 **Turning it on**, once `CollectionParserRest` is live in the PRODUCTION Pennie
-org (not a sandbox):
+org (not a sandbox). Done on 2026-10-28 (version 177, #2832); the steps stay as
+the record of how:
 
 1. Check it on a test lead first: a production test lead on the `trades_present`
    route (the Skyfall test lead procedure), with the endpoint called by hand with
@@ -282,10 +283,12 @@ request if the edit should stand.
 Only a member of the production organization can save Main Flow, so this runs in
 Dan's logged in Bidspoke tab, as the Liberty1 workflow was created. Each stage is
 applied by its own phase issue. The stages live now are the ones `APPLIED_STAGES`
-names in `gate-fixture.test.ts`: `canary_send_salesforce`, applied on 2026-10-26
-as version 175 (#2174), over `canary_invalid_state`, applied on 2026-10-16 as
-version 172 (#2173) after an earlier apply (version 170) and its rollback
-(version 171).
+names in `gate-fixture.test.ts`: `collections`, applied on 2026-10-28 as version
+177 (#2832), over version 176 (a canvas save of 2026-10-27 raising
+`send_salesforce`'s timeout from 4,500 to 5,250 ms) and `canary_send_salesforce`,
+applied on 2026-10-26 as version 175 (#2174), over `canary_invalid_state`, applied
+on 2026-10-16 as version 172 (#2173) after an earlier apply (version 170) and its
+rollback (version 171).
 
 1. Before any apply, the engine pull request that the stage needs is merged and
    deployed, and the live commit confirmed (plan point 12).
@@ -568,4 +571,6 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
 The money gate answers the native Submission PATCH (`salesforce_submission_update`)
 and the Apex calls (`salesforce_credit_inquiries`, `salesforce_credit_collections`), each with a failing answer,
 and its `salesforce_inquiry_post_fails` variant fails the inquiry post both
-before the port and after it.
+before the port and after it. Its `salesforce_collections_post_fails` variant
+(#2832) fails the collections call alone, on a Tripoint win: the lead is still
+answered and the walk goes on past `parallel_1`.

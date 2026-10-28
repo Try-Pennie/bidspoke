@@ -34,7 +34,7 @@ import { isCreditCollectionsPost } from '../../../engine/inquiry-post'
 /** Everything the port does at once: every post, the inquiry moved, and the collections slot (#2832). */
 const FULL: PortOptions = { posts: 'all', moveInquiry: true, collections: true }
 
-/** Main Flow as the money gate holds it: the live version 175, canary_send_salesforce applied. */
+/** Main Flow as the money gate holds it: the live version 177, both canaries and the collections slot applied (#2832). */
 const live = (): Definition => structuredClone((JSON.parse(GATE_MAIN_FLOW_RAW as string) as { definition: Definition }).definition)
 
 /** The same definition whatever order its nodes and edges are listed in. */
@@ -45,6 +45,14 @@ const canonical = (d: Definition) => ({
 })
 
 const applyAll = (def: Definition, stages: readonly PortStage[]) => stages.reduce((d, s) => portMainFlow(d, PORT_STAGES[s]), def)
+
+/**
+ * Main Flow as it stood before the collections stage: the frozen version 169 with
+ * both canaries applied. Live Main Flow holds the slot since version 177
+ * (2026-10-28), so what the stage adds is held here, as #2831 did for the send
+ * Salesforce canary, since no copy of version 176 is kept.
+ */
+const beforeCollections = (): Definition => applyAll(productionMainFlow(), ['canary_invalid_state', 'canary_send_salesforce'])
 
 function refusalOf(def: unknown, options: PortOptions = FULL): string[] {
   try {
@@ -153,8 +161,8 @@ describe('portMainFlow over the production definition', () => {
 })
 
 describe('the collections stage (#2832): a slot of parallel_1, before the answer', () => {
-  it('over live Main Flow (canary_send_salesforce, version 175) ports nothing and adds the collections body and Apex call alone', () => {
-    const before = live()
+  it('over the definition before it (both canaries applied) ports nothing and adds the collections body and Apex call alone', () => {
+    const before = beforeCollections()
     const after = portMainFlow(before, PORT_STAGES.collections)
     expect(portStatus(before)).toMatchObject({ collections: false })
     expect(portStatus(after)).toEqual({ ...portStatus(before), collections: true })
@@ -168,8 +176,8 @@ describe('the collections stage (#2832): a slot of parallel_1, before the answer
   })
 
   it('is a third slot of parallel_1, beside the trades chain and the inquiry relay, marked continue, the settings otherwise as they were', () => {
-    const before = nodeByNamespace(live(), 'parallel_1')
-    const after = portMainFlow(live(), PORT_STAGES.collections)
+    const before = nodeByNamespace(beforeCollections(), 'parallel_1')
+    const after = portMainFlow(beforeCollections(), PORT_STAGES.collections)
     const p = nodeByNamespace(after, 'parallel_1')
     expect(p.config).toEqual({ ...before.config, children: [...(before.config.children as unknown[]), COLLECTIONS_CHILD] })
     expect(p.config).toMatchObject({ wait_for: 'all', on_child_error: 'fail', on_timeout: 'partial', timeout_ms: 20_000 })
@@ -179,7 +187,7 @@ describe('the collections stage (#2832): a slot of parallel_1, before the answer
   })
 
   it('posts once to credit-collections, 4.5 s, skipped only for a null body; its body step has one 500 ms attempt', () => {
-    const after = portMainFlow(live(), PORT_STAGES.collections)
+    const after = portMainFlow(beforeCollections(), PORT_STAGES.collections)
     expect(nodeByNamespace(after, COLLECTIONS_APEX).config).toEqual({
       operation: 'apex', apex_path: COLLECTIONS_APEX_PATH, body: `{{steps.${COLLECTIONS_BODY}.output}}`, skip_when_empty: true, retries: 0, timeout_ms: 4_500,
     })
@@ -190,11 +198,12 @@ describe('the collections stage (#2832): a slot of parallel_1, before the answer
   // #2847: the engine gives this call, and only this call, the collections
   // share of the Salesforce bulkhead, by the endpoint it posts to.
   it('builds the one step the engine recognises as the collections post', () => {
-    for (const def of [portMainFlow(live(), PORT_STAGES.collections), portMainFlow(productionMainFlow(), FULL)]) {
+    // Live Main Flow (version 177) among them: the applied stage built the same step.
+    for (const def of [live(), portMainFlow(beforeCollections(), PORT_STAGES.collections), portMainFlow(productionMainFlow(), FULL)]) {
       const recognised = def.nodes.filter((n) => n.type === 'salesforce' && isCreditCollectionsPost(n.config as Record<string, unknown>)).map((n) => n.namespace)
       expect(recognised).toEqual([COLLECTIONS_APEX])
     }
-    expect(live().nodes.filter((n) => isCreditCollectionsPost(n.config as Record<string, unknown>))).toEqual([])
+    expect(beforeCollections().nodes.filter((n) => isCreditCollectionsPost(n.config as Record<string, unknown>))).toEqual([])
   })
 
   it('outcome_posts and inquiry applied later keep the collections slot exactly as it is', () => {
@@ -214,7 +223,7 @@ describe('the collections stage (#2832): a slot of parallel_1, before the answer
   })
 
   it('outcome_posts and inquiry never add the slot when it is absent', () => {
-    const posts = portMainFlow(live(), PORT_STAGES.outcome_posts)
+    const posts = portMainFlow(beforeCollections(), PORT_STAGES.outcome_posts)
     const inquiry = portMainFlow(posts, PORT_STAGES.inquiry)
     for (const d of [posts, inquiry]) {
       expect(portStatus(d).collections).toBe(false)
@@ -224,7 +233,7 @@ describe('the collections stage (#2832): a slot of parallel_1, before the answer
   })
 
   it('applied after the inquiry has moved, it adds the same slot to parallel_1', () => {
-    const inquiry = applyAll(live(), ['outcome_posts', 'inquiry'])
+    const inquiry = applyAll(beforeCollections(), ['outcome_posts', 'inquiry'])
     const after = portMainFlow(inquiry, PORT_STAGES.collections)
     expect(nodeByNamespace(after, 'parallel_1').config.children).toEqual([{ id: 'child-0', label: 'pennie_debt_calc' }, COLLECTIONS_CHILD])
     expect(after.nodes.filter((n) => !inquiry.nodes.some((m) => m.id === n.id)).map((n) => n.namespace).sort()).toEqual([COLLECTIONS_APEX, COLLECTIONS_BODY])
@@ -376,7 +385,7 @@ describe('refuses a definition whose ported parts are not the shape it expects',
   })
 
   it('a step that reads parallel_1\'s output, which the collections slot adds to', () => {
-    const def = live()
+    const def = beforeCollections()
     nodeByNamespace(def, 'mutate_bes').config.note = '{{steps.parallel_1.output[1]}}'
     expect(refusalOf(def, PORT_STAGES.collections).join('\n')).toMatch(/mutate_bes.*parallel_1/)
   })
@@ -388,7 +397,7 @@ describe('refuses a definition whose ported parts are not the shape it expects',
   })
 
   it('a collections namespace already taken when the collections slot is added', () => {
-    const def = live()
+    const def = beforeCollections()
     nodeByNamespace(def, 'mutate_bes').namespace = COLLECTIONS_APEX
     expect(refusalOf(def, PORT_STAGES.collections).join('\n')).toContain(`${COLLECTIONS_APEX}: the namespace the port adds is already taken`)
   })

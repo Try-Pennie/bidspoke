@@ -7,8 +7,10 @@
  * the apply, so these ran it on the money gate's Main Flow, which the runbook's
  * step 5 refreshes from production after every save, until Dan applied it on
  * 2026-10-26 (version 174 to version 175). The gate's Main Flow is now version
- * 175, which holds the port: the stage over it is the stage as applied, and
- * gate-fixture.test.ts fails on a canvas save that undoes it. That the stage
+ * 177 (2026-10-28: version 176 a canvas save raising this write's timeout to
+ * 5,250 ms, version 177 the collections stage, #2832), which holds the port: the
+ * stage over it is the stage as applied, and gate-fixture.test.ts fails on a
+ * canvas save that undoes it. That the stage
  * ports this one post and nothing else is held on the definition just before
  * it, the frozen version 169 with the first canary applied, since no copy of
  * version 174 is kept.
@@ -58,6 +60,14 @@ const live = (): Definition => structuredClone(gate.definition)
 const canary = (): Definition => portMainFlow(live(), PORT_STAGES.canary_send_salesforce)
 /** Main Flow as it stood before this stage: the frozen version 169 with the first canary applied. */
 const beforeCanary = (): Definition => portMainFlow(productionMainFlow(), PORT_STAGES.canary_invalid_state)
+/** This stage as it built the write, over the definition before it: the settings the apply wrote. */
+const asBuilt = (): Definition => portMainFlow(beforeCanary(), PORT_STAGES.canary_send_salesforce)
+/**
+ * The write's timeout on the live canvas. Version 176 (2026-10-27) raised it from
+ * the 4,500 ms the port built to 5,250 ms, a canvas save the later stages keep, so
+ * a check of the live write reads it rather than OUTCOME_WRITE_TIMEOUT_MS.
+ */
+const liveWriteTimeoutMs = (): number => Number(nodeByNamespace(live(), 'send_salesforce').config.timeout_ms)
 
 describe('the send_salesforce canary stage over the live Main Flow', () => {
   it('is live: send_salesforce and invalid_state_sf_post native, the other seven on the relay, the inquiry where it was', () => {
@@ -66,7 +76,8 @@ describe('the send_salesforce canary stage over the live Main Flow', () => {
       ported: ['send_salesforce', 'invalid_state_sf_post'],
       relay: OUTCOME_POSTS.filter((p) => p !== 'invalid_state_sf_post' && p !== 'send_salesforce'),
       inquiryMoved: false,
-      collections: false,
+      // The collections slot, applied after this stage as version 177 (#2832).
+      collections: true,
     })
   })
 
@@ -107,17 +118,23 @@ describe('the send_salesforce canary stage over the live Main Flow', () => {
       injected_fields: { PDFlow_4__c: '{{execution.bidspoke_link}}' },
       skip_when_empty: true,
       retries: 0,
-      timeout_ms: OUTCOME_WRITE_TIMEOUT_MS,
+      timeout_ms: liveWriteTimeoutMs(),
     })
+    // The stage built it with the port's own timeout; the canvas raised it since (version 176).
+    expect(nodeByNamespace(asBuilt(), 'send_salesforce').config.timeout_ms).toBe(OUTCOME_WRITE_TIMEOUT_MS)
     expect(nextOf(canary(), 'send_salesforce')).toEqual(['output:exit_1'])
   })
 
   it('has the same write settings as the invalid state post the first canary passed on, apart from its body and record id', () => {
-    const settings = (ns: string) => {
-      const { body: _b, record_id: _r, ...rest } = nodeByNamespace(canary(), ns).config
+    const settings = (def: Definition, ns: string, ...canvasOwned: string[]) => {
+      const { body: _b, record_id: _r, ...rest } = nodeByNamespace(def, ns).config
+      for (const k of canvasOwned) delete rest[k]
       return rest
     }
-    expect(settings('send_salesforce')).toEqual(settings('invalid_state_sf_post'))
+    // As the stage built it, every setting alike.
+    expect(settings(asBuilt(), 'send_salesforce')).toEqual(settings(asBuilt(), 'invalid_state_sf_post'))
+    // On the live canvas, alike but for the timeout version 176 raised on send_salesforce alone.
+    expect(settings(canary(), 'send_salesforce', 'timeout_ms')).toEqual(settings(canary(), 'invalid_state_sf_post', 'timeout_ms'))
   })
 
   it('applying it again changes nothing', () => {
@@ -144,11 +161,13 @@ describe('the send_salesforce canary stage over the live Main Flow', () => {
   })
 
   it('the worst case from the answer to the end of the write fits the 12 s window', () => {
-    // calculate_internal_debt: three 150 ms attempts and 1.5 s of backoff; the write: one 4.5 s attempt.
+    // calculate_internal_debt: three 150 ms attempts and 1.5 s of backoff; the
+    // write: one attempt of its live timeout, 5,250 ms since version 176 (6,450 ms
+    // in all at the 4,500 ms the port built, 7,200 ms now).
     const debt = nodeByNamespace(canary(), 'calculate_internal_debt').config
     expect({ retries: debt.retries, timeout_ms: debt.timeout_ms }).toEqual({ retries: 2, timeout_ms: 150 })
-    const worst = 3 * 150 + 500 + 1000 + OUTCOME_WRITE_TIMEOUT_MS
-    expect(worst).toBe(6_450)
+    expect(nodeByNamespace(canary(), 'send_salesforce').config.retries).toBe(0)
+    const worst = 3 * 150 + 500 + 1000 + liveWriteTimeoutMs()
     expect(worst).toBeLessThanOrEqual(CONTINUATION_WINDOW_MS)
   })
 })

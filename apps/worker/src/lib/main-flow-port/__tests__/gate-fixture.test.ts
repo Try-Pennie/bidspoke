@@ -31,9 +31,10 @@ import { productionMainFlow } from './production-fixture'
 /**
  * The stages applied to live Main Flow, in the order they were applied:
  * canary_invalid_state as version 172 (2026-10-16, #2173), canary_send_salesforce
- * as version 175 (2026-10-26, #2174).
+ * as version 175 (2026-10-26, #2174), collections as version 177 (2026-10-28,
+ * #2832, over version 176, a canvas save raising send_salesforce's timeout).
  */
-const APPLIED_STAGES: readonly PortStage[] = ['canary_invalid_state', 'canary_send_salesforce']
+const APPLIED_STAGES: readonly PortStage[] = ['canary_invalid_state', 'canary_send_salesforce', 'collections']
 
 const gate = JSON.parse(GATE_MAIN_FLOW_RAW as string) as { id: string; definition: Definition }
 
