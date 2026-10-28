@@ -6,6 +6,7 @@
  */
 import type { ConnectionDeclaration } from './connection'
 import type { GoogleDelegationScope } from './google-delegation'
+import type { WebRequestAuthType } from './web-request'
 
 export const ARGUMENT_TYPES = ['text', 'dropdown', 'list', 'code'] as const
 export type ArgumentType = (typeof ARGUMENT_TYPES)[number]
@@ -77,6 +78,13 @@ export interface ServiceSchema {
    * so a service cannot ship without saying how it is connected.
    */
   readonly connection: ConnectionDeclaration
+  /**
+   * The sign in the canvas's Webhook step presets when this service is picked
+   * there (web-request.ts, #2342). Absent for a service the step does not
+   * offer. A form preset only: no action's fingerprint reads it, and the engine
+   * sends what the step stores, never this.
+   */
+  readonly webRequestAuth?: WebRequestAuthType
 }
 
 /**

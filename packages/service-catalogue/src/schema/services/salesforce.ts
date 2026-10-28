@@ -160,6 +160,8 @@ export const SALESFORCE_GET_INGEST_JOB_V1: ActionSchema = {
 export const SALESFORCE_SERVICE: ServiceSchema = {
   key: 'salesforce',
   name: 'Salesforce',
+  // The Webhook step's preset when Salesforce is picked there: a bearer token (#2342).
+  webRequestAuth: 'bearer',
   actions: [
     SALESFORCE_SOQL_SEARCH_V1, SALESFORCE_QUERY_V1, SALESFORCE_CREATE_RECORD_V1, SALESFORCE_UPDATE_RECORD_V1, SALESFORCE_UPSERT_RECORD_V1,
     SALESFORCE_CREATE_RECORDS_V1, SALESFORCE_UPDATE_RECORDS_V1, SALESFORCE_APEX_REST_V1, SALESFORCE_BULK_INGEST_V1, SALESFORCE_GET_INGEST_JOB_V1,
