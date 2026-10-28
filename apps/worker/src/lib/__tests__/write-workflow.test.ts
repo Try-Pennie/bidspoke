@@ -164,7 +164,44 @@ describe('writeWorkflow pushes the GitHub backup of every version it writes (#28
     expect(vi.mocked(pushWorkflowToGitHub)).toHaveBeenCalledWith('gh-tok', 'Try-Pennie/backups', 'wf-1', 'Lead Routing', WRITTEN.definition, 9, 'fix: the filter')
   })
 
-  it.each(['create', 'duplicate', 'patch', 'delete'] as const)('pushes nothing for a %s, which writes no version of its own', async (op) => {
+  // #2879: a create writes its first version and a duplicate answers the version
+  // its definition is, so neither waits for a first save to reach the backup.
+  it('pushes a create\'s definition as its first version, and stamps the commit on that version row', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-new')
+    const { supabase, ctx, updates, backup } = backed({ data: { workflow: WRITTEN, version_id: 'ver-1', version_number: 1 }, error: null }, [{ id: 'ver-1' }])
+    const result = await writeWorkflow(supabase, { ...call, op: 'create', workflowId: null, expectedVersion: null, fields: { name: 'Lead Routing', definition: WRITTEN.definition }, backup })
+    expect(result.kind).toBe('written')
+    await ctx.settle()
+    expect(vi.mocked(pushWorkflowToGitHub)).toHaveBeenCalledWith('gh-tok', 'Try-Pennie/backups', 'wf-1', 'Lead Routing', WRITTEN.definition, 1, 'chore: create workflow "Lead Routing" as v1')
+    expect(updates).toEqual([{ values: { commit_sha: 'commit-new' }, id: 'ver-1' }])
+    expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalledWith(call.backup.env.IDEMPOTENCY, 'org-1')
+  })
+
+  it('pushes a duplicate under the copy\'s own id, naming its source, and stamps the copy\'s version, never the source\'s', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-copy')
+    const copy = { ...WRITTEN, id: 'wf-copy', name: 'Lead Routing (copy)' }
+    const { supabase, ctx, updates, backup } = backed({ data: { workflow: copy, version_id: 'ver-copy-3', version_number: 3, versions_copied: 3 }, error: null }, [{ id: 'ver-copy-3' }])
+    const result = await writeWorkflow(supabase, { ...call, op: 'duplicate', workflowId: 'wf-1', fields: { name: copy.name, definition: copy.definition }, backup })
+    expect(result.kind).toBe('written')
+    await ctx.settle()
+    expect(vi.mocked(pushWorkflowToGitHub)).toHaveBeenCalledWith('gh-tok', 'Try-Pennie/backups', 'wf-copy', 'Lead Routing (copy)', copy.definition, 3, 'chore: duplicate workflow wf-1 as "Lead Routing (copy)" at v3')
+    expect(updates).toEqual([{ values: { commit_sha: 'commit-copy' }, id: 'ver-copy-3' }])
+  })
+
+  it.each(['create', 'duplicate'] as const)('answers a %s as written when its push fails, and records the failure for the alert', async (op) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const failure = new Error('GitHub push failed (500): Server Error')
+    vi.mocked(pushWorkflowToGitHub).mockRejectedValue(failure)
+    const { supabase, ctx, updates, backup } = backed({ data: { workflow: WRITTEN, version_id: 'ver-1', version_number: 1 }, error: null })
+    const result = await writeWorkflow(supabase, { ...call, op, fields: { name: 'Lead Routing', definition: WRITTEN.definition }, backup })
+    expect(result.kind).toBe('written')
+    await ctx.settle()
+    expect(vi.mocked(recordBackupFailure)).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-1', workflowId: 'wf-1', workflowName: 'Lead Routing', error: failure }))
+    expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
+    expect(updates).toEqual([])
+  })
+
+  it.each(['patch', 'delete'] as const)('pushes nothing for a %s, which writes no version of its own', async (op) => {
     const { supabase, ctx, backup } = backed({ data: { workflow: WRITTEN }, error: null })
     await writeWorkflow(supabase, { ...call, op, backup })
     await ctx.settle()

@@ -36,7 +36,7 @@ A `PATCH` or `DELETE` whose target row does not exist, or belongs to another org
 |--------|------|---------|
 | GET | `/api/workflows` | List workflows in your org (summary fields, newest-updated first). |
 | POST | `/api/workflows` | Create a workflow. |
-| POST | `/api/workflows/:id/duplicate` | Clone a workflow with its full version history. |
+| POST | `/api/workflows/:id/duplicate` | Clone a workflow, switched off, with its full version history (each copied version's `commit_sha` left empty, since it names a commit of the source's file). The clone is pushed to the GitHub backup as its own file, and the commit is recorded on the version its definition is (#2879). |
 | GET | `/api/workflows/:id` | Get one workflow, including its full `definition`. |
 | PUT | `/api/workflows/:id` | Save the definition. Creates a version snapshot and invalidates the KV cache. |
 | PATCH | `/api/workflows/:id` | Lightweight field update (`is_active`, `capture_sightings`, `folder_id`). No version snapshot. |
@@ -53,7 +53,7 @@ A `PATCH` or `DELETE` whose target row does not exist, or belongs to another org
 
 ### Create a workflow
 
-`POST /api/workflows`. Only `name` is required. If you omit `definition`, an empty HTTP-webhook definition is seeded.
+`POST /api/workflows`. Only `name` is required. If you omit `definition`, an empty HTTP-webhook definition is seeded. The workflow is created switched off, with a first version (v1) holding its definition, which is pushed to the GitHub backup repo in the background as a save is, so a new workflow is backed up before its first save (#2879).
 
 ```bash
 curl -X POST https://bidspoke.trypennie.dev/api/workflows \
@@ -75,7 +75,7 @@ Response `201`:
   "name": "Lead intake",
   "description": "Validate and route inbound leads",
   "definition": { "nodes": [], "edges": [], "trigger": { "type": "http_webhook", "config": { "method": "POST", "auth_method": "api_key" } } },
-  "is_active": true,
+  "is_active": false,
   "folder_id": null,
   "created_at": "2026-06-09T12:00:00Z",
   "updated_at": "2026-06-09T12:00:00Z"
