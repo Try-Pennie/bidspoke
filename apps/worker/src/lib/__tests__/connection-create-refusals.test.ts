@@ -5,8 +5,8 @@
  * R21), in the same module.
  */
 import { describe, expect, it } from 'vitest'
-import { CATALOGUE } from '@bidspoke/service-catalogue/schema'
-import { secretLabelOf } from '../connection-create'
+import { CATALOGUE, type ServiceSchema } from '@bidspoke/service-catalogue/schema'
+import { keyScopeOf, secretLabelOf } from '../connection-create'
 import { OPS_CONNECTIONS_REFUSAL_CODES } from '../ops-connections-contract'
 import { CONNECTION_REFUSAL_CODES } from '../../ops/connections/refusals'
 import {
@@ -62,6 +62,56 @@ describe('the create refusals', () => {
     expect(createRefusalSentence('connection_needs_reauth', CTX)).toBe('Salesforce refused the client secret. Nothing was saved. Check the secret and save again.')
     expect(createRefusalSentence('connection_needs_reauth', { ...CTX, service: 'Snowflake', secret: 'private key' })).toBe('Snowflake refused the private key. Nothing was saved. Check the secret and save again.')
     expect(createRefusalSentence('connection_needs_reauth', { ...CTX, service: 'Lender API', secret: 'login' })).toBe('Lender API refused the login. Nothing was saved. Check the login and save again.')
+  })
+
+  // OpenAI answers a key used with a Project ID it cannot act in with the same 401 as a bad key: its error
+  // reference documents no code that tells them apart (#2715), so the sentence names both and which to check first.
+  it('says a refused key on a connection that names a project means the key or the Project ID is wrong, Project ID first (#2715)', () => {
+    const openai: RefusalContext = { ...CTX, service: 'OpenAI', secret: 'api key', org: null, names: [], keyScope: { key: 'API key', scope: 'Project ID', owner: 'project' } }
+    expect(createRefusalSentence('connection_needs_reauth', openai)).toBe(
+      'OpenAI refused the API key with this Project ID, so either the key or the Project ID is wrong. Nothing was saved. Check the Project ID first, then the key, and save again.',
+    )
+    // A service whose key names no scope keeps the design's sentence (D14).
+    expect(createRefusalSentence('connection_needs_reauth', { ...openai, keyScope: null })).toBe('OpenAI refused the api key. Nothing was saved. Check the secret and save again.')
+  })
+
+  // Reconnect takes the Project ID from the stored connection and refuses a changed one (reconnect_target_changed),
+  // so there a refusal may only send the person to the key, the one thing they can change (L111, #2715 review).
+  it('on Reconnect, where the Project ID cannot change, sends the person to the key alone (#2715)', () => {
+    const fixed: RefusalContext = { ...CTX, service: 'OpenAI', secret: 'api key', org: null, names: [], keyScope: { key: 'API key', scope: 'Project ID', owner: 'project', fixed: true } }
+    const reauth = createRefusalSentence('connection_needs_reauth', fixed)
+    expect(reauth).toBe(
+      'OpenAI refused the API key with this connection\'s Project ID, so the key is wrong or belongs to another project. Nothing was saved. Check the key is from this connection\'s project and save again.',
+    )
+    const mismatch = createRefusalSentence('verify_openai_project_mismatch', fixed)
+    expect(mismatch).toBe(
+      'OpenAI says this API key belongs to another project than this connection\'s Project ID. Nothing was saved. Check the key is from this connection\'s project and save again.',
+    )
+    for (const sentence of [reauth, mismatch]) {
+      expect(sentence).not.toMatch(/Check the Project ID/)
+      expect(sentence).not.toMatch(/Project ID is wrong/)
+    }
+    // Where the Project ID can still be changed (Add), both keep sending the person to it.
+    const open: RefusalContext = { ...fixed, keyScope: { key: 'API key', scope: 'Project ID', owner: 'project' } }
+    expect(createRefusalSentence('connection_needs_reauth', open)).toMatch(/Check the Project ID first, then the key/)
+    expect(createRefusalSentence('verify_openai_project_mismatch', open)).toBe('OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.')
+  })
+
+  it('reads the key and its scope from the OpenAI form\'s own labels, and names no scope for any other service (#2715)', () => {
+    const service = (key: string) => {
+      const found = CATALOGUE.find((s) => s.key === key)
+      if (found === undefined) throw new Error(`the catalogue declares no ${key}`)
+      return found
+    }
+    expect(keyScopeOf(service('openai'))).toEqual({ key: 'API key', scope: 'Project ID', owner: 'project' })
+    for (const s of CATALOGUE.filter((s) => s.key !== 'openai')) expect(keyScopeOf(s), s.key).toBeNull()
+  })
+
+  it('refuses loudly when the OpenAI form no longer has the field its key is scoped to, rather than dropping the scope (#2715)', () => {
+    const openai = CATALOGUE.find((s) => s.key === 'openai')
+    if (openai === undefined) throw new Error('the catalogue declares no openai')
+    const renamed: ServiceSchema = { ...openai, connection: { ...openai.connection, fields: openai.connection.fields.filter((f) => f.key !== 'project_id') } }
+    expect(() => keyScopeOf(renamed)).toThrow(/project_id/)
   })
 
   it("keeps the secret label's own capitals in every catalogue service's refused sentence (#2889)", () => {

@@ -136,6 +136,26 @@ export interface RefusalContext {
   names: readonly string[]
   /** The money identity found, for connection_money_identity. */
   money: MoneyTargetKind | null
+  /**
+   * For a service whose refusal of the key can as well mean a field the key is
+   * scoped to is wrong (OpenAI's Project ID, #2715), the two fields' labels as the
+   * form shows them; null or absent for every other service (connection-create.ts, keyScopeOf).
+   */
+  keyScope?: KeyScope | null
+}
+
+/** A key's label and the label of the field it only works within, as the form shows them (#2715). */
+export interface KeyScope {
+  key: string
+  scope: string
+  /** What the scope field identifies, in the service's own word (OpenAI's project). */
+  owner: string
+  /**
+   * True where the scope cannot be changed: Reconnect takes it from the stored
+   * connection and refuses a changed one (reconnect_target_changed), so its
+   * sentences send the person to the key alone (L111).
+   */
+  fixed?: boolean
 }
 
 /** "A", "A and B", "A, B and C". */
@@ -196,7 +216,9 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   verify_identity_mismatch: (c) => `${c.service} says this login belongs to another account than the one entered. Nothing was saved. Check the account and save again.`,
   verify_slack_not_a_bot: () => 'This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.',
   verify_slack_workspace_mismatch: () => 'Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
-  verify_openai_project_mismatch: () => 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.',
+  verify_openai_project_mismatch: (c) => c.keyScope?.fixed
+    ? 'OpenAI says this API key belongs to another project than this connection\'s Project ID. Nothing was saved. Check the key is from this connection\'s project and save again.'
+    : 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.',
   verify_google_mailbox_mismatch: () => 'Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.',
   verify_anthropic_workspace_mismatch: () => 'Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
   verify_http_check_refused: () => 'The Check path did not answer with this header value. Nothing was saved. Check the Check path, the Header and the Header value, and save again.',
@@ -229,7 +251,14 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   sf_lease_unavailable: () => 'The workflows server could not reserve a Salesforce call for the check. Nothing was saved. Save again in a minute.',
   connection_record_failed: () => 'The workflows server could not record the check before sending it. Nothing was saved. Save again.',
   // The design's sentence (D14): the secret is named once, then "the secret" (L605); a service with no secret says its login.
-  connection_needs_reauth: (c) => `${c.service} refused the ${c.secret}. Nothing was saved. Check the ${c.secret === 'login' ? 'login' : 'secret'} and save again.`,
+  // OpenAI answers a valid key sent with a wrong Project ID with the same 401 as a bad key, and its error reference
+  // documents no code that tells the two apart (#2715), so a key scoped to a field names both, and which to check first.
+  // On Reconnect the scope is the stored connection's and cannot change there, so only the key is named as the fix (L111).
+  connection_needs_reauth: (c) => c.keyScope?.fixed
+    ? `${c.service} refused the ${c.keyScope.key} with this connection's ${c.keyScope.scope}, so the key is wrong or belongs to another ${c.keyScope.owner}. Nothing was saved. Check the key is from this connection's ${c.keyScope.owner} and save again.`
+    : c.keyScope
+    ? `${c.service} refused the ${c.keyScope.key} with this ${c.keyScope.scope}, so either the key or the ${c.keyScope.scope} is wrong. Nothing was saved. Check the ${c.keyScope.scope} first, then the key, and save again.`
+    : `${c.service} refused the ${c.secret}. Nothing was saved. Check the ${c.secret === 'login' ? 'login' : 'secret'} and save again.`,
   connection_auth_unavailable: (c) => `${c.service} did not answer the sign in. Nothing was saved. Save again in a minute.`,
   connection_not_allowed: (c) => `A Bidspoke rule refused this ${c.service} login before it was tried. Nothing was saved. Check what the connection names and save again.`,
   connection_auth_check_unavailable: () => 'The workflows server could not read the list it checks this login against. Nothing was saved. Save again in a minute.',
