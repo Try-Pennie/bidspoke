@@ -149,6 +149,45 @@ describe('summariseStageB', () => {
   })
 })
 
+/** A canary lead whose time ran out before Tripoint was called (#2933): handed on runs tripoint_ping, held does not. */
+function claimDeadline(id: string, o: { handedOn: boolean; qualified?: boolean; code?: number | null }): ParityExecution {
+  return {
+    execution_id: id,
+    started_at: T0,
+    node: { _route: o.handedOn ? 'deferred' : 'no_sale', reason: 'object_deadline', mode_effective: 'live', live_percent_in_force: 5, sale: { skipped: true, accepted: false, result_code: null } },
+    node_duration_ms: 2000,
+    incumbent: o.handedOn ? { skipped: false, qualified: o.qualified ?? false, resultCode: o.code ?? null } : null,
+    incumbent_duration_ms: o.handedOn ? 3000 : null,
+  }
+}
+
+describe('summariseStageB counts the canary leads whose claim ran out of time (#2933)', () => {
+  it('counts each such lead as handed on or held, with what the legacy route got for the handed on ones, and keeps them out of both arms', () => {
+    const execs = [
+      canary('c1', { accepted: true, code: '1001', duration: 3400, call: 3100, percent: 5 }),
+      legacy('l1', { qualified: true, code: 1001, duration: 2800 }),
+      claimDeadline('d1', { handedOn: true, qualified: true, code: 1001 }),
+      claimDeadline('d2', { handedOn: true, qualified: false, code: 1003 }),
+      claimDeadline('d3', { handedOn: false }),
+    ]
+    const s = summariseStageB(execs, oneEach(execs), SETTLED, true, NO_TIMING)
+    expect(s.claim_deadline).toEqual({ handed_on: 2, handed_on_accepted: 1, held: 1 })
+    expect(s.canary).toMatchObject({ attempts: 1, accepted: 1 })
+    // The legacy arm stays the leads outside the share, so the accept rate yardstick is unchanged.
+    expect(s.legacy).toMatchObject({ attempts: 1, accepted: 1, result_codes: { '1001': 1 } })
+  })
+
+  it('a day with none reports zeros, a measured nothing, beside the arms', () => {
+    const execs = [canary('c1', { accepted: true, code: '1001', duration: 3400, call: 3100 }), legacy('l1', { qualified: true, code: 1001, duration: 2800 })]
+    expect(summariseStageB(execs, oneEach(execs), SETTLED, true, NO_TIMING).claim_deadline).toEqual({ handed_on: 0, handed_on_accepted: 0, held: 0 })
+  })
+
+  it('a rehearsal that ran out of time is not a canary lead and is not counted', () => {
+    const rehearsal: ParityExecution = { ...claimDeadline('r1', { handedOn: false }), node: { _route: 'deferred', reason: 'rehearsal_deadline', mode_effective: 'decide_only', sale: { skipped: true, accepted: false, result_code: null } } }
+    expect(summariseStageB([rehearsal], oneEach([rehearsal]), SETTLED, true, NO_TIMING).claim_deadline).toEqual({ handed_on: 0, handed_on_accepted: 0, held: 0 })
+  })
+})
+
 describe('readStageBBids', () => {
   const DAY = '2027-09-20'
   // The Eastern day 2027-09-20 runs from 04:00Z to 2027-09-21T04:00Z.

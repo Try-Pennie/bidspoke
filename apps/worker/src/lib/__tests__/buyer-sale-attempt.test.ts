@@ -225,7 +225,7 @@ describe('runBuyerSaleAttempt waiting on a holder (sale_in_flight, L524)', () =>
     const sale = new FakeSale([inFlight])
     const ledger = new FakeLedger()
     const h = harness({ sale, ledger, buyerTimeoutMs: 1000, waitIntervalMs: 250 })
-    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'sale_in_flight', detail: 'exec-0 held the lead past the 1000 ms budget' })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'sale_in_flight', detail: 'exec-0 held the lead past the 1000 ms budget', claim_contended: true })
     // Four intervals fill the budget; the fifth poll would start past it.
     expect(h.sleeps).toEqual([250, 250, 250, 250])
     expect(ledger.calls).toEqual([])
@@ -267,7 +267,7 @@ describe('runBuyerSaleAttempt on an in_doubt claim (L151, L105)', () => {
     const sale = new FakeSale([inDoubt])
     const ledger = new FakeLedger(undefined, { found: true, entry: entry(status) })
     const h = harness({ sale, ledger })
-    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'outcome_unknown', page: true, detail: `partner-1 ledger entry is ${status}` })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'outcome_unknown', page: true, detail: `partner-1 ledger entry is ${status}`, claim_contended: true })
     expect(sale.calls).toEqual(['claim:exec-1'])
     expect(h.buyerCalls).toBe(0)
   })
@@ -276,7 +276,7 @@ describe('runBuyerSaleAttempt on an in_doubt claim (L151, L105)', () => {
     const sale = new FakeSale([inDoubt])
     const ledger = new FakeLedger(undefined, new Error('ledger 500'))
     const h = harness({ sale, ledger })
-    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'cap_check_error', detail: 'ledger 500' })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'cap_check_error', detail: 'ledger 500', claim_contended: true })
     expect(sale.calls).toEqual(['claim:exec-1'])
   })
 
@@ -636,7 +636,7 @@ describe('a live attempt bounded before the buyer call (#1508)', () => {
     // The budget is read off the same clock the fake sleep advances, so the wait ends by the clock, never by a counter.
     const start = h.deps.clock()
     h.deps.preCallBudgetLeftMs = () => 600 - (h.deps.clock() - start)
-    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'sale_in_flight', detail: 'exec-0 held the lead for the whole pre-call budget' })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'sale_in_flight', detail: 'exec-0 held the lead for the whole pre-call budget', claim_contended: true })
     // Two intervals fit inside 600 ms; the third would start with 100 ms left, less than an interval.
     expect(h.sleeps).toEqual([250, 250])
     expect(ledger.calls).toEqual([])
@@ -662,5 +662,42 @@ describe('a live attempt bounded before the buyer call (#1508)', () => {
     h.deps.preCallBudgetLeftMs = () => 1500
     expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'sold', outcome: OUTCOME, replay: false, mirrored: true })
     expect(h.steps).toEqual(['claimed', 'reserved', 'buyer_called', 'committed', 'marked_sold', 'mirrored'])
+  })
+})
+
+describe('runBuyerSaleAttempt says whether another execution touched the lead (#2933)', () => {
+  const inFlightElsewhere: ClaimResult = { state: 'in_flight', holder_execution_id: 'exec-0', since: NOW, generation: 4 }
+  const inDoubt: ClaimResult = { state: 'in_doubt', partner_id: 'partner-1', generation: 2 }
+
+  it('a first claim that does not answer carries no contention: nothing else is known to hold the lead', async () => {
+    const sale = new FakeSale([new DeadlineError('lead sale claim', 500) as unknown as ClaimResult])
+    const result = await runBuyerSaleAttempt(INPUT, harness({ sale, ledger: new FakeLedger() }).deps)
+    expect(result).toEqual({ result: 'no_sale', reason: 'object_deadline', detail: 'lead sale claim did not answer within 500 ms' })
+  })
+
+  it('a re-read that does not answer while another execution held the lead carries the contention', async () => {
+    const sale = new FakeSale([inFlightElsewhere, new DeadlineError('lead sale claim', 300) as unknown as ClaimResult])
+    const h = harness({ sale, ledger: new FakeLedger() })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'object_deadline', detail: 'lead sale claim did not answer within 300 ms', claim_contended: true })
+    expect(h.buyerCalls).toBe(0)
+  })
+
+  it('a heal that does not answer on a lead an earlier execution sold carries the contention', async () => {
+    const sale = new FakeSale([inDoubt], { heal: new DeadlineError('lead sale heal', 400) })
+    const ledger = new FakeLedger(undefined, { found: true, entry: entry('accepted', OUTCOME) })
+    const h = harness({ sale, ledger })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'object_deadline', detail: 'lead sale heal did not answer within 400 ms', claim_contended: true })
+    expect(h.buyerCalls).toBe(0)
+  })
+
+  it('a reserve that does not answer after this execution claimed a free lead carries no contention', async () => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger(new DeadlineError('buyer ledger reserve', 500))
+    expect(await runBuyerSaleAttempt(INPUT, harness({ sale, ledger }).deps)).toEqual({ result: 'no_sale', reason: 'object_deadline', detail: 'buyer ledger reserve did not answer within 500 ms' })
+  })
+
+  it('a sale is never marked: contention describes a lead that was not sold', async () => {
+    const sale = new FakeSale([{ state: 'sold', partner_id: 'partner-1', outcome: OUTCOME, generation: 2 }])
+    expect(await runBuyerSaleAttempt(INPUT, harness({ sale, ledger: new FakeLedger() }).deps)).toEqual({ result: 'sold', outcome: OUTCOME, replay: true, mirrored: false })
   })
 })

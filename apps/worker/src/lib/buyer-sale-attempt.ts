@@ -185,20 +185,39 @@ export type AttemptReason = OutReason | 'rehearsal_deadline'
  */
 export type MirrorOutcome = boolean | 'outcome_unknown'
 
+/**
+ * `claim_contended` is set, and true, on a no sale whose attempt was told by the
+ * claim that ANOTHER execution held the lead (in_flight), had held it past its
+ * deadline (in_doubt), or had sold it (#2933). Without it, nothing but this
+ * attempt is known to have touched the lead's claim, so a lead whose attempt ran
+ * out of time before the buyer was called may be offered by another route
+ * without risk of a second execution's sale in flight beside it.
+ */
 export type AttemptResult =
   | { result: 'sold'; outcome: SaleOutcomeRecord; replay: boolean; mirrored: MirrorOutcome }
-  | { result: 'no_sale'; reason: AttemptReason; detail?: string; page?: boolean }
+  | { result: 'no_sale'; reason: AttemptReason; detail?: string; page?: boolean; claim_contended?: true }
 
 /** How many times the in_doubt resolution may re-read the claim before giving up. */
 const MAX_CLAIM_ROUNDS = 5
 
+/** What the claim told this attempt about other executions (#2933): set once any answer named another holder or a sale. */
+interface Contention {
+  seen: boolean
+}
+
 export async function runBuyerSaleAttempt(input: AttemptInput, deps: AttemptDeps): Promise<AttemptResult> {
+  const contention: Contention = { seen: false }
+  const result = await attemptSale(input, deps, contention)
+  return result.result === 'no_sale' && contention.seen ? { ...result, claim_contended: true } : result
+}
+
+async function attemptSale(input: AttemptInput, deps: AttemptDeps, contention: Contention): Promise<AttemptResult> {
   const startedAt = deps.clock()
   const key: EntryKey = { lead_key: input.lead_key, population: input.population, kind: input.kind }
   const step = async (s: AttemptStep) => { await deps.onStep?.(s) }
 
   // ── 1. claim ────────────────────────────────────────────────────────────────
-  const claimed = await acquireClaim(input, deps, startedAt)
+  const claimed = await acquireClaim(input, deps, startedAt, contention)
   if (claimed.kind !== 'claimed') return claimed.result
   let generation = claimed.generation
   await step('claimed')
@@ -305,7 +324,7 @@ type Acquired =
   | { kind: 'claimed'; generation: number }
   | { kind: 'done'; result: AttemptResult }
 
-async function acquireClaim(input: AttemptInput, deps: AttemptDeps, startedAt: number): Promise<Acquired> {
+async function acquireClaim(input: AttemptInput, deps: AttemptDeps, startedAt: number, contention: Contention): Promise<Acquired> {
   const body: ClaimBody = { partner_id: input.partner_id, execution_id: input.execution_id, deadline_ms: deps.buyerTimeoutMs }
   for (let round = 0; round < MAX_CLAIM_ROUNDS; round++) {
     let claim: ClaimResult
@@ -315,6 +334,8 @@ async function acquireClaim(input: AttemptInput, deps: AttemptDeps, startedAt: n
       return { kind: 'done', result: objectFailure(deps, err) }
     }
     observe(deps, { kind: 'claim_answered', result: claim })
+    // The same execution claiming again is answered claimed, so any other answer names another execution.
+    if (claim.state !== 'claimed') contention.seen = true
     switch (claim.state) {
       case 'claimed':
         return { kind: 'claimed', generation: claim.generation }
