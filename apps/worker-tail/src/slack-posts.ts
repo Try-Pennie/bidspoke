@@ -12,9 +12,11 @@
  * share their failure (L561).
  *
  * The key is the post id the logger minted, so a batch written twice is one
- * row. The ops Worker's traces are skipped. A line that does not parse, or
- * whose values the table would refuse, is dropped on its own: one bad row in an
- * upsert would refuse the whole batch, and hold every good row with it.
+ * row. Each row carries the alert's fixed kind name beside its title (#2948),
+ * so an alert with no header is still told apart. The ops Worker's traces are
+ * skipped. A line that does not parse, or whose values the table would refuse,
+ * is dropped on its own: one bad row in an upsert would refuse the whole batch,
+ * and hold every good row with it.
  */
 import { OPS_WORKER_SCRIPT } from './scripts'
 import { createRowCopier, type RowCopier, type RowCopierDeps } from './row-copier'
@@ -33,6 +35,8 @@ export interface SlackPostRow {
   kind: 'destination' | 'transient' | null
   status: number | null
   title: string | null
+  /** The alert's fixed kind name (#2948); null for a post that named none, or a line from a Worker that predates it. */
+  alert_kind: string | null
 }
 
 /** Kept in step with SLACK_POST_OUTCOME_PREFIX in slack-post-outcome.ts; the worker's test feeds its real line here. */
@@ -46,6 +50,9 @@ const MAX_ID = 100
 const MAX_CHANNEL = 200
 const MAX_REASON = 100
 const MAX_TITLE = 200
+/** The table's alert kind rule, kept in step with ALERT_KIND_PATTERN and ALERT_KIND_MAX in slack-post-outcome.ts. */
+const ALERT_KIND = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const MAX_ALERT_KIND = 60
 
 function messageText(message: unknown): string | null {
   if (typeof message === 'string') return message
@@ -75,6 +82,9 @@ function parseLine(line: string, occurredAt: string): SlackPostRow | null {
   if (!(kind === null || (typeof kind === 'string' && KINDS.has(kind)))) return null
   // A delivered post carries no refusal kind, and every refusal carries one: the table's own rule.
   if ((b.outcome === 'delivered') !== (kind === null)) return null
+  // Absent from a line written before #2948, which is copied with no kind; one the table would refuse drops the line.
+  const alertKind = b.alert_kind === undefined ? null : b.alert_kind
+  if (!(alertKind === null || (typeof alertKind === 'string' && alertKind.length <= MAX_ALERT_KIND && ALERT_KIND.test(alertKind)))) return null
   return {
     post_id: b.post_id,
     occurred_at: occurredAt,
@@ -84,6 +94,7 @@ function parseLine(line: string, occurredAt: string): SlackPostRow | null {
     kind: kind as SlackPostRow['kind'],
     status,
     title: b.title,
+    alert_kind: alertKind,
   }
 }
 

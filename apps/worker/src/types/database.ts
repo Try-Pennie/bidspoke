@@ -2641,6 +2641,7 @@ export type Database = {
       }
       slack_post_outcomes: {
         Row: {
+          alert_kind: string | null
           channel: string
           kind: string | null
           occurred_at: string
@@ -2652,6 +2653,7 @@ export type Database = {
           title: string | null
         }
         Insert: {
+          alert_kind?: string | null
           channel: string
           kind?: string | null
           occurred_at: string
@@ -2663,6 +2665,7 @@ export type Database = {
           title?: string | null
         }
         Update: {
+          alert_kind?: string | null
           channel?: string
           kind?: string | null
           occurred_at?: string

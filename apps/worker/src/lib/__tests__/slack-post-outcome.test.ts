@@ -1,8 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { stubFetch, type FetchMock } from '../../__tests__/helpers/fetch-mock'
-import { postMessage, sendThreadReply } from '../slack'
-import { alertTitleOf, redactAlertTitle, SLACK_POST_OUTCOME_PREFIX, THREAD_REPLY_TITLE, type SlackPostOutcomeLine } from '../slack-post-outcome'
+import { postMessage, sendHttpMoneyHostAlert, sendThreadReply, type HttpMoneyHostAlert } from '../slack'
+import {
+  ALERT_KIND_MAX,
+  ALERT_KIND_PATTERN,
+  alertTitleOf,
+  redactAlertTitle,
+  SLACK_ALERT_KINDS,
+  SLACK_POST_OUTCOME_PREFIX,
+  THREAD_REPLY_TITLE,
+  type SlackPostOutcomeLine,
+} from '../slack-post-outcome'
 import { slackPostsIn } from '../../../../worker-tail/src/slack-posts'
+import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 /**
  * Every Slack post says how it went, in one structured line (#2364).
@@ -70,6 +81,7 @@ describe('deliverMessage logs one outcome line per post', () => {
       channel: 'C0STATUS',
       retry_after: null,
       title: 'Workflow Execution Failed',
+      alert_kind: null,
     })
   })
 
@@ -149,7 +161,100 @@ describe('deliverMessage logs one outcome line per post', () => {
       kind: 'destination',
       status: 200,
       title: 'Workflow Execution Failed',
+      alert_kind: null,
     }])
+  })
+})
+
+/**
+ * Every alert carries a fixed kind name (#2948). The title is read from the
+ * header block, and some alerts have none (the HTTP money host page lost its
+ * title at Dan's request, #2761), while others build their title from a value,
+ * so neither tells one alert kind apart from another. The kind is a name from
+ * one fixed list, recorded on the outcome line whether or not a title is shown,
+ * and copied by the tail Worker into slack_post_outcomes.alert_kind.
+ */
+describe('an alert kind is logged with every post that names one', () => {
+  const untitled = [{ type: 'section', text: { type: 'mrkdwn', text: BODY_SECRET } }]
+
+  it('an untitled alert still logs its kind, delivered or refused', async () => {
+    fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '1.1' }))
+    await postMessage(TOKEN, 'C0STATUS', untitled, 'x', 'http-money-host')
+    fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'invalid_blocks' }))
+    await postMessage(TOKEN, 'C0STATUS', untitled, 'x', 'http-money-host')
+    expect(outcomeLines().map((l) => [l.outcome, l.title, l.alert_kind])).toEqual([
+      ['delivered', null, 'http-money-host'],
+      ['refused', null, 'http-money-host'],
+    ])
+  })
+
+  it('a post with no answer logs its kind before the error is rethrown', async () => {
+    fetchMock.mockImplementation(() => Promise.reject(new TypeError('fetch failed')))
+    await expect(postMessage(TOKEN, 'C0STATUS', untitled, 'x', 'http-money-host')).rejects.toBeInstanceOf(TypeError)
+    expect(outcomeLines()).toEqual([expect.objectContaining({ outcome: 'no_answer', alert_kind: 'http-money-host' })])
+  })
+
+  it('a titled alert with a kind keeps its title as before, beside the kind', async () => {
+    fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'not_in_channel' }))
+    await postMessage(TOKEN, 'C0STATUS', blocks, 'x', 'http-money-host')
+    expect(outcomeLines()).toEqual([expect.objectContaining({ title: 'Workflow Execution Failed', alert_kind: 'http-money-host', kind: 'destination' })])
+  })
+
+  it('a titled alert that names no kind logs exactly what it did before, with a null kind', async () => {
+    fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '1.1' }))
+    await postMessage(TOKEN, 'C0STATUS', blocks, 'x')
+    expect(outcomeLines()[0]).toMatchObject({ title: 'Workflow Execution Failed', alert_kind: null })
+  })
+
+  it('the HTTP money host page, which has no title, logs the http-money-host kind', async () => {
+    const chain: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'limit') {
+          return alertRowsAnswer(() => sealedSlackRow({ bot_token: TOKEN, default_channel: 'C0CONFIG', workspace_name: 'Pennie' }).then((row) => ({ data: row, error: null })))
+        }
+        return () => chain
+      },
+    })
+    const supabase = withSlackKeyRing({ from: () => chain }) as never
+    const alert: HttpMoneyHostAlert = {
+      name: 'Lender API',
+      host: 'api.lendco.test',
+      source: 'partner_configs',
+      origin: { kind: 'partner', slug: 'lendco', name: 'Lendco' },
+      workflows: [],
+      firstReportedAt: null,
+    }
+    fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '1.3' }))
+    expect(await sendHttpMoneyHostAlert(supabase, 'org-1', alert, 'https://app.test')).toBe(true)
+    const lines = outcomeLines()
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({ outcome: 'delivered', channel: 'C0CONFIG', title: null, alert_kind: 'http-money-host' })
+  })
+
+  it('every kind is a fixed name the table accepts: lower case words joined by hyphens, at most ALERT_KIND_MAX characters', () => {
+    expect(SLACK_ALERT_KINDS.length).toBeGreaterThan(0)
+    expect(new Set(SLACK_ALERT_KINDS).size).toBe(SLACK_ALERT_KINDS.length)
+    for (const kind of SLACK_ALERT_KINDS) {
+      expect(kind).toMatch(ALERT_KIND_PATTERN)
+      expect(kind.length).toBeLessThanOrEqual(ALERT_KIND_MAX)
+    }
+    // And the tail Worker's parser, which keeps its own copy of the rule, copies each one.
+    for (const kind of SLACK_ALERT_KINDS) {
+      const line = `${SLACK_POST_OUTCOME_PREFIX}${JSON.stringify({ post_id: `p-${kind}`, outcome: 'delivered', reason: null, status: 200, kind: null, channel: 'C0STATUS', retry_after: null, title: null, alert_kind: kind })}`
+      const trace = { scriptName: 'bidspoke-worker', logs: [{ timestamp: Date.parse('2026-10-28T15:00:00Z'), level: 'log', message: [line] }] } as unknown as TraceItem
+      expect(slackPostsIn(trace).map((r) => r.alert_kind)).toEqual([kind])
+    }
+    expect('Http Money Host').not.toMatch(ALERT_KIND_PATTERN)
+    expect('http--money').not.toMatch(ALERT_KIND_PATTERN)
+  })
+
+  it('the kind reaches the tail Worker\'s row (the real line, through the real parser)', async () => {
+    fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'invalid_blocks' }))
+    await postMessage(TOKEN, 'C0STATUS', untitled, 'x', 'http-money-host')
+    const line = logged.find((l) => l.startsWith(SLACK_POST_OUTCOME_PREFIX))!
+    const trace = { scriptName: 'bidspoke-worker', logs: [{ timestamp: Date.parse('2026-10-28T15:00:00Z'), level: 'log', message: [line] }] } as unknown as TraceItem
+    expect(slackPostsIn(trace)).toEqual([expect.objectContaining({ title: null, alert_kind: 'http-money-host' })])
   })
 })
 
