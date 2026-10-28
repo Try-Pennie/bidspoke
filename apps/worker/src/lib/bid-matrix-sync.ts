@@ -16,6 +16,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
+import { salesforceNextPageUrl, salesforceQueryUrl } from './salesforce-api'
 import { requireSalesforceCreds } from './salesforce-creds'
 import { parseJson } from './json'
 import { sendMatrixChangeAlert, sendMatrixValidationAlert, sendMatrixSyncFailureAlert } from './slack'
@@ -220,7 +221,7 @@ async function querySalesforceMatrixRows(
     `WHERE ${whereParts.join(' AND ')} ` +
     `ORDER BY RowId__c, RangeLow__c`
 
-  const url = `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`
+  const url = salesforceQueryUrl(instanceUrl, soql)
 
   const all: SalesforceBidRow[] = []
   let next: string | undefined = url
@@ -234,7 +235,7 @@ async function querySalesforceMatrixRows(
     }
     const body = await parseJson<{ records: SalesforceBidRow[]; done: boolean; nextRecordsUrl?: string }>(res)
     all.push(...body.records)
-    next = body.done ? undefined : body.nextRecordsUrl ? `${instanceUrl}${body.nextRecordsUrl}` : undefined
+    next = body.done ? undefined : body.nextRecordsUrl ? salesforceNextPageUrl(instanceUrl, body.nextRecordsUrl) : undefined
   }
   return all
 }
