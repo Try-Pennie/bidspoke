@@ -29,7 +29,7 @@ import { Button, Field } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
 import { ConnectionField } from '@/components/connections/ConnectionField'
 import { api, type StepTestResult } from '@/lib/api'
-import { APP_ACTION_SERVICE_CHOICES, appActionChoices, appActionSchema, appActionServiceChoice } from '@/lib/app-action-display'
+import { APP_ACTION_SERVICE_CHOICES, TOO_BIG_TO_KEEP_SENTENCE, appActionChoices, appActionSchema, appActionServiceChoice } from '@/lib/app-action-display'
 import TemplateTextarea from './TemplateTextarea'
 import { DataPicker, insertReference, type PickerGroup } from './DataPicker'
 import { useConnectionListLoader } from './connection-names'
@@ -46,6 +46,9 @@ type ResultLoad =
   | { kind: 'loading' }
   | { kind: 'ready'; result: StepTestResult | null }
   | { kind: 'failed'; message: string }
+
+/** An earlier step whose finished test answered nothing, or nothing the picker can offer. */
+const NO_VALUES_SENTENCE = 'Its last test answered no values.'
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
 
@@ -120,10 +123,13 @@ export function AppActionConfig({ config, onChange, workflowId, upstream, trigge
       if (load.kind === 'idle' || load.kind === 'loading') out.push({ key: step.id, from: name, state: { kind: 'loading' } })
       else if (load.kind === 'failed') out.push({ key: step.id, from: name, state: { kind: 'failed', message: load.message, retry: () => readResult(step) } })
       else if (load.result === null) out.push({ key: step.id, from: name, state: { kind: 'empty', sentence: 'No test in the last 7 days. Test the step to pick its values.' } })
-      else if (load.result.status !== 'completed' || load.result.output === null) out.push({ key: step.id, from: name, state: { kind: 'empty', sentence: 'Its last test did not finish, so it has no values.' } })
+      else if (load.result.status !== 'completed') out.push({ key: step.id, from: name, state: { kind: 'empty', sentence: 'Its last test did not finish, so it has no values.' } })
+      // A finished test kept no answer for one of two reasons (#2882): it was too big to keep, or the action answered nothing.
+      else if (load.result.output_dropped) out.push({ key: step.id, from: name, state: { kind: 'empty', sentence: TOO_BIG_TO_KEEP_SENTENCE } })
+      else if (load.result.output === null) out.push({ key: step.id, from: name, state: { kind: 'empty', sentence: NO_VALUES_SENTENCE } })
       else {
         const rows = sampleRows(`steps.${step.namespace}.output`, load.result.output).rows
-        out.push({ key: step.id, from: name, state: rows.length > 0 ? { kind: 'rows', rows } : { kind: 'empty', sentence: 'Its last test answered no values.' } })
+        out.push({ key: step.id, from: name, state: rows.length > 0 ? { kind: 'rows', rows } : { kind: 'empty', sentence: NO_VALUES_SENTENCE } })
       }
     }
     return out
