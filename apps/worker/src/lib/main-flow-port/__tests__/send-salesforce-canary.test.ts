@@ -150,9 +150,9 @@ describe('the send_salesforce canary stage over the live Main Flow', () => {
   // The definition rules alone. The save itself, body and version check included,
   // is sent through the real route by save-route-contract.test.ts (#2174).
   it('passes the save route\'s definition rules and adds no canvas validation problem', () => {
-    const live175 = canary()
-    expect(findWorkflowCycle(live175.nodes, live175.edges)).toBeNull()
-    expect(findSalesforceConfigProblems(live175.nodes)).toEqual([])
+    const liveNow = canary()
+    expect(findWorkflowCycle(liveNow.nodes, liveNow.edges)).toBeNull()
+    expect(findSalesforceConfigProblems(liveNow.nodes)).toEqual([])
     // What the stage adds is compared over the definition before it, since live already holds it.
     const before = beforeCanary()
     const after = portMainFlow(beforeCanary(), PORT_STAGES.canary_send_salesforce)
