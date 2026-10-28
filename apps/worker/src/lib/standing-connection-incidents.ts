@@ -20,6 +20,9 @@
  *   a read that did not look at it. `findings: null` means nothing was judged.
  * - A state record that could not be read is never written over, since that
  *   would drop every incident it holds and the all clear each is owed.
+ * - A finding may carry a `context` of plain strings, kept with its open
+ *   incident and handed back to its all clear, so the all clear can say what
+ *   the page said even once the thing it named has changed (#2761).
  *
  * Who may run it: the bidding Worker's daily cron, through the checks above.
  * Whose data: the state names connection ids and their organizations; each
@@ -36,6 +39,8 @@ export interface StandingConnectionFinding {
   organizationId: string
   /** The incident's label: the connection's name and service (opsConnectionLabel). */
   label: string
+  /** What the all clear needs to repeat from the page, kept with the open incident. */
+  context?: Readonly<Record<string, string>>
   /** Sends the page, given when it was first reported (null on the first). Returns whether it reached Slack. */
   send(firstReportedAt: string | null): Promise<boolean>
 }
@@ -45,6 +50,8 @@ export interface StandingConnectionRecovery {
   alertedAt: string
   endedAt: string | null
   firstHealthyAt: string | null
+  /** The context the last page recorded, or null when it recorded none. */
+  context: Readonly<Record<string, string>> | null
 }
 
 export interface StandingConnectionsOptions {
@@ -71,6 +78,15 @@ export interface StandingConnectionsOutcome {
 interface OpenIncident {
   organization_id: string
   label: string
+  context?: Record<string, string>
+}
+
+/** A context of strings only, or undefined: anything else in a stored record is not trusted. */
+function contextOf(value: unknown): Record<string, string> | undefined | null {
+  if (value === undefined) return undefined
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const entries = Object.entries(value as Record<string, unknown>)
+  return entries.every(([, v]) => typeof v === 'string') ? Object.fromEntries(entries) as Record<string, string> : null
 }
 
 interface OpenState {
@@ -90,9 +106,11 @@ function parseState(raw: string | null): { state: OpenState; unreadable: number 
     if (!v.open || typeof v.open !== 'object' || Array.isArray(v.open)) return { state: { open }, unreadable: 1 }
     let unreadable = 0
     for (const [id, e] of Object.entries(v.open as Record<string, unknown>)) {
-      const o = e as Partial<OpenIncident> | null
-      if (o && typeof o.organization_id === 'string' && typeof o.label === 'string') open[id] = { organization_id: o.organization_id, label: o.label }
-      else unreadable++
+      const o = e as (Partial<OpenIncident> & { context?: unknown }) | null
+      const context = o ? contextOf(o.context) : null
+      if (o && typeof o.organization_id === 'string' && typeof o.label === 'string' && context !== null) {
+        open[id] = context === undefined ? { organization_id: o.organization_id, label: o.label } : { organization_id: o.organization_id, label: o.label, context }
+      } else unreadable++
     }
     return { state: { open }, unreadable }
   } catch {
@@ -136,7 +154,7 @@ async function clear(o: StandingConnectionsOptions, id: string, open: OpenIncide
     id,
     null,
     incidentFor(open.organization_id, open.label, errors),
-    (alertedAt, endedAt, firstHealthyAt) => o.sendRecovery(open.organization_id, { subject: open.label, alertedAt, endedAt, firstHealthyAt }),
+    (alertedAt, endedAt, firstHealthyAt) => o.sendRecovery(open.organization_id, { subject: open.label, alertedAt, endedAt, firstHealthyAt, context: open.context ?? null }),
     // A daily state check: a complete read that no longer finds it is the end.
     { now: nowMs, rearmMinutes: 0 },
   )
@@ -178,7 +196,7 @@ export async function settleStandingConnections(o: StandingConnectionsOptions): 
   const next: OpenState = { open: {} }
   for (const f of o.findings) {
     // Listed whatever the page does, so its all clear is asked for once it clears.
-    next.open[f.id] = { organization_id: f.organizationId, label: f.label }
+    next.open[f.id] = f.context ? { organization_id: f.organizationId, label: f.label, context: { ...f.context } } : { organization_id: f.organizationId, label: f.label }
     try {
       if (await page(o, f)) outcome.paged.push(f.id)
     } catch (err) {
@@ -225,7 +243,7 @@ export function definitionNames(definition: unknown, connectionId: string): bool
  * on runs it at once; soft deleted ones left out, since they cannot run.
  * Throws when the workflows cannot be read, never answering none.
  */
-export async function workflowsNamingConnection(supabase: SupabaseClient, organizationId: string, connectionId: string): Promise<{ name: string; active: boolean }[]> {
+export async function workflowsNamingConnection(supabase: SupabaseClient, organizationId: string, connectionId: string): Promise<{ id: string; name: string; active: boolean }[]> {
   let workflows: OrgWorkflow[]
   try {
     workflows = await readOrgWorkflows(supabase, organizationId)
@@ -234,5 +252,5 @@ export async function workflowsNamingConnection(supabase: SupabaseClient, organi
   }
   return workflows
     .filter((w) => definitionNames(w.definition, connectionId))
-    .map((w) => ({ name: w.name, active: w.is_active }))
+    .map((w) => ({ id: w.id, name: w.name, active: w.is_active }))
 }

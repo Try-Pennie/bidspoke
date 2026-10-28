@@ -18,12 +18,15 @@
  *
  * WHAT PAGES. Each caught connection, to its own organization's Slack alert
  * channel under the configuration alerts toggle (sendHttpMoneyHostAlert),
- * naming the connection, its host, where bidding sends to that host, and the
- * organization's workflows that name the connection. Every day while it
- * stands. The signal is http-money-host (incident-signals.ts), keyed on the
- * connection id, armed only on a delivered page; the all clear goes once a
- * complete read no longer finds it (standing-connection-incidents.ts, shared
- * with the owner check).
+ * naming the connection, its host, where bidding sends to that host (the
+ * partner or money workflow by name, linked, when it came from one), and the
+ * organization's active workflows that name the connection, each linked.
+ * Every day while it stands. The signal is http-money-host
+ * (incident-signals.ts), keyed on the connection id, armed only on a delivered
+ * page; the all clear goes once a complete read no longer finds it
+ * (standing-connection-incidents.ts, shared with the owner check), and names
+ * the source the last page named, which the open incident keeps
+ * (httpMoneyHostContext), since the partner's settings may since have changed.
  *
  * Each connection is judged against its own organization's money hosts, as
  * the save judged it: an organization's partners and money workflows are its
@@ -60,7 +63,7 @@ import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
 import { formatErr } from './format-error'
 import { liveMoneyHostReads } from './money-host-reads'
 import { fetchAllPaged } from './paginate'
-import { opsConnectionLabel, sendHttpMoneyHostAlert, sendHttpMoneyHostRecoveryAlert, type HttpMoneyHostAlert } from './slack'
+import { httpMoneyHostContext, opsConnectionLabel, sendHttpMoneyHostAlert, sendHttpMoneyHostRecoveryAlert, type HttpMoneyHostAlert } from './slack'
 import { settleStandingConnections, workflowsNamingConnection, type StandingConnectionFinding, type StandingConnectionRecovery } from './standing-connection-incidents'
 import type { Env } from '../index'
 
@@ -96,7 +99,7 @@ export interface HttpMoneyHostReads {
   /** The organization's money hosts, or which of their sources could not be read. */
   moneyHosts(organizationId: string): Promise<MoneyHostsRead>
   /** The workflows of `organizationId` whose definition names `connectionId`. */
-  workflowsNaming(organizationId: string, connectionId: string): Promise<{ name: string; active: boolean }[]>
+  workflowsNaming(organizationId: string, connectionId: string): Promise<{ id: string; name: string; active: boolean }[]>
 }
 
 export interface HttpMoneyHostDeps {
@@ -210,6 +213,7 @@ export async function runHttpMoneyHostCheck(deps: HttpMoneyHostDeps): Promise<Ht
       id: c.id,
       organizationId: c.organization_id,
       label: opsConnectionLabel(c.name, HTTP_SERVICE_KEY),
+      context: httpMoneyHostContext(money.source, money.origin),
       send: async (firstReportedAt) => {
         let workflows: HttpMoneyHostAlert['workflows'] = null
         try {
@@ -217,7 +221,7 @@ export async function runHttpMoneyHostCheck(deps: HttpMoneyHostDeps): Promise<Ht
         } catch (err) {
           errors.push(`${c.id}: the workflows that use it could not be read, so the page does not name them: ${formatErr(err)}`)
         }
-        return deps.sendAlert(c.organization_id, { name: c.name, host: money.host, source: money.source, workflows, firstReportedAt })
+        return deps.sendAlert(c.organization_id, { name: c.name, host: money.host, source: money.source, origin: money.origin, workflows, firstReportedAt })
       },
     })
   }
@@ -257,15 +261,15 @@ export function liveHttpMoneyHostReads(supabase: SupabaseClient, env: Env): Http
   }
 }
 
-const UNREADABLE_FIX = 'The connections named were not checked, and nothing is checked again until the next daily batch. If it fails again, check that the bidding database answers and that SUPABASE_URL and APP_URL are set on bidspoke-worker, then search the bidspoke-worker logs for http-money-host.'
+const UNREADABLE_FIX = 'The connections counted above were not checked, and nothing is checked again until the next daily batch. If it fails again, check that the bidding database answers and that SUPABASE_URL and APP_URL are set on bidspoke-worker, then search the bidspoke-worker logs for http-money-host.'
 
 /** The daily check wired to the bidding Worker: the bidding database, the shared export alerter, Slack. */
 export function runHttpMoneyHostCheckForEnv(supabase: SupabaseClient, env: Env): Promise<HttpMoneyHostSummary> {
   return runHttpMoneyHostCheck({
     kv: env.IDEMPOTENCY,
     reads: liveHttpMoneyHostReads(supabase, env),
-    sendAlert: (organizationId, alert) => sendHttpMoneyHostAlert(supabase, organizationId, alert),
-    sendRecovery: (organizationId, recovery) => sendHttpMoneyHostRecoveryAlert(supabase, organizationId, recovery),
+    sendAlert: (organizationId, alert) => sendHttpMoneyHostAlert(supabase, organizationId, alert, env.APP_URL),
+    sendRecovery: (organizationId, recovery) => sendHttpMoneyHostRecoveryAlert(supabase, organizationId, recovery, env.APP_URL),
     reportUnreadable: (problems) => notifyExportFailure(supabase, HTTP_MONEY_HOST_JOB, problems, env.IDEMPOTENCY, {
       title: 'The HTTP connection host check could not run',
       fixHint: UNREADABLE_FIX,

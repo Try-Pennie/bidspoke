@@ -266,7 +266,8 @@ export function liveOwnerCheckReads(supabase: SupabaseClient): OwnerCheckReads {
       }
       return out
     },
-    workflowsNaming: (organizationId, connectionId) => workflowsNamingConnection(supabase, organizationId, connectionId),
+    // The owner page names a workflow by name only, so the ids the shared read carries are left out.
+    workflowsNaming: async (organizationId, connectionId) => (await workflowsNamingConnection(supabase, organizationId, connectionId)).map(({ name, active }) => ({ name, active })),
   }
 }
 

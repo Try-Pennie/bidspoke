@@ -13,7 +13,7 @@ import {
 import { recoveryKey } from '../alert-recovery'
 import { incidentSignal } from '../incident-signals'
 import { cronJob } from '../cron-heartbeat'
-import { httpMoneyHostMessage, type HttpMoneyHostAlert } from '../slack'
+import { httpMoneyHostMessage, httpMoneyHostRecoveryWording, type HttpMoneyHostAlert } from '../slack'
 import type { Env } from '../../index'
 
 /**
@@ -67,7 +67,7 @@ function tables(): Record<string, Row[]> {
       { id: LENDER, organization_id: ORG, name: 'Lender hook', service_type: 'http', sealed_for: 'ops_key', target: { host: 'api.lender.example', header: 'X-Key', check_path: '/ping' } },
     ],
     partner_configs: [
-      { id: PARTNER, organization_id: ORG, api_endpoint: 'https://api.partner-one.example/leads', dedup_endpoint: null, click_url: null },
+      { id: PARTNER, organization_id: ORG, slug: 'lendco', name: 'Lendco', api_endpoint: 'https://api.partner-one.example/leads', dedup_endpoint: null, click_url: null },
     ],
     workflows: [
       wf('wf-money', ORG, 'Engine Bidding', { lane: 'money', definition: { nodes: [{ id: 'n1', type: 'http', config: { url: 'https://api.partner-two.example/bid' } }] } }),
@@ -170,14 +170,19 @@ describe('runHttpMoneyHostCheck', () => {
       name: 'Lender hook',
       host: 'api.lender.example',
       source: 'partner_configs',
-      workflows: [{ name: 'Daily lead sync', active: true }, { name: 'Old export', active: false }],
+      origin: { kind: 'partner', slug: 'lendco', name: 'Lendco' },
+      // Every workflow naming it is read; the page itself lists the active ones.
+      workflows: [{ id: 'wf-a', name: 'Daily lead sync', active: true }, { id: 'wf-b', name: 'Old export', active: false }],
       firstReportedAt: null,
     })
     expect(reportUnreadable).not.toHaveBeenCalled()
     expect(reportReadable).toHaveBeenCalledTimes(1)
     // The incident is opened on the delivered page, and kept for its all clear.
     expect(marker(kv)).toBe(new Date(NOW).toISOString())
-    expect(JSON.parse(kv.store.get(HTTP_MONEY_HOST_STATE_KEY)!)).toEqual({ open: { [LENDER]: { organization_id: ORG, label: 'Lender hook (HTTP)' } } })
+    // The open incident keeps the partner the page named, for the all clear.
+    expect(JSON.parse(kv.store.get(HTTP_MONEY_HOST_STATE_KEY)!)).toEqual({
+      open: { [LENDER]: { organization_id: ORG, label: 'Lender hook (HTTP)', context: { source: 'partner_configs', origin_kind: 'partner', origin_ref: 'lendco', origin_name: 'Lendco' } } },
+    })
   })
 
   it('pages a host written in a money workflow, and a host under the bidding Worker\'s zone', async () => {
@@ -188,8 +193,11 @@ describe('runHttpMoneyHostCheck', () => {
     const { d, sendAlert } = deps()
     const s = await runHttpMoneyHostCheck(d)
     expect(s.found.sort()).toEqual([REGAL, LENDER].sort())
-    const bySource = Object.fromEntries(sendAlert.mock.calls.map(([, a]) => [a.name, a.source]))
-    expect(bySource).toEqual({ 'Regal events': 'money workflows', 'Lender hook': 'APP_URL' })
+    const bySource = Object.fromEntries(sendAlert.mock.calls.map(([, a]) => [a.name, [a.source, a.origin]]))
+    expect(bySource).toEqual({
+      'Regal events': ['money workflows', { kind: 'workflow', id: 'wf-money', name: 'Engine Bidding' }],
+      'Lender hook': ['APP_URL', null],
+    })
   })
 
   it('judges each connection against its own organization\'s money hosts, as the save does', async () => {
@@ -251,7 +259,14 @@ describe('runHttpMoneyHostCheck', () => {
     expect(next.sendAlert).not.toHaveBeenCalled()
     expect(next.sendRecovery).toHaveBeenCalledTimes(1)
     expect(next.sendRecovery.mock.calls[0][0]).toBe(ORG)
-    expect(next.sendRecovery.mock.calls[0][1]).toMatchObject({ subject: 'Lender hook (HTTP)', alertedAt: new Date(NOW).toISOString() })
+    // The partner no longer names the host, yet the all clear still names it, from what the incident recorded.
+    expect(next.sendRecovery.mock.calls[0][1]).toEqual({
+      subject: 'Lender hook (HTTP)',
+      alertedAt: new Date(NOW).toISOString(),
+      endedAt: expect.anything() as unknown,
+      firstHealthyAt: expect.anything() as unknown,
+      context: { source: 'partner_configs', origin_kind: 'partner', origin_ref: 'lendco', origin_name: 'Lendco' },
+    })
     expect(marker(first.kv)).toBeUndefined()
     expect(JSON.parse(first.kv.store.get(HTTP_MONEY_HOST_STATE_KEY)!)).toEqual({ open: {} })
   })
@@ -354,51 +369,83 @@ describe('runHttpMoneyHostCheck', () => {
 })
 
 describe('the page', () => {
+  const APP = 'https://bidspoke.trypennie.dev'
   const base: HttpMoneyHostAlert = {
-    name: 'Lender hook', host: 'api.lender.example', source: 'partner_configs',
-    workflows: [{ name: 'Daily lead sync', active: true }, { name: 'Old export', active: false }], firstReportedAt: null,
+    name: 'Lender hook', host: 'api.lender.example', source: 'partner_configs', origin: { kind: 'partner', slug: 'lendco', name: 'Lendco' },
+    workflows: [{ id: 'wf-a', name: 'Daily lead sync', active: true }, { id: 'wf-b', name: 'Old export', active: false }], firstReportedAt: null,
   }
   const DASH_PUNCTUATION = new RegExp(`[\\u2014\\u2013]|\\s${String.fromCharCode(45)}\\s`)
+  const REPLACE_FIX = '*Fix:* use Replace on the Connections page to move the workflows that use it onto an HTTP connection with another host, then remove this one.'
 
-  it('names the connection, the host, where bidding sends to it and the workflows, and says what to do, with no dashes', () => {
-    const m = httpMoneyHostMessage(base)
-    expect(m.title).toBe('An HTTP connection reaches a host bidding sends to')
-    const text = m.sections.join('\n')
-    expect(text).toContain('Lender hook')
-    expect(text).toContain('api.lender.example')
-    expect(text).toContain('a partner\'s settings')
-    expect(text).toContain('Daily lead sync')
-    expect(text).toContain('Old export (switched off)')
-    expect(text).toMatch(/\*Fix:\*.*Replace.*Connections page/)
-    expect(text).not.toMatch(DASH_PUNCTUATION)
-    expect(text).not.toMatch(/partner_configs|APP_URL|SUPABASE_URL/)
+  it('opens with the finding, names and links the partner and the active workflows only, and says what to do', () => {
+    const m = httpMoneyHostMessage(base, APP)
+    expect(m.sections).toEqual([
+      'The HTTP connection named Lender hook sends to api.lender.example, and bidding now sends there too: it is in the settings of the partner <https://bidspoke.trypennie.dev/partners?selected=lendco|Lendco>.',
+      'Workflows that use it: <https://bidspoke.trypennie.dev/workflows/wf-a|Daily lead sync>.',
+      REPLACE_FIX,
+    ])
+    // The notification preview is the opening sentence, without link markup.
+    expect(m.fallback).toBe('The HTTP connection named Lender hook sends to api.lender.example, and bidding now sends there too: it is in the settings of the partner Lendco.')
+    expect(m).not.toHaveProperty('title')
+    expect(m.sections.join('\n')).not.toMatch(DASH_PUNCTUATION)
+    expect(m.sections.join('\n')).not.toContain('may never reach')
+  })
+
+  it('names and links the bidding workflow a host came from', () => {
+    const m = httpMoneyHostMessage({ ...base, source: 'money workflows', origin: { kind: 'workflow', id: 'wf-money', name: 'Engine Bidding' } }, APP)
+    expect(m.sections[0]).toBe('The HTTP connection named Lender hook sends to api.lender.example, and bidding now sends there too: it is written in the bidding workflow <https://bidspoke.trypennie.dev/workflows/wf-money|Engine Bidding>.')
+    expect(m.fallback).toBe('The HTTP connection named Lender hook sends to api.lender.example, and bidding now sends there too: it is written in the bidding workflow Engine Bidding.')
   })
 
   it.each([
-    ['SUPABASE_URL', 'the bidding database'],
-    ['APP_URL', 'Bidspoke\'s own addresses'],
-    ['SALESFORCE_INSTANCE_URL', 'the Salesforce bidding writes to'],
-    ['ACHIEVE_HOSTS', 'the Achieve offers step'],
-    ['money workflows', 'a bidding workflow'],
+    ['SUPABASE_URL', 'it is the bidding database.'],
+    ['APP_URL', 'it is one of Bidspoke\'s own addresses.'],
+    ['SALESFORCE_INSTANCE_URL', 'it is the Salesforce bidding writes to.'],
+    ['ACHIEVE_HOSTS', 'the Achieve offers step calls it.'],
   ] as const)('says where bidding sends to it in words for %s', (source, words) => {
-    expect(httpMoneyHostMessage({ ...base, source }).sections.join('\n')).toContain(words)
+    const m = httpMoneyHostMessage({ ...base, source, origin: null }, APP)
+    expect(m.sections[0]).toBe(`The HTTP connection named Lender hook sends to api.lender.example, and bidding now sends there too: ${words}`)
+    expect(m.fallback).toBe(m.sections[0])
   })
 
-  it('asks only for the removal when no workflow uses it', () => {
-    const none = httpMoneyHostMessage({ ...base, workflows: [] }).sections.join('\n')
-    expect(none).toMatch(/No workflow uses it/)
-    expect(none).toMatch(/\*Fix:\* remove it on the Connections page\./)
-    expect(none).not.toMatch(/Replace/)
+  it('makes a name safe as a link label', () => {
+    const m = httpMoneyHostMessage({ ...base, origin: { kind: 'partner', slug: 'a&b', name: 'A|B <Co>' } }, APP)
+    expect(m.sections[0]).toContain('<https://bidspoke.trypennie.dev/partners?selected=a%26b|A/B &lt;Co&gt;>')
+  })
+
+  it('asks only for the removal when no active workflow uses it, a switched off one included', () => {
+    for (const workflows of [[], [{ id: 'wf-b', name: 'Old export', active: false }]]) {
+      const m = httpMoneyHostMessage({ ...base, workflows }, APP)
+      expect(m.sections.slice(1)).toEqual(['No active workflow uses it.', '*Fix:* remove it on the Connections page.'])
+    }
+  })
+
+  it('names at most ten active workflows and counts the rest', () => {
+    const many = Array.from({ length: 13 }, (_, i) => ({ id: `wf-${i + 1}`, name: `Flow ${i + 1}`, active: true }))
+    const line = httpMoneyHostMessage({ ...base, workflows: many }, APP).sections[1]
+    expect(line).toContain('<https://bidspoke.trypennie.dev/workflows/wf-10|Flow 10>, and 3 more.')
+    expect(line).not.toContain('Flow 11')
   })
 
   it('says the workflows could not be read, and still says to move any first', () => {
-    const unread = httpMoneyHostMessage({ ...base, workflows: null }).sections.join('\n')
-    expect(unread).toMatch(/could not be read/)
-    expect(unread).toMatch(/Replace/)
+    const m = httpMoneyHostMessage({ ...base, workflows: null }, APP)
+    expect(m.sections.slice(1)).toEqual(['The workflows that use it could not be read, so this page cannot name them.', REPLACE_FIX])
   })
 
   it('says when it was first reported on a repeat', () => {
-    const m = httpMoneyHostMessage({ ...base, firstReportedAt: new Date(NOW).toISOString() })
-    expect(m.sections.join('\n')).toMatch(/First reported/)
+    const m = httpMoneyHostMessage({ ...base, firstReportedAt: new Date(NOW).toISOString() }, APP)
+    expect(m.sections[3]).toBe('First reported Oct 28, 9:00 AM EDT.')
+  })
+
+  it('has the all clear name the source the page named, linked', () => {
+    const partner = { source: 'partner_configs', origin_kind: 'partner', origin_ref: 'lendco', origin_name: 'Lendco' }
+    const workflow = { source: 'money workflows', origin_kind: 'workflow', origin_ref: 'wf-money', origin_name: 'Engine Bidding' }
+    expect(httpMoneyHostRecoveryWording(partner, APP).recoveredPhrase).toBe('no longer reaches a host bidding sends to for <https://bidspoke.trypennie.dev/partners?selected=lendco|Lendco>')
+    expect(httpMoneyHostRecoveryWording(workflow, APP).recoveredPhrase).toBe('no longer reaches a host bidding sends to for <https://bidspoke.trypennie.dev/workflows/wf-money|Engine Bidding>')
+    expect(httpMoneyHostRecoveryWording({ source: 'SUPABASE_URL' }, APP).recoveredPhrase).toBe('no longer reaches a host bidding sends to for the bidding database')
+    expect(httpMoneyHostRecoveryWording({ source: 'ACHIEVE_HOSTS' }, APP).recoveredPhrase).toBe('no longer reaches a host bidding sends to for the Achieve offers step')
+    // A record from before the source was kept, or one unreadable, still says the finding ended.
+    expect(httpMoneyHostRecoveryWording(null, APP).recoveredPhrase).toBe('no longer reaches a host bidding sends to')
+    expect(httpMoneyHostRecoveryWording({ source: 'nonsense' }, APP).recoveredPhrase).toBe('no longer reaches a host bidding sends to')
   })
 })

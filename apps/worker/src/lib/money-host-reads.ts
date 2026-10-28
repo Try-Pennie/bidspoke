@@ -19,7 +19,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
-import type { MoneyHostReads } from './connection-money-targets'
+import type { MoneyHostReads, MoneyPartner } from './connection-money-targets'
 import { readOrgWorkflows } from './org-workflows'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 
@@ -27,6 +27,8 @@ import { resolveSalesforceCredsFor } from './salesforce-creds'
 export const MONEY_HOST_READ_LIMIT = 1000
 
 interface PartnerUrlRow {
+  slug: string
+  name: string
   api_endpoint: string | null
   dedup_endpoint: string | null
   click_url: string | null
@@ -35,19 +37,19 @@ interface PartnerUrlRow {
 export function liveMoneyHostReads(supabase: SupabaseClient, env: Env): MoneyHostReads {
   return {
     salesforce: (organizationId) => resolveSalesforceCredsFor(env, supabase, organizationId),
-    partnerUrls: async (organizationId) => {
+    partners: async (organizationId) => {
       const { data, error } = await supabase
         .from('partner_configs')
-        .select('api_endpoint, dedup_endpoint, click_url')
+        .select('slug, name, api_endpoint, dedup_endpoint, click_url')
         .eq('organization_id', organizationId)
         .order('id')
         .limit(MONEY_HOST_READ_LIMIT)
       if (error) throw new Error('partner_configs read failed')
       if (!Array.isArray(data)) throw new Error('partner_configs read answered no rows')
       if (data.length >= MONEY_HOST_READ_LIMIT) throw new Error('partner_configs read reached its limit')
-      return (data as PartnerUrlRow[]).flatMap((r) => [r.api_endpoint, r.dedup_endpoint, r.click_url].filter((v): v is string => typeof v === 'string'))
+      return (data as PartnerUrlRow[]).map((r): MoneyPartner => ({ slug: r.slug, name: r.name, urls: [r.api_endpoint, r.dedup_endpoint, r.click_url] }))
     },
     // The one organization workflows read (lib/org-workflows.ts): scoped, not soft deleted, paged; it throws rather than truncating.
-    moneyDefinitions: async (organizationId) => (await readOrgWorkflows(supabase, organizationId, { lane: 'money' })).map((w) => JSON.stringify(w.definition)),
+    moneyWorkflows: async (organizationId) => (await readOrgWorkflows(supabase, organizationId, { lane: 'money' })).map((w) => ({ id: w.id, name: w.name, definition: JSON.stringify(w.definition) })),
   }
 }
