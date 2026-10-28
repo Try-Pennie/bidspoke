@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { CATALOGUE, catalogueActions } from '@bidspoke/service-catalogue/schema'
-import { appActionDisplay, appActionRealSend, realSendConnectionOf } from '../app-action-display'
+import { CATALOGUE, STEP_OUTPUT_MAX_BYTES, catalogueActions } from '@bidspoke/service-catalogue/schema'
+import { TOO_BIG_TO_KEEP_SENTENCE, appActionDisplay, appActionRealSend, kilobytes, realSendConnectionOf } from '../app-action-display'
 
 /**
  * What an App Action step's card says (#2339, docs/design/app-action-node-card.html):
@@ -62,5 +62,26 @@ describe('realSendConnectionOf', () => {
     expect(realSendConnectionOf('app_action', { ...gmail, action: 'google.drive-list-files' })).toBeNull()
     expect(realSendConnectionOf('salesforce', gmail)).toBeNull()
     expect(realSendConnectionOf('app_action', { ...gmail, connection: undefined })).toBeNull()
+  })
+})
+
+/**
+ * The size an earlier step's too big answer is named by (#2882, decision D2 of
+ * docs/design/insert-too-big-answer.html): the ops Worker's own kept limit,
+ * STEP_OUTPUT_MAX_BYTES, shared through the catalogue's schema entry, written
+ * in KB of 1,000 bytes. app-action-too-big-limit.test.ts proves the sentence
+ * moves when the limit does.
+ */
+describe('the too big to keep sentence', () => {
+  it('writes a size in KB of 1,000 bytes, never claiming more than the bytes hold', () => {
+    expect(kilobytes(160_000)).toBe('160 KB')
+    expect(kilobytes(1_234_000)).toBe('1,234 KB')
+    expect(kilobytes(160_999)).toBe('160 KB')
+  })
+
+  it('names the limit the ops Worker keeps answers by', () => {
+    expect(STEP_OUTPUT_MAX_BYTES).toBe(160_000)
+    expect(TOO_BIG_TO_KEEP_SENTENCE).toBe(`Its last test answered more than ${kilobytes(STEP_OUTPUT_MAX_BYTES)}, too much to keep, so it has no values.`)
+    expect(TOO_BIG_TO_KEEP_SENTENCE).toBe('Its last test answered more than 160 KB, too much to keep, so it has no values.')
   })
 })

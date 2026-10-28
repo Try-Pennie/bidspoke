@@ -12,7 +12,7 @@ import { useState } from 'react'
 import { AppActionConfig, LookupDropdown, type UpstreamStep } from '../AppActionConfig'
 import { ConnectionListProvider } from '../connection-names'
 import { insertReference } from '../DataPicker'
-import { api, type ConnectionList } from '@/lib/api'
+import { api, type ConnectionList, type StepTestResult } from '@/lib/api'
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -123,6 +123,40 @@ describe('the data picker', () => {
     fireEvent.click(within(list).getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(api.workflows.testResult).toHaveBeenCalledTimes(4))
     expect(vi.mocked(api.workflows.testResult).mock.calls.map((c) => c[1])).toEqual(['a', 'b', 'c', 'c'])
+  })
+
+  // What an earlier step's group says when its last test left no values (#2882, docs/design/insert-too-big-answer.html):
+  // an answer too big to keep, an answer of nothing, and a test that did not finish are three different facts (L11).
+  describe('an earlier step whose last test left no values', () => {
+    const FIND_LEAD = [{ id: 'a', namespace: 'find_lead', label: 'Find lead' }]
+    const tested = (over: Partial<StepTestResult>): { result: StepTestResult } => ({
+      result: { node_id: 'a', namespace: 'find_lead', tested_at: '', status: 'completed', output: null, output_bytes: null, output_dropped: false, error: null, duration_ms: 1, ...over },
+    })
+    async function groupFor(answer: { result: StepTestResult }) {
+      vi.mocked(api.workflows.testResult).mockResolvedValueOnce(answer)
+      render(<Harness initial={GMAIL} upstream={FIND_LEAD} />)
+      fireEvent.click(screen.getByRole('button', { name: 'Insert a value into To' }))
+      const group = within(screen.getByRole('listbox')).getByRole('group', { name: 'From Find lead' })
+      await waitFor(() => expect(group).not.toHaveTextContent(/Reading/))
+      return group
+    }
+
+    it('names the size kept when its finished test answered more than Bidspoke keeps', async () => {
+      const group = await groupFor(tested({ output_bytes: 412_000, output_dropped: true }))
+      expect(within(group).getByText('Its last test answered more than 160 KB, too much to keep, so it has no values.')).toBeInTheDocument()
+      expect(within(group).queryByText(/did not finish/)).toBeNull()
+    })
+
+    it('says a finished test that answered nothing answered no values, never that it did not finish', async () => {
+      const group = await groupFor(tested({ output: null, output_dropped: false }))
+      expect(within(group).getByText('Its last test answered no values.')).toBeInTheDocument()
+      expect(within(group).queryByText(/did not finish/)).toBeNull()
+    })
+
+    it('says did not finish only of a test that failed', async () => {
+      const group = await groupFor(tested({ status: 'failed', error: 'Gmail refused the send.' }))
+      expect(within(group).getByText('Its last test did not finish, so it has no values.')).toBeInTheDocument()
+    })
   })
 
   // A workflow not yet saved has no kept tests to read: say so, never "Reading" for ever (L10).

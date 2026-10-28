@@ -10,12 +10,14 @@
  * and earlier answers, and an ops definition may read no environment variable.
  */
 
+import { STEP_OUTPUT_MAX_BYTES } from '@bidspoke/service-catalogue/schema'
+
 /**
- * The largest answer kept, in bytes of JSON as this Worker writes it. The
- * database holds an answer to 256 KB of its own text form, which spaces each
- * separator and so can be up to half as long again: 160 KB stays under it.
+ * The largest answer kept, in bytes of JSON as this Worker writes it: the one
+ * limit the catalogue's schema entry holds (#2882), so the canvas names the
+ * same size it is applied at. Why 160 KB is said there.
  */
-export const STEP_OUTPUT_MAX_BYTES = 160_000
+export { STEP_OUTPUT_MAX_BYTES }
 
 /** The database keeps an error to 2,000 characters; a clipped one says how much more there was. */
 export const STEP_ERROR_MAX = 2_000
