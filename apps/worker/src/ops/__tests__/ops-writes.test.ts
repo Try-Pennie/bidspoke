@@ -67,6 +67,8 @@ import {
   purgeOpsStepRecords,
   recordRunCheckpoint,
   readRunCheckpoint,
+  observeOpsReseal,
+  recordOpsResealRun,
 } from '../ops-writes'
 import type { ResourceWaitCause } from '../run-vocabulary'
 
@@ -997,6 +999,46 @@ describe('the step record wrappers (#2703)', () => {
     const { client, calls } = rpcFetch([{ purged: 4, more: true }])
     expect(await purgeOpsStepRecords(client, 1000)).toEqual({ purged: 4, more: true })
     expect(calls[0]).toEqual({ path: '/rest/v1/rpc/purge_ops_step_records', body: { p_limit: 1000 } })
+  })
+})
+
+describe('the reseal watch wrappers (#2486)', () => {
+  const row = {
+    mode: 'apply', mode_since: '2026-10-27T10:00:00+00:00', last_run_at: '2026-10-27T11:59:00+00:00', last_run_nothing_left: false, last_run_left: 3,
+    nothing_left_since: null, restarted: false, db_now: '2026-10-27T12:00:00+00:00',
+  }
+  const state = {
+    mode: 'apply', modeSince: '2026-10-27T10:00:00+00:00', lastRunAt: '2026-10-27T11:59:00+00:00', lastRunNothingLeft: false, lastRunLeft: 3,
+    nothingLeftSince: null, restarted: false, dbNow: '2026-10-27T12:00:00+00:00',
+  }
+
+  it('observe_ops_reseal sends the mode and the restart window in seconds, and reads the row', async () => {
+    const { client, calls } = rpcFetch([row])
+    expect(await observeOpsReseal(client, 'apply', 600)).toEqual(state)
+    expect(calls).toEqual([{ path: '/rest/v1/rpc/observe_ops_reseal', body: { p_mode: 'apply', p_restart_after_seconds: 600 } }])
+  })
+
+  it('record_ops_reseal_run sends the run, a failed one with no count, and reads the row', async () => {
+    const { client, calls } = rpcFetch([{ ...row, last_run_nothing_left: true, last_run_left: 0, nothing_left_since: '2026-10-27T12:00:00+00:00' }])
+    expect(await recordOpsResealRun(client, 'preview', { nothingLeft: true, left: 0 }, 600)).toEqual({
+      ...state, lastRunNothingLeft: true, lastRunLeft: 0, nothingLeftSince: '2026-10-27T12:00:00+00:00',
+    })
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/record_ops_reseal_run', body: { p_mode: 'preview', p_nothing_left: true, p_left: 0, p_restart_after_seconds: 600 } })
+    const failed = rpcFetch([{ ...row, last_run_left: null }])
+    expect((await recordOpsResealRun(failed.client, 'apply', { nothingLeft: false, left: null }, 600)).lastRunLeft).toBeNull()
+    expect(failed.calls[0].body).toEqual({ p_mode: 'apply', p_nothing_left: false, p_left: null, p_restart_after_seconds: 600 })
+  })
+
+  it('refuses a mode it cannot send, sending nothing, and an answer of the wrong shape by its field', async () => {
+    const empty = rpcFetch([row])
+    await expect(observeOpsReseal(empty.client, 'yes' as never, 600)).rejects.toThrow(/preview or apply/)
+    await expect(recordOpsResealRun(empty.client, 'off' as never, { nothingLeft: false, left: null }, 600)).rejects.toThrow(/preview or apply/)
+    expect(empty.calls).toEqual([])
+    await expect(observeOpsReseal(rpcFetch([{ ...row, mode: 'yes' }]).client, 'apply', 600)).rejects.toThrow(/mode/)
+    await expect(observeOpsReseal(rpcFetch([{ ...row, mode_since: 'soon' }]).client, 'apply', 600)).rejects.toThrow(/mode_since/)
+    await expect(observeOpsReseal(rpcFetch([{ ...row, last_run_left: -1 }]).client, 'apply', 600)).rejects.toThrow(/last_run_left/)
+    await expect(observeOpsReseal(rpcFetch([{ ...row, db_now: null }]).client, 'apply', 600)).rejects.toThrow(/db_now/)
+    await expect(observeOpsReseal(rpcFetch([]).client, 'apply', 600)).rejects.toThrow(/0 rows/)
   })
 })
 

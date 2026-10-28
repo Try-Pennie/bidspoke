@@ -38,8 +38,12 @@ export function withSlackKeyRing<T extends object>(client: T): T {
  * 20261027170000 (#2643): save_slack_alert_token and save_slack_alert_settings
  * each merge what they were sent into `row`'s config (the token save also
  * replacing its sealed token) and return the row as written, which is what the
- * routes rebuild the saved Slack copy from. The real functions are proven in
- * supabase/tests/slack_alert_config_own_keys.test.sql. Any other function
+ * routes rebuild the saved Slack copy from. The settings route calls the five
+ * argument save_slack_alert_settings of migration 20261027230000 (#2870), whose
+ * p_actor_email this double does not record, since it holds only config and
+ * the token. The real functions are proven in
+ * supabase/tests/slack_alert_config_own_keys.test.sql and
+ * supabase/tests/slack_alert_settings_changed_by.test.sql. Any other function
  * answers its rows from `others`, or null. Hand it to makeSupabase as `rpc`.
  */
 export function answerSlackConfigSaves(row: Record<string, unknown> = {}, others: Record<string, unknown[]> = {}) {

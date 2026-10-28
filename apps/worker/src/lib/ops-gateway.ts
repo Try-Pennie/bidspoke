@@ -781,7 +781,7 @@ function unreadableReport(why: string, at: string): OpsTickReport {
     tick_id: 'unreadable', mode: 'observe', scheduled_time: null, started_at: at, finished_at: at, db_now: null,
     outcome: 'problems', problems: [`The ops tick's report could not be read (${why}), so whether the tick worked is not known.`], counts: {},
     not_configured_secrets: [], start_stamp_failed: null, problem_keys: ['report_unreadable'], connection_logins: null, write_backs: null,
-    sweeps_run: null,
+    sweeps_run: null, reseal: null,
   }
 }
 

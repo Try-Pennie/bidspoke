@@ -17,7 +17,7 @@
  * Worker on a cron in FAILED_RUN_CADENCES (countsFailedRuns): every minute
  * (buyer-sale-drain, unconfirmed-write-sweep, salesforce-read-back,
  * writeback-drain, ops-tick-report, ops-connection-logins,
- * ops-connection-write-backs; #2523), every five minutes (partner-reachability,
+ * ops-connection-write-backs, ops-key-reseal; #2523), every five minutes (partner-reachability,
  * database-memory, partner-page-monitor, incident-drain, writeback-backlog,
  * partner-live-miss-notice),
  * every fifteen (buyer-sales-checks, tripoint-ping-outcome-rate,
@@ -31,8 +31,9 @@
  * so a job hands its throw on rather than swallowing it in a last `.catch`
  * (the guard minute-job-failures-reach-complete-after.test.ts holds the call
  * sites to that). A run also fails when the job resolves to failedRun(), which
- * the two ops connection page jobs return when their summary lists faults: they
- * catch every fault per connection by design and never throw, and those faults
+ * the two ops connection page jobs and the ops key reseal page (#2486) return
+ * when their summary lists faults: they catch every fault by design and never
+ * throw, and those faults
  * (a page that threw, the open incidents that could not be read or kept) were
  * otherwise only logged. The write back drain returns it for a run whose own
  * alerts did not reach Slack (#2527, writeback-drain.ts drainRunFailure), which

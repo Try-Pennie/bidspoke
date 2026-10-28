@@ -102,7 +102,7 @@ export const AUTH_TYPE_OF: Readonly<Record<ConnectionAuthKind, string>> = {
   oauth_user: 'oauth_user',
 }
 
-/** The service's secret field's label in lower case, for the page's sentence ("refused the client secret"): the catalogue's one rule. */
+/** The service's secret field's label as it reads mid sentence ("refused the client secret", "refused the API key"): the catalogue's one rule. */
 export function secretLabelOf(service: ServiceSchema): string {
   return connectionSecretLabel(service.connection)
 }

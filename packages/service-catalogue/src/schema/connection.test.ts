@@ -263,4 +263,30 @@ describe('connectionSecretLabel (#2338)', () => {
     expect(connectionSecretLabel(service('snowflake').connection)).toBe('private key')
     expect(connectionSecretLabel({ tile: 't', auth: 'static_key', fields: [{ key: 'host', label: 'Host', input: 'text', required: true, target: 'host' }] })).toBe('login')
   })
+
+  it("keeps a label's own capitals, lower casing only its ordinary words (#2889)", () => {
+    expect(connectionSecretLabel(service('anthropic').connection)).toBe('API key')
+    expect(connectionSecretLabel(service('openai').connection)).toBe('API key')
+    expect(connectionSecretLabel(service('http').connection)).toBe('header value')
+    expect(connectionSecretLabel(service('slack').connection)).toBe('bot token')
+    const label = (l: string) => connectionSecretLabel({ tile: 't', auth: 'static_key', fields: [{ key: 'k', label: l, input: 'secret', required: true, login: 'k' }] })
+    expect(label('JSON key')).toBe('JSON key')
+    expect(label('OAuth client secret')).toBe('OAuth client secret')
+    expect(label('Key for API')).toBe('key for API')
+  })
+
+  it("words every catalogue service's secret with each word holding more than one capital kept as written (#2889)", () => {
+    let checked = 0
+    for (const s of CATALOGUE) {
+      const field = s.connection.fields.find((f) => f.input === 'secret' || f.input === 'secret_block')
+      if (!field) continue
+      checked++
+      const words = connectionSecretLabel(s.connection).split(' ')
+      field.label.split(' ').forEach((w, i) => {
+        const kept = (w.match(/[A-Z]/g) ?? []).length > 1
+        expect(words[i], `${s.key}: ${field.label}`).toBe(kept ? w : w.toLowerCase())
+      })
+    }
+    expect(checked).toBeGreaterThan(5)
+  })
 })

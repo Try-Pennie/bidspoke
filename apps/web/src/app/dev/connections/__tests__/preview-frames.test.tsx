@@ -58,6 +58,11 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'remove-removing': ['Removing Achieve Salesforce 2, 4 s'],
   'remove-refused-in-use': ['Daily Salesforce cleanup uses this connection, so it cannot be removed.'],
   'remove-ops-not-told': ['The workflows server could not be told straight away'],
+  // Build PR 12: the Replace dialog's states (the Replace rounds, Dan 2026-10-27).
+  'replace-working': ['Replace Pennie Salesforce', 'Moving 6 workflows to TPL2 Salesforce, 3 s'],
+  'replace-partial': ['Achieve report import, moved', 'Replace in 1 workflow', 'Lead Completed sync was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it.'],
+  'replace-deleted': ['Used by (7)', 'Replace in 6 workflows'],
+  'replace-done': ['Moved 6 workflows to TPL2 Salesforce. Nothing uses Pennie Salesforce now.', 'Used by (0)'],
   // Build PR 14: the Slack alerts login's Reconnect and its alert settings.
   'alert-reconnect': ['Reconnect Bidspoke Alerts', 'New bot token'],
   'alert-reconnect-checking': ['Checking the login with Slack, 4 s'],
@@ -97,7 +102,7 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
 
 function quiet(): ConnectionsSource {
   const never = vi.fn(() => new Promise<never>(() => {}))
-  return { list: never, history: never, googleSubjects: never, addGoogleSubject: never, removeGoogleSubject: never, create: never, reconnect: never, remove: never, slackAlerts: never, updateSlackAlerts: never, searchSlackChannels: never, startGoogleSignIn: never, goTo: vi.fn(), finishGoogleSignIn: never, keptSignIns: keptSignInsIn(null) }
+  return { list: never, history: never, googleSubjects: never, addGoogleSubject: never, removeGoogleSubject: never, create: never, reconnect: never, remove: never, replace: never, slackAlerts: never, updateSlackAlerts: never, searchSlackChannels: never, startGoogleSignIn: never, goTo: vi.fn(), finishGoogleSignIn: never, keptSignIns: keptSignInsIn(null) }
 }
 
 describe('the preview frames for states the design never drew', () => {

@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { CATALOGUE, type ServiceSchema } from '@bidspoke/service-catalogue/schema'
-import { keyScopeOf } from '../connection-create'
+import { keyScopeOf, secretLabelOf } from '../connection-create'
 import { OPS_CONNECTIONS_REFUSAL_CODES } from '../ops-connections-contract'
 import { CONNECTION_REFUSAL_CODES } from '../../ops/connections/refusals'
 import {
@@ -112,6 +112,20 @@ describe('the create refusals', () => {
     if (openai === undefined) throw new Error('the catalogue declares no openai')
     const renamed: ServiceSchema = { ...openai, connection: { ...openai.connection, fields: openai.connection.fields.filter((f) => f.key !== 'project_id') } }
     expect(() => keyScopeOf(renamed)).toThrow(/project_id/)
+  })
+
+  it("keeps the secret label's own capitals in every catalogue service's refused sentence (#2889)", () => {
+    const anthropic = CATALOGUE.find((s) => s.key === 'anthropic')!
+    expect(createRefusalSentence('connection_needs_reauth', { ...CTX, service: anthropic.name, secret: secretLabelOf(anthropic) }))
+      .toBe('Anthropic refused the API key. Nothing was saved. Check the secret and save again.')
+    for (const s of CATALOGUE) {
+      const sentence = createRefusalSentence('connection_needs_reauth', { ...CTX, service: s.name, secret: secretLabelOf(s) })
+      const field = s.connection.fields.find((f) => f.input === 'secret' || f.input === 'secret_block')
+      for (const w of field?.label.split(' ') ?? []) {
+        if ((w.match(/[A-Z]/g) ?? []).length > 1) expect(sentence, s.key).toContain(` ${w} `)
+      }
+      expect(sentence, s.key).not.toMatch(/\bapi\b/)
+    }
   })
 
   // Word for word as Dan settled it in design round 33 (2026-10-21), the org's address filled in.
