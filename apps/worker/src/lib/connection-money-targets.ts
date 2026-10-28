@@ -246,7 +246,7 @@ export function moneyHostOf(host: string, hosts: readonly MoneyHost[]): { host: 
   return found ? { host: h, source: found.source } : null
 }
 
-/** The organization scoped reads behind the money hosts, bound to the bidding client by the route. */
+/** The organization scoped reads behind the money hosts, bound to the bidding database by liveMoneyHostReads (money-host-reads.ts) for the save and the daily check. */
 export interface MoneyHostReads {
   readonly salesforce: ResolveSalesforceCreds
   partnerUrls(organizationId: string): Promise<string[]>
