@@ -1,6 +1,8 @@
 -- save_slack_alert_token and save_slack_alert_settings: each Slack alert writer
 -- changes only its own keys of the alert row's config (#2643), migration
--- 20261027170000.
+-- 20261027170000. The settings save is called in its five argument form
+-- (20261027230000, #2870), the only one left once 20261028020000 dropped the
+-- four argument form (#2896).
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
 -- by replaying every migration from empty, never production. The ciphertexts
@@ -125,13 +127,13 @@ DECLARE
 BEGIN
   BEGIN
     PERFORM pg_temp.sak_rows();
-    SELECT count(*) INTO n FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333332643', '{}', '22222222-2222-2222-2222-222222222643');
+    SELECT count(*) INTO n FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333332643', '{}', '22222222-2222-2222-2222-222222222643', 'sak2643@example.test');
     IF n <> 1 THEN RAISE EXCEPTION 'an empty settings save returned % rows, not the row', n; END IF;
     DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-111111112643';
 
     SELECT * INTO r FROM public.save_slack_alert_settings(
       '11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333332643',
-      '{"volume_alerts_enabled": false, "default_channel": "#new-alerts", "backup_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643');
+      '{"volume_alerts_enabled": false, "default_channel": "#new-alerts", "backup_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643', 'sak2643@example.test');
     IF r.id IS DISTINCT FROM '33333333-3333-3333-3333-333333332643'::uuid THEN RAISE EXCEPTION 'the settings save returned row %', r.id; END IF;
     c := pg_temp.sak_config('33333333-3333-3333-3333-333333332643');
     IF c <> '{"default_channel": "#new-alerts", "workspace_name": "Pennie", "volume_alerts_enabled": false, "matrix_alerts_enabled": true, "backup_alerts_enabled": false}'::jsonb THEN
@@ -218,15 +220,15 @@ BEGIN
   BEGIN
     PERFORM pg_temp.sak_rows();
     -- Org A names org B's alert row.
-    SELECT count(*) INTO n FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-33333333264b', '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643');
+    SELECT count(*) INTO n FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-33333333264b', '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643', 'sak2643@example.test');
     IF n <> 0 THEN RAISE EXCEPTION 'a save for org A returned % rows for org B''s row', n; END IF;
     -- A row that does not exist.
-    SELECT count(*) INTO n FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333339999', '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643');
+    SELECT count(*) INTO n FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333339999', '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643', 'sak2643@example.test');
     IF n <> 0 THEN RAISE EXCEPTION 'a save of a missing row returned % rows', n; END IF;
     -- The ops row and the second, non alert slack row of org A.
-    SELECT count(*) INTO n FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-33333333264c', '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643');
+    SELECT count(*) INTO n FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-33333333264c', '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643', 'sak2643@example.test');
     IF n <> 0 THEN RAISE EXCEPTION 'a save of an ops row returned % rows', n; END IF;
-    SELECT count(*) INTO n FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-33333333264a', '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643');
+    SELECT count(*) INTO n FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-33333333264a', '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643', 'sak2643@example.test');
     IF n <> 0 THEN RAISE EXCEPTION 'a save of a non alert slack row returned % rows', n; END IF;
     IF EXISTS (SELECT 1 FROM public.service_connections
                WHERE organization_id IN ('11111111-1111-1111-1111-111111112643', '11111111-1111-1111-1111-11111112643b')
@@ -262,7 +264,7 @@ BEGIN
   ) v(writer, patch, actor) LOOP
     BEGIN
       IF bad.writer = 'settings' THEN
-        PERFORM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333332643', bad.patch, bad.actor);
+        PERFORM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333332643', bad.patch, bad.actor, 'sak2643@example.test');
       ELSE
         PERFORM public.save_slack_alert_token('11111111-1111-1111-1111-111111112643', 'planted-ciphertext-2643-bad', bad.patch, bad.actor, NULL);
       END IF;
@@ -313,7 +315,7 @@ DECLARE
   v_waiting boolean := false;
   i integer;
 BEGIN
-  PERFORM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333332643', '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643');
+  PERFORM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333332643', '{"volume_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643', 'sak2643@example.test');
   PERFORM dblink_send_query('sak_b', $q$SELECT id FROM public.save_slack_alert_token('11111111-1111-1111-1111-111111112643', 'planted-ciphertext-2643-race', '{"workspace_name": "Pennie HQ"}', '22222222-2222-2222-2222-22222222264b', NULL)$q$);
   FOR i IN 1..200 LOOP
     SELECT wait_event_type = 'Lock' INTO v_waiting FROM pg_stat_activity WHERE pid = v_pid;
@@ -352,7 +354,7 @@ DECLARE
   i integer;
 BEGIN
   PERFORM public.save_slack_alert_token('11111111-1111-1111-1111-111111112643', 'planted-ciphertext-2643-race-2', '{"workspace_name": "Pennie Two"}', '22222222-2222-2222-2222-22222222264b', NULL);
-  PERFORM dblink_send_query('sak_b', $q$SELECT id FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333332643', '{"matrix_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643')$q$);
+  PERFORM dblink_send_query('sak_b', $q$SELECT id FROM public.save_slack_alert_settings('11111111-1111-1111-1111-111111112643', '33333333-3333-3333-3333-333333332643', '{"matrix_alerts_enabled": false}', '22222222-2222-2222-2222-222222222643', 'sak2643@example.test')$q$);
   FOR i IN 1..200 LOOP
     SELECT wait_event_type = 'Lock' INTO v_waiting FROM pg_stat_activity WHERE pid = v_pid;
     EXIT WHEN v_waiting;
@@ -397,7 +399,7 @@ DECLARE
   r text;
   p record;
 BEGIN
-  FOREACH fn IN ARRAY ARRAY['public.save_slack_alert_token(uuid, text, jsonb, uuid, text)', 'public.save_slack_alert_settings(uuid, uuid, jsonb, uuid)'] LOOP
+  FOREACH fn IN ARRAY ARRAY['public.save_slack_alert_token(uuid, text, jsonb, uuid, text)', 'public.save_slack_alert_settings(uuid, uuid, jsonb, uuid, text)'] LOOP
     FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
       IF has_function_privilege(r, fn, 'EXECUTE') THEN RAISE EXCEPTION '% may call %', r, fn; END IF;
     END LOOP;

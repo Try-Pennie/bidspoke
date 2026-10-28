@@ -72,7 +72,7 @@ function database(rows: Row[]) {
       tables.service_connections = tables.service_connections.filter((r) => !gone.includes(r))
       return { data: gone.map((r) => ({ id: r.id })) }
     },
-    // save_slack_alert_settings follows its migration (20261027170000): it merges the settings into the
+    // save_slack_alert_settings follows its five argument form (20261027230000, the only one since #2896): it merges the settings into the
     // one alert row named, in the org named, never an ops_key row, and returns that row as written (#2643).
     save_slack_alert_settings: (args, tables) => {
       const hit = tables.service_connections.filter((r) => r.id === args.p_connection_id && r.organization_id === args.p_organization_id && r.service_type === 'slack' && r.name === 'slack' && r.sealed_for !== 'ops_key')
