@@ -6,9 +6,9 @@ import { alertRowListAnswer } from './helpers/slack-alert-read'
 import { loadWorker } from '../test-setup/load-worker'
 
 /**
- * #2519: the three minute jobs that turn the ops tick's report into pages,
- * ops-tick-report, ops-connection-logins and ops-connection-write-backs
- * (#2340), each stamp their own heartbeat
+ * #2519: the minute jobs that turn the ops tick's report into pages,
+ * ops-tick-report, ops-connection-logins, ops-connection-write-backs
+ * (#2340) and ops-key-reseal (#2486), each stamp their own heartbeat
  * (started, then completed once the run settles), and each has its own
  * CRON_JOBS entry. Invokes the real scheduled handler with a real KV map, so
  * the stamps are proven to come from the minute cron, and then the real
@@ -17,6 +17,7 @@ import { loadWorker } from '../test-setup/load-worker'
 const runOpsTickReportCheck = vi.fn().mockResolvedValue('healthy')
 const runOpsConnectionLoginCheckForEnv = vi.fn().mockResolvedValue({ judged: true, paged: [], allClear: [], errors: [] })
 const runOpsConnectionWriteBackCheckForEnv = vi.fn().mockResolvedValue({ judged: true, paged: [], allClear: [], errors: [] })
+const runOpsKeyResealCheckForEnv = vi.fn().mockResolvedValue({ judged: true, paged: false, allClear: false, errors: [] })
 const sendCronHeartbeatAlert = vi.fn(async () => true)
 
 vi.mock('../lib/ops-gateway', async (importOriginal) => ({
@@ -27,6 +28,10 @@ vi.mock('../lib/ops-connection-logins', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/ops-connection-logins')>()),
   runOpsConnectionLoginCheckForEnv: (...args: unknown[]) => runOpsConnectionLoginCheckForEnv(...args),
   runOpsConnectionWriteBackCheckForEnv: (...args: unknown[]) => runOpsConnectionWriteBackCheckForEnv(...args),
+}))
+vi.mock('../lib/ops-key-reseal', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/ops-key-reseal')>()),
+  runOpsKeyResealCheckForEnv: (...args: unknown[]) => runOpsKeyResealCheckForEnv(...args),
 }))
 vi.mock('../lib/cache-prewarm', () => ({ prewarmKvCaches: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
@@ -82,12 +87,13 @@ async function fireMinute(kv: ReturnType<typeof memoryKv>) {
   await ctx.settle()
 }
 
-const JOBS = ['ops-tick-report', 'ops-connection-logins', 'ops-connection-write-backs'] as const
+const JOBS = ['ops-tick-report', 'ops-connection-logins', 'ops-connection-write-backs', 'ops-key-reseal'] as const
 
 beforeEach(() => {
   runOpsTickReportCheck.mockClear()
   runOpsConnectionLoginCheckForEnv.mockClear()
   runOpsConnectionWriteBackCheckForEnv.mockClear()
+  runOpsKeyResealCheckForEnv.mockClear()
   sendCronHeartbeatAlert.mockClear()
 })
 
@@ -110,6 +116,7 @@ describe('the ops report minute jobs have their own heartbeat (#2519)', () => {
     expect(runOpsTickReportCheck).toHaveBeenCalledTimes(1)
     expect(runOpsConnectionLoginCheckForEnv).toHaveBeenCalledTimes(1)
     expect(runOpsConnectionWriteBackCheckForEnv).toHaveBeenCalledTimes(1)
+    expect(runOpsKeyResealCheckForEnv).toHaveBeenCalledTimes(1)
     const started = kv.store.get(heartbeat.heartbeatKey(id))
     const completed = kv.store.get(heartbeat.completedKey(id))
     expect(started, `${id} started stamp`).toBeDefined()

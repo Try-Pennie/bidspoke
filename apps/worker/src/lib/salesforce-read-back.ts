@@ -52,6 +52,11 @@
  *    with no answer stops the tick like any other call, deciding nothing. The
  *    conflict alert names each left out field's two values, from this tick's
  *    read, never stored.
+ *  - A field holding a later state of the value being sent (LATER_STATES in
+ *    salesforce-field-conflict.ts, #2895: a Prospect's "Converted" where "Bid"
+ *    was sent) is never sent, whatever the record's stamp or history, and is no
+ *    conflict: it is counted as later_states and logged, never alerted. A write
+ *    whose every field is at a later state is settled without a send.
  *  - Nothing is sent while Salesforce's bulkhead is full or cannot be asked
  *    (fail closed), and the first call that gets no answer stops the tick's
  *    Salesforce traffic, which is this job's circuit: no Salesforce circuit
@@ -118,7 +123,7 @@ import { formatErr } from './format-error'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { getSlackConnection, sendSalesforceReadBackAlert, type SlackConnection } from './slack'
 import { BulkheadClient, salesforceBulkheadLimit } from './bulkhead-client'
-import { fieldsMovedSince, LAST_MODIFIED_MARGIN_MS, movedFieldValues, readFieldHistory, sameSalesforceValue, type FieldHistory, type MovedFieldValues } from './salesforce-field-conflict'
+import { fieldsMovedSince, LAST_MODIFIED_MARGIN_MS, laterStateFields, movedFieldValues, readFieldHistory, sameSalesforceValue, type FieldHistory, type MovedFieldValues } from './salesforce-field-conflict'
 import type { ReadBackAlertWrite, SalesforceReadBackAlert, UnreadReason } from './salesforce-read-back-alert'
 
 export const SF_READ_BACK_JOB = 'salesforce-read-back'
@@ -240,6 +245,8 @@ export interface ReadBackSummary {
   history_cleared: number
   /** Left for a later tick: the claim said no, or the attempt could not be recorded. */
   deferred: number
+  /** Writes with a field left out because it already held a later state of its value (#2895), which is never alerted. */
+  later_states: number
   /** This tick's resends, per object and field: how many carried the field, and how many found it moved. */
   conflict_fields: Record<string, { conflicts: number; candidates: number }>
   alerts: number
@@ -402,15 +409,19 @@ export type RecordDecision =
   | { id: string; verdict: 'landed'; attempt: number }
   | { id: string; verdict: 'superseded' }
   | { id: string; verdict: 'exhausted' }
-  | { id: string; verdict: 'conflict_only'; conflicts: string[]; conflictValues: MovedFieldValues[]; ownedByLater: string[]; candidates: string[] }
-  | { id: string; verdict: 'resend'; send: Record<string, unknown>; conflicts: string[]; conflictValues: MovedFieldValues[]; ownedByLater: string[]; candidates: string[] }
+  | { id: string; verdict: 'conflict_only'; conflicts: string[]; conflictValues: MovedFieldValues[]; later: string[]; ownedByLater: string[]; candidates: string[] }
+  /** Every field it sets already holds a later state of its value (#2895): nothing to send, and nothing to say. */
+  | { id: string; verdict: 'later_only'; later: string[] }
+  | { id: string; verdict: 'resend'; send: Record<string, unknown>; conflicts: string[]; conflictValues: MovedFieldValues[]; later: string[]; ownedByLater: string[]; candidates: string[] }
 
 /**
  * Decides every held write to one record from one read of it. `entries` are in
  * attempt order, oldest first. `history`, once read, is what Salesforce's field
  * history says about the fields a first decision called moved (#2264).
+ * `sfObject` is the record's object, which names its later states (#2895), so
+ * no caller can leave that rule out.
  */
-export function decideRecord(entries: RecordEntry[], current: Record<string, unknown>, history?: FieldHistory): RecordDecision[] {
+export function decideRecord(sfObject: string, entries: RecordEntry[], current: Record<string, unknown>, history?: FieldHistory): RecordDecision[] {
   const stamp = parseWriteMarker(current[WRITE_MARKER_FIELD])
   const stampedId = stamp ? `${stamp.executionId}:${stamp.stepNamespace}` : null
   // The newest write of the run to set each field owns it.
@@ -427,11 +438,15 @@ export function decideRecord(entries: RecordEntry[], current: Record<string, unk
     // The one moved field rule (salesforce-field-conflict.ts), which the drain
     // of stored writes also applies (#468): a value an earlier write of the run
     // sent is ours, and this newer write replaces it.
-    const conflicts = fieldsMovedSince({ fields: own, body: e.body, current, sinceMs: e.firstAttemptMs, earlier: entries.slice(0, i).map((x) => x.body), history })
+    // A field already at a later state of its value is never sent, and is no conflict (#2895).
+    const later = laterStateFields({ sfObject, fields: own, body: e.body, current })
+    const judged = own.filter((f) => !later.includes(f))
+    const conflicts = fieldsMovedSince({ fields: judged, body: e.body, current, sinceMs: e.firstAttemptMs, earlier: entries.slice(0, i).map((x) => x.body), history })
     const conflictValues = movedFieldValues({ moved: conflicts, body: e.body, current, sinceMs: e.firstAttemptMs, history })
-    const send = own.filter((f) => !conflicts.includes(f))
-    if (send.length === 0) return { id: e.id, verdict: 'conflict_only', conflicts, conflictValues, ownedByLater, candidates: own }
-    return { id: e.id, verdict: 'resend', send: Object.fromEntries(send.map((f) => [f, e.body[f]])), conflicts, conflictValues, ownedByLater, candidates: own }
+    const send = judged.filter((f) => !conflicts.includes(f))
+    if (send.length === 0 && conflicts.length === 0) return { id: e.id, verdict: 'later_only', later }
+    if (send.length === 0) return { id: e.id, verdict: 'conflict_only', conflicts, conflictValues, later, ownedByLater, candidates: own }
+    return { id: e.id, verdict: 'resend', send: Object.fromEntries(send.map((f) => [f, e.body[f]])), conflicts, conflictValues, later, ownedByLater, candidates: own }
   })
 }
 
@@ -439,7 +454,7 @@ function emptySummary(): ReadBackSummary {
   return {
     listed: 0, truncated: false, skipped: 0, not_ours: 0, unreadable_entries: 0, nothing_to_send: 0, finished: 0, young: 0, unread: 0, reads: 0,
     landed: 0, landed_by_resend: 0, superseded: 0, resent: 0, resent_confirmed: 0, resend_unanswered: 0, resend_refused: 0,
-    exhausted: 0, conflicts: 0, history_reads: 0, history_cleared: 0, deferred: 0, conflict_fields: {}, alerts: 0,
+    exhausted: 0, conflicts: 0, history_reads: 0, history_cleared: 0, deferred: 0, later_states: 0, conflict_fields: {}, alerts: 0,
   }
 }
 
@@ -591,6 +606,13 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     }
   }
 
+  /** A write with fields left out at a later state of their value (#2895): counted and logged, never alerted. */
+  const laterState = (h: Held, later: string[]) => {
+    if (later.length === 0) return
+    s.later_states++
+    console.log(`[${SF_READ_BACK_JOB}] ${h.id} left ${later.join(', ')} of ${h.entry.sf_object} ${h.entry.sf_record_id} at a later state of the value it was sending`)
+  }
+
   /**
    * The claim, then the attempt counted, before anything is sent. Only a won
    * claim spends an attempt. One the object could not answer sends nothing and
@@ -631,6 +653,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
       return null
     }
     if (!(await claimAttempt(h, attempt, { owned_by_later: d.ownedByLater }))) return null
+    laterState(h, d.later)
     count(h, d.candidates, d.conflicts)
     if (d.conflicts.length > 0) s.conflicts++
     s.resent++
@@ -783,7 +806,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     }
 
     const entries = group.map((h) => ({ id: h.id, body: h.body, attempts: h.state.attempts, ownedByLater: h.state.owned_by_later ?? [], firstAttemptMs: h.firstAttemptMs }))
-    let decisions = decideRecord(entries, current)
+    let decisions = decideRecord(head.sf_object, entries, current)
     // A field the record read calls moved is asked about in its own history
     // (#2264): the record being written since says nothing about WHICH field.
     const judged = decisions.flatMap((d, i) => ((d.verdict === 'resend' || d.verdict === 'conflict_only') && d.conflicts.length > 0 ? [{ d, h: group[i] }] : []))
@@ -803,7 +826,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
         return { unread: true, stop: 'salesforce_not_answering' }
       }
       if (history.kind === 'unread') console.error(`[${SF_READ_BACK_JOB}] the field history of ${head.sf_object} ${head.sf_record_id} could not be read, so ${moved.join(', ')} stay left out: ${history.why}`)
-      decisions = decideRecord(entries, current, history)
+      decisions = decideRecord(head.sf_object, entries, current, history)
       const stillMoved = new Set(decisions.flatMap((d) => (d.verdict === 'resend' || d.verdict === 'conflict_only' ? d.conflicts : [])))
       s.history_cleared += moved.filter((f) => !stillMoved.has(f)).length
     }
@@ -820,7 +843,11 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
       } else if (d.verdict === 'exhausted') {
         s.exhausted++
         await finish(h, { kind: 'unknown' }, { still_trying: false })
+      } else if (d.verdict === 'later_only') {
+        laterState(h, d.later)
+        await forget(h)
       } else if (d.verdict === 'conflict_only') {
+        laterState(h, d.later)
         count(h, d.candidates, d.conflicts)
         s.conflicts++
         await finish(h, { kind: 'conflict', conflict_fields: d.conflicts, resent: false }, { conflict_values: d.conflictValues })
@@ -875,7 +902,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
   if (deps.recordRun && (s.reads > 0 || s.unread > 0 || s.alerts > 0)) {
     await deps.recordRun(startedAt, {
       outcome: s.resend_refused > 0 || s.exhausted > 0 ? 'unresolved-found' : s.unread > 0 ? 'unread' : 'resolved',
-      detail: `landed=${s.landed} nothing_to_send=${s.nothing_to_send} resent=${s.resent} confirmed=${s.resent_confirmed} unanswered=${s.resend_unanswered} refused=${s.resend_refused} conflicts=${s.conflicts} unread=${s.unread} young=${s.young}`,
+      detail: `landed=${s.landed} nothing_to_send=${s.nothing_to_send} resent=${s.resent} confirmed=${s.resent_confirmed} unanswered=${s.resend_unanswered} refused=${s.resend_refused} conflicts=${s.conflicts} later_states=${s.later_states} unread=${s.unread} young=${s.young}`,
       summary: { ...s },
     }).catch((e) => console.error(`[${SF_READ_BACK_JOB}] could not record the run:`, formatErr(e)))
   }

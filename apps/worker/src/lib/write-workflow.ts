@@ -16,11 +16,17 @@
  * written, stale (409 with the current row), not_found (what was missing),
  * connection_refused (the #2338 trigger's refusal, by name), refused (a call
  * the function judged malformed) and failed (anything else, never thrown).
+ *
+ * A write that writes a version snapshot (save, restore) is also pushed to
+ * the GitHub backup from here (#2868, lib/workflow-backup.ts), in the
+ * background through the caller's waitUntil, so no route can write a version
+ * the backup never sees. `backup` is required of every call for that reason.
  */
 import type { createSupabaseClient } from './supabase'
 import type { Database, Json } from '../types/database'
 import { stampAppActionBinders } from './app-action-binders'
 import { connectionRefusalOfWriteError, type ConnectionCheckRefusal } from './workflow-connection-check'
+import { backUpWrittenVersion, type WorkflowBackupContext } from './workflow-backup'
 
 type Supabase = ReturnType<typeof createSupabaseClient>
 export type WorkflowRow = Database['public']['Tables']['workflows']['Row']
@@ -47,6 +53,12 @@ export interface WriteWorkflowCall {
    * lib/app-action-binders.ts), never taken from the client.
    */
   storedDefinition: unknown
+  /**
+   * Where the version this write makes is backed up from (#2868). Required of
+   * every call, so a new definition writer cannot leave it out; used only by
+   * the ops that write a version (VERSION_OPS).
+   */
+  backup: WorkflowBackupContext
 }
 
 export type WriteWorkflowResult =
@@ -62,6 +74,9 @@ const NOT_FOUND: Record<string, 'workflow' | 'version' | 'folder'> = {
   version_not_found: 'version',
   folder_not_found: 'folder',
 }
+
+/** The ops whose write is a new version snapshot, each pushed to the GitHub backup (#2868). */
+export const VERSION_OPS: ReadonlySet<WriteWorkflowOp> = new Set(['save', 'restore'])
 
 const stringOrNull = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 const numberOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) ? v : null)
@@ -121,12 +136,33 @@ export async function writeWorkflow(supabase: Supabase, call: WriteWorkflowCall)
   if (!workflow || typeof workflow !== 'object') {
     return { kind: 'failed', error: new Error('write_workflow answered without the workflow it wrote') }
   }
-  return {
-    kind: 'written',
+  const written = {
+    kind: 'written' as const,
     workflow: workflow as WorkflowRow,
     versionId: stringOrNull(out.version_id),
     versionNumber: numberOrNull(out.version_number),
     restoredFrom: numberOrNull(out.restored_from),
     versionsCopied: numberOrNull(out.versions_copied),
   }
+  if (VERSION_OPS.has(call.op)) {
+    // What the write stored, not what the caller sent: the definition carries
+    // the binder stamps above, and a save naming no definition snapshots the
+    // stored one, which the row still holds.
+    const name = written.workflow.name || written.workflow.id
+    const message = typeof call.fields.message === 'string' && call.fields.message.trim()
+      ? call.fields.message
+      : call.op === 'restore' && written.restoredFrom !== null
+        ? `chore: restore workflow "${name}" from v${written.restoredFrom}${written.versionNumber === null ? '' : ` as v${written.versionNumber}`}`
+        : undefined
+    backUpWrittenVersion(supabase, call.backup, {
+      orgId: call.orgId,
+      workflowId: written.workflow.id,
+      workflowName: name,
+      definition: written.workflow.definition,
+      versionId: written.versionId,
+      versionNumber: written.versionNumber,
+      message,
+    })
+  }
+  return written
 }

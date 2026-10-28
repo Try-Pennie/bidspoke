@@ -23,7 +23,9 @@
  *    never lands over a newer one; a value an earlier row sent this tick counts
  *    as ours, so the newer row replaces it;
  *  - a field another writer changed since the row was written is left out and
- *    named in an alert (the read-back's one rule, salesforce-field-conflict.ts);
+ *    named in an alert (the read-back's one rule, salesforce-field-conflict.ts),
+ *    except one holding a later state of its value (LATER_STATES, #2895), which
+ *    is left out, counted as later_states and never alerted;
  *  - at most DRAIN_MAX_ATTEMPTS attempts per row, the second no sooner than
  *    DRAIN_BACKOFF_MS after the first ended. A rejection closes the row refused
  *    (salesforceRejectedTheWrite), and a failed last attempt closes it abandoned;
@@ -157,6 +159,8 @@ export interface DrainSummary {
   abandoned: number
   /** Rows with at least one field left out because another writer changed it. */
   moved: number
+  /** Rows with at least one field left out because it already held a later state of its value (#2895), never alerted. */
+  later_states: number
   /** Failed with an attempt left. */
   retrying: number
   /** Inside the backoff, or behind an earlier row of the same record. */
@@ -202,7 +206,7 @@ function parseFinding(raw: string | null): DrainFinding | null {
 export async function runWritebackDrain(deps: WritebackDrainDeps): Promise<DrainSummary> {
   const now = deps.now ?? Date.now
   const startedAt = now()
-  const s: DrainSummary = { listed: 0, replayed: 0, refused: 0, abandoned: 0, moved: 0, retrying: 0, waiting: 0, skipped: 0, deferred: 0, unread: 0, alerts: 0, alert_failures: 0 }
+  const s: DrainSummary = { listed: 0, replayed: 0, refused: 0, abandoned: 0, moved: 0, later_states: 0, retrying: 0, waiting: 0, skipped: 0, deferred: 0, unread: 0, alerts: 0, alert_failures: 0 }
   const findings: DrainFinding[] = []
 
   // A failed read throws: it is never read as nothing pending.
@@ -219,7 +223,7 @@ export async function runWritebackDrain(deps: WritebackDrainDeps): Promise<Drain
   if (deps.recordRun && (s.listed > 0 || s.alerts > 0 || s.alert_failures > 0)) {
     await deps.recordRun(startedAt, {
       outcome: s.refused > 0 || s.abandoned > 0 || s.moved > 0 ? 'unresolved-found' : s.held || s.stopped ? 'unread' : 'resolved',
-      detail: `listed=${s.listed} replayed=${s.replayed} refused=${s.refused} abandoned=${s.abandoned} moved=${s.moved} retrying=${s.retrying} waiting=${s.waiting} skipped=${s.skipped} deferred=${s.deferred} unread=${s.unread}${s.held ? ` held=${s.held}` : ''}${s.stopped ? ` stopped=${s.stopped}` : ''}`,
+      detail: `listed=${s.listed} replayed=${s.replayed} refused=${s.refused} abandoned=${s.abandoned} moved=${s.moved} later_states=${s.later_states} retrying=${s.retrying} waiting=${s.waiting} skipped=${s.skipped} deferred=${s.deferred} unread=${s.unread}${s.held ? ` held=${s.held}` : ''}${s.stopped ? ` stopped=${s.stopped}` : ''}`,
       summary: { ...s },
     }).catch((e) => console.error(`[${WRITEBACK_DRAIN_JOB}] could not record the run:`, formatErr(e)))
   }
@@ -302,6 +306,7 @@ async function drainRows(deps: WritebackDrainDeps, listed: DrainRow[], s: DrainS
       if (out.kind === 'replayed') {
         s.replayed++
         earlier.push(out.sent)
+        if (out.later.length > 0) s.later_states++
         if (out.moved.length > 0) {
           s.moved++
           found(r, 'moved', { fields: out.moved, resent: true })
@@ -309,8 +314,12 @@ async function drainRows(deps: WritebackDrainDeps, listed: DrainRow[], s: DrainS
         continue
       }
       if (out.kind === 'all_moved') {
-        s.moved++
-        found(r, 'moved', { fields: out.moved, resent: false })
+        if (out.later.length > 0) s.later_states++
+        // Only a field another writer moved is a choice for a person; a later state is not (#2895).
+        if (out.moved.length > 0) {
+          s.moved++
+          found(r, 'moved', { fields: out.moved, resent: false })
+        }
         continue
       }
       if (out.kind === 'refused') {

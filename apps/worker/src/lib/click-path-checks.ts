@@ -105,6 +105,7 @@ import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { withJobRun, type JobRunEnding } from './job-run-record'
 import { parseJson } from './json'
 import { fetchAllPaged } from './paginate'
+import { salesforceQueryUrl } from './salesforce-api'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 
 // ── Names ─────────────────────────────────────────────────────────────────────
@@ -912,7 +913,7 @@ async function readCompletedRecords(env: Env, supabase: SupabaseClient, orgId: s
   if (!creds) throw new Error(`Salesforce credentials missing: ${missing.join(', ')}`)
   const token = await getSalesforceToken(env, orgId, creds.instanceUrl, creds.clientId, creds.clientSecret)
   const out: CompletedProspect[] = []
-  let next: string | undefined = `${creds.instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`
+  let next: string | undefined = salesforceQueryUrl(creds.instanceUrl, soql)
   while (next) {
     const res: Response = await fetch(next, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) throw new Error(`Salesforce query failed (${res.status}): ${(await res.text()).slice(0, 300)}`)

@@ -98,6 +98,13 @@ describe('problemNotice (R7, D7)', () => {
     expect(problemNotice(alerts, NOW)).toEqual({ cause: 'Slack has refused its token.', effect: null, fix: 'Reconnect with a new token from the Slack app.' })
   })
 
+  it("keeps the API key's capitals when Anthropic refuses it (#2889)", () => {
+    const refused = conn({ name: 'Lead notes', service: 'anthropic', serviceName: 'Anthropic', status: 'reauth', problemSince: '2026-10-20T13:52:00Z', problemCause: 'login_refused: invalid_api_key' })
+    const n = problemNotice(refused, NOW)!
+    expect(n.cause).toBe('Since 9:52 AM ET, Anthropic has refused its API key.')
+    expect(n.fix).toMatch(/new API key/)
+  })
+
   it('gives no notice to a working connection', () => {
     expect(problemNotice(conn({}), NOW)).toBeNull()
   })
