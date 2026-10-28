@@ -1,8 +1,9 @@
 /**
  * Catch a strand-drain branch that cannot fire (#1133).
  *
- * resolveStrandedExecution resolves each stranded run down one of four evidence
- * branches (failed_step, graph_dead_end, sighting_outcome, unresolved). The
+ * resolveStrandedExecution resolves each stranded run down one of five evidence
+ * branches (failed_step, graph_dead_end, sighting_outcome, unresolved, and
+ * no_evidence, the fallback for a row that gave no branch anything to read). The
  * precise branches sit in front of a conservative, always-correct `unresolved`
  * fallback, and the fallback being truthful is exactly what hides a precise
  * branch that never matches (L551): #1112 resolved 119 of 119 rows as
