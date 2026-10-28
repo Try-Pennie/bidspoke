@@ -25,6 +25,7 @@ import { panelHeadingOf } from '@/lib/panel-heading'
 import { CLICK_CHECK_BUDGET_MS, DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, POPULATIONS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
 import { POPULATION_LABELS } from '@/components/partners/buyer-profile/labels'
 import { SIMPLE_FILTER_OPERATORS, VALUE_LESS_OPERATORS } from '@bidspoke/workflow-definition'
+import { WEB_REQUEST_SERVICES, webRequestAuthFor } from '@bidspoke/service-catalogue/schema'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -2053,18 +2054,6 @@ function TransformConfig({
 
 // ── Webhook node config ───────────────────────────────────────────────────────
 
-const BUILTIN_SERVICE_OPTIONS = [
-  { value: 'custom', label: 'Custom' },
-  { value: 'equifax', label: 'Equifax' },
-  { value: 'salesforce', label: 'Salesforce' },
-]
-
-const AUTH_PRESETS: Record<string, { authType: string }> = {
-  equifax: { authType: 'basic' },
-  salesforce: { authType: 'bearer' },
-  custom: { authType: 'none' },
-}
-
 function IntegrationConfig({
   config,
   onChange,
@@ -2094,8 +2083,9 @@ function IntegrationConfig({
   const { rows: headerRows, invalidIds: headerInvalid, setKey: setHeaderKey, setValue: setHeaderValue, addRow: addHeader, removeRow: removeHeader } =
     useKeyValueRows<string>(initialHeaders, persistHeaders, '', reportValidity)
 
-  // HTTP Services presets are retired (#2338, Dan's decision 2): the built in services are the list.
-  const allOptions = BUILTIN_SERVICE_OPTIONS
+  // HTTP Services presets are retired (#2338, Dan's decision 2). The services and the sign in each
+  // presets are the service catalogue's one list (#2342).
+  const allOptions = WEB_REQUEST_SERVICES
 
   const bodyStr =
     config.body !== undefined
@@ -2109,7 +2099,7 @@ function IntegrationConfig({
   }
 
   function onServiceChange(svc: string) {
-    const authType = AUTH_PRESETS[svc]?.authType ?? 'none'
+    const authType = webRequestAuthFor(svc)
     const label = allOptions.find((o) => o.value === svc)?.label ?? svc
     onChange({ service: svc, service_label: label, auth: { ...auth, type: authType } })
   }
