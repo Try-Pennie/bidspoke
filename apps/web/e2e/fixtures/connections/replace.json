@@ -1,0 +1,48 @@
+{
+  "outcome": "incomplete",
+  "connection": {
+    "id": "0e2e0c00-0000-4000-8000-000000000001"
+  },
+  "with": {
+    "id": "0e2e0c00-0000-4000-8000-000000000002",
+    "name": "TPL2 Salesforce"
+  },
+  "workflows": [
+    {
+      "id": "0e2e0f00-0000-4000-8000-000000000001",
+      "name": "Achieve report import",
+      "outcome": "replaced",
+      "version": 2
+    },
+    {
+      "id": "0e2e0f00-0000-4000-8000-000000000002",
+      "name": "Daily Salesforce cleanup",
+      "outcome": "replaced",
+      "version": 2
+    },
+    {
+      "id": "0e2e0f00-0000-4000-8000-000000000003",
+      "name": "Lead Completed sync",
+      "outcome": "changed"
+    },
+    {
+      "id": "0e2e0f00-0000-4000-8000-000000000004",
+      "name": "Partner report email",
+      "outcome": "replaced",
+      "version": 2
+    },
+    {
+      "id": "0e2e0f00-0000-4000-8000-000000000005",
+      "name": "Reserve My Loan intake",
+      "outcome": "replaced",
+      "version": 2
+    },
+    {
+      "id": "0e2e0f00-0000-4000-8000-000000000006",
+      "name": "Tripoint submission",
+      "outcome": "replaced",
+      "version": 2
+    }
+  ],
+  "message": "Lead Completed sync was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it."
+}

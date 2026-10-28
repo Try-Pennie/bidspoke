@@ -7,15 +7,17 @@
  * to the Worker is answered from fixtures/connections/, which the Worker's
  * connections-fixtures-contract.test.ts holds to what the routes answer: the
  * list at the settled design's count, two connections' History, the Google
- * mailboxes and drives, the Slack alerts login's settings, and the answer to
- * removing Lead notes (ops not told, which opens the page's removal notice).
+ * mailboxes and drives, the Slack alerts login's settings, the answer to
+ * removing Lead notes (ops not told, which opens the page's removal notice),
+ * and the answer to replacing Pennie Salesforce with TPL2 Salesforce (all but
+ * Lead Completed sync moved, which keeps the Replace dialog open, #2338).
  * Nothing reaches production: a call with no answer here is unmatched, and the
  * spec fails on it (worker-fixtures.ts).
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { Page } from '@playwright/test'
-import type { ConnectionList } from '../src/lib/api'
+import type { ConnectionList, ConnectionReplaceAnswer } from '../src/lib/api'
 import { ownEntry, routeWorkerAnswers, type Answer } from './worker-fixtures'
 
 const DIR = path.join(__dirname, 'fixtures', 'connections')
@@ -29,6 +31,8 @@ export interface ConnectionFixtures {
   slackAlerts: unknown
   /** DELETE /api/connections/:id for the one connection the scan removes. */
   remove: { outcome: 'removed'; connection: { id: string; generation: number }; ops: { told: true } | { told: false; cause: string; message: string } }
+  /** POST /api/connections/:id/replace for the one Replace the scan makes. */
+  replace: ConnectionReplaceAnswer
 }
 
 export function loadConnectionFixtures(): ConnectionFixtures {
@@ -38,6 +42,7 @@ export function loadConnectionFixtures(): ConnectionFixtures {
     googleSubjects: read('google-subjects.json'),
     slackAlerts: read('slack-alerts.json'),
     remove: read('remove.json'),
+    replace: read('replace.json'),
   }
 }
 
@@ -48,6 +53,9 @@ export function answerConnectionsFor(method: string, url: string, fx: Connection
   let m: RegExpExecArray | null
   if (method === 'DELETE' && (m = /^\/api\/connections\/([^/]+)$/.exec(p))) {
     return decodeURIComponent(m[1]) === fx.remove.connection.id ? ok(fx.remove) : null
+  }
+  if (method === 'POST' && (m = /^\/api\/connections\/([^/]+)\/replace$/.exec(p))) {
+    return decodeURIComponent(m[1]) === fx.replace.connection.id ? ok(fx.replace) : null
   }
   if (method !== 'GET') return null
   if (p === '/api/connections') return ok(fx.list)

@@ -35,7 +35,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { refreshWorkflowCaches } from '../../../engine/definition-loader'
 import api from '../index'
-import { REPLACE_OUTCOMES } from '../../../lib/connection-replace'
+import { REPLACE_OUTCOMES, REPLACE_WORKFLOWS_MAX } from '../../../lib/connection-replace'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -394,7 +394,7 @@ describe('a concurrent edit is never written over', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as Answer
     expect(body).toMatchObject({ outcome: 'incomplete', workflows: [{ id: ACHIEVE, outcome: 'changed' }] })
-    expect(body.message).toBe('Nothing was changed. Achieve report import was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it.')
+    expect(body.message).toBe('Achieve report import was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it.')
     expect(db.writes).toHaveLength(3)
     expect(stepOf(wf(ACHIEVE).definition).config.connection).toBe(PENNIE)
     expect(writeAuditLog).not.toHaveBeenCalled()
@@ -433,6 +433,16 @@ describe('organization scoping', () => {
     expect(((await res.json()) as Answer).error).toBe('replace_body_invalid')
     expect(db.order).toEqual([])
   })
+
+  it(`refuses more than ${REPLACE_WORKFLOWS_MAX} workflows by name, reading and writing nothing, since more could outlast the page's wait`, async () => {
+    const ids = Array.from({ length: REPLACE_WORKFLOWS_MAX + 1 }, (_, i) => `10000000-0000-4000-8000-${String(100 + i).padStart(12, '0')}`)
+    const res = await replace(PENNIE, { with: TPL2, workflows: ids })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as Answer
+    expect(body.error).toBe('replace_too_many')
+    expect(body.message).toBe(`Replace moves at most ${REPLACE_WORKFLOWS_MAX} workflows at a time. Nothing was changed. Untick some and replace again.`)
+    expect(db.order).toEqual([])
+  })
 })
 
 describe('what may stand in for a connection', () => {
@@ -452,7 +462,7 @@ describe('what may stand in for a connection', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as Answer
     expect(body).toMatchObject({ outcome: 'incomplete', workflows: [{ id: ACHIEVE, outcome: 'refused' }] })
-    expect(body.message).toBe('Nothing was changed. TPL2 Salesforce was removed while this ran, so Achieve report import still uses Pennie Salesforce. Choose another connection and replace again.')
+    expect(body.message).toBe('TPL2 Salesforce was removed while this ran, so Achieve report import still uses Pennie Salesforce. Choose another connection and replace again.')
     expect(stepOf(wf(ACHIEVE).definition).config.connection).toBe(PENNIE)
     expect(writeAuditLog).not.toHaveBeenCalled()
   })
@@ -502,7 +512,7 @@ describe('workflows that cannot get a new version', () => {
     const res = await replace(PENNIE, { with: TPL2, workflows: [OLD_IMPORT, ACHIEVE] })
     const body = (await res.json()) as Answer
     expect(body).toMatchObject({ outcome: 'incomplete', workflows: [{ id: OLD_IMPORT, outcome: 'deleted' }, { id: ACHIEVE, outcome: 'replaced' }] })
-    expect(body.message).toBe('Replaced in 1 workflow. Old import was deleted, so it cannot get a new version.')
+    expect(body.message).toBe('Old import was deleted, so it cannot get a new version.')
     expect(db.writes.map((w) => w.p_id)).toEqual([ACHIEVE])
   })
 
