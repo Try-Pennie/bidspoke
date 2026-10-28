@@ -199,7 +199,7 @@ export async function runPartnerErrorRateCheck(
             measuredWindowMinutes: WINDOW_MINUTES,
             recoveredPhrase: `is getting answers from ${watch.partner} again`,
             url: `${appUrl}/workflows/${wf.id}`,
-          })
+          }, 'partner-error-rate-all-clear')
         },
         { hasEvidence: () => answered >= 1 && belowShare, claim: minuteAllClearClaim(claims, PARTNER_ERROR_RATE_SIGNAL, wf.id) },
       )

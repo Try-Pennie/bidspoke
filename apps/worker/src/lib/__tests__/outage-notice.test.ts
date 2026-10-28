@@ -94,7 +94,7 @@ describe('the outage line on scheduled alerts (#2061)', () => {
   it('adds one line, under the title, naming when the outage was reported, when reads last failed, and the saved settings used', async () => {
     const kv = await openIncident()
     const slack = await tick(kv, true)
-    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'A scheduled job has not run'))
+    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'A scheduled job has not run', 'execution-failure'))
     expect(outageLines()).toHaveLength(1)
     expect(posted[0].blocks[1].type).toBe('context')
     expect(lineText()).toBe(
@@ -108,28 +108,28 @@ describe('the outage line on scheduled alerts (#2061)', () => {
   it('says nothing about saved settings when this tick read Slack live', async () => {
     const kv = await openIncident()
     const slack = await tick(kv, false)
-    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'x'))
+    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'x', 'execution-failure'))
     expect(lineText()).toBe('Sent during the database outage reported at Oct 14, 9:14 PM EDT (database reads last failed at Oct 14, 9:41 PM EDT), so this alert may be a consequence of it.')
   })
 
   it('leaves out the last failure when it was not recorded', async () => {
     const kv = await kvWith({ [RECOVERY]: new Date(REPORTED).toISOString() })
     const slack = await tick(kv, false)
-    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'x'))
+    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'x', 'execution-failure'))
     expect(lineText()).toBe('Sent during the database outage reported at Oct 14, 9:14 PM EDT, so this alert may be a consequence of it.')
   })
 
   it('puts the line first when the message has no title', async () => {
     const kv = await openIncident()
     const slack = await tick(kv, false)
-    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', [{ type: 'section', text: { type: 'mrkdwn', text: 'b' } }], 'x'))
+    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', [{ type: 'section', text: { type: 'mrkdwn', text: 'b' } }], 'x', 'execution-failure'))
     expect(posted[0].blocks[0].type).toBe('context')
   })
 
   it('adds it to an alert sent through a sender, not only a direct post', async () => {
     const kv = await openIncident()
     const slack = await tick(kv, true)
-    await runWithOutageNotice({ kv, scheduled: slack }, () => sendTitledAlert(CONN, null, { title: 'A title', errors: ['A finding'] }))
+    await runWithOutageNotice({ kv, scheduled: slack }, () => sendTitledAlert(CONN, null, { title: 'A title', errors: ['A finding'] }, 'stored-copy-serving'))
     expect(outageLines()).toHaveLength(1)
   })
 
@@ -138,8 +138,8 @@ describe('the outage line on scheduled alerts (#2061)', () => {
     const slack = await tick(kv, true)
     const shared = blocks()
     await runWithOutageNotice({ kv, scheduled: slack }, async () => {
-      await postMessage('xoxb-t', 'C1', shared, 'x')
-      await postMessage('xoxb-t', 'C2', shared, 'x')
+      await postMessage('xoxb-t', 'C1', shared, 'x', 'execution-failure')
+      await postMessage('xoxb-t', 'C2', shared, 'x', 'execution-failure')
     })
     expect(outageLines(0)).toHaveLength(1)
     expect(outageLines(1)).toHaveLength(1)
@@ -149,13 +149,13 @@ describe('the outage line on scheduled alerts (#2061)', () => {
   it('adds nothing when no outage is open', async () => {
     const kv = await kvWith({})
     const slack = await tick(kv, false)
-    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'x'))
+    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'x', 'execution-failure'))
     expect(posted[0].blocks).toEqual(blocks())
   })
 
   it('leaves a post outside a scheduled tick unchanged and reads nothing for it (the request and engine paths)', async () => {
     const kv = await openIncident()
-    await postMessage('xoxb-t', 'C1', blocks(), 'x')
+    await postMessage('xoxb-t', 'C1', blocks(), 'x', 'execution-failure')
     expect(posted[0].blocks).toEqual(blocks())
     expect(kv.reads).toEqual([])
   })
@@ -179,7 +179,7 @@ describe('the outage line on scheduled alerts (#2061)', () => {
     kv.store.set(SLACK_CONNS_LASTGOOD_KEY, await copyBlob())
     const working = await kvWith({})
     const slack = await tick(working, false)
-    const sent = await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'x'))
+    const sent = await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'x', 'execution-failure'))
     expect(sent).toBe('1.2')
     expect(posted[0].blocks).toEqual(blocks())
     expect(errors.some((e) => e.includes('[outage-notice]') && e.includes('KV GET failed: 500') && e.includes('posted without the outage line'))).toBe(true)
@@ -192,8 +192,8 @@ describe('the outage line on scheduled alerts (#2061)', () => {
     const waited: number[] = []
     const delay = (ms: number) => { waited.push(ms); return Promise.resolve() }
     await runWithOutageNotice({ kv, scheduled: slack, delay }, async () => {
-      await postMessage('xoxb-t', 'C1', blocks(), 'x')
-      await postMessage('xoxb-t', 'C2', blocks(), 'x')
+      await postMessage('xoxb-t', 'C1', blocks(), 'x', 'execution-failure')
+      await postMessage('xoxb-t', 'C2', blocks(), 'x', 'execution-failure')
     })
     expect(posted).toHaveLength(2)
     expect(posted.every((p) => !p.blocks.some((b) => b.type === 'context'))).toBe(true)
@@ -206,8 +206,8 @@ describe('the outage line on scheduled alerts (#2061)', () => {
     kv.store.delete(SLACK_CONNS_LASTGOOD_KEY)
     const slack = await tick(kv, false)
     await runWithOutageNotice({ kv, scheduled: slack }, async () => {
-      await postMessage('xoxb-t', 'C1', blocks(), 'x')
-      await postMessage('xoxb-t', 'C2', blocks(), 'x')
+      await postMessage('xoxb-t', 'C1', blocks(), 'x', 'execution-failure')
+      await postMessage('xoxb-t', 'C2', blocks(), 'x', 'execution-failure')
     })
     expect(posted.map((p) => p.blocks)).toEqual([blocks(), blocks()])
     // Said once a tick: the tick's copy cannot change under it.

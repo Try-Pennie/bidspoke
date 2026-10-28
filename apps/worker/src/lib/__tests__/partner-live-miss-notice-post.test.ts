@@ -31,8 +31,10 @@ describe('postLiveMissNotice', () => {
     postMessage.mockResolvedValue('1730000000.000100')
     expect(await postLiveMissNotice(supabase, ORG, notice)).toEqual({ kind: 'posted' })
     expect(lookupSlackConnection).toHaveBeenCalledWith(supabase, ORG)
-    const [token, channel, blocks, text] = postMessage.mock.calls[0]
+    const [token, channel, blocks, text, alertKind] = postMessage.mock.calls[0]
     expect([token, channel, text]).toEqual(['xoxb', 'C123', notice.title])
+    // Logged under its fixed kind (#2948).
+    expect(alertKind).toBe('partner-page-live-miss')
     expect(blocks).toEqual([
       { type: 'header', text: { type: 'plain_text', text: notice.title, emoji: false } },
       { type: 'section', text: { type: 'mrkdwn', text: 'One.' } },

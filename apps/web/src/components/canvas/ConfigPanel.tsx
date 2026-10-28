@@ -21,6 +21,7 @@ import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
 import { duplicateBranchArmIndices } from '@/lib/branch-validation'
 import { isHardCoded4xx } from '@/lib/response-status'
 import { isBuyerPartner } from '@/lib/partner-roles'
+import { panelHeadingOf } from '@/lib/panel-heading'
 import { CLICK_CHECK_BUDGET_MS, DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, POPULATIONS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
 import { POPULATION_LABELS } from '@/components/partners/buyer-profile/labels'
 import { SIMPLE_FILTER_OPERATORS, VALUE_LESS_OPERATORS } from '@bidspoke/workflow-definition'
@@ -112,6 +113,11 @@ export function upstreamAppSteps(
   return out
 }
 
+// The defaults for props a caller may leave out, made once, so a memo reading
+// them is not handed a new empty array on every render (#2782).
+const NO_NODE_OPTIONS: NonNullable<Props['nodeOptions']> = []
+const NO_EDGES: NonNullable<Props['edges']> = []
+
 // Retries always resolves to a number (never null/empty): erasing the field
 // lands on 0, anything else is parsed and clamped to 0–5. Mirrors the engine
 // default of 2, which the input shows when the value is unset.
@@ -122,7 +128,7 @@ function clampRetries(raw: string): number {
   return Math.max(0, Math.min(5, n))
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], namespaceReferenced = false, readOnly = false, referenceProblems = [], edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId, onRenameRequest, onKeyEditorValidityChange }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = NO_NODE_OPTIONS, refs = [], namespaceReferenced = false, readOnly = false, referenceProblems = [], edges = NO_EDGES, onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId, onRenameRequest, onKeyEditorValidityChange }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -132,6 +138,8 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   const sendConnectionName = useConnectionName(sendConnection)
   const realSend = sendConnection === null ? null : appActionRealSend(data.config, sendConnectionName)
   const isCode = type === 'code'
+  // Worked out once per step, nodes and edges, so the App Action form's picker memos hold across renders (#2782).
+  const upstream = useMemo(() => upstreamAppSteps(node.id, edges, nodeOptions), [node.id, edges, nodeOptions])
 
   const [showAdvanced, setShowAdvanced] = useState(true)
   // A lead validation step opens with Advanced collapsed (Dan, 2026-10-21,
@@ -219,7 +227,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{type}</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{panelHeadingOf(type, data.config)}</p>
           <p className="mt-0.5 text-sm font-semibold text-graphite">{data.label || data.namespace}</p>
           {data.label && <p className="font-mono text-xs text-gray-500">{data.namespace}</p>}
         </div>
@@ -444,7 +452,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
             config={data.config}
             onChange={updateConfig}
             workflowId={workflowId}
-            upstream={upstreamAppSteps(node.id, edges, nodeOptions)}
+            upstream={upstream}
             triggerPayload={defaultTestPayload}
             refs={refs}
           />

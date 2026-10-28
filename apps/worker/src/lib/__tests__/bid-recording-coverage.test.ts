@@ -253,6 +253,8 @@ describe('runBidRecordingCoverageCheck: who gets told (#1157)', () => {
     const db = makeSupabase({ rpc: () => ({ data: SILENT, error: null }) })
     await runBidRecordingCoverageCheck(db.client, kv)
     expect(postMessage).toHaveBeenCalledTimes(1)
+    // Logged under its fixed kind (#2948).
+    expect((postMessage.mock.calls[0] as unknown[])[4]).toBe('bid-recording-none')
     const body = JSON.stringify(postMessage.mock.calls[0])
     expect(body).toContain('Lead Economy')
     expect(body).toContain('1700')
@@ -440,6 +442,7 @@ describe('ratio collapse: reached from the scheduled check (#1168)', () => {
 
     expect(postMessage).toHaveBeenCalledTimes(1)
     const [, , blocks] = postMessage.mock.calls[0]
+    expect((postMessage.mock.calls[0] as unknown[])[4]).toBe('bid-recording-ratio')
     const text = JSON.stringify(blocks)
     expect(text).toContain('Lead Economy')
     expect(text).toContain('far fewer bids than usual')

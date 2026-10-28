@@ -273,7 +273,12 @@ function ArgumentField({ id, arg, value, onChange, refs, groups, onOpenPicker, c
   )
 }
 
-/** A dropdown filled by a lookup on the step's connection; a failed lookup shows its error in the list (L10). */
+/**
+ * A dropdown filled by a lookup on the step's connection; a failed lookup shows its error in the list (L10).
+ * `parents` are the values of the arguments its `dependsOn` names, in that order, '' for one not filled yet.
+ * While any is empty the lookup waits (#2782): it is never sent, and the dropdown is shut, as it is while it
+ * waits for a connection, so "a parent not filled yet" is never sent as "no parent".
+ */
 export function LookupDropdown({ id, lookup, connection, parents, value, onChange }: {
   id: string
   lookup: string
@@ -282,19 +287,22 @@ export function LookupDropdown({ id, lookup, connection, parents, value, onChang
   value: string
   onChange: (value: string) => void
 }) {
-  const parentsKey = parents.join('\u0000')
+  const parentsKey = JSON.stringify(parents)
+  const waitingForParent = parents.some((p) => p === '')
   const load = useCallback(async (): Promise<ComboboxOption[]> => {
     if (connection === null) throw new Error('Choose a connection first, then its list can be read.')
+    // Shut while it waits, so this list is never shown; the lookup is sent once every parent is filled.
+    if (waitingForParent) return []
     let answer
     try {
-      answer = (await api.connections.lookup(connection, lookup, parentsKey === '' ? [] : parentsKey.split('\u0000'))).answer
+      answer = (await api.connections.lookup(connection, lookup, JSON.parse(parentsKey) as string[])).answer
     } catch (err) {
       const message = err instanceof Error && err.message.trim() ? err.message : 'The list could not be read from the connection.'
       throw new Error(message)
     }
     if ('entries' in answer) return answer.entries.map((e) => ({ value: e.name, label: e.label || e.name }))
     return answer.fields.map((f) => ({ value: f.name, label: f.label || f.name, hint: f.type }))
-  }, [connection, lookup, parentsKey])
+  }, [connection, lookup, parentsKey, waitingForParent])
   return (
     <Combobox
       key={`${connection ?? ''}|${parentsKey}`}
@@ -303,7 +311,7 @@ export function LookupDropdown({ id, lookup, connection, parents, value, onChang
       onChange={onChange}
       loadOptions={load}
       placeholder={connection === null ? 'Choose a connection first' : 'Choose one'}
-      disabled={connection === null}
+      disabled={connection === null || waitingForParent}
     />
   )
 }

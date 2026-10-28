@@ -585,7 +585,7 @@ export async function postLiveMissNotice(supabase: SupabaseClient, organizationI
     { type: 'header', text: { type: 'plain_text', text: notice.title, emoji: false } },
     ...notice.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
-  const ts = await postMessage(found.connection.bot_token, found.connection.default_channel, blocks, notice.title)
+  const ts = await postMessage(found.connection.bot_token, found.connection.default_channel, blocks, notice.title, 'partner-page-live-miss')
   return ts === null ? { kind: 'failed', reason: 'Slack did not accept the post' } : { kind: 'posted' }
 }
 

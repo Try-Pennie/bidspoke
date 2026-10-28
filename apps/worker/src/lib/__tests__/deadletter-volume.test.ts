@@ -135,6 +135,8 @@ describe('runDeadLetterBuildTriggerCheck (#355)', () => {
     const kv = fakeKv({ [`outcome-deadletter-daily:${utcDay(NOW)}`]: JSON.stringify({ total: 1, unrecoverable: 1 }) })
     expect(await runDeadLetterBuildTriggerCheck(kv, fakeSupabase, 'https://app.test', NOW)).toBe(true)
     expect(postMessage).toHaveBeenCalledTimes(1)
+    // Logged under its fixed kind (#2948).
+    expect(vi.mocked(postMessage).mock.calls[0][4]).toBe('deadletter-volume')
     const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0][2])
     expect(text).toMatch(/durable outcome store|build-now|build the/i)
   })

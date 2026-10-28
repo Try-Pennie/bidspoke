@@ -297,6 +297,44 @@ describe('runAchieveExport trades-backfill failure', () => {
     expect(stored).toEqual([{ Id: 'a04Ui00000MSNppIAH', RevolvingTotalBalance__c: 6370 }])
   })
 
+  // #2394: the query url is built by the shared salesforce-api module now, and must be byte for
+  // byte the url the hand built template sent. The expected value is that template written out
+  // over the one query this read sends.
+  it('asks Salesforce at exactly the url the hand built template sent', async () => {
+    const supabase = {
+      from: vi.fn(() => {
+        const b: Record<string, unknown> = {}
+        for (const m of ['select', 'eq', 'is', 'limit', 'order', 'gt']) b[m] = vi.fn(() => b)
+        b.update = vi.fn(() => {
+          const u: Record<string, unknown> = {
+            eq: vi.fn(() => u),
+            select: () => Promise.resolve({ data: [{ id: 'row-1' }], error: null }),
+          }
+          return u
+        })
+        b.then = (resolve: (r: unknown) => unknown) =>
+          resolve({
+            data: [{ id: 'row-1', requested_at_utc: '2026-09-16T00:00:00Z', request_payload: { partner_lead_id: 'a04Ui00000MSNppIAH' } }],
+            error: null,
+          })
+        return b
+      }),
+    }
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      return new Response(JSON.stringify({ records: [{ Id: 'a04Ui00000MSNppIAH', RevolvingTotalBalance__c: 6370 }] }), { status: 200 })
+    }))
+
+    await backfillEnrollmentView(supabase as never, {} as never, 10_000, () => 0)
+    vi.unstubAllGlobals()
+
+    const soql = 'SELECT Id, RevolvingTotalBalance__c, RevolvingCreditLimit__c, RevolvingUtilization__c, ' +
+      'RevolvingHighBalance__c, CollectionTotalBalance__c, InstallmentTotalBalance__c ' +
+      "FROM Submission__c WHERE Id IN ('a04Ui00000MSNppIAH')"
+    expect(urls).toEqual([`https://sf.example/services/data/v60.0/query?q=${encodeURIComponent(soql)}`])
+  })
+
   // The enrollment view is a second lens on the same lead, not the analysis payload, so it is
   // deliberately NOT allowed to gate the export the way the trades backfill does. A Salesforce
   // outage must leave the column null and let otherwise complete rows through, because holding

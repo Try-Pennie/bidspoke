@@ -37,6 +37,7 @@ import { INCIDENT_OUTBOX_PREFIX, outboxKeyTime, parseIncidentEvent, type Inciden
 import { clearCondition, readCondition, type BackoffKv } from './alert-backoff'
 import { deliverAll, postStanding, type SlackTarget } from './standing-alert'
 import type { AlertClaims } from './alert-claim'
+import type { SlackAlertKind } from './slack-post-outcome'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 
 export const INCIDENT_DRAIN_JOB = 'incident-drain'
@@ -84,7 +85,8 @@ export interface IncidentDrainDeps {
   now: () => number
   claims?: AlertClaims
   resolveSlack: () => Promise<SlackTarget[]>
-  send: (slack: SlackTarget, message: TitledMessage) => Promise<boolean>
+  /** Posts a titled alert under the fixed kind the post outcome line records (#2948). */
+  send: (slack: SlackTarget, message: TitledMessage, alertKind: SlackAlertKind) => Promise<boolean>
   log?: (line: string) => void
 }
 
@@ -355,7 +357,7 @@ async function alertOnDrain(deps: IncidentDrainDeps, nowMs: number, s: IncidentD
           context: 'The incidents themselves were still alerted on. Only their record is behind.',
           fixHint: 'Read the incident-drain log lines for the cause. Set aside events are kept for 30 days under incident-outbox-refused: in the IDEMPOTENCY KV.',
           ...(repeat ? { repeat } : {}),
-        })) ? 'sent' : null,
+        }, 'incident-drain-behind')) ? 'sent' : null,
       })
       return
     }
@@ -368,7 +370,7 @@ async function alertOnDrain(deps: IncidentDrainDeps, nowMs: number, s: IncidentD
         // Only what this run measured: nothing waits. A set aside event was not
         // written, so the line says where it is rather than claiming it was.
         errors: ['Nothing is waiting to be written to the record any more. Any event that was set aside stays under incident-outbox-refused: in the IDEMPOTENCY KV for 30 days.'],
-      }))
+      }, 'incident-drain-caught-up'))
       if (delivered) {
         await clearCondition(deps.kv, INCIDENT_DRAIN_ALERT_KEY)
         s.allClear = true

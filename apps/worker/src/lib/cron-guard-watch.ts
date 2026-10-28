@@ -39,6 +39,7 @@ import { formatErr } from './format-error'
 import { anyDelivered, forEachSlackOrg } from './alert-fanout'
 import { etTime, sendExportFailureAlert } from './slack'
 import { cronTickKey } from './cron-once'
+import type { SlackAlertKind } from './slack-post-outcome'
 import { scheduleInWords } from './schedule-words'
 
 export type CronGuardKind = 'failed_open' | 'skipped_duplicate'
@@ -689,6 +690,24 @@ export async function runCronGuardWatch(deps: CronGuardWatchDeps): Promise<CronG
   return results
 }
 
+/**
+ * The fixed kind each page is logged under (#2948): a fail open, a skipped
+ * duplicate and a doubled tick are three different alerts, though all three
+ * go out through the export alert.
+ */
+export const CRON_GUARD_ALERT_KINDS = {
+  failed_open: 'cron-guard-failed-open',
+  skipped_duplicate: 'cron-guard-skipped-duplicate',
+  double_run: 'cron-guard-double-run',
+} as const satisfies Record<CronGuardPage, SlackAlertKind>
+
+/** The live send: every organization with Slack, under the page's own kind. */
+export function sendCronGuardPage(supabase: SupabaseClient, page: CronGuardPage, message: CronGuardMessage): Promise<boolean> {
+  return forEachSlackOrg(supabase, 'cron-guard-watch', 'tell-only', (orgId) =>
+    sendExportFailureAlert(supabase, orgId, null, { jobName: 'cron-guard-watch', ...message }, CRON_GUARD_ALERT_KINDS[page]),
+  ).then(anyDelivered)
+}
+
 /** Wire the live dependencies and run the check. */
 export async function runCronGuardWatchLive(supabase: SupabaseClient, kv: KVNamespace): Promise<CronGuardResult[]> {
   return runCronGuardWatch({
@@ -696,10 +715,7 @@ export async function runCronGuardWatchLive(supabase: SupabaseClient, kv: KVName
     now: () => Date.now(),
     tailFailOpens: supabaseTailCopyReader(supabase),
     deliveries: supabaseDeliveryReader(supabase),
-    send: (_page, message) =>
-      forEachSlackOrg(supabase, 'cron-guard-watch', 'tell-only', (orgId) =>
-        sendExportFailureAlert(supabase, orgId, null, { jobName: 'cron-guard-watch', ...message }),
-      ).then(anyDelivered),
+    send: (page, message) => sendCronGuardPage(supabase, page, message),
     log: (line) => console.log(line),
     error: (line) => console.error(line),
   })
