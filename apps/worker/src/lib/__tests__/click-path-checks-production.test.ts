@@ -105,6 +105,21 @@ describe('the Salesforce read', () => {
     expect(urls[1]).toBe('https://sf.test/services/data/v60.0/query/next')
   })
 
+  // #2394: the next page goes through salesforceNextPageUrl. A path is joined to
+  // the instance byte for byte as before (above); an absolute next page is
+  // followed as it is, where the hand join sent the instance twice.
+  it('follows an absolute next page as it is', async () => {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      urls.push(url)
+      const body = urls.length === 1 ? { records: [record(1)], done: false, nextRecordsUrl: 'https://sf.test/services/data/v60.0/query/next' } : { records: [record(2)], done: true }
+      return new Response(JSON.stringify(body), { status: 200 })
+    }))
+    const { supabase } = recordingSupabase()
+    await productionClickPathDeps(supabase, env).readCompletedProspects(ORG, 4, Date.UTC(2027, 8, 20, 6, 45), Date.UTC(2027, 8, 21, 7, 15))
+    expect(urls[1]).toBe('https://sf.test/services/data/v60.0/query/next')
+  })
+
   it('asks for Completed Liberty1 submissions with NO Prospect, by the submission fields (routing code as text), inside the bounds', async () => {
     const urls: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {

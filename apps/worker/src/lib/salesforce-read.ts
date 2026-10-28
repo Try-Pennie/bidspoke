@@ -14,14 +14,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { parseJson } from './json'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
+import { salesforceDataUrl } from './salesforce-api'
 import { requireSalesforceCreds, resolveSalesforceCredentialOrg } from './salesforce-creds'
 import type { Env } from '../index'
 
-export const SALESFORCE_API_VERSION = 'v60.0'
-
 /**
- * GET `/services/data/<version>/<path>` and parse the JSON body. `purpose` names
- * the caller in the missing credentials message.
+ * GET `path` under the versioned data API (salesforceDataUrl, the one version
+ * every Salesforce call is made on, #2394) and parse the JSON body. `purpose`
+ * names the caller in the missing credentials message.
  */
 export async function salesforceGet<T>(env: Env, supabase: SupabaseClient, path: string, purpose: string): Promise<T> {
   const { orgId, error } = await resolveSalesforceCredentialOrg(supabase)
@@ -29,7 +29,7 @@ export async function salesforceGet<T>(env: Env, supabase: SupabaseClient, path:
   const { instanceUrl, clientId, clientSecret } = await requireSalesforceCreds(env, supabase, orgId, purpose)
   const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)
 
-  const res = await fetch(`${instanceUrl}/services/data/${SALESFORCE_API_VERSION}/${path}`, {
+  const res = await fetch(salesforceDataUrl(instanceUrl, `/${path}`), {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) {
@@ -52,7 +52,9 @@ export async function salesforceRows(
   maxRecords: number,
 ): Promise<Array<Record<string, unknown>>> {
   const out: Array<Record<string, unknown>> = []
-  const prefix = `/services/data/${SALESFORCE_API_VERSION}/`
+  // The data API's own path, as a next page names it: the shared module's URL
+  // with no instance in front.
+  const prefix = salesforceDataUrl('', '/')
   let path: string | undefined = `query?q=${encodeURIComponent(soql)}`
   while (path) {
     const body: { records?: unknown; done?: unknown; nextRecordsUrl?: unknown } = await salesforceGet(env, supabase, path, purpose)
