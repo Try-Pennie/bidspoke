@@ -23,6 +23,9 @@
 --      window, by reason and by title, whether or not a success came between.
 --   G. Both read functions are STABLE, so the local dev write guard can let
 --      them through as reads.
+--   H. The alert kind (#2948): a fixed name of lower case words joined by
+--      hyphens, at most 60 characters, or null (a post that named none, and
+--      every row written before the column existed); anything else is refused.
 --
 -- HOW IT ASSERTS: RAISE EXCEPTION inside DO blocks, one case per block, counted
 -- into a temp table and compared to the number at the bottom (L288).
@@ -250,6 +253,35 @@ BEGIN
 END
 $do$;
 
+-- ── H. The alert kind ────────────────────────────────────────────────────────
+DO $do$
+DECLARE
+  bad text;
+BEGIN
+  INSERT INTO public.slack_post_outcomes (post_id, occurred_at, channel, outcome, kind, status, title, alert_kind) VALUES
+    ('spo-test-h1', now(), 'C0SPOTEST', 'refused', 'transient', 200, NULL, 'http-money-host'),
+    ('spo-test-h2', now(), 'C0SPOTEST', 'delivered', NULL, 200, 'Failure Spike', NULL),
+    ('spo-test-h3', now(), 'C0SPOTEST', 'delivered', NULL, 200, NULL, repeat('k', 60));
+  IF (SELECT alert_kind FROM public.slack_post_outcomes WHERE post_id = 'spo-test-h1') IS DISTINCT FROM 'http-money-host' THEN
+    RAISE EXCEPTION 'an untitled post lost its alert kind';
+  END IF;
+  INSERT INTO public.slack_post_outcomes (post_id, occurred_at, channel, outcome, kind, status)
+  VALUES ('spo-test-h4', now(), 'C0SPOTEST', 'delivered', NULL, 200);
+  IF (SELECT alert_kind FROM public.slack_post_outcomes WHERE post_id = 'spo-test-h4') IS NOT NULL THEN
+    RAISE EXCEPTION 'a row naming no alert kind was given one';
+  END IF;
+  FOREACH bad IN ARRAY ARRAY['', 'Http Money Host', 'http_money_host', 'http--money', '-http', 'http-', repeat('k', 61)] LOOP
+    BEGIN
+      INSERT INTO public.slack_post_outcomes (post_id, occurred_at, channel, outcome, kind, status, alert_kind)
+      VALUES ('spo-test-hbad', now(), 'C0SPOTEST', 'delivered', NULL, 200, bad);
+      RAISE EXCEPTION 'the alert kind % was accepted', quote_literal(bad);
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  INSERT INTO spo_cases VALUES ('the alert kind is a fixed name or null');
+END
+$do$;
+
 -- ── Clean up ─────────────────────────────────────────────────────────────────
 DELETE FROM public.slack_post_outcomes WHERE post_id LIKE 'spo-test-%';
 
@@ -257,7 +289,7 @@ DO $do$
 DECLARE
   n int := (SELECT count(*) FROM spo_cases);
 BEGIN
-  IF n <> 7 THEN RAISE EXCEPTION 'expected 7 cases, % ran', n; END IF;
+  IF n <> 8 THEN RAISE EXCEPTION 'expected 8 cases, % ran', n; END IF;
   RAISE NOTICE 'slack_post_outcomes.test.sql: % cases passed', n;
 END
 $do$;

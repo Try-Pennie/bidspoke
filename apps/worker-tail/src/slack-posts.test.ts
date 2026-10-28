@@ -57,7 +57,29 @@ describe('slackPostsIn', () => {
       kind: 'destination',
       status: 200,
       title: 'Workflow Execution Failed',
+      alert_kind: null,
     }])
+  })
+
+  // #2948: an alert's fixed kind name rides the line beside its title, so an
+  // alert with no header (the HTTP money host page) is still told apart.
+  it('copies the alert kind, for an untitled alert as for a titled one', () => {
+    const rows = slackPostsIn(trace({ messages: [
+      [line({ post_id: 'untitled', title: null, alert_kind: 'http-money-host' })],
+      [line({ post_id: 'titled', alert_kind: 'http-money-host' })],
+    ] }))
+    expect(rows.map((r) => [r.post_id, r.title, r.alert_kind])).toEqual([
+      ['untitled', null, 'http-money-host'],
+      ['titled', 'Workflow Execution Failed', 'http-money-host'],
+    ])
+  })
+
+  it('a line with no alert kind, or a null one, is copied with a null kind: a Worker deployed before #2948 writes none', () => {
+    const rows = slackPostsIn(trace({ messages: [
+      [line({ post_id: 'missing' })],
+      [line({ post_id: 'null', alert_kind: null })],
+    ] }))
+    expect(rows.map((r) => [r.post_id, r.alert_kind])).toEqual([['missing', null], ['null', null]])
   })
 
   it('copies a delivered post and a post with no answer, from a bare string as well as an argument list', () => {
@@ -84,6 +106,10 @@ describe('slackPostsIn', () => {
       [line({ post_id: 'odd-status', status: 'teapot' })],
       [line({ post_id: 'delivered-with-kind', outcome: 'delivered', kind: 'destination' })],
       [line({ post_id: 'refused-without-kind', kind: null })],
+      [line({ post_id: 'alert-kind-number', alert_kind: 7 })],
+      [line({ post_id: 'alert-kind-empty', alert_kind: '' })],
+      [line({ post_id: 'alert-kind-spaced', alert_kind: 'Money Host' })],
+      [line({ post_id: 'alert-kind-long', alert_kind: 'k'.repeat(61) })],
       [line({ post_id: 'good' })],
     ] }))
     expect(rows.map((r) => r.post_id)).toEqual(['good'])
@@ -124,6 +150,12 @@ describe('createSlackPostCopier', () => {
     expect(posted[0].url).toContain('on_conflict=post_id')
     expect(posted[0].prefer).toContain('resolution=ignore-duplicates')
     expect((posted[0].body as unknown[]).length).toBe(1)
+  })
+
+  it('writes the alert kind into its column', async () => {
+    const c = createSlackPostCopier({ sleep: () => Promise.resolve(), error: () => {}, log: () => {} })
+    await c.copy(supabase(), slackPostsIn(trace({ messages: [[line({ title: null, alert_kind: 'http-money-host' })]] })))
+    expect(posted[0].body).toEqual([expect.objectContaining({ title: null, alert_kind: 'http-money-host' })])
   })
 
   it('holds what the database refuses and writes it with the next batch', async () => {

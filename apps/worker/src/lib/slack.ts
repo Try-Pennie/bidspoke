@@ -42,7 +42,7 @@ import { openOutageForPost, type OpenOutage } from './outage-notice'
 import { createSlackClient, slackCallFailure, slackNetworkCause, type AnyMessageBlock } from '@bidspoke/slack-client'
 import { STALL_SNAPSHOT_DEADLINE_MS, STALL_SNAPSHOT_TTL_SECONDS, type StallSnapshotCount } from './db-stall-snapshot'
 import { isIdleShutdownRefusal } from '@bidspoke/partner-page-live'
-import { alertTitleOf, logSlackPostOutcome, THREAD_REPLY_TITLE } from './slack-post-outcome'
+import { alertTitleOf, logSlackPostOutcome, THREAD_REPLY_TITLE, type SlackAlertKind } from './slack-post-outcome'
 export type { SlackConnection } from './slack-connection'
 
 export interface FailureAlertPayload {
@@ -4512,7 +4512,8 @@ export async function sendHttpMoneyHostAlert(supabase: SupabaseClient, orgId: st
   if (!connection || !connection.config_alerts_enabled) return false
   const m = httpMoneyHostMessage(alert, appUrl)
   const blocks = m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } }))
-  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.fallback)) !== null
+  // No title block (Dan, 2026-10-28), so the kind is what names this page in the post record (#2948).
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.fallback, 'http-money-host')) !== null
 }
 
 /**
@@ -4970,14 +4971,19 @@ function withOutageLine(blocks: unknown[], outage: OpenOutage): unknown[] {
 // Every alert goes through here, so this is where a scheduled tick's alert
 // gets the outage line while the database outage is open (#2061). Reading the
 // incident never throws and never waits past its own deadline.
+//
+// `alertKind` is the alert's fixed kind name (#2948), which the post outcome
+// line records whether or not the blocks carry a header title. Only the HTTP
+// money host page names one so far; the rest record null, as before.
 export async function postMessage(
   botToken: string,
   channel: string,
   blocks: unknown[],
-  text: string
+  text: string,
+  alertKind?: SlackAlertKind,
 ): Promise<string | null> {
   const outage = await openOutageForPost()
-  return deliverMessage(botToken, channel, outage ? withOutageLine(blocks, outage) : blocks, text)
+  return deliverMessage(botToken, channel, outage ? withOutageLine(blocks, outage) : blocks, text, alertKind)
 }
 
 /**
@@ -5016,10 +5022,12 @@ async function deliverMessage(
   botToken: string,
   channel: string,
   blocks: unknown[],
-  text: string
+  text: string,
+  alertKind?: SlackAlertKind,
 ): Promise<string | null> {
   let ts: string | undefined
   // The title only, redacted, for the outcome line (#2364): never the body or `text`.
+  // The kind beside it, so an alert with no header is still told apart (#2948).
   const title = alertTitleOf(blocks)
   try {
     const result = await createSlackClient({ bot_token: botToken }).chat.postMessage({
@@ -5031,25 +5039,25 @@ async function deliverMessage(
     })
     if (result.ok !== true) {
       console.error(`[slack] API error: ${result.error}`)
-      logSlackPostOutcome({ outcome: 'refused', reason: result.error ?? null, status: 200, channel, title })
+      logSlackPostOutcome({ outcome: 'refused', reason: result.error ?? null, status: 200, channel, title, alertKind })
       return null
     }
-    logSlackPostOutcome({ outcome: 'delivered', status: 200, channel, title })
+    logSlackPostOutcome({ outcome: 'delivered', status: 200, channel, title, alertKind })
     ts = result.ts
   } catch (e) {
     const failure = slackCallFailure(e)
     if (!failure) {
       // No answer: said before the throw, so the record holds it (#2364).
-      logSlackPostOutcome({ outcome: 'no_answer', channel, title })
+      logSlackPostOutcome({ outcome: 'no_answer', channel, title, alertKind })
       throw slackNetworkCause(e)
     }
     if (failure.kind === 'api') {
       console.error(`[slack] API error: ${failure.error}`)
-      logSlackPostOutcome({ outcome: 'refused', reason: failure.error, status: 200, channel, title })
+      logSlackPostOutcome({ outcome: 'refused', reason: failure.error, status: 200, channel, title, alertKind })
     } else {
       const wait = failure.retryAfter === null ? '' : `, Retry-After ${failure.retryAfter} s, not waited for`
       console.error(`[slack] HTTP error ${failure.status}${wait}`)
-      logSlackPostOutcome({ outcome: 'refused', status: failure.status, retryAfter: failure.retryAfter, channel, title })
+      logSlackPostOutcome({ outcome: 'refused', status: failure.status, retryAfter: failure.retryAfter, channel, title, alertKind })
     }
     return null
   }

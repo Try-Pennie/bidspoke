@@ -13,7 +13,8 @@
  *
  * WHAT IT CARRIES: the outcome, Slack's error code or the HTTP status, how the
  * refusal is classed, the channel posted to, any Retry-After, a fresh post id
- * (the record's key, so a line copied twice is one row) and the alert's title.
+ * (the record's key, so a line copied twice is one row), the alert's title and
+ * its fixed kind name.
  * Never the token, never the message body or its fallback text, which can
  * quote a lead.
  *
@@ -25,6 +26,15 @@
  * four or more digits, and cuts it to 120 characters. A thread reply carries no
  * header, and its text is a summary of a failure, so it is titled only as a
  * thread reply.
+ *
+ * THE ALERT KIND (#2948): a title does not tell alert kinds apart. Some alerts
+ * have no header (the HTTP money host page, at Dan's request, #2761) and some
+ * build their title from a value. So a sender also names a fixed kind from
+ * SLACK_ALERT_KINDS, which the line records as alert_kind whether or not a
+ * title is shown, and the tail Worker copies into slack_post_outcomes.alert_kind
+ * (#2811 tells a failing alert kind apart by it). A post that names none
+ * records null, as every post did before. Only the HTTP money host page names
+ * one so far; making the kind required of every sender is the next step.
  *
  * It adds no I/O and no await: one console.log, which Workers Logs and the tail
  * Worker both receive, and crypto.randomUUID. It never throws into a poster.
@@ -42,6 +52,23 @@ export const TITLE_MAX = 120
 
 export type SlackPostOutcome = 'delivered' | 'refused' | 'no_answer'
 
+/**
+ * Every alert kind a sender may name (#2948): fixed words, never built from a
+ * value, so the record can group an alert's posts however its title reads.
+ * Each is lower case words joined by single hyphens, at most ALERT_KIND_MAX
+ * characters, which the table's own CHECK and the tail Worker's parser also
+ * hold (migration 20261028170000). A new kind is added here.
+ */
+export const SLACK_ALERT_KINDS = ['http-money-host'] as const
+
+export type SlackAlertKind = (typeof SLACK_ALERT_KINDS)[number]
+
+/** The shape the table accepts for an alert kind. */
+export const ALERT_KIND_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/** The most characters an alert kind may have. */
+export const ALERT_KIND_MAX = 60
+
 export interface SlackPostOutcomeLine {
   post_id: string
   outcome: SlackPostOutcome
@@ -55,6 +82,8 @@ export interface SlackPostOutcomeLine {
   /** The Retry-After of a refused post, when Slack sent one. */
   retry_after: string | null
   title: string | null
+  /** The alert's fixed kind name, or null when the sender named none (#2948). */
+  alert_kind: SlackAlertKind | null
 }
 
 export interface SlackPostOutcomeInput {
@@ -64,6 +93,7 @@ export interface SlackPostOutcomeInput {
   channel: string
   retryAfter?: string | null
   title: string | null
+  alertKind?: SlackAlertKind | null
 }
 
 const EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]+/g
@@ -114,6 +144,7 @@ export function slackPostOutcomeLine(input: SlackPostOutcomeInput): SlackPostOut
     channel: input.channel,
     retry_after: input.retryAfter ?? null,
     title: input.title,
+    alert_kind: input.alertKind ?? null,
   }
 }
 
