@@ -1458,7 +1458,7 @@ connections.delete('/google/subjects/:kind/:subject', async (c) => {
 // ── Sign in with your own Google account (build PR 13; R17) ─────────────────
 
 /** How each sign in refusal is answered. */
-const SIGN_IN_STATUS: Readonly<Record<SignInRefusalCode, 400 | 403 | 404 | 409 | 410 | 422 | 502 | 503>> = {
+const SIGN_IN_STATUS: Readonly<Record<SignInRefusalCode, 400 | 403 | 404 | 409 | 410 | 422 | 500 | 502 | 503>> = {
   sign_in_request_invalid: 400,
   google_sign_in_unset: 503,
   google_sign_in_misconfigured: 503,
@@ -1474,6 +1474,7 @@ const SIGN_IN_STATUS: Readonly<Record<SignInRefusalCode, 400 | 403 | 404 | 409 |
   google_sign_in_not_owner: 403,
   google_sign_in_wrong_account: 422,
   google_sign_in_no_email: 422,
+  google_sign_in_login_unreadable: 500,
 }
 
 /** The address a person signs in to Google as: their own Bidspoke email, lower case, or null when they have none. */
@@ -1715,7 +1716,11 @@ connections.post('/google/sign-in/finish', async (c) => {
     } catch {
       envelope = null
     }
-    if (!isRecordValue(envelope)) return signInRefuse(c, orgId, 'connection_store_failed')
+    // Nothing has been tried yet, so this is not connection_store_failed, whose sentence says the login worked (L11, #2926).
+    if (!isRecordValue(envelope)) {
+      console.error(JSON.stringify({ event: 'google_sign_in_login_unreadable', organization_id: orgId, connection_id: found.row.id, generation: found.row.credential_generation }))
+      return signInRefuse(c, orgId, 'google_sign_in_login_unreadable')
+    }
     const answer = await exchange(found.row.credential_generation, envelope as unknown as SealedEnvelope)
     if (wrongAccount(answer)) {
       // An ops that already stored another account's login is a defect in it: named, so it is found.
