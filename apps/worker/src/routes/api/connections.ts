@@ -59,7 +59,7 @@ import {
   type RefusalContext, type RouteRefusalContext, type VerifyRefusalCode,
 } from '../../lib/connection-create-refusals'
 import {
-  readReplaceBody, replaceClock, replaceComplete, replaceConnectionId, replaceHasTimeFor, REPLACE_OUTCOMES, REPLACE_SAVE_ATTEMPTS, type ReplacedWorkflow, type ReplaceRefusal,
+  readReplaceBody, replaceArrivedAt, replaceClock, replaceComplete, replaceConnectionId, replaceHasTimeFor, REPLACE_OUTCOMES, REPLACE_SAVE_ATTEMPTS, type ReplacedWorkflow, type ReplaceRefusal, type ReplaceVariables,
 } from '../../lib/connection-replace'
 import { checkDefinitionConnections, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
 import { copiedDefinitionStamp, writtenDefinitionStamp } from '../../lib/definition-stamp'
@@ -91,7 +91,7 @@ import { secretKeys } from '../../lib/secret-crypto'
 import { saveSlackAlertConnection } from './integrations'
 import { OPS_CONNECTIONS_DEADLINES_MS } from '../../lib/ops-connections-client'
 
-type Variables = AuthVariables
+type Variables = AuthVariables & Partial<ReplaceVariables>
 
 const connections = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -1197,7 +1197,8 @@ function replaceRefusalOf(refusal: ConnectionCheckRefusal, replacement: string):
 // and not someone else's own Google account, which only its owner may use in a
 // workflow (Dan, 2026-10-23); the executor refuses a step bound by anyone else.
 connections.post('/:id/replace', async (c) => {
-  const startedAt = replaceClock.now()
+  // The deadline counts from the request's arrival, stamped ahead of jwtAuth (#2920).
+  const startedAt = replaceArrivedAt(c.get('replaceArrivedAt'))
   const { orgId, userId, email, name } = c.get('user')
   const id = c.req.param('id').toLowerCase()
   const refuse = (code: ConnectionRouteRefusalCode, ctx: Partial<RouteRefusalContext> = {}) => {
