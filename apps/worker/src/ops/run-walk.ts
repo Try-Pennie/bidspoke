@@ -63,7 +63,7 @@ import { executeBranchNode } from '../engine/nodes/branch'
 import { executeFilterNode } from '../engine/nodes/filter'
 import { executeResponseNode } from '../engine/nodes/response'
 import { executeTransformNode } from '../engine/nodes/transform'
-import { envReferences } from '../lib/definition-env-references'
+import { envReferences, judgeVariables, namedVariables as named } from '../lib/definition-env-references'
 import { formatErr } from '../lib/format-error'
 import type { OpsVersionVariables } from '../lib/ops-gateway-contract'
 import type { EdgeDefinition, ExecutionContext, NodeDefinition, StepExecutionResult } from '../types'
@@ -108,26 +108,23 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 
 const failed = (error: string): Extract<RunBodyEnd, { outcome: 'failed' }> => ({ outcome: 'failed', error })
 
-const named = (keys: string[]) => keys.map((k) => `env.${k}`).join(', ')
-
 /**
  * The values a run is given: the plain variables kept with its version that
  * its definition reads, or why it can be given none, as the run's error.
  */
 function runVariables(definition: Record<string, unknown>, variables: OpsVersionVariables | null, version: number): { env: Record<string, string> } | { refused: string } {
   const reads = envReferences(definition)
-  if (reads.length === 0) return { env: {} }
-  if (variables === null) {
+  const judged = judgeVariables(reads, variables)
+  if (judged.kind === 'given') return { env: judged.env }
+  if (judged.kind === 'none_kept') {
     return { refused: `the definition reads ${named(reads)}, and version ${version} was saved before ops kept the values of its variables with it, so nothing was run; save the workflow again` }
   }
-  const secret = reads.filter((k) => variables.secretKeys.includes(k))
-  const missing = reads.filter((k) => !secret.includes(k) && !Object.hasOwn(variables.values, k))
+  const { secret, missing } = judged
   const secretSaid = `reads the secret ${secret.length === 1 ? 'variable' : 'variables'} ${named(secret)}, and an ops run is never given a secret: a credential an ops step uses belongs in a connection`
   const missingSaid = `${named(missing)}, which ${missing.length === 1 ? 'was not a variable' : 'were not variables'} of this workflow when version ${version} was saved, so nothing was run`
   if (secret.length > 0 && missing.length > 0) return { refused: `the definition ${secretSaid}; and it reads ${missingSaid}` }
   if (secret.length > 0) return { refused: `the definition ${secretSaid}, so nothing was run` }
-  if (missing.length > 0) return { refused: `the definition reads ${missingSaid}; add ${missing.length === 1 ? 'it' : 'them'} and save the workflow again` }
-  return { env: Object.fromEntries(reads.map((k) => [k, variables.values[k]])) }
+  return { refused: `the definition reads ${missingSaid}; add ${missing.length === 1 ? 'it' : 'them'} and save the workflow again` }
 }
 
 export interface OpsWalkOptions {

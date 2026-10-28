@@ -38,6 +38,8 @@ import { writeWorkflow, type WriteWorkflowResult } from '../../lib/write-workflo
 import type { WorkflowBackupContext } from '../../lib/workflow-backup'
 import { stampAppActionBinders } from '../../lib/app-action-binders'
 import { readOpsStepTest, testOpsStep } from './ops-step-test'
+import { envReferences, judgeVariables, namedVariables } from '../../lib/definition-env-references'
+import { servedVersionVariables } from '../../lib/version-variables'
 import { assertNever } from '@bidspoke/node-types'
 
 type Variables = AuthVariables
@@ -172,6 +174,75 @@ function unfinishedStepRefusal(
     error: 'step_unfinished',
     message: `Nothing was saved. Step ${first.namespace} is not finished: ${first.message}. A workflow with an unfinished step cannot be switched on.`,
     steps: judged.steps,
+  }, 422)
+}
+
+/**
+ * An ops workflow made live that reads a secret environment variable, or one
+ * that does not exist for it (#2702, Dan's answer of 2026-10-28), refused up
+ * front, naming each, as an unfinished step is. Asked by the save of a switched
+ * on ops workflow, the switch on and a restore onto a switched on ops workflow.
+ * What exists is read now, by the env loader's own rules (the version a write
+ * makes keeps the same rows, capture_version_env_variables): the variables
+ * this organization saved under the names the definition reads, the
+ * workflow's own over the organization's (rowReach, through
+ * servedVersionVariables). A money workflow, and one reading no variable, is
+ * never read for. A read that fails refuses with 503 rather than passing as if
+ * every variable existed (L42). The run's own refusal (ops/run-walk.ts) stays
+ * as the backstop.
+ */
+async function opsVariableRefusal(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  workflow: { id: string; lane: unknown; definition: unknown },
+): Promise<Response | null> {
+  if (workflow.lane !== 'ops' || workflow.definition === null || typeof workflow.definition !== 'object' || Array.isArray(workflow.definition)) return null
+  const definition = workflow.definition as Record<string, unknown>
+  const reads = envReferences(definition)
+  if (reads.length === 0) return null
+  const unreadable = () => c.json({
+    error: 'variables_unavailable',
+    message: 'Nothing was saved. The workflow\'s environment variables could not be read, so whether each one it reads exists cannot be told. Try again in a moment.',
+  }, 503)
+  // One organization's rows under the names this definition reads: a handful, far under the limit.
+  const { data, error } = await supabase
+    .from('environment_variables')
+    .select('key, value, is_secret, scope, workflow_id')
+    .eq('organization_id', orgId)
+    .in('key', reads)
+    .order('created_at')
+    .order('id')
+    .limit(1000)
+  if (error) {
+    console.error(`[workflows] the environment variables of workflow ${workflow.id} could not be read: ${formatErr(error)}`)
+    return unreadable()
+  }
+  // As a version keeps them: a secret by its name alone, an empty value as none.
+  const rows = ((data ?? []) as Array<{ key: string; value: string | null; is_secret: boolean; scope: string; workflow_id: string | null }>)
+    .filter((r) => r.value !== null && r.value !== '')
+    .map((r) => ({ ...r, value: r.is_secret ? null : r.value }))
+  let served
+  try {
+    served = servedVersionVariables(rows, workflow.id, definition, `workflow ${workflow.id}`)
+  } catch (err) {
+    console.error(`[workflows] the environment variables of workflow ${workflow.id} could not be judged: ${formatErr(err)}`)
+    return unreadable()
+  }
+  const judged = judgeVariables(reads, served === null ? null : { values: served.values, secretKeys: served.secret_keys })
+  if (judged.kind !== 'refused') return null
+  const { secret, missing } = judged
+  const said: string[] = []
+  if (secret.length > 0) {
+    said.push(`It reads the secret ${secret.length === 1 ? 'variable' : 'variables'} ${namedVariables(secret)}, and an ops workflow is never given a secret: a credential belongs in a connection.`)
+  }
+  if (missing.length > 0) {
+    said.push(`It ${secret.length > 0 ? 'also ' : ''}reads ${namedVariables(missing)}, which ${missing.length === 1 ? 'is not a variable' : 'are not variables'} of this workflow: add ${missing.length === 1 ? 'it' : 'them'} first.`)
+  }
+  return c.json({
+    error: 'variable_unavailable',
+    message: `Nothing was saved. ${said.join(' ')} A switched on ops workflow cannot read a secret variable or one that does not exist.`,
+    variables: { secret, missing },
   }, 422)
 }
 
@@ -593,6 +664,9 @@ workflows.put('/:id', async (c) => {
     if (existing.is_active === true) {
       const unfinished = unfinishedStepRefusal(c, def, existing.lane, writtenDefinitionStamp())
       if (unfinished) return unfinished
+      // A live ops workflow reads no secret variable and none that does not exist (#2702).
+      const variables = await opsVariableRefusal(c, supabase, orgId, { id, lane: existing.lane, definition: body.definition })
+      if (variables) return variables
     }
     // A live workflow's buyer steps must read every rule they judge (#2149).
     if (existing.is_active === true) {
@@ -780,7 +854,7 @@ workflows.post('/:id/draft-changelog', async (c) => {
   }
 })
 
-// PATCH /api/workflows/:id — lightweight field updates (is_active) without creating a version snapshot
+// PATCH /api/workflows/:id: lightweight field updates (is_active, folder_id); only switching an ops workflow on writes a version (#2702)
 workflows.patch('/:id', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id')
@@ -810,6 +884,8 @@ workflows.patch('/:id', async (c) => {
     if (validationProblem) return c.json({ error: validationProblem }, 400)
     const unfinished = unfinishedStepRefusal(c, owner.definition, owner.lane, owner.definition_schema_version)
     if (unfinished) return unfinished
+    const variables = await opsVariableRefusal(c, supabase, orgId, { id, lane: owner.lane, definition: owner.definition })
+    if (variables) return variables
     const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: owner.name, definition: owner.definition })
     if (unread) return unread
     // And every connection it names must still be a live one of this
@@ -829,6 +905,32 @@ workflows.patch('/:id', async (c) => {
   // stale, so a definition nobody checked is never switched on. A switch off or
   // a move needs no version. The function refuses a folder of another
   // organization as folder not found.
+  //
+  // Switching an ops workflow on writes a new version of it first (#2702, Dan's
+  // answer of 2026-10-28), through the same save a canvas makes, sending no
+  // definition: the version snapshots the stored one, and the database keeps
+  // today's values of the variables it reads with it, so a switched on ops
+  // workflow always runs with the values it was switched on with. First, so a
+  // switch on whose version cannot be written switches nothing on; and the
+  // switch on is then made from the version that save left.
+  let fromVersion = owner.version
+  if (body.is_active === true && owner.lane === 'ops' && owner.is_active !== true) {
+    const snapshot = await writeWorkflow(supabase, {
+      op: 'save',
+      orgId,
+      workflowId: id,
+      expectedVersion: owner.version,
+      fields: { message: 'Switched on' },
+      saveId: null,
+      actor: actorOf(c),
+      backup: backupOf(c),
+      storedDefinition: null,
+    })
+    if (snapshot.kind !== 'written') {
+      return answerUnwritten(c, snapshot, 'Not switched on. This workflow was saved by someone else while it was being switched on, so the definition checked is no longer the one stored. Nothing was changed. Try again.')
+    }
+    fromVersion = snapshot.workflow.version
+  }
   const fields: Record<string, unknown> = {}
   if (body.is_active !== undefined) fields.is_active = body.is_active
   if ('folder_id' in body && (body.folder_id === null || typeof body.folder_id === 'string')) fields.folder_id = body.folder_id
@@ -836,7 +938,7 @@ workflows.patch('/:id', async (c) => {
     op: 'patch',
     orgId,
     workflowId: id,
-    expectedVersion: body.is_active === true ? owner.version : null,
+    expectedVersion: body.is_active === true ? fromVersion : null,
     fields,
     saveId: null,
     actor: actorOf(c),
@@ -1045,6 +1147,8 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   if (owner.is_active === true) {
     const unfinished = unfinishedStepRefusal(c, version.definition, owner.lane, writtenDefinitionStamp())
     if (unfinished) return unfinished
+    const variables = await opsVariableRefusal(c, supabase, orgId, { id, lane: owner.lane, definition: version.definition })
+    if (variables) return variables
   }
 
   // A restore onto a live workflow makes the old definition live at once (#2149).

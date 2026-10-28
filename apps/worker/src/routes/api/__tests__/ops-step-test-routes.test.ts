@@ -244,3 +244,71 @@ describe('GET test-results for an ops workflow\'s step', () => {
     expect(ops.calls).toEqual([])
   })
 })
+
+// #2702: a step test is given the plain values the workflow's newest saved
+// version kept, as a run of it would be, and ops refuses by name a step reading
+// a secret variable or one that version did not keep.
+describe('POST test-node: the variables an ops step test is given (#2702)', () => {
+  const readsEnv = { ...appStep, config: { ...appStep.config, args: { text: 'to {{env.API_BASE}}' } } }
+  const envDefinition = { ...definition, nodes: [readsEnv] }
+  const capture = [
+    { key: 'API_BASE', value: 'https://hooks.example.test', is_secret: false, scope: 'global', workflow_id: null },
+    { key: 'UNREAD', value: 'kept but not read by this step', is_secret: false, scope: 'global', workflow_id: null },
+  ]
+  const withVersions = (versions: { list?: Record<string, unknown>[]; listError?: { message: string; code?: string } }) => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { id: WF, lane: 'ops' } }, workflow_versions: versions })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    return sb
+  }
+
+  it('sends the values the newest saved version kept that the step reads, with that version\'s number', async () => {
+    const sb = withVersions({ list: [{ version_number: 7, env_capture: capture }] })
+    const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
+    const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition: envDefinition, confirm_send: true })
+    expect(res.status).toBe(200)
+    expect((ops.calls[0].request as { version: unknown }).version).toEqual({ number: 7, variables: { values: { API_BASE: 'https://hooks.example.test' }, secret_keys: [] } })
+    const calls = sb.calls.workflow_versions ?? []
+    expect(calls).toContainEqual(['eq', ['workflow_id', WF]])
+    expect(calls).toContainEqual(['order', ['version_number', { ascending: false }]])
+  })
+
+  it('names no version when the workflow has none, or one saved before its variables were kept', async () => {
+    for (const [list, sent] of [[[], null], [[{ version_number: 3, env_capture: null }], { number: 3, variables: null }]] as const) {
+      withVersions({ list: [...list] })
+      const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
+      await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition: envDefinition, confirm_send: true })
+      expect((ops.calls[0].request as { version: unknown }).version).toEqual(sent)
+    }
+  })
+
+  it('a step reading no variable never reads the versions', async () => {
+    const sb = withVersions({ listError: { message: 'must not be read' } })
+    const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
+    const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition, confirm_send: true })
+    expect(res.status).toBe(200)
+    expect(sb.calls.workflow_versions).toBeUndefined()
+    expect(Object.keys(ops.calls[0].request as object)).not.toContain('version')
+  })
+
+  it('sends nothing when the saved variables cannot be read, saying so', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    withVersions({ listError: { message: 'the database is not answering', code: 'PGRST000' } })
+    const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
+    const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition: envDefinition, confirm_send: true })
+    expect(res.status).toBe(503)
+    expect(await res.json()).toMatchObject({ error: 'step_test_variables_unavailable', message: expect.stringContaining('Nothing was sent') })
+    expect(ops.calls).toEqual([])
+  })
+
+  it('words ops\'s refusal of a step reading a secret or missing variable as the sentence ops gave', async () => {
+    withVersions({ list: [{ version_number: 7, env_capture: capture }] })
+    const detail = 'this step reads the secret variable env.TOKEN, and an ops step is never given a secret: a credential belongs in a connection, so nothing was sent'
+    const ops = opsBinding({ testStep: { ok: false, refused: 'step_test_variable_unavailable', detail, retry_at: null } })
+    const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition: envDefinition, confirm_send: true })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({
+      error: 'step_test_variable_unavailable',
+      message: 'This step reads the secret variable env.TOKEN, and an ops step is never given a secret: a credential belongs in a connection, so nothing was sent.',
+    })
+  })
+})

@@ -121,6 +121,25 @@ export function consumeParens(src: string, open: number): number {
   return src.length
 }
 
+/**
+ * Whether a writeWorkflow call (#1947) whose match starts at `at` writes a
+ * definition of its own: create, duplicate and restore always do, and a save
+ * does unless its fields are an inline object naming no definition, which
+ * write_workflow answers by snapshotting the stored definition with its stored
+ * stamp (#2702: switching an ops workflow on writes such a version). A save
+ * whose fields are anything else (an object built earlier) counts, so a guard
+ * never passes a definition it cannot see. Read on source with comments
+ * blanked and strings kept.
+ */
+export function writeWorkflowWritesDefinition(src: string, at: number, op: string): boolean {
+  if (op === 'create' || op === 'duplicate' || op === 'restore') return true
+  if (op !== 'save') return false
+  const open = src.indexOf('(', at)
+  const call = src.slice(open, consumeParens(src, open))
+  const fields = /\bfields\s*:\s*\{([^{}]*)\}/.exec(call)
+  return fields === null || /\bdefinition\b/.test(fields[1])
+}
+
 // ── Route handler scanning ───────────────────────────────────────────────────
 //
 // Shared by the guards that read what each worker route handler does to the

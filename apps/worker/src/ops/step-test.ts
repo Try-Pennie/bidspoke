@@ -39,6 +39,7 @@
  */
 import { readAppActionConfig } from '@bidspoke/service-catalogue/schema'
 import { buildContext } from '../engine/context'
+import { envReferences, judgeVariables, namedVariables as named } from '../lib/definition-env-references'
 import { formatErr } from '../lib/format-error'
 import { chainToStepPath, extractStepChains, extractTemplateExpressions } from '@bidspoke/references'
 import type {
@@ -233,6 +234,30 @@ async function contextFromRun(
   return { ok: true, triggerPayload: payloadGiven ? request.trigger_payload : run.payload, steps: { ...fromRun, ...request.steps } }
 }
 
+/**
+ * The variables a step test is given (#2702), as a run of the workflow's newest
+ * saved version would be (run-walk.ts): the plain values that version kept that
+ * the step reads, or why not, as the refusal's sentence.
+ */
+function stepVariables(request: TestStepRequest): { env: Record<string, string> } | { refused: string } {
+  const reads = envReferences({ nodes: [request.node], edges: [] })
+  const version = request.version
+  const judged = judgeVariables(reads, version?.variables ?? null)
+  if (judged.kind === 'given') return { env: judged.env }
+  if (judged.kind === 'none_kept') {
+    const kept = version === null
+      ? 'no saved version of the workflow kept the values of its variables'
+      : `version ${version.number} of the workflow was saved before ops kept the values of its variables with it`
+    return { refused: `this step reads ${named(reads)}, and ${kept}, so nothing was sent; save the workflow and test again` }
+  }
+  const { secret, missing } = judged
+  const secretSaid = `this step reads the secret ${secret.length === 1 ? 'variable' : 'variables'} ${named(secret)}, and an ops step is never given a secret: a credential belongs in a connection`
+  const missingSaid = `${named(missing)}, which ${missing.length === 1 ? 'was not a variable' : 'were not variables'} of this workflow when version ${version?.number ?? 0} was saved, so nothing was sent`
+  if (secret.length > 0 && missing.length > 0) return { refused: `${secretSaid}; and it reads ${missingSaid}` }
+  if (secret.length > 0) return { refused: `${secretSaid}, so nothing was sent` }
+  return { refused: `this step reads ${missingSaid}; add ${missing.length === 1 ? 'it' : 'them'}, save the workflow and test again` }
+}
+
 /** Runs one step for real and keeps its result. Every answer is a value. */
 export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, signal: AbortSignal): Promise<TestStepAnswer> {
   const organizationId = organizationIdFrom(request.organization_id)
@@ -247,6 +272,11 @@ export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, 
     triggerPayload = built.triggerPayload
     contextSteps = built.steps
   }
+
+  // The run's rule (#2702): the step is given the plain values the workflow's newest saved
+  // version kept, and refused by name, before anything is sent, a variable it cannot be given.
+  const given = stepVariables(request)
+  if ('refused' in given) return refuse('step_test_variable_unavailable', given.refused)
 
   // Ask first for an action that changes something in the service. Settings that cannot be
   // read, or a version the catalogue lacks, fall through to the executor, which names them.
@@ -265,7 +295,7 @@ export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, 
   const handler = appActionHandler({ ...deps.appAction, record: collector.record })
   const started = deps.now()
   const run = testRun(request, organizationId, deps.newRunId(), started, triggerPayload)
-  const ctx = buildContext(triggerPayload, 'step_test', request.workflow_id, run.runRequestId, {}, organizationId, run.runRequestId)
+  const ctx = buildContext(triggerPayload, 'step_test', request.workflow_id, run.runRequestId, given.env, organizationId, run.runRequestId)
   ctx.steps = Object.fromEntries(Object.entries(contextSteps).map(([namespace, step]) => [namespace, { output: step.output, status: step.status as StepOutput['status'] }]))
   const node: NodeDefinition = { id: request.node.id, namespace: request.node.namespace, type: 'app_action', config: request.node.config }
 

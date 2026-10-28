@@ -32,3 +32,31 @@ export function envReferences(definition: Record<string, unknown>): string[] {
   if (Array.isArray(definition.edges)) collect(definition.edges, found)
   return [...found]
 }
+
+/**
+ * What a reader of the variables it reads is given (#2702): the plain values,
+ * or why not. none_kept: no variables were kept to judge by (a version saved
+ * before they were, or no saved version at all). refused: some it reads are
+ * secret (an ops run or step is never given a secret) or missing, each named.
+ * The one judgement the ops run (ops/run-walk.ts), the ops step test
+ * (ops/step-test.ts) and the bidding Worker's live save and switch on check
+ * (routes/api/workflows.ts) make, each wording it for its own reader.
+ */
+export type VariablesJudged =
+  | { kind: 'given'; env: Record<string, string> }
+  | { kind: 'none_kept' }
+  | { kind: 'refused'; secret: string[]; missing: string[] }
+
+export function judgeVariables(
+  reads: readonly string[], variables: { values: Readonly<Record<string, string>>; secretKeys: readonly string[] } | null,
+): VariablesJudged {
+  if (reads.length === 0) return { kind: 'given', env: {} }
+  if (variables === null) return { kind: 'none_kept' }
+  const secret = reads.filter((k) => variables.secretKeys.includes(k))
+  const missing = reads.filter((k) => !secret.includes(k) && !Object.hasOwn(variables.values, k))
+  if (secret.length > 0 || missing.length > 0) return { kind: 'refused', secret, missing }
+  return { kind: 'given', env: Object.fromEntries(reads.map((k) => [k, variables.values[k]])) }
+}
+
+/** Variable names as a definition writes them: env.A, env.B. */
+export const namedVariables = (keys: readonly string[]) => keys.map((k) => `env.${k}`).join(', ')

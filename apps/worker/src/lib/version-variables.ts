@@ -21,7 +21,7 @@
  * variables were kept serves null.
  */
 import { envReferences, ENV_KEY } from './definition-env-references'
-import { rowReach } from './env-loader'
+import { rowReach } from './env-row-reach'
 import type { ServedOpsVariables } from './ops-gateway-contract'
 
 interface CapturedRow {

@@ -3139,3 +3139,158 @@ describe('a created or duplicated workflow is pushed to the GitHub backup (#2879
     expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
   })
 })
+
+// #2702, Dan's answers of 2026-10-28: an ops workflow's plain variables are
+// frozen with its version, so switching one on writes a new version (the
+// database trigger keeps today's values with it), and saving live or switching
+// on an ops workflow that reads a secret variable, or one that does not exist
+// for it, is refused up front, naming the variable. The run's own refusal stays.
+describe('an ops workflow\'s environment variables at switch on and a live save (#2702)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    vi.mocked(recordBackupSuccess).mockResolvedValue(undefined)
+    vi.mocked(recordBackupFailure).mockResolvedValue(false)
+    app = await makeApp()
+  })
+
+  const reads = (...keys: string[]) => ({
+    nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: keys.map((k) => ({ source: `env.${k}`, target: k.toLowerCase() })) } }],
+    edges: [{ id: 'e0', source: 'trigger', target: 'shape' }],
+  })
+  const opsOff = { ...existingWorkflow, lane: 'ops', is_active: false, definition: reads('API_BASE'), definition_schema_version: 1 }
+  const plain = (key: string, over: Record<string, unknown> = {}) => ({ key, value: 'https://api.example.test', is_secret: false, scope: 'global', workflow_id: null, ...over })
+  const client = (workflow: Record<string, unknown>, variables: TableConfig) => makeSupabase({
+    users: { single: testUser },
+    workflows: [{ single: workflow }],
+    environment_variables: variables,
+  })
+
+  it('switching an ops workflow on writes a new version first, then switches it on from it', async () => {
+    const sb = client(opsOff, { list: [plain('API_BASE')] })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(200)
+    expect(sb.writes.map((w) => w.p_op)).toEqual(['save', 'patch'])
+    const [save, patch] = sb.writes
+    // No definition is sent, so the version snapshots the stored one and the trigger keeps today's values with it.
+    expect(save).toMatchObject({ p_id: 'wf-1', p_expected_version: 4, p_fields: { message: 'Switched on' } })
+    expect(Object.keys(save.p_fields)).toEqual(['message'])
+    expect(patch).toMatchObject({ p_fields: { is_active: true }, p_expected_version: 5 })
+  })
+
+  it('a switch on whose new version cannot be written switches nothing on', async () => {
+    const sb = makeSupabase(
+      { users: { single: testUser }, workflows: [{ single: opsOff }], environment_variables: { list: [plain('API_BASE')] } },
+      { write: (args) => (args.p_op === 'save' ? { data: null, error: { code: 'XX000', message: 'the database is not answering' } } : defaultWrite(args)) },
+    )
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBeGreaterThanOrEqual(500)
+    expect(writesOf(sb, 'patch')).toEqual([])
+  })
+
+  it('switching a money workflow on, an ops workflow off, or one already on writes no version', async () => {
+    for (const [workflow, isActive] of [
+      [{ ...existingWorkflow, is_active: false }, true],
+      [{ ...opsOff, is_active: true }, false],
+      [{ ...opsOff, is_active: true }, true],
+    ] as const) {
+      const sb = client(workflow, { list: [plain('API_BASE')] })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: isActive } })
+      expect(res.status).toBe(200)
+      expect(sb.writes.map((w) => w.p_op)).toEqual(['patch'])
+    }
+  })
+
+  it('refuses to switch on an ops workflow reading a secret variable, naming it, and writes nothing', async () => {
+    const sb = client(opsOff, { list: [plain('API_BASE', { is_secret: true, value: 'ciphertext-not-real' })] })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(422)
+    const body = await res.json() as { error: string; message: string; variables: unknown }
+    expect(body).toMatchObject({ error: 'variable_unavailable', variables: { secret: ['API_BASE'], missing: [] } })
+    expect(body.message).toBe('Nothing was saved. It reads the secret variable env.API_BASE, and an ops workflow is never given a secret: a credential belongs in a connection. A switched on ops workflow cannot read a secret variable or one that does not exist.')
+    expect(body.message).not.toMatch(/ciphertext/)
+    expect(sb.writes).toEqual([])
+  })
+
+  it('refuses to switch on an ops workflow reading a variable that does not exist for it, naming it', async () => {
+    // Another workflow's own value is not this workflow's.
+    const sb = client({ ...opsOff, definition: reads('API_BASE', 'LIST_ID') }, { list: [plain('API_BASE'), plain('LIST_ID', { scope: 'workflow', workflow_id: 'wf-other' })] })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(422)
+    expect(await res.json()).toMatchObject({
+      error: 'variable_unavailable',
+      variables: { secret: [], missing: ['LIST_ID'] },
+      message: 'Nothing was saved. It reads env.LIST_ID, which is not a variable of this workflow: add it first. A switched on ops workflow cannot read a secret variable or one that does not exist.',
+    })
+    expect(sb.writes).toEqual([])
+  })
+
+  it('reads the variables by the env loader\'s rules: the workflow\'s own over the organization\'s, in this organization only', async () => {
+    const sb = client({ ...opsOff, definition: reads('API_BASE') }, { list: [plain('API_BASE', { is_secret: true, value: 'x' }), plain('API_BASE', { scope: 'workflow', workflow_id: 'wf-1' })] })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(200)
+    const calls = sb.calls.environment_variables ?? []
+    expect(calls).toContainEqual(['eq', ['organization_id', USER_ORG]])
+    expect(calls).toContainEqual(['in', ['key', ['API_BASE']]])
+  })
+
+  it('refuses the live save of an ops workflow reading a secret variable, and lets a switched off draft save', async () => {
+    const live = client({ ...opsOff, is_active: true, definition: reads() }, { list: [plain('TOKEN', { is_secret: true, value: 'x' })] })
+    vi.mocked(createSupabaseClient).mockReturnValue(live as unknown as ReturnType<typeof createSupabaseClient>)
+    const refused = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: reads('TOKEN') } })
+    expect(refused.status).toBe(422)
+    expect(await refused.json()).toMatchObject({ error: 'variable_unavailable', variables: { secret: ['TOKEN'], missing: [] } })
+    expect(live.writes).toEqual([])
+
+    const draft = client({ ...opsOff, definition: reads() }, { list: [plain('TOKEN', { is_secret: true, value: 'x' })] })
+    vi.mocked(createSupabaseClient).mockReturnValue(draft as unknown as ReturnType<typeof createSupabaseClient>)
+    const saved = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: reads('TOKEN') } })
+    expect(saved.status).toBe(200)
+  })
+
+  it('refuses to restore onto a switched on ops workflow a version reading a missing variable', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: { ...opsOff, is_active: true } }],
+      workflow_versions: [{ single: { id: 'ver-1', definition: reads('GONE'), version_number: 1 } }],
+      environment_variables: { list: [] },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(422)
+    expect(await res.json()).toMatchObject({ error: 'variable_unavailable', variables: { missing: ['GONE'] } })
+    expect(sb.writes).toEqual([])
+  })
+
+  it('refuses with 503, writing nothing, when the variables cannot be read, never reading them as absent', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sb = client(opsOff, { listError: { message: 'the database is not answering', code: 'PGRST000' } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(503)
+    expect(await res.json()).toMatchObject({ error: 'variables_unavailable' })
+    expect(sb.writes).toEqual([])
+  })
+
+  it('never reads the variables of a money workflow, nor of an ops one that reads none', async () => {
+    for (const workflow of [{ ...existingWorkflow, is_active: false, definition: reads('API_BASE') }, { ...opsOff, definition: reads() }]) {
+      const sb = client(workflow, { listError: { message: 'must not be read' } })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(200)
+      expect(sb.calls.environment_variables).toBeUndefined()
+    }
+  })
+})

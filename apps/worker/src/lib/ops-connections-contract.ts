@@ -32,7 +32,9 @@ import type { ConnectionRefusalCode } from '../ops/connections/refusals'
 import { DELEGATION_KINDS, type DelegationKind } from '../ops/run-vocabulary'
 import type { SchemaLookupCode } from './schema-sync/errors'
 import type { SchemaLookupAnswer } from './schema-sync/lookup'
-import { clearFieldProblem, OpsGatewayContractError, parseSealedEnvelope, type SealedEnvelopeShape } from './ops-gateway-contract'
+import {
+  clearFieldProblem, OpsGatewayContractError, parseOpsVersionVariables, parseSealedEnvelope, type OpsVersionVariables, type SealedEnvelopeShape, type ServedOpsVariables,
+} from './ops-gateway-contract'
 
 /**
  * Every method the bidding Worker calls through OPS_CONNECTIONS, and so every
@@ -238,6 +240,8 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'step_test_run_payload_not_held',
   /** The run's records could not be read. */
   'step_test_run_unavailable',
+  /** The step reads a secret variable, or one the workflow's newest saved version did not keep (#2702); the detail names each. Nothing was sent. */
+  'step_test_variable_unavailable',
 ] as const
 export type OpsConnectionsOwnRefusal = (typeof OPS_CONNECTIONS_REFUSAL_CODES)[number]
 export type OpsConnectionsRefusalCode = OpsConnectionsOwnRefusal | ConnectionRefusalCode | SchemaLookupCode
@@ -625,6 +629,14 @@ export interface TestStepRequest {
   steps: Record<string, { output: unknown; status: string }>
   /** The person confirmed that a step changing something in the service may send for real. */
   confirm_send: boolean
+  /**
+   * The workflow's newest saved version and the variables kept with it that the
+   * step reads (#2702), which the step is given as a run of that version would
+   * be; variables null for a version saved before they were kept. Null for a
+   * workflow with no saved version, a step reading no variable, or a bidding
+   * Worker from before #2702, which sends none.
+   */
+  version: { number: number; variables: OpsVersionVariables | null } | null
 }
 
 /**
@@ -632,10 +644,12 @@ export interface TestStepRequest {
  * into a TestStepRequest: from a past run, a payload or steps left out are the
  * run's own (#2703).
  */
-export type TestStepCall = Omit<TestStepRequest, 'execution_id' | 'trigger_payload' | 'steps'> & {
+export type TestStepCall = Omit<TestStepRequest, 'execution_id' | 'trigger_payload' | 'steps' | 'version'> & {
   execution_id?: string
   trigger_payload?: unknown
   steps?: TestStepRequest['steps']
+  /** As served: { number, variables: ServedOpsVariables | null } | null. */
+  version?: { number: number; variables: ServedOpsVariables | null } | null
 }
 
 export interface StepTestResultRequest {
@@ -712,6 +726,21 @@ export function parseTestStepRequest(raw: unknown): TestStepRequest {
     organization_id, workflow_id, tested_by,
     node: { id, namespace: r.node.namespace, config: r.node.config },
     execution_id, trigger_payload, steps, confirm_send: r.confirm_send === true,
+    version: stepTestVersionOf(r.version),
+  }
+}
+
+/** The newest saved version a step test is given the variables of (#2702); absent or null is none. */
+function stepTestVersionOf(raw: unknown): TestStepRequest['version'] {
+  if (raw === undefined || raw === null) return null
+  if (!isRecord(raw) || typeof raw.number !== 'number' || !Number.isInteger(raw.number) || raw.number < 1 || !('variables' in raw)) {
+    throw new OpsConnectionsContractError('the request\'s version is not { number: whole number from 1, variables }')
+  }
+  try {
+    return { number: raw.number, variables: parseOpsVersionVariables(raw.variables) }
+  } catch (err) {
+    if (err instanceof OpsGatewayContractError) throw new OpsConnectionsContractError(`the request's version's variables cannot be read: ${err.message}`)
+    throw err
   }
 }
 
