@@ -463,23 +463,63 @@ describe('invokeRun: what a requeue answers', () => {
     expect(h.db.results).toEqual([{ ledgerId: 'ledger-1', status: 'forwarded', responseStatus: 503 }])
   })
 
-  it('the same send answered 429 requeues, its ledger row failed, since a 429 proves nothing was applied', async () => {
+  // A deferral spends no retry attempt (#1693 7.4, #2859): the run waits as a
+  // rate_limit_wait suspend naming its step, never a charged retry.
+  it('the same send answered 429 waits without spending an attempt, its ledger row failed, since a 429 proves nothing was applied', async () => {
     const h = harness()
     const report = await h.run(async (ctx) => {
       await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: h.forwardWith('post', async () => requeue(429)) })
       return { outcome: 'done' }
     })
-    expect(report).toMatchObject({ end: { outcome: 'retry', notBefore: new Date('2026-10-22T13:00:00Z') } })
+    expect(report).toEqual({
+      outcome: 'completed',
+      end: {
+        outcome: 'suspend', reason: 'rate_limit_wait', step: 'post', status: 429, notBefore: new Date('2026-10-22T13:00:00Z'),
+        error: 'step post (POST x.example.com): rate_limited, answered 429, asked to wait until 2026-10-22T13:00:00.000Z',
+      },
+      runStatus: 'suspend',
+    })
     expect(h.db.results).toEqual([{ ledgerId: 'ledger-1', status: 'failed', responseStatus: 429 }])
   })
 
-  it('an idempotent send answered 503 requeues', async () => {
+  it('an idempotent send answered 503 with Retry-After waits the same way', async () => {
     const h = harness()
     const report = await h.run(async (ctx) => {
       await ctx.send({ nodeId: 'put', seq: 0, method: 'PUT', url: 'https://x.example.com/', idempotent: true, forward: h.forwardWith('put', async () => requeue(503)) })
       return { outcome: 'done' }
     })
-    expect(report).toMatchObject({ end: { outcome: 'retry' } })
+    expect(report).toMatchObject({ end: { outcome: 'suspend', reason: 'rate_limit_wait', step: 'put', status: 503 } })
+  })
+
+  it('a wait asked with no request made (a token endpoint 429) carries no status', async () => {
+    const h = harness()
+    const report = await h.run(async (ctx) => {
+      await ctx.send({ nodeId: 'read', seq: 0, method: 'GET', url: 'https://x.example.com/', idempotent: true, forward: h.forwardWith('read', async () => requeue(null)) })
+      return { outcome: 'done' }
+    })
+    expect(report).toMatchObject({
+      end: { outcome: 'suspend', reason: 'rate_limit_wait', step: 'read', status: null, error: 'step read (GET x.example.com): rate_limited, no request was made, asked to wait until 2026-10-22T13:00:00.000Z' },
+    })
+  })
+
+  it('the database ending a wait at the requeue cap is reported by name, with the step, host and status', async () => {
+    const h = harness()
+    h.db.completeAnswers.push(async () => ({ outcome: 'completed', runStatus: 'failed' }))
+    const report = await h.run(async (ctx) => {
+      await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: h.forwardWith('post', async () => requeue(429)) })
+      return { outcome: 'done' }
+    })
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'suspend', reason: 'rate_limit_wait' }, runStatus: 'failed' })
+    expect(h.events).toContainEqual(expect.objectContaining({ event: 'ops_run', step: 'requeue_cap_reached', node_id: 'post', host: 'x.example.com', status: 429 }))
+  })
+
+  it('a wait the database took is not reported as the cap', async () => {
+    const h = harness()
+    await h.run(async (ctx) => {
+      await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: h.forwardWith('post', async () => requeue(429)) })
+      return { outcome: 'done' }
+    })
+    expect(h.events.some((e) => e.step === 'requeue_cap_reached')).toBe(false)
   })
 
   it('a resource wait (nothing sent) suspends the run on that cause', async () => {
@@ -692,7 +732,7 @@ describe('invokeRun: recording a step (#2703)', () => {
       }
       return { outcome: 'done' }
     })
-    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'retry' } })
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'suspend', reason: 'rate_limit_wait' } })
     expect(await recorded).toBeInstanceOf(RunStopped)
     expect(h.db.calls.some((c) => c.startsWith('step'))).toBe(false)
   })

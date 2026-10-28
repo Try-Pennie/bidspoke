@@ -162,9 +162,9 @@ describe('a non idempotent action through connectionFetch (#2337 comment, 2026-1
     expect(db.results).toEqual([{ status: 'forwarded', responseStatus: 503 }])
   })
 
-  it('answered 429 requeues', async () => {
+  it('answered 429 waits, spending no attempt (#1693 7.4, #2859)', async () => {
     const { report, db } = await runOnePost(new Response('slow', { status: 429, headers: { 'retry-after': '30' } }))
-    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'retry', notBefore: new Date(T0 + 30_000) } })
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'suspend', reason: 'rate_limit_wait', status: 429, notBefore: new Date(T0 + 30_000) } })
     expect(db.results).toEqual([{ status: 'failed', responseStatus: 429 }])
   })
 })

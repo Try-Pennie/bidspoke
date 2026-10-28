@@ -389,7 +389,12 @@ BEGIN
     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = v_spec.name;
     v_args := v_fn.proargnames[1:v_fn.pronargs];
     v_cols := v_fn.proargnames[v_fn.pronargs + 1:];
-    IF v_args <> v_spec.sent THEN RAISE EXCEPTION '% takes %, the deployed Worker sends %', v_spec.name, v_args, v_spec.sent; END IF;
+    -- The deployed call still resolves when a later migration adds arguments
+    -- after the ones it sends, each with a default (#2859 added p_step and
+    -- p_status to complete_run_request): PostgREST matches the names it is sent.
+    IF v_args[1:array_length(v_spec.sent, 1)] <> v_spec.sent OR v_fn.pronargs - array_length(v_spec.sent, 1) > v_fn.pronargdefaults THEN
+      RAISE EXCEPTION '% takes % (% defaulted), the deployed Worker sends %', v_spec.name, v_args, v_fn.pronargdefaults, v_spec.sent;
+    END IF;
     IF NOT (v_cols @> v_spec.read) THEN RAISE EXCEPTION '% answers %, the deployed Worker reads %', v_spec.name, v_cols, v_spec.read; END IF;
   END LOOP;
 
