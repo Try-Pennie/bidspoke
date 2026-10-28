@@ -194,6 +194,13 @@ const NEW_CONNECTION = 'To use another, add a new connection.'
 const DAN_OR_NEW = 'Tell Dan, or add a new connection if this one names the wrong address.'
 /** A sign in names nothing anyone types, so the person can sign in again, and Dan looks into one that repeats. */
 const signInAgain = (c: RefusalContext) => `Sign in with ${c.service} again, and tell Dan if it keeps happening.`
+/**
+ * A sign in saves no form, so where Add and Reconnect say to save again, a sign in says to sign in again
+ * (#2923): at once, or after a wait (in a minute, in a few minutes) where something must recover first.
+ */
+const signInNow = (c: RefusalContext, when?: string) => `Sign in with ${c.service} again${when ? ` ${when}` : ''}.`
+const SOON = 'in a minute'
+const FAULT = 'Tell Dan, since this is a fault in Bidspoke.'
 
 /**
  * The remedy of a sentence about what the connection names, by where that
@@ -204,7 +211,10 @@ function remedy(c: RefusalContext, form: string, stored: string, signIn: string 
   return c.targetFrom === 'form' ? form : kept(c, stored, signIn)
 }
 
-/** remedy for a sentence whose Add wording is written out whole beside it: the stored row's, or a sign in's. */
+/**
+ * remedy for a sentence whose Add and Reconnect remedy are one, or whose Add wording is written out whole beside
+ * it: that remedy, or a sign in's, which names no save, since a sign in saves no form (#2923).
+ */
 function kept(c: RefusalContext, stored: string, signIn: string = signInAgain(c)): string {
   return c.targetFrom === 'sign_in' ? signIn : stored
 }
@@ -216,47 +226,52 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   connection_service_undeclared: (c) => c.targetFrom === 'stored'
     ? `Bidspoke cannot connect to ${c.service} any more, so this connection cannot be reconnected. Nothing was saved. Tell Dan.`
     : `Bidspoke cannot connect to ${c.service} yet. Nothing was saved. ${c.targetFrom === 'form' ? 'Choose one of the services the form offers.' : 'Tell Dan.'}`,
-  connection_name_missing: () => 'The connection has no name. Nothing was saved. Give it a name and save again.',
-  connection_name_invalid: () => `The name is longer than ${CONNECTION_NAME_MAX} characters or holds a character a name cannot. Nothing was saved. Shorten the name and save again.`,
-  connection_fields_missing: (c) => `${listed(c.names)} ${isAre(c.names)} empty. Nothing was saved. Fill ${itThem(c.names)} in and save again.`,
+  connection_name_missing: (c) => `The connection has no name. Nothing was saved. ${kept(c, 'Give it a name and save again.', `Give it a name and sign in with ${c.service} again.`)}`,
+  connection_name_invalid: (c) => `The name is longer than ${CONNECTION_NAME_MAX} characters or holds a character a name cannot. Nothing was saved. ${kept(c, 'Shorten the name and save again.', `Shorten the name and sign in with ${c.service} again.`)}`,
+  connection_fields_missing: (c) => `${listed(c.names)} ${isAre(c.names)} empty. Nothing was saved. Fill ${itThem(c.names)} in and ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
   connection_fields_undeclared: (c) => `The form sent ${listed(c.names)}, which a ${c.service} connection does not have. Nothing was saved. Reload the page and fill the form in again.`,
-  connection_name_reserved: (c) => `That name belongs to Bidspoke's own ${c.service} alert login. Nothing was saved. Choose another name and save again.`,
-  connection_name_taken: (c) => `Another ${c.service} connection already has that name. Nothing was saved. Choose another name and save again.`,
+  connection_name_reserved: (c) => `That name belongs to Bidspoke's own ${c.service} alert login. Nothing was saved. Choose another name and ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
+  connection_name_taken: (c) => `Another ${c.service} connection already has that name. Nothing was saved. Choose another name and ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
   // A Slack alert bot is matched by its token, which a Reconnect replaces; every other bidding identity is what the stored connection names.
   connection_money_identity: (c) => `This is ${c.money ? MONEY_WORDS[c.money] : 'a login Bidspoke\'s bidding uses'}, which a workflow connection may never use. Nothing was saved. ${remedy(c, 'Use a login made for workflows.', c.money === 'slack_alert_bot' ? 'Use a login made for workflows.' : 'Add a new connection with a login made for workflows.', 'Sign in with an account made for workflows.')}`,
-  connection_money_targets_unreadable: () => 'Bidspoke could not check whether this is one of its own bidding logins. Nothing was saved. Save again in a minute.',
+  connection_money_targets_unreadable: (c) => `Bidspoke could not check whether this is one of its own bidding logins. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
   connection_host_owned: (c) => `The host ${c.names[0] ?? 'entered'} belongs to ${c.names[1] ?? 'another service'}, which an HTTP connection may never reach. Nothing was saved. ${remedy(c, `Use another host, or a ${c.names[1] ?? 'service'} connection where Bidspoke offers one.`, `Add a new connection with another host, or a ${c.names[1] ?? 'service'} connection where Bidspoke offers one.`)}`,
   connection_money_host: (c) => `The host ${c.names[0] ?? 'entered'} is one Bidspoke's bidding sends to, which a workflow connection may never reach. Nothing was saved. ${remedy(c, 'Use another host.', 'Add a new connection with another host.')}`,
-  google_subject_not_listed: (c) => `${listed(c.names)} ${isAre(c.names)} not on the company list of mailboxes and drives. Nothing was saved. Add ${itThem(c.names)} to the list on this page, then save again.`,
+  google_subject_not_listed: (c) => `${listed(c.names)} ${isAre(c.names)} not on the company list of mailboxes and drives. Nothing was saved. Add ${itThem(c.names)} to the list on this page, then ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
   google_subject_is_drive: (c) => `${c.names[0] ?? 'That'} is a shared drive, and a Google connection acts as a mailbox. Nothing was saved. ${remedy(c, 'Choose a mailbox under Acts as, tick the drive under Shared drives, then save again.', 'Add a new connection that acts as a mailbox, with the drive under Shared drives.')}`,
-  google_list_unavailable: () => 'The company list of mailboxes and drives could not be read. Nothing was saved. Save again in a minute.',
-  connection_seal_failed: () => 'Bidspoke could not lock the login away for safe keeping. Nothing was saved. Save again, and tell Dan if it keeps happening.',
-  connections_unavailable: () => 'Bidspoke\'s database did not answer. Nothing was saved. Save again in a minute.',
-  connection_store_failed: () => 'The login worked, but Bidspoke could not store the connection. Nothing was saved. Save again.',
-  verify_timed_out: (c) => `The login check with ${c.service} did not finish in time. Nothing was saved. Save again.`,
-  verify_refused_unknown: (c) => `The login check with ${c.service} failed for a reason Bidspoke does not know. Nothing was saved. Save again, and tell Dan if it keeps happening.`,
+  google_list_unavailable: (c) => `The company list of mailboxes and drives could not be read. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
+  connection_seal_failed: (c) => `Bidspoke could not lock the login away for safe keeping. Nothing was saved. ${kept(c, 'Save again, and tell Dan if it keeps happening.')}`,
+  connections_unavailable: (c) => `Bidspoke's database did not answer. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
+  // A sign in's store fails on its insert or on a stored login it cannot read back, which a repeat does not mend: Dan then.
+  connection_store_failed: (c) => `The login worked, but Bidspoke could not store the connection. Nothing was saved. ${kept(c, 'Save again.')}`,
+  verify_timed_out: (c) => `The login check with ${c.service} did not finish in time. Nothing was saved. ${kept(c, 'Save again.', signInNow(c))}`,
+  verify_refused_unknown: (c) => `The login check with ${c.service} failed for a reason Bidspoke does not know. Nothing was saved. ${kept(c, 'Save again, and tell Dan if it keeps happening.')}`,
 
   // ── verify: OpsConnections' own ────────────────────────────────────────────
   ops_connections_request_invalid: () => 'The workflows server could not read the login check Bidspoke sent. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
   lane_unset: () => 'The workflows server is not set up to say which lane it serves. Nothing was saved. Tell Dan.',
   lane_not_ops: () => 'The login check reached a server that is not the workflows server. Nothing was saved. Tell Dan.',
   ops_connections_not_configured: () => 'The workflows server is missing a setting it needs to check logins. Nothing was saved. Tell Dan.',
-  ops_connections_timeout: (c) => `The workflows server stopped the check with ${c.service} because it took too long. Nothing was saved. Save again.`,
-  ops_connections_failed: (c) => `The login check with ${c.service} failed unexpectedly. Nothing was saved. Save again, and tell Dan if it keeps happening.`,
-  money_identity_unavailable: () => 'Bidspoke could not read which Salesforce user it bids as, so it cannot rule this login out. Nothing was saved. Save again in a minute.',
+  ops_connections_timeout: (c) => `The workflows server stopped the check with ${c.service} because it took too long. Nothing was saved. ${kept(c, 'Save again.', signInNow(c))}`,
+  ops_connections_failed: (c) => `The login check with ${c.service} failed unexpectedly. Nothing was saved. ${kept(c, 'Save again, and tell Dan if it keeps happening.')}`,
+  money_identity_unavailable: (c) => `Bidspoke could not read which Salesforce user it bids as, so it cannot rule this login out. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
   money_identity_unmeasured: () => 'Bidspoke has no recent reading of which Salesforce user it bids as, so it cannot rule this login out. Nothing was saved. Tell Dan.',
   // The user a Salesforce login signs in as is its connected app's, whose client id the stored connection names.
   money_identity_match: (c) => `This login signs in as the Salesforce user Bidspoke bids as, which a workflow connection may never use. Nothing was saved. ${remedy(c, 'Use a login made for workflows.', 'Add a new connection with a login made for workflows.', 'Sign in with an account made for workflows.')}`,
   verify_client_id_mismatch: (c) => c.targetFrom === 'form'
     ? 'The client secret belongs to another connected app than the client id. Nothing was saved. Check both and save again.'
     : `The client secret belongs to another connected app than this connection's client id. Nothing was saved. ${kept(c, 'Check the client secret is from this connection\'s connected app and save again.')}`,
-  candidate_not_refreshable: (c) => `A personal ${c.service} login is added by signing in, not with this form. Nothing was saved. Use the sign in button instead.`,
+  // exchangeOAuthCode answers it when ops will not take a sign in's own candidate: no form is open, and it is Bidspoke's fault.
+  candidate_not_refreshable: (c) => c.targetFrom === 'sign_in'
+    ? `The workflows server would not take this ${c.service} sign in as a new login. Nothing was saved. ${FAULT}`
+    : `A personal ${c.service} login is added by signing in, not with this form. Nothing was saved. Use the sign in button instead.`,
   verify_identity_unmeasurable: (c) => `Bidspoke cannot yet check who a ${c.service} login acts as. Nothing was saved. Tell Dan.`,
-  verify_identity_unreadable: (c) => `${c.service} did not say who this login acts as. Nothing was saved. Save again, and tell Dan if it keeps happening.`,
+  verify_identity_unreadable: (c) => `${c.service} did not say who this login acts as. Nothing was saved. ${kept(c, 'Save again, and tell Dan if it keeps happening.')}`,
   verify_identity_mismatch: (c) => c.targetFrom === 'form'
     ? `${c.service} says this login belongs to another account than the one entered. Nothing was saved. Check the account and save again.`
     : `${c.service} says this login belongs to another account than the one this connection names. Nothing was saved. ${kept(c, `Check the ${c.secret} is for this connection's account and save again.`)}`,
-  verify_slack_not_a_bot: () => 'This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.',
+  // A sign in sends no bot token, so this reaching one is Bidspoke's fault.
+  verify_slack_not_a_bot: (c) => `This token acts as a person, not as a bot. Nothing was saved. ${kept(c, 'Use the bot token from the ops Slack app and save again.', FAULT)}`,
   verify_slack_workspace_mismatch: (c) => c.targetFrom === 'form'
     ? 'Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'
     : `Slack says this bot is in another workspace than this connection's Workspace ID. Nothing was saved. ${kept(c, 'Use a bot token from the ops Slack app in this connection\'s workspace and save again.')}`,
@@ -273,15 +288,15 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   verify_http_check_refused: (c) => `The Check path did not answer with this header value. Nothing was saved. ${remedy(c, 'Check the Check path, the Header and the Header value, and save again.', 'Check the Header value and save again, or add a new connection if the Check path or the Header is wrong.')}`,
   verify_supabase_lane_project: (c) => `This is one of the Supabase projects Bidspoke itself runs on, which a workflow connection may never use. Nothing was saved. ${remedy(c, 'Use a project made for workflows.', 'Add a new connection to a project made for workflows.')}`,
   identity_changed: (c) => `${c.service} names another user for this login than it did before. Nothing was saved. Tell Dan before it is used.`,
-  measured_identity_unrecorded: () => 'The login worked, but the workflows server could not record who it acts as. Nothing was saved. Save again.',
+  measured_identity_unrecorded: (c) => `The login worked, but the workflows server could not record who it acts as. Nothing was saved. ${kept(c, 'Save again.', signInNow(c))}`,
 
   // ── verify: connectionFetch's ──────────────────────────────────────────────
   connection_call_invalid: () => 'The workflows server refused the shape of the login check. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
-  connection_removed: () => 'This connection was removed while it was being checked. Nothing was saved. Save it again.',
-  connection_withdrawn: () => 'The workflows server withdrew this connection while it was being checked. Nothing was saved. Save it again.',
-  connection_copy_expired: () => 'The workflows server holds an expired copy under this connection. Nothing was saved. Save again.',
-  connection_not_found: () => 'The workflows server found no connection to check. Nothing was saved. Save again.',
-  connection_copy_unreadable: () => 'The workflows server\'s database did not answer. Nothing was saved. Save again in a minute.',
+  connection_removed: (c) => `This connection was removed while it was being checked. Nothing was saved. ${kept(c, 'Save it again.', signInNow(c))}`,
+  connection_withdrawn: (c) => `The workflows server withdrew this connection while it was being checked. Nothing was saved. ${kept(c, 'Save it again.', signInNow(c))}`,
+  connection_copy_expired: (c) => `The workflows server holds an expired copy under this connection. Nothing was saved. ${kept(c, 'Save again.', signInNow(c))}`,
+  connection_not_found: (c) => `The workflows server found no connection to check. Nothing was saved. ${kept(c, 'Save again.', signInNow(c))}`,
+  connection_copy_unreadable: (c) => `The workflows server's database did not answer. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
   connection_service_unknown: (c) => `The workflows server cannot connect to ${c.service} yet. Nothing was saved. Tell Dan.`,
   connection_service_mismatch: () => 'The workflows server holds another service under this connection. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
   connection_generation_older: () => 'The workflows server holds a newer login under this connection. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
@@ -295,39 +310,42 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
     : `The ${c.service} address entered is not one Bidspoke can use. Nothing was saved. Check the address and save again.`,
   connection_url_invalid: (c) => `The check was sent to an address that is not a secure ${c.service} one. Nothing was saved. ${remedy(c, 'Check the address and save again.', DAN_OR_NEW, 'Tell Dan, since this is a fault in Bidspoke.')}`,
   connection_host_not_declared: (c) => `${c.service} sent the check to an address this connection does not name. Nothing was saved. ${remedy(c, 'Check the address and save again.', DAN_OR_NEW, 'Tell Dan, since this is a fault in Bidspoke.')}`,
-  sf_pool_busy: () => 'Salesforce is busy with other Bidspoke work. Nothing was saved. Save again in a minute.',
-  sf_org_unmeasured: (c) => `Bidspoke has not yet measured the Salesforce org ${orgOf(c)}. Nothing was saved. Save again in a minute.`,
+  sf_pool_busy: (c) => `Salesforce is busy with other Bidspoke work. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
+  sf_org_unmeasured: (c) => `Bidspoke has not yet measured the Salesforce org ${orgOf(c)}. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
   // Dan's words, design round 33 (2026-10-21): what is missing and what happens next, in the person's terms.
-  sf_cap_unset: (c) => `Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to ${c.org ?? 'the org this connection names'}, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.`,
-  sf_purpose_cap_unset: (c) => `Bidspoke has no approved share for checking logins on the Salesforce org ${orgOf(c)}. Nothing was saved. Dan must approve one for this org before a connection to it can be saved.`,
-  sf_budget_floor: (c) => `The Salesforce org ${orgOf(c)} has nearly used up today's API calls. Nothing was saved. Save again tomorrow, or ask Dan.`,
-  sf_budget_unmeasured: () => 'Bidspoke has no recent reading of how many Salesforce API calls are left today. Nothing was saved. Save again in a few minutes.',
-  sf_lease_unavailable: () => 'The workflows server could not reserve a Salesforce call for the check. Nothing was saved. Save again in a minute.',
-  connection_record_failed: () => 'The workflows server could not record the check before sending it. Nothing was saved. Save again.',
+  sf_cap_unset: (c) => `Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to ${c.org ?? 'the org this connection names'}, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then ${kept(c, 'save again.', `sign in with ${c.service} again.`)}`,
+  sf_purpose_cap_unset: (c) => `Bidspoke has no approved share for checking logins on the Salesforce org ${orgOf(c)}. Nothing was saved. ${kept(c, 'Dan must approve one for this org before a connection to it can be saved.', 'Dan must approve one for this org before anyone can sign in to it.')}`,
+  sf_budget_floor: (c) => `The Salesforce org ${orgOf(c)} has nearly used up today's API calls. Nothing was saved. ${kept(c, 'Save again tomorrow, or ask Dan.', `Sign in with ${c.service} again tomorrow, or ask Dan.`)}`,
+  sf_budget_unmeasured: (c) => `Bidspoke has no recent reading of how many Salesforce API calls are left today. Nothing was saved. ${kept(c, 'Save again in a few minutes.', signInNow(c, 'in a few minutes'))}`,
+  sf_lease_unavailable: (c) => `The workflows server could not reserve a Salesforce call for the check. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
+  connection_record_failed: (c) => `The workflows server could not record the check before sending it. Nothing was saved. ${kept(c, 'Save again.', signInNow(c))}`,
   // The design's sentence (D14): the secret is named once, then "the secret" (L605); a service with no secret says its login.
   // OpenAI answers a valid key sent with a wrong Project ID with the same 401 as a bad key, and its error reference
   // documents no code that tells the two apart (#2715), so a key scoped to a field names both, and which to check first.
   // On Reconnect the scope is the stored connection's and cannot change there, so only the key is named as the fix (L111).
-  connection_needs_reauth: (c) => c.keyScope && c.targetFrom !== 'form'
+  // A sign in's own refusal is google_code_refused (the route maps this code to it), so this one reaching a sign in is worded as one.
+  connection_needs_reauth: (c) => c.targetFrom === 'sign_in'
+    ? `${c.service} refused the sign in. Nothing was saved. ${signInNow(c)}`
+    : c.keyScope && c.targetFrom !== 'form'
     ? `${c.service} refused the ${c.keyScope.key} with this connection's ${c.keyScope.scope}, so the key is wrong or belongs to another ${c.keyScope.owner}. Nothing was saved. Check the key is from this connection's ${c.keyScope.owner} and save again.`
     : c.keyScope
     ? `${c.service} refused the ${c.keyScope.key} with this ${c.keyScope.scope}, so either the key or the ${c.keyScope.scope} is wrong. Nothing was saved. Check the ${c.keyScope.scope} first, then the key, and save again.`
     : `${c.service} refused the ${c.secret}. Nothing was saved. Check the ${c.secret === 'login' ? 'login' : 'secret'} and save again.`,
-  connection_auth_unavailable: (c) => `${c.service} did not answer the sign in. Nothing was saved. Save again in a minute.`,
+  connection_auth_unavailable: (c) => `${c.service} did not answer the sign in. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
   // Most of these rules judge what the connection names (target_invalid); on Reconnect that is stored, so the remedy is Dan or a
   // new connection. A sign in's are Bidspoke's own settings (its sign in app, its token address), so the remedy is Dan.
   connection_not_allowed: (c) => `A Bidspoke rule refused this ${c.service} login before it was tried. Nothing was saved. ${remedy(c, 'Check what the connection names and save again.', 'Tell Dan, or add a new connection if what this one names is wrong.', 'Tell Dan.')}`,
-  connection_auth_check_unavailable: () => 'The workflows server could not read the list it checks this login against. Nothing was saved. Save again in a minute.',
-  connection_token_object_unavailable: () => 'The workflows server could not reach where it keeps sign ins. Nothing was saved. Save again in a minute.',
-  connection_auth_failed: (c) => `The sign in to ${c.service} failed for a reason it did not give. Nothing was saved. Check the login and save again.`,
-  connection_network_error: (c) => `Bidspoke could not reach ${c.service}. Nothing was saved. Save again in a minute.`,
-  connection_aborted: () => 'The check was stopped before it finished. Nothing was saved. Save again.',
-  connection_timeout: (c) => `${c.service} took too long to answer. Nothing was saved. Save again.`,
-  connection_body_not_resendable: (c) => `${c.service} needed the check sent twice, which Bidspoke will not do. Nothing was saved. Save again.`,
-  connection_rate_limited: (c) => `${c.service} asked Bidspoke to wait. Nothing was saved. Save again in a few minutes.`,
+  connection_auth_check_unavailable: (c) => `The workflows server could not read the list it checks this login against. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
+  connection_token_object_unavailable: (c) => `The workflows server could not reach where it keeps sign ins. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
+  connection_auth_failed: (c) => `The sign in to ${c.service} failed for a reason it did not give. Nothing was saved. ${kept(c, 'Check the login and save again.')}`,
+  connection_network_error: (c) => `Bidspoke could not reach ${c.service}. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
+  connection_aborted: (c) => `The check was stopped before it finished. Nothing was saved. ${kept(c, 'Save again.', signInNow(c))}`,
+  connection_timeout: (c) => `${c.service} took too long to answer. Nothing was saved. ${kept(c, 'Save again.', signInNow(c))}`,
+  connection_body_not_resendable: (c) => `${c.service} needed the check sent twice, which Bidspoke will not do. Nothing was saved. ${kept(c, 'Save again.', signInNow(c))}`,
+  connection_rate_limited: (c) => `${c.service} asked Bidspoke to wait. Nothing was saved. ${kept(c, 'Save again in a few minutes.', signInNow(c, 'in a few minutes'))}`,
 
   // ── the binding ────────────────────────────────────────────────────────────
-  ops_connections_unavailable: () => 'The workflows server did not answer. Nothing was saved. Save again in a minute.',
+  ops_connections_unavailable: (c) => `The workflows server did not answer. Nothing was saved. ${kept(c, 'Save again in a minute.', signInNow(c, SOON))}`,
 }
 
 /** The page's sentence for one refusal. */

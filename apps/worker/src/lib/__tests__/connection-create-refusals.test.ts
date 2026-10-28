@@ -11,7 +11,7 @@ import { OPS_CONNECTIONS_REFUSAL_CODES } from '../ops-connections-contract'
 import { CONNECTION_REFUSAL_CODES } from '../../ops/connections/refusals'
 import {
   CONNECTION_ROUTE_REFUSAL_CODES, CREATE_REFUSAL_CODES, CREATE_ROUTE_REFUSAL_CODES, NOT_VERIFY_REFUSALS, connectionRouteSentence, createRefusalSentence,
-  type RefusalContext, type RouteRefusalContext, type TargetFrom,
+  type CreateRefusalCode, type RefusalContext, type RouteRefusalContext, type TargetFrom,
 } from '../connection-create-refusals'
 
 const CTX: RefusalContext = {
@@ -214,6 +214,35 @@ describe('on Reconnect, where the target is stored, and on a sign in, where nobo
     expect(asksForTarget('No. Nothing was saved. Add a new connection with another host.', service('google'), 'sign_in')).not.toEqual([])
   })
 
+  /**
+   * Each part of a sign in sentence that asks for a save. A sign in saves no form: what starts it again is
+   * signing in again (#2923). "Nothing was saved." says what happened, so it is the one allowed.
+   */
+  function asksToSave(sentence: string): string[] {
+    return sentence.replace(/Nothing was saved\./g, '').match(/[^.]*\bsav(?:e|ed|es|ing)\b[^.]*\.?/gi)?.map((p) => p.trim()) ?? []
+  }
+
+  it('no sign in sentence asks for a save, for any code and any service, since a sign in saves no form (#2923)', () => {
+    const asks: string[] = []
+    for (const s of CATALOGUE) {
+      for (const code of CREATE_REFUSAL_CODES) {
+        // Every shape a context can take that changes the words: a key with a scope, each bidding identity, an org or none.
+        for (const ctx of [keptCtx(s, 'sign_in'), { ...keptCtx(s, 'sign_in'), keyScope: null, money: null, org: null, names: [] }]) {
+          const sentence = createRefusalSentence(code, ctx)
+          for (const part of asksToSave(sentence)) asks.push(`${s.key} ${code}: "${part}" in "${sentence}"`)
+        }
+      }
+    }
+    expect(asks).toEqual([])
+  })
+
+  it('the save check itself catches a sentence that asks for a save, and lets "Nothing was saved." through (it is seen to fail)', () => {
+    expect(asksToSave('No. Nothing was saved. Save again in a minute.')).toEqual(['Save again in a minute.'])
+    expect(asksToSave('No. Nothing was saved. Check the login and save again.')).toEqual(['Check the login and save again.'])
+    expect(asksToSave('No. Nothing was saved. Dan must approve one before a connection to it can be saved.')).not.toEqual([])
+    expect(asksToSave('No. Nothing was saved. Sign in with Google again in a minute.')).toEqual([])
+  })
+
   it.each([...CREATE_REFUSAL_CODES])('%s keeps the pattern on Reconnect and a sign in: what failed, that nothing was saved, what to do', (code) => {
     for (const s of CATALOGUE) {
       for (const from of KEPT) {
@@ -251,6 +280,44 @@ describe('on Reconnect, where the target is stored, and on a sign in, where nobo
     expect(createRefusalSentence('verify_google_mailbox_mismatch', signIn)).toBe(
       'Google says this acts as another mailbox than the one this connection names. Nothing was saved. Sign in with Google again, and tell Dan if it keeps happening.',
     )
+  })
+
+  // The general refusals a sign in shares with Add and Reconnect end in signing in again, at once, in a minute,
+  // or with Dan told if it repeats, never in a form's save (#2923).
+  it('on a Google sign in, words the shared refusals as signing in again, never as saving a form (#2923)', () => {
+    const signIn: RefusalContext = { ...CTX, service: 'Google', secret: 'login', org: null, names: [], money: null, targetFrom: 'sign_in' }
+    const said: Record<string, string> = {
+      connection_auth_failed: 'The sign in to Google failed for a reason it did not give. Nothing was saved. Sign in with Google again, and tell Dan if it keeps happening.',
+      connection_network_error: 'Bidspoke could not reach Google. Nothing was saved. Sign in with Google again in a minute.',
+      connection_timeout: 'Google took too long to answer. Nothing was saved. Sign in with Google again.',
+      connection_rate_limited: 'Google asked Bidspoke to wait. Nothing was saved. Sign in with Google again in a few minutes.',
+      connection_removed: 'This connection was removed while it was being checked. Nothing was saved. Sign in with Google again.',
+      connections_unavailable: 'Bidspoke\'s database did not answer. Nothing was saved. Sign in with Google again in a minute.',
+      connection_store_failed: 'The login worked, but Bidspoke could not store the connection. Nothing was saved. Sign in with Google again, and tell Dan if it keeps happening.',
+      connection_seal_failed: 'Bidspoke could not lock the login away for safe keeping. Nothing was saved. Sign in with Google again, and tell Dan if it keeps happening.',
+      connection_name_taken: 'Another Google connection already has that name. Nothing was saved. Choose another name and sign in with Google again.',
+      verify_timed_out: 'The login check with Google did not finish in time. Nothing was saved. Sign in with Google again.',
+      verify_refused_unknown: 'The login check with Google failed for a reason Bidspoke does not know. Nothing was saved. Sign in with Google again, and tell Dan if it keeps happening.',
+      ops_connections_timeout: 'The workflows server stopped the check with Google because it took too long. Nothing was saved. Sign in with Google again.',
+      ops_connections_unavailable: 'The workflows server did not answer. Nothing was saved. Sign in with Google again in a minute.',
+      candidate_not_refreshable: 'The workflows server would not take this Google sign in as a new login. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
+    }
+    for (const [code, sentence] of Object.entries(said)) expect(createRefusalSentence(code as CreateRefusalCode, signIn), code).toBe(sentence)
+  })
+
+  it('leaves the Add and Reconnect wording of the shared refusals as it was (#2923)', () => {
+    for (const from of ['form', 'stored'] as const) {
+      const ctx: RefusalContext = { ...CTX, service: 'Google', secret: 'login', org: null, names: [], money: null, targetFrom: from }
+      expect(createRefusalSentence('connection_auth_failed', ctx)).toBe('The sign in to Google failed for a reason it did not give. Nothing was saved. Check the login and save again.')
+      expect(createRefusalSentence('connection_network_error', ctx)).toBe('Bidspoke could not reach Google. Nothing was saved. Save again in a minute.')
+      expect(createRefusalSentence('connection_timeout', ctx)).toBe('Google took too long to answer. Nothing was saved. Save again.')
+      expect(createRefusalSentence('connection_removed', ctx)).toBe('This connection was removed while it was being checked. Nothing was saved. Save it again.')
+      expect(createRefusalSentence('connection_name_taken', ctx)).toBe('Another Google connection already has that name. Nothing was saved. Choose another name and save again.')
+      expect(createRefusalSentence('candidate_not_refreshable', ctx)).toBe('A personal Google login is added by signing in, not with this form. Nothing was saved. Use the sign in button instead.')
+      expect(createRefusalSentence('sf_purpose_cap_unset', { ...ctx, service: 'Salesforce', org: 'lendco.my.salesforce.com' })).toBe(
+        'Bidspoke has no approved share for checking logins on the Salesforce org lendco.my.salesforce.com. Nothing was saved. Dan must approve one for this org before a connection to it can be saved.',
+      )
+    }
   })
 
   it('words the four the issue names for the key, or a new connection where the stored target is wrong', () => {
