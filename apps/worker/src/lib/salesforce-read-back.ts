@@ -48,7 +48,9 @@
  *    asked about in Salesforce's own field history (#2264), because the run's
  *    own prospect_trades update writes the Prospect milliseconds before every
  *    reject patch: a tracked field with no change recorded since the write
- *    began still holds its value from before it, and is sent. A history query
+ *    began still holds its value from before it, and is sent, as is an
+ *    untracked Checkbox still at false, its value when nothing set it (#2492,
+ *    read off the same field definitions query). A history query
  *    with no answer stops the tick like any other call, deciding nothing. The
  *    conflict alert names each left out field's two values, from this tick's
  *    read, never stored.
@@ -245,7 +247,7 @@ export interface ReadBackSummary {
   conflicts: number
   /** Field history queries made (#2264), counted in reads too. */
   history_reads: number
-  /** Fields the record read called moved that their own history showed nobody changed, so they were sent. */
+  /** Fields the record read called moved that the history read cleared, so they were sent: no change recorded, or an untracked checkbox still at false (#2492). */
   history_cleared: number
   /** Left for a later tick: the claim said no, or the attempt could not be recorded. */
   deferred: number
