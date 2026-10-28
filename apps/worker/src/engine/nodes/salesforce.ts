@@ -57,12 +57,6 @@ import {
   salesforceUpsertUrl,
 } from '../../lib/salesforce-api'
 
-// The node has always handed out these two rules, and the held write capture,
-// the read-back and the replay tool import them from here (a test swaps the
-// rule on this module to prove the capture uses it, #2054). They are the shared
-// functions themselves, not copies (#2335).
-export { salesforceFailureIsTransient, salesforceRejectedTheWrite } from '../../lib/salesforce-api'
-
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
 interface ExpectedError {

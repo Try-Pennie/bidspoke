@@ -105,7 +105,7 @@ import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { withJobRun, type JobRunEnding } from './job-run-record'
 import { parseJson } from './json'
 import { fetchAllPaged } from './paginate'
-import { salesforceQueryUrl } from './salesforce-api'
+import { salesforceNextPageUrl, salesforceQueryUrl } from './salesforce-api'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 
 // ── Names ─────────────────────────────────────────────────────────────────────
@@ -926,7 +926,7 @@ async function readCompletedRecords(env: Env, supabase: SupabaseClient, orgId: s
       out.push({ id: rec.Id, at })
     }
     if (out.length > RECONCILE_MAX_RECORDS) throw new Error(`more than ${RECONCILE_MAX_RECORDS} Completed ${kind}s in the day, so the day was not reconciled on part of them`)
-    next = body.done ? undefined : body.nextRecordsUrl ? `${creds.instanceUrl}${body.nextRecordsUrl}` : undefined
+    next = body.done ? undefined : body.nextRecordsUrl ? salesforceNextPageUrl(creds.instanceUrl, body.nextRecordsUrl) : undefined
   }
   return out
 }

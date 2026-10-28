@@ -85,7 +85,7 @@
  * stamping is the ops-sf-limits heartbeat's to page (cron-heartbeat.ts), on the
  * bidding Worker, which this Worker's health cannot silence (L71).
  */
-import { SALESFORCE_API_VERSION } from '../lib/salesforce-api'
+import { salesforceDataUrl } from '../lib/salesforce-api'
 import { raceDeadline } from '../lib/alert-claim'
 import { formatErr } from '../lib/format-error'
 import { tickProblem, type OpsJobReport, type TickProblem } from '../lib/ops-gateway-contract'
@@ -180,7 +180,7 @@ export function parseDailyApiRequests(body: unknown): DailyApiRequests {
 /** The Limits resource of the connection's declared instance. Throws connection_target_invalid by name. */
 export function sfLimitsUrl(target: unknown): string {
   try {
-    return `${salesforceInstanceOf(target).origin}/services/data/${SALESFORCE_API_VERSION}/limits`
+    return salesforceDataUrl(salesforceInstanceOf(target).origin, '/limits')
   } catch {
     throw new ConnectionRefusal('connection_target_invalid', 'the Salesforce connection\'s target does not declare an https Salesforce instance_url')
   }

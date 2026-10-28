@@ -17,7 +17,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { getSalesforceToken, salesforceTokenCacheKey } from '../engine/nodes/salesforce'
 import { requireSalesforceCreds, type SalesforceCreds } from './salesforce-creds'
-import { SALESFORCE_API_VERSION } from './salesforce-read'
+import { salesforceRecordUrl } from './salesforce-api'
+import { isSalesforceApiName } from './salesforce-names'
 
 /** How long one update may take, the engine's own per call bound. */
 export const SALESFORCE_UPDATE_TIMEOUT_MS = 15_000
@@ -53,6 +54,8 @@ export async function salesforceUpdate(
   deps: SalesforceUpdateDeps = {},
 ): Promise<void> {
   if (!SALESFORCE_ID.test(recordId)) throw new SalesforceUpdateError(`${JSON.stringify(recordId)} is not a Salesforce id, so no update was sent`, null)
+  // salesforceRecordUrl puts the object in as it is, so only an API name reaches it (#2394).
+  if (!isSalesforceApiName(object)) throw new SalesforceUpdateError(`${JSON.stringify(object)} is not a Salesforce API name, so no update was sent`, null)
   if (env.LOCAL_DEV && !env.ALLOW_PROD_WRITES) {
     throw new SalesforceUpdateError(
       `Blocked a Salesforce update of ${object} ${recordId}: local dev shares the production Salesforce org. Set ALLOW_PROD_WRITES=true in apps/worker/.dev.vars if you intend this (see issue #669).`,
@@ -63,7 +66,7 @@ export async function salesforceUpdate(
   const readToken = () => (deps.token ?? getSalesforceToken)(env, orgId, creds.instanceUrl, creds.clientId, creds.clientSecret)
   const doFetch = deps.fetch ?? fetch
   const patch = async (token: string) =>
-    doFetch(`${creds.instanceUrl}/services/data/${SALESFORCE_API_VERSION}/sobjects/${object}/${recordId}`, {
+    doFetch(salesforceRecordUrl(creds.instanceUrl, object, recordId), {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

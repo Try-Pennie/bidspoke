@@ -1,10 +1,11 @@
 /**
  * One rule for whether a Salesforce answer is worth sending again (#471). The node
  * retries on it and the replay tool leaves a held write pending on it, so the two
- * must never disagree about the same answer.
+ * must never disagree about the same answer. Both live in the shared
+ * salesforce-api module, which every caller imports them from (#2394).
  */
 import { describe, it, expect } from 'vitest'
-import { salesforceFailureIsTransient, salesforceRejectedTheWrite } from '../salesforce'
+import { salesforceFailureIsTransient, salesforceRejectedTheWrite } from '../../../lib/salesforce-api'
 
 describe('salesforceFailureIsTransient', () => {
   it('reads a rate limit and a server error as worth sending again', () => {
