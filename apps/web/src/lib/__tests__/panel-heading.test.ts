@@ -32,7 +32,8 @@ describe('panelHeadingOf', () => {
 
 /**
  * Types whose panel heading still shows the raw type name with its underscore,
- * because no design round has settled their words yet (#2765 reported them).
+ * because no design round has settled their words yet (#2765 reported them;
+ * #2961 settles them and empties this list).
  * This list may only shrink: a type that gets readable words must leave it, and
  * the test below fails while a listed type no longer shows an underscore. A new
  * node type may never be added here; it ships with a readable heading.
