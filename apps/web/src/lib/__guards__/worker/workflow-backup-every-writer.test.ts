@@ -153,7 +153,8 @@ describe('every workflow version the Worker writes is pushed to the GitHub backu
     const declared = /VERSION_OPS[^=]*=\s*new Set\(\[([^\]]*)\]\)/.exec(readFileSync(path.join(WORKER_SRC, WRITER), 'utf8'))
     expect(declared, 'VERSION_OPS is no longer declared as a literal set in lib/write-workflow.ts').not.toBeNull()
     const ops = [...(declared?.[1] ?? '').matchAll(/'(\w+)'/g)].map((m) => m[1]).sort()
-    expect(opsAnsweringAVersion()).toEqual(['restore', 'save'])
+    // Create and duplicate answer theirs since #2879, so a new or copied workflow is backed up at once.
+    expect(opsAnsweringAVersion()).toEqual(['create', 'duplicate', 'restore', 'save'])
     expect(ops).toEqual(opsAnsweringAVersion())
   })
 })

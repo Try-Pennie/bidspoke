@@ -339,6 +339,8 @@ workflows.post('/', async (c) => {
   // nothing a caller sends can create one that takes traffic before a person
   // has switched it on through PATCH, where the safeguards live. The stamp is
   // never the caller's: the Worker says which rules this definition is judged by.
+  // The function also writes the first version (v1), which writeWorkflow pushes
+  // to the GitHub backup, so a new workflow is backed up before its first save (#2879).
   const result = await writeWorkflow(supabase, {
     op: 'create',
     orgId,
@@ -401,8 +403,13 @@ workflows.post('/:id/duplicate', async (c) => {
   // first version of it when it was never saved: one write_workflow call, so a
   // copy never lands without its history (#1947). A copy of a live workflow is
   // a second definition that could take traffic the moment anything routes to
-  // it, so a person switches it on deliberately. History is copied as stored;
-  // a restore of a copied version cleans its scripts as every restore does.
+  // it, so a person switches it on deliberately. History is copied as stored,
+  // except each version's commit_sha, which names a commit of the source's
+  // file; a restore of a copied version cleans its scripts as every restore
+  // does. The function answers the version the copy's definition is (the
+  // newest copied one, or a new one on top when the cleaned definition differs
+  // from it), which writeWorkflow pushes to the GitHub backup as the copy's own
+  // file and stamps with that commit (#2879).
   const result = await writeWorkflow(supabase, {
     op: 'duplicate',
     orgId,
