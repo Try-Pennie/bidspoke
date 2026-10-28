@@ -660,6 +660,17 @@
     "note": "The Slack alert settings save (#2643), in its five argument form (#2870, migration 20261027230000) that also names the changer in updated_by_email: PATCH /api/integrations/slack/settings merges only the channel and the four alert switches into the alert row through it, so a Reconnect at the same moment keeps its workspace name and token. A WRITE, service_role only, so anon must be denied. Probed with all five argument names, because PostgREST picks the form by the names a call sends: if only the four argument form exists, every settings change on the Connections page answers 500 and saves nothing. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would write nothing."
   },
   {
+    "name": "save_slack_alert_settings",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_connection_id": "00000000-0000-0000-0000-000000000000",
+      "p_settings": {},
+      "p_actor": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "absent",
+    "note": "The FOUR argument form of the Slack alert settings save, DROPPED by migration 20261028020000, and this entry is now the guard that it stays dropped (#2896, #2930). It saved a setting without naming who changed it; the five argument form above replaced it. A copy recreated by hand would be picked by any call sending the four old names, saving a change that names nobody. Probed with exactly the four argument names of migration 20261027170000, because PostgREST picks an overload by the names a call sends: the five argument form has no default for p_actor_email, so it cannot answer this probe, and only a four argument form can. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would write nothing."
+  },
+  {
     "name": "connection_history",
     "args": {
       "p_organization_id": "00000000-0000-0000-0000-000000000000",

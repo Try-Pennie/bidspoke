@@ -18,7 +18,11 @@
 # An entry may also expect `absent`, which asserts the object is NOT there. That
 # is the guard a DROP needs in order to outlive the migration that performed it:
 # a scan of migration text cannot see a routine recreated by hand in the database
-# (#1145).
+# (#1145). It probes with the argument names of the form that was dropped, and
+# PostgREST picks an overload by the names a call sends, so an absent entry can
+# assert a dropped OVERLOAD stays gone while the app calls another form of the
+# same function, provided that form has a parameter without a default the
+# probe does not send (#2930).
 #
 # Each object's ARGUMENT SHAPE comes from the manifest and matches what the app
 # actually sends. That is not cosmetic: probed with an empty body,
@@ -79,23 +83,36 @@ echo "Asserting $COUNT required database objects against $SUPABASE_URL"
 FAILURES=0
 UNREACHABLE=0
 
+# Each run keeps the probe's answer in a file of its own. A fixed path such as
+# /tmp/dbobj.json is shared by every run and every user on the machine: on a
+# self hosted runner a file another user left there cannot be overwritten, so a
+# failed write left an earlier run's answer to be read as this probe's (#2930).
+BODY=$(mktemp "${TMPDIR:-/tmp}/dbobj.XXXXXX") || { echo "::error::could not create a temporary file for the probe answers."; exit 1; }
+trap 'rm -f "$BODY"' EXIT
+
 probe_once() {
-  # $1 name, $2 args json. Echoes "<http_code> <pg_code>".
+  # $1 name, $2 args json. Echoes "<http_code> <pg_code>", with an http_code of
+  # 000 when curl got no answer, so the pg code can never be read as the status.
   local name="$1" args="$2" http pg
-  http=$(curl -s -o /tmp/dbobj.json -w '%{http_code}' --max-time 20 \
+  : >"$BODY"
+  http=$(curl -s -o "$BODY" -w '%{http_code}' --max-time 20 \
     -X POST "$SUPABASE_URL/rest/v1/rpc/$name" \
     -H "apikey: $SUPABASE_ANON_KEY" \
     -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
     -H 'Content-Type: application/json' \
     -d "$args" 2>/dev/null) || http=""
-  pg=$(jq -r '.code // ""' /tmp/dbobj.json 2>/dev/null) || pg=""
-  echo "$http $pg"
+  pg=$(jq -r '.code // ""' "$BODY" 2>/dev/null) || pg=""
+  echo "${http:-000} $pg"
 }
 
 for i in $(seq 0 $((COUNT - 1))); do
   NAME=$(jq -r ".[$i].name" "$MANIFEST")
   ARGS=$(jq -c ".[$i].args" "$MANIFEST")
   EXPECT=$(jq -r ".[$i].anon" "$MANIFEST")
+  # The entry is named with its argument names, because PostgREST picks an
+  # overload by the names a call sends and two entries can share a function
+  # name: the form the app calls, and a dropped overload asserted absent (#2930).
+  LABEL="$NAME($(jq -r ".[$i].args | keys_unsorted | join(\", \")" "$MANIFEST"))"
 
   read -r HTTP PG <<<"$(probe_once "$NAME" "$ARGS")"
   VERDICT=$(bash "$DECIDE" "$HTTP" "$PG" "$EXPECT")
@@ -108,28 +125,28 @@ for i in $(seq 0 $((COUNT - 1))); do
     VERDICT=$(bash "$DECIDE" "$HTTP" "$PG" "$EXPECT")
   fi
 
-  printf '%-42s expect_anon=%-8s http=%-4s pg=%-10s -> %s\n' "$NAME" "$EXPECT" "${HTTP:-none}" "${PG:-none}" "$VERDICT"
+  printf '%-42s expect_anon=%-8s http=%-4s pg=%-10s -> %s\n' "$LABEL" "$EXPECT" "${HTTP:-none}" "${PG:-none}" "$VERDICT"
 
   case "$VERDICT" in
     ok) ;;
     missing)
-      echo "::error::$NAME is not callable with the arguments the app sends. Either the object is absent from the live database or its signature changed, and any code path calling it is broken right now."
+      echo "::error::$LABEL is not callable with the arguments the app sends. Either the object is absent from the live database or its signature changed, and any code path calling it is broken right now."
       FAILURES=$((FAILURES + 1))
       ;;
     anon_can_execute)
-      echo "::error::$NAME is executable by anon over /rest/v1/rpc, which the manifest says it must not be. Postgres grants EXECUTE to PUBLIC on every new function, so the fix is an explicit REVOKE in a migration."
+      echo "::error::$LABEL is executable by anon over /rest/v1/rpc, which the manifest says it must not be. Postgres grants EXECUTE to PUBLIC on every new function, so the fix is an explicit REVOKE in a migration."
       FAILURES=$((FAILURES + 1))
       ;;
     still_present)
-      echo "::error::$NAME answered a probe, and the manifest says it must not exist at all. It was dropped deliberately; something has recreated it. Check the manifest's note for why it was removed before restoring anything."
+      echo "::error::$LABEL answered a probe, and the manifest says that form must not exist at all. It was dropped deliberately; something has recreated it. Check the manifest's note for why it was removed before restoring anything."
       FAILURES=$((FAILURES + 1))
       ;;
     probe_rejected)
-      echo "::error::the probe of $NAME did not reach the question (http=$HTTP pg=$PG). Either the anon key is wrong or a grant the manifest expects is absent."
+      echo "::error::the probe of $LABEL did not reach the question (http=$HTTP pg=$PG). Either the anon key is wrong or a grant the manifest expects is absent."
       FAILURES=$((FAILURES + 1))
       ;;
     unreachable)
-      echo "::error::could not reach the database to check $NAME after a retry. This ran after the deploy, so an unreachable database is itself the alarm."
+      echo "::error::could not reach the database to check $LABEL after a retry. This ran after the deploy, so an unreachable database is itself the alarm."
       UNREACHABLE=$((UNREACHABLE + 1))
       ;;
   esac
