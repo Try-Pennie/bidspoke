@@ -25,7 +25,8 @@
  *  - a field another writer changed since the row was written is left out and
  *    named in an alert (the read-back's one rule, salesforce-field-conflict.ts),
  *    except one holding a later state of its value (LATER_STATES, #2895), which
- *    is left out, counted as later_states and never alerted;
+ *    is left out, counted as later_states and never alerted, and one nobody
+ *    needs to decide (QUIET_MOVED_FIELDS), which is left out and logged;
  *  - at most DRAIN_MAX_ATTEMPTS attempts per row, the second no sooner than
  *    DRAIN_BACKOFF_MS after the first ended. A rejection closes the row refused
  *    (salesforceRejectedTheWrite), and a failed last attempt closes it abandoned;
@@ -69,6 +70,7 @@ import { bulkheadBusy, readBackHoldsStep, slackForEnv, SF_CALL_DEADLINE_MS, SF_R
 import { makeAlertClaims, raceDeadline, type AlertClaims } from './alert-claim'
 import { secretKeys, type SecretKeyInput } from './secret-crypto'
 import { formatErr } from './format-error'
+import { movedFieldsToAlert } from './salesforce-field-conflict'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { sendWritebackDrainAlert, type SlackConnection, type WritebackDrainAlert } from './slack'
 import { failedRun, type FailedRun } from './minute-job-failures'
@@ -267,6 +269,16 @@ async function drainRows(deps: WritebackDrainDeps, listed: DrainRow[], s: DrainS
   })
   const found = (r: DrainRow, kind: DrainFinding['kind'], extra: Partial<DrainFinding> = {}) =>
     findings.push({ id: r.id, org_id: r.organization_id, kind, sf_object: r.sf_object, ...extra })
+  /** Whether a row's moved fields need an alert: any does, unless every one is a field nobody needs to decide (QUIET_MOVED_FIELDS), which is logged. */
+  const alertMoved = (r: DrainRow, moved: string[]): boolean => {
+    if (moved.length === 0) return false
+    if (movedFieldsToAlert(r.sf_object, moved).length === 0) {
+      console.log(`[${WRITEBACK_DRAIN_JOB}] held write ${r.id} left ${moved.join(', ')} of ${r.sf_object} as moved, which nobody needs to decide`)
+      return false
+    }
+    s.moved++
+    return true
+  }
 
   let taken = 0
   for (const group of groups.values()) {
@@ -307,19 +319,13 @@ async function drainRows(deps: WritebackDrainDeps, listed: DrainRow[], s: DrainS
         s.replayed++
         earlier.push(out.sent)
         if (out.later.length > 0) s.later_states++
-        if (out.moved.length > 0) {
-          s.moved++
-          found(r, 'moved', { fields: out.moved, resent: true })
-        }
+        if (alertMoved(r, out.moved)) found(r, 'moved', { fields: out.moved, resent: true })
         continue
       }
       if (out.kind === 'all_moved') {
         if (out.later.length > 0) s.later_states++
         // Only a field another writer moved is a choice for a person; a later state is not (#2895).
-        if (out.moved.length > 0) {
-          s.moved++
-          found(r, 'moved', { fields: out.moved, resent: false })
-        }
+        if (alertMoved(r, out.moved)) found(r, 'moved', { fields: out.moved, resent: false })
         continue
       }
       if (out.kind === 'refused') {
