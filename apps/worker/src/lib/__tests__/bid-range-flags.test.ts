@@ -56,15 +56,28 @@ describe('fetchPartnerFlags', () => {
   })
 
   // #2394: the describe url is built by the shared salesforce-api module now, and
-  // must be byte for byte the url the hand built template sent before it.
+  // must be byte for byte the url the hand built template sent before it. The
+  // template encoded the name; for an API name encoding changes nothing, which
+  // is why salesforceSobjectUrl, which puts it in as it is, sends the same bytes.
   it.each([
     ['https://x.my.salesforce.com', 'BidRangeRow__c'],
-    ['https://pennie.my.salesforce.com', 'Other Matrix/Rows__c'],
-    ['https://sandbox--dev.sandbox.my.salesforce.com', 'Ünïcode&Matrix?__c'],
+    ['https://pennie.my.salesforce.com', 'Other_Matrix_Rows__c'],
+    ['https://sandbox--dev.sandbox.my.salesforce.com', 'Matrix2__c'],
   ])('asks %s for the describe of %s at exactly the url the hand built template sent', async (instanceUrl, sobject) => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify(BID_RANGE_ROW_DESCRIBE), { status: 200 }))
     await fetchPartnerFlags(instanceUrl, 'tok', fetchImpl, sobject)
     expect(fetchImpl.mock.calls[0][0]).toBe(`${instanceUrl}/services/data/v60.0/sobjects/${encodeURIComponent(sobject)}/describe`)
+  })
+
+  // The object comes from a partner bid config a person typed (sf_object), which
+  // nothing checks on save. A name that is not an API name names no object, so it
+  // is refused before any call rather than sent, which keeps it from reaching the
+  // URL as more than one path segment now that the name goes in unencoded.
+  it.each(['Other Matrix/Rows__c', 'Ünïcode&Matrix?__c', '../limits', 'BidRangeRow__c/', ''])('refuses %j before any call, since it is not a Salesforce API name', async (sobject) => {
+    const fetchImpl = vi.fn()
+    await expect(fetchPartnerFlags('https://x.my.salesforce.com', 'tok', fetchImpl, sobject))
+      .rejects.toThrow(/is not a Salesforce API name/)
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('throws with the status and body when Salesforce refuses, never falling back to a fixed list', async () => {

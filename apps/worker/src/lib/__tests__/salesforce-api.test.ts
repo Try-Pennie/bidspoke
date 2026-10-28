@@ -222,9 +222,13 @@ describe('findSalesforceErrorRule', () => {
   })
 })
 
+// The node used to hand these two rules out as well, the shared functions
+// themselves (#2335). Every caller now imports them from here (#2394), so the
+// node no longer does: a caller that reached for its copy would be importing
+// the engine's whole node to read two pure rules.
 describe('one implementation', () => {
-  it('the node hands out the shared rules themselves, not copies of them', () => {
-    expect(node.salesforceFailureIsTransient).toBe(salesforceFailureIsTransient)
-    expect(node.salesforceRejectedTheWrite).toBe(salesforceRejectedTheWrite)
+  it('the node hands out neither rule; they are taken from this module', () => {
+    expect(Object.keys(node)).not.toContain('salesforceFailureIsTransient')
+    expect(Object.keys(node)).not.toContain('salesforceRejectedTheWrite')
   })
 })

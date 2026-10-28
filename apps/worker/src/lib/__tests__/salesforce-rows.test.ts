@@ -13,7 +13,8 @@ vi.mock('../salesforce-creds', () => ({
 }))
 vi.mock('../../engine/nodes/salesforce', () => ({ getSalesforceToken: vi.fn(async () => 'token') }))
 
-import { salesforceRows } from '../salesforce-read'
+import * as salesforceRead from '../salesforce-read'
+import { salesforceGet, salesforceRows } from '../salesforce-read'
 
 const env = {} as Env
 const supabase = {} as SupabaseClient
@@ -71,5 +72,22 @@ describe('salesforceRows', () => {
     pages({ records: [{ Id: 'a' }], done: false, nextRecordsUrl: NEXT }, new Response('INVALID_SESSION_ID', { status: 401 }))
 
     await expect(salesforceRows(env, supabase, 'SELECT Id FROM Submission__c', 'a test', 10)).rejects.toThrow(/401.*INVALID_SESSION_ID/)
+  })
+})
+
+// #2394: the data URL is built by the shared salesforce-api module now, and must
+// be byte for byte the url the hand built template sent. The expected value is
+// that template written out.
+describe('salesforceGet', () => {
+  it('asks for the path under the versioned data API, as the hand built template did', async () => {
+    const urls = pages({ fields: [] })
+
+    await salesforceGet(env, supabase, 'sobjects/Lead/describe', 'a test')
+
+    expect(urls).toEqual(['https://sf.test/services/data/v60.0/sobjects/Lead/describe'])
+  })
+
+  it('declares no API version of its own: there is one, in the shared module', () => {
+    expect(Object.keys(salesforceRead)).not.toContain('SALESFORCE_API_VERSION')
   })
 })

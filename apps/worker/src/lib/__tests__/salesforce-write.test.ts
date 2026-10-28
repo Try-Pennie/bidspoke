@@ -87,6 +87,14 @@ describe('salesforceUpdate', () => {
     expect(d.fetch).not.toHaveBeenCalled()
   })
 
+  // The record URL comes from the shared salesforceRecordUrl (#2394), which puts
+  // the object in as it is, so a name that is not an API name never reaches it.
+  it('refuses an object that is not a Salesforce API name before any call, since it goes into the URL', async () => {
+    const d = deps(new Response(null, { status: 204 }))
+    await expect(salesforceUpdate({} as Env, supabase, 'org-1', 'Lead/../query', '00Q000000000001AAA', {}, 'p', d)).rejects.toThrow(/not a Salesforce API name/)
+    expect(d.fetch).not.toHaveBeenCalled()
+  })
+
   it('local dev is refused unless ALLOW_PROD_WRITES is set: Salesforce has no local copy', async () => {
     const d = deps(new Response(null, { status: 204 }))
     await expect(salesforceUpdate({ LOCAL_DEV: 'true' } as Env, supabase, 'org-1', 'Lead', '00Q000000000001AAA', {}, 'p', d)).rejects.toThrow(/ALLOW_PROD_WRITES/)

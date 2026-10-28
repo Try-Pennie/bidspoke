@@ -10,7 +10,8 @@
  */
 
 import { parseJson } from './json'
-import { salesforceDataUrl } from './salesforce-api'
+import { salesforceSobjectUrl } from './salesforce-api'
+import { isSalesforceApiName } from './salesforce-names'
 
 export interface PartnerFlag {
   /** API name, e.g. IsBorrowBetter__c. */
@@ -49,9 +50,16 @@ export async function fetchPartnerFlags(
   fetchImpl: typeof fetch = fetch,
   sobject = 'BidRangeRow__c',
 ): Promise<PartnerFlag[]> {
-  // Not salesforceSobjectUrl, which puts the name in as it is: this url has
-  // always encoded it, and moving to the shared module (#2394) changes no byte.
-  const res = await fetchImpl(salesforceDataUrl(instanceUrl, `/sobjects/${encodeURIComponent(sobject)}/describe`), {
+  // The name comes from a partner bid config a person typed (sf_object), which
+  // nothing checks on save. salesforceSobjectUrl puts it in as it is, as every
+  // caller of the shared module does with a name it has checked (#2394): for an
+  // API name that is the same bytes the encoded name sent before, and anything
+  // else names no object (the sync also reads it FROM in SOQL), so it is refused
+  // here rather than sent as more than one path segment.
+  if (!isSalesforceApiName(sobject)) {
+    throw new Error(`${JSON.stringify(sobject)} is not a Salesforce API name, so its describe was not read`)
+  }
+  const res = await fetchImpl(`${salesforceSobjectUrl(instanceUrl, sobject)}/describe`, {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) {

@@ -21,7 +21,7 @@ import { requireSalesforceCreds, resolveSalesforceCredentialOrg } from './salesf
 import { lookupSlackConnection, postMessage } from './slack'
 import type { SlackAlertKind } from './slack-post-outcome'
 import { parseJson } from './json'
-import { salesforceDataUrl } from './salesforce-api'
+import { salesforceDataUrl, salesforceNextPageUrl } from './salesforce-api'
 import { formatErr } from './format-error'
 import { fetchAllPaged } from './paginate'
 import { fetchPartnerFlags, type PartnerFlag } from './bid-range-flags'
@@ -434,7 +434,7 @@ export async function querySalesforce<T>(
     }
     const body = await parseJson<{ records: T[]; done: boolean; nextRecordsUrl?: string }>(res)
     all.push(...body.records)
-    next = body.done ? undefined : body.nextRecordsUrl ? `${instanceUrl}${body.nextRecordsUrl}` : undefined
+    next = body.done ? undefined : body.nextRecordsUrl ? salesforceNextPageUrl(instanceUrl, body.nextRecordsUrl) : undefined
   }
   return all
 }

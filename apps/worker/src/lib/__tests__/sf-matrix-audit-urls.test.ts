@@ -47,4 +47,16 @@ describe('querySalesforce urls', () => {
       'https://x.my.salesforce.com/services/data/v60.0/query/01gXX-2000',
     ])
   })
+
+  // The next page goes through salesforceNextPageUrl (#2394): a path is joined
+  // byte for byte as before (above), and an absolute one is followed as it is,
+  // where the hand join sent the instance twice.
+  it('follows an absolute next page as it is', async () => {
+    const urls = recordUrls([
+      { records: [{ Id: 'a' }], done: false, nextRecordsUrl: 'https://x.my.salesforce.com/services/data/v60.0/query/01gXX-2000' },
+      { records: [{ Id: 'b' }], done: true },
+    ])
+    await querySalesforce<{ Id: string }>('https://x.my.salesforce.com', 'tok', SOQL[0])
+    expect(urls[1]).toBe('https://x.my.salesforce.com/services/data/v60.0/query/01gXX-2000')
+  })
 })
