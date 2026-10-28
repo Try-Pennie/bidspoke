@@ -159,7 +159,7 @@ export interface DrainSummary {
   replayed: number
   refused: number
   abandoned: number
-  /** Rows with at least one field left out because another writer changed it. */
+  /** Rows alerted for a field left out because another writer changed it; a row whose only such fields nobody needs to decide (QUIET_MOVED_FIELDS) is logged, not counted. */
   moved: number
   /** Rows with at least one field left out because it already held a later state of its value (#2895), never alerted. */
   later_states: number
