@@ -53,6 +53,7 @@ import { etTime, sendRecoveryAlert, sendTitledAlert } from './slack'
 import { backoffCooldownKey, clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, type BackoffKv } from './alert-backoff'
 import { keepAlerted, markSpikeSeen, recordPaged, recoveryDue, settleRecovery, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import type { AlertClaims } from './alert-claim'
+import type { SlackAlertKind } from './slack-post-outcome'
 import { formatErr } from './format-error'
 
 /** The minutes, ending with the current one, the serving alert looks back over. */
@@ -116,7 +117,7 @@ export interface StoredCopyCheckDeps {
   sweep: SweepResult
   now?: () => number
   /** Seams for tests; production uses the real senders and the shared alerter. */
-  post?: (slack: SlackTarget, message: TitledMessage) => Promise<boolean>
+  post?: (slack: SlackTarget, message: TitledMessage, alertKind: SlackAlertKind) => Promise<boolean>
   postRecovery?: typeof sendRecoveryAlert
   notify?: typeof notifyExportFailure
 }
@@ -269,7 +270,7 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
     subjectLabel: 'Stored copy use',
     onRecordError: (message) => recordErrors.push(message),
   }
-  const post = deps.post ?? ((slack: SlackTarget, message: TitledMessage) => sendTitledAlert(slack, null, message))
+  const post = deps.post ?? ((slack: SlackTarget, message: TitledMessage, alertKind: SlackAlertKind) => sendTitledAlert(slack, null, message, alertKind))
 
   if (reading.activeMinutes < STORED_COPY_SERVING_ALERT_MINUTES) {
     // Below the threshold is not over: a copy used at all in the window moves
@@ -294,7 +295,7 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
         // clear. The notice says it had cleared by this tick instead.
         measuredWindowMinutes: STORED_COPY_SERVING_WINDOW_MINUTES,
         url: `${deps.appUrl}/dashboard`,
-      }, nowMs).catch((e: unknown) => {
+      }, 'stored-copy-serving-all-clear', nowMs).catch((e: unknown) => {
         console.error(`[stored-copy-checks] all-clear failed: ${formatErr(e)}`)
         return false
       })
@@ -338,7 +339,7 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
   const repeat = describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged) ?? undefined
   let delivered = false
   for (const slack of targets) {
-    const ok = await post(slack, { title: message.title, errors: message.errors, context: message.context, fixHint: message.fixHint, repeat }).catch((e: unknown) => {
+    const ok = await post(slack, { title: message.title, errors: message.errors, context: message.context, fixHint: message.fixHint, repeat }, 'stored-copy-serving').catch((e: unknown) => {
       console.error(`[stored-copy-checks] Slack post failed: ${formatErr(e)}`)
       return false
     })

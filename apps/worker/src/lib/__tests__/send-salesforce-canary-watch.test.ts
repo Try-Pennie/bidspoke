@@ -104,6 +104,7 @@ const ok = (body: unknown): SalesforceRead => ({ kind: 'answer', status: 200, te
 function deps(over: Partial<CanaryWatchDeps> & { steps?: WatchedStep[]; records?: (id: string) => SalesforceRead | undefined; clockStepMs?: number } = {}) {
   const asked: string[] = []
   const posted: ReturnType<typeof canaryWatchMessage>[] = []
+  const postedKinds: string[] = []
   const recorded: JobRunEnding[] = []
   const windows: Array<[string, string]> = []
   let clock = NOW_MS
@@ -123,8 +124,9 @@ function deps(over: Partial<CanaryWatchDeps> & { steps?: WatchedStep[]; records?
       const m = /^\/sobjects\/(Submission__c|Lead)\/([A-Za-z0-9]+)\?fields=/.exec(p)
       return (m && over.records?.(m[2])) ?? { kind: 'answer', status: 404, text: '[{"errorCode":"NOT_FOUND"}]' }
     },
-    post: async (m) => {
+    post: async (m, alertKind) => {
       posted.push(m)
+      postedKinds.push(alertKind)
       return true
     },
     recordRun: async (_s, ending) => {
@@ -132,7 +134,7 @@ function deps(over: Partial<CanaryWatchDeps> & { steps?: WatchedStep[]; records?
     },
     ...over,
   }
-  return { d, asked, posted, recorded, windows }
+  return { d, asked, posted, postedKinds, recorded, windows }
 }
 
 const landedRecords = (id: string) => {
@@ -184,19 +186,22 @@ describe('before the stage is applied', () => {
   })
 
   it('once the check has reported a day, a later day with neither the port nor a direct write still reports, so a rollback is never silenced', async () => {
-    const { d, posted, recorded } = deps({ livePorted: async () => false, anyDirect: async () => false, reportedBefore: async () => true, steps: [relayStep(1), relayStep(2)] })
+    const { d, posted, postedKinds, recorded } = deps({ livePorted: async () => false, anyDirect: async () => false, reportedBefore: async () => true, steps: [relayStep(1), relayStep(2)] })
     const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
     expect(report.notSwitchedOn).toBeUndefined()
     expect(posted).toHaveLength(1)
+    // Each watch's message is logged under its own fixed kind (#2948).
+    expect(postedKinds).toEqual(['send-salesforce-canary-watch'])
     expect(posted[0].alert).toBe(true)
     expect(posted[0].title).toBe('Direct Send Salesforce writes: Main Flow is not writing directly')
     expect(recorded[0].outcome).toBe('off_direct_write')
   })
 
   it('the live invalid state canary, which has reported every day since Oct 17, keeps alerting after a rollback as before', async () => {
-    const { d, posted } = deps({ livePorted: async () => false, anyDirect: async () => false, reportedBefore: async () => true, steps: [relayStep(1)] })
+    const { d, posted, postedKinds } = deps({ livePorted: async () => false, anyDirect: async () => false, reportedBefore: async () => true, steps: [relayStep(1)] })
     await runCanaryWatch(INVALID_STATE_SUBJECT, d)
     expect(posted[0].title).toBe('Direct Salesforce writes: Main Flow is not writing directly')
+    expect(postedKinds).toEqual(['invalid-state-canary-watch'])
   })
 
   it('whether it reported before, when that cannot be read, counts as yes', async () => {

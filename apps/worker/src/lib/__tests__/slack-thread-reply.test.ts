@@ -40,7 +40,7 @@ describe('sendThreadReply through the Slack client (#2331, F123)', () => {
 
   it('posts the text under the parent message (channel, thread_ts, unfurl_links false, the bearer token) and logs nothing', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '1760700001.000200' }))
-    await expect(sendThreadReply(HANDLE, 'Summary: the credit pull timed out')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'Summary: the credit pull timed out', 'execution-failure')).resolves.toBeUndefined()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const post = await slackPostOf(fetchMock.mock.calls[0])
     expect(post.url).toBe('https://slack.com/api/chat.postMessage')
@@ -55,27 +55,27 @@ describe('sendThreadReply through the Slack client (#2331, F123)', () => {
 
   it('posts through the Slack client, as one Request', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '1.1' }))
-    await sendThreadReply(HANDLE, 'hi')
+    await sendThreadReply(HANDLE, 'hi', 'execution-failure')
     expect(fetchMock.mock.calls[0]).toHaveLength(1)
     expect(fetchMock.mock.calls[0][0]).toBeInstanceOf(Request)
   })
 
   it('resolves, and logs the Slack error code, when Slack answers ok:false', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'thread_not_found' }))
-    await expect(sendThreadReply(HANDLE, 'hi')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'hi', 'execution-failure')).resolves.toBeUndefined()
     expect(lines()).toEqual(['[slack] thread reply API error: thread_not_found'])
   })
 
   it('resolves, and logs the same line as before, when Slack answers ok:false with no error code', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false }))
-    await expect(sendThreadReply(HANDLE, 'hi')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'hi', 'execution-failure')).resolves.toBeUndefined()
     expect(lines()).toEqual(['[slack] thread reply API error: undefined'])
   })
 
   it('resolves on a 429 in one request with no timer (never slept on), and logs it', async () => {
     const timer = vi.spyOn(globalThis, 'setTimeout')
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'ratelimited' }, 429))
-    await expect(sendThreadReply(HANDLE, 'hi')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'hi', 'execution-failure')).resolves.toBeUndefined()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(timer).not.toHaveBeenCalled()
     expect(lines()).toEqual(['[slack] thread reply HTTP error 429'])
@@ -85,7 +85,7 @@ describe('sendThreadReply through the Slack client (#2331, F123)', () => {
   it('logs the Retry-After of a 429, not waited for', async () => {
     const timer = vi.spyOn(globalThis, 'setTimeout')
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'ratelimited' }, 429, { 'Retry-After': '30' }))
-    await expect(sendThreadReply(HANDLE, 'hi')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'hi', 'execution-failure')).resolves.toBeUndefined()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(timer).not.toHaveBeenCalled()
     expect(lines()).toEqual(['[slack] thread reply HTTP error 429, Retry-After 30 s, not waited for'])
@@ -93,14 +93,14 @@ describe('sendThreadReply through the Slack client (#2331, F123)', () => {
 
   it('resolves, and logs the status, on a 500', async () => {
     fetchMock.mockImplementation(async () => new Response('upstream down', { status: 500 }))
-    await expect(sendThreadReply(HANDLE, 'hi')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'hi', 'execution-failure')).resolves.toBeUndefined()
     expect(lines()).toEqual(['[slack] thread reply HTTP error 500'])
   })
 
   it('resolves, never throws, on a network failure, and logs the error the fetch threw (the same object)', async () => {
     const down = new TypeError('fetch failed')
     fetchMock.mockImplementation(() => Promise.reject(down))
-    await expect(sendThreadReply(HANDLE, 'hi')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'hi', 'execution-failure')).resolves.toBeUndefined()
     expect(error).toHaveBeenCalledTimes(1)
     expect(error.mock.calls[0]).toHaveLength(2)
     expect(error.mock.calls[0][0]).toBe('[slack] thread reply failed:')
@@ -109,7 +109,7 @@ describe('sendThreadReply through the Slack client (#2331, F123)', () => {
 
   it('resolves, never throws, when a 200 answer is not JSON, and logs the SyntaxError', async () => {
     fetchMock.mockImplementation(async () => new Response('<html>edge</html>', { status: 200 }))
-    await expect(sendThreadReply(HANDLE, 'hi')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'hi', 'execution-failure')).resolves.toBeUndefined()
     expect(error).toHaveBeenCalledTimes(1)
     expect(error.mock.calls[0][0]).toBe('[slack] thread reply failed:')
     expect(error.mock.calls[0][1]).toBeInstanceOf(SyntaxError)
@@ -122,18 +122,18 @@ describe('sendThreadReply through the Slack client (#2331, F123)', () => {
   // chat.postMessage with 200, so this is an edge.
   it('resolves and logs an HTTP error for a 2xx other than 200, even when its body says ok:true', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '1.1' }, 201))
-    await expect(sendThreadReply(HANDLE, 'hi')).resolves.toBeUndefined()
+    await expect(sendThreadReply(HANDLE, 'hi', 'execution-failure')).resolves.toBeUndefined()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(lines()).toEqual(['[slack] thread reply HTTP error 201'])
   })
 
   it('never puts the token in a log line', async () => {
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'invalid_auth' }, 429, { 'Retry-After': '5' }))
-    await sendThreadReply(HANDLE, 'hi')
+    await sendThreadReply(HANDLE, 'hi', 'execution-failure')
     fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'invalid_auth' }))
-    await sendThreadReply(HANDLE, 'hi')
+    await sendThreadReply(HANDLE, 'hi', 'execution-failure')
     fetchMock.mockImplementation(() => Promise.reject(new TypeError('fetch failed')))
-    await sendThreadReply(HANDLE, 'hi')
+    await sendThreadReply(HANDLE, 'hi', 'execution-failure')
     expect(error).toHaveBeenCalledTimes(3)
     expect(lines().join('\n')).not.toContain(TOKEN)
   })

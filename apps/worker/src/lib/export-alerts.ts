@@ -362,7 +362,7 @@ export async function notifyExportFailure(
         itemNoun: explained?.itemNoun,
         title: titled?.title,
         context: titled?.context,
-      })) delivered = true
+      }, 'export-alert')) delivered = true
     } catch (err) {
       console.error(`[export-alerts] alert failed for org ${orgId}:`, err)
     }

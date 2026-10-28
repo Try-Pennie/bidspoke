@@ -106,7 +106,7 @@ describe('sendCliffAlert channel (#110)', () => {
 
   it('posts to the channel it is given (the per-workflow override), not a hardcoded default', async () => {
     await sendCliffAlert({ bot_token: 'xoxb' }, '#leadflow-overrides', cliff, 'https://app.test', selfCheck)
-    expect(vi.mocked(postMessage)).toHaveBeenCalledWith('xoxb', '#leadflow-overrides', expect.anything(), expect.any(String))
+    expect(vi.mocked(postMessage)).toHaveBeenCalledWith('xoxb', '#leadflow-overrides', expect.anything(), expect.any(String), 'volume-cliff')
   })
 })
 
@@ -192,6 +192,8 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     await run(kv)
 
     expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+    // Logged under its fixed kind (#2948).
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][3]).toBe('volume-cliff-all-clear')
     expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({
       signal: 'volume cliff',
       subject: 'Main Flow',

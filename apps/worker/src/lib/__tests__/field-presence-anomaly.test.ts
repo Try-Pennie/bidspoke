@@ -818,6 +818,8 @@ describe('field-presence alerting', () => {
     expect(text).toContain('Main Flow')
     expect(text).toContain('100.0%')
     expect(text).toContain('0.0%')
+    // Logged under its fixed kind, whatever the title says (#2948).
+    expect(vi.mocked(postMessage).mock.calls[0][4]).toBe('field-presence-drought')
   })
 
   it('starts the incident at the same reading as its running end, on a clock that moves between reads (#2099)', async () => {
@@ -1209,6 +1211,7 @@ describe('field-presence alerting', () => {
     expect(vi.mocked(sendGroupedRecoveryAlert).mock.calls[0][2].items).toMatchObject([
       { subject: 'Main Flow scout.final' },
     ])
+    expect(vi.mocked(sendGroupedRecoveryAlert).mock.calls[0][3]).toBe('field-presence-drought-all-clear')
     expect(kv.store.has('field-presence-drought-recovery:wf-1 scout.final')).toBe(false)
   })
 
@@ -1351,6 +1354,7 @@ describe('field-presence alerting', () => {
     // #835: it also fires for a field that is empty by design and read only on
     // a rare branch, which is neither an outage nor a wrong path, so it says so.
     expect(text).toMatch(/rare branch/)
+    expect(vi.mocked(postMessage).mock.calls[0][4]).toBe('field-presence-dead')
   })
 
   it('keeps the two tiers on separate incident markers', async () => {
@@ -1618,6 +1622,7 @@ describe('the daily dead run, narrowed (#2018, #1803)', () => {
     expect(postMessage).not.toHaveBeenCalled()
     expect(sendGroupedRecoveryAlert).toHaveBeenCalledTimes(1)
     expect(vi.mocked(sendGroupedRecoveryAlert).mock.calls[0][2]).toMatchObject({ recoveredPhrase: BY_DESIGN_PHRASE, signal: DEAD_SIGNAL })
+    expect(vi.mocked(sendGroupedRecoveryAlert).mock.calls[0][3]).toBe('field-presence-dead-all-clear')
     expect(kv.store.has(`field-presence-dead-recovery:wf-1 ${field}`)).toBe(false)
   })
 
@@ -1629,6 +1634,7 @@ describe('the daily dead run, narrowed (#2018, #1803)', () => {
     expect(text).toContain('Output Field Path Not Found')
     expect(text).toContain('did not appear on any of *2800* runs since 2026-10-07')
     expect(WRONG_PATH_SIGNAL).toBe('output field path not found')
+    expect(vi.mocked(postMessage).mock.calls[0][4]).toBe('field-presence-wrong-path')
   })
 
   it('hands an open dead page over to the wrong path alert with one line, rather than letting it lapse', async () => {

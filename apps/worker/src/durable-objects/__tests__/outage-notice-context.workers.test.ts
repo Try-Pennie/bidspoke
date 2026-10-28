@@ -78,9 +78,9 @@ describe('the outage line context in workerd (#2061)', () => {
     try {
       await runWithOutageNotice(s, async () => {
         await afterTimer()
-        await postMessage('xoxb-t', 'C1', [{ type: 'header', text: { type: 'plain_text', text: 'T' } }], 'T')
+        await postMessage('xoxb-t', 'C1', [{ type: 'header', text: { type: 'plain_text', text: 'T' } }], 'T', 'execution-failure')
       })
-      await postMessage('xoxb-t', 'C1', [{ type: 'header', text: { type: 'plain_text', text: 'T' } }], 'T')
+      await postMessage('xoxb-t', 'C1', [{ type: 'header', text: { type: 'plain_text', text: 'T' } }], 'T', 'execution-failure')
     } finally {
       globalThis.fetch = realFetch
     }

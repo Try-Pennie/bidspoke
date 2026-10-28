@@ -218,7 +218,7 @@ async function checkOrg(
     ]
 
     try {
-      const sent = await postMessage(slack.bot_token, slack.default_channel, blocks, `Email drop rate: ${o.source}`)
+      const sent = await postMessage(slack.bot_token, slack.default_channel, blocks, `Email drop rate: ${o.source}`, 'email-drop-rate')
       // The cooldown is set only on a CONFIRMED send. Setting it optimistically
       // would swallow the one notification whenever Slack was briefly unavailable
       // and then stay quiet for a day (LESSONS L12).

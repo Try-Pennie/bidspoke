@@ -32,9 +32,13 @@
  * build their title from a value. So a sender also names a fixed kind from
  * SLACK_ALERT_KINDS, which the line records as alert_kind whether or not a
  * title is shown, and the tail Worker copies into slack_post_outcomes.alert_kind
- * (#2811 tells a failing alert kind apart by it). A post that names none
- * records null, as every post did before. Only the HTTP money host page names
- * one so far; making the kind required of every sender is the next step.
+ * (#2811 tells a failing alert kind apart by it). The kind is a required
+ * argument of every poster (postMessage, sendThreadReply and the shared
+ * senders in lib/slack.ts), so an alert that names none does not compile. One
+ * kind per kind of alert, never per call site: two places posting the same
+ * alert share one, and one function posting two alerts names two. A thread
+ * reply names the kind of the alert it replies under. Rows written before
+ * #2948 hold null, which the table still allows.
  *
  * It adds no I/O and no await: one console.log, which Workers Logs and the tail
  * Worker both receive, and crypto.randomUUID. It never throws into a poster.
@@ -57,9 +61,136 @@ export type SlackPostOutcome = 'delivered' | 'refused' | 'no_answer'
  * value, so the record can group an alert's posts however its title reads.
  * Each is lower case words joined by single hyphens, at most ALERT_KIND_MAX
  * characters, which the table's own CHECK and the tail Worker's parser also
- * hold (migration 20261028170000). A new kind is added here.
+ * hold (migration 20261028170000). Named after the alert's job, check or
+ * incident signal where it has one, and an all-clear after its page with
+ * `-all-clear`. A new alert adds its kind here, and a removed one takes its
+ * kind out: a guard fails on a listed kind no sender names, and on a name
+ * listed twice (apps/web/src/lib/__guards__/worker/slack-alert-kinds-are-used.test.ts).
  */
-export const SLACK_ALERT_KINDS = ['http-money-host'] as const
+export const SLACK_ALERT_KINDS = [
+  // A run, a workflow's runs and its partners (the AI summary threads under the first two).
+  'execution-failure',
+  'slow-execution',
+  'slow-spike',
+  'slow-spike-all-clear',
+  'failure-spike',
+  'failure-saturation',
+  'upstream-outage',
+  'failure-rate-all-clear',
+  'partner-error-rate',
+  'partner-error-rate-all-clear',
+  'circuit-breaker',
+  'volume-cliff',
+  'volume-cliff-all-clear',
+  'volume-anomaly',
+  'lead-validation-config',
+  'lead-validation-config-all-clear',
+  'lead-validation-rejection-rate',
+  'lead-validation-rejection-rate-all-clear',
+  'field-presence-drought',
+  'field-presence-drought-all-clear',
+  'field-presence-dead',
+  'field-presence-dead-all-clear',
+  'field-presence-wrong-path',
+  'field-presence-wrong-path-all-clear',
+  'email-drop-rate',
+  'bid-recording-none',
+  'bid-recording-ratio',
+  'buyer-click-page',
+  'buyer-click-over-cap',
+  'slowdown-summary',
+  'repeated-slowdown',
+  // The bid matrix.
+  'bid-matrix-change',
+  'bid-matrix-validation',
+  'bid-matrix-sync',
+  'sf-matrix-audit',
+  'sf-matrix-audit-rebuilt',
+  // Writes that must not be lost.
+  'outcome-deadletter',
+  'outcome-deadletter-writeback-lost',
+  'outcome-deadletter-writeback-uncapturable',
+  'outcome-deadletter-writeback-held',
+  'outcome-deadletter-writeback-held-unrecorded',
+  'outcome-deadletter-continuation-unfinished',
+  'deadletter-volume',
+  'unconfirmed-writes',
+  'writeback-backlog',
+  'writeback-backlog-all-clear',
+  'writeback-drain',
+  'salesforce-read-back-resend-failed',
+  'salesforce-read-back-unknown',
+  'salesforce-read-back-conflict',
+  'salesforce-read-back-unread',
+  'salesforce-read-back-not-running',
+  'salesforce-bulkhead-limit',
+  'salesforce-bulkhead-limit-all-clear',
+  'strand-branch-skew',
+  'invalid-state-canary-watch',
+  'send-salesforce-canary-watch',
+  // Scheduled jobs and the checks that watch them.
+  'export-alert',
+  'cron-guard-failed-open',
+  'cron-guard-skipped-duplicate',
+  'cron-guard-double-run',
+  'cron-heartbeat-dark',
+  'cron-heartbeat-vanished',
+  'cron-heartbeat-unstamped',
+  'cron-heartbeat-all-clear',
+  'pg-cron-watch',
+  'pg-cron-watch-all-clear',
+  'workflow-dispatch',
+  'workflow-schedule',
+  'workflow-schedule-all-clear',
+  'minute-job-failing',
+  'minute-job-failing-all-clear',
+  'drain-stall',
+  'backup-failure',
+  'timeout-config',
+  'kill-rate-drift',
+  'incident-drain-behind',
+  'incident-drain-caught-up',
+  // The database.
+  'db-unreachable',
+  'db-unreachable-all-clear',
+  'stored-copy-serving',
+  'stored-copy-serving-all-clear',
+  'supabase-memory-short',
+  'supabase-memory-unreadable',
+  'supabase-memory-all-clear',
+  'big-table-growth',
+  'query-timeout',
+  'query-cancelled',
+  // Secrets and the Slack connection itself.
+  'secret-drift',
+  'secret-decrypt',
+  'required-secrets',
+  'required-env-vars',
+  'slack-token-undecryptable',
+  'slack-token-undecryptable-all-clear',
+  'slack-post-refused-all-clear',
+  // Partners and the partners page.
+  'partner-reachability-blocked',
+  'partner-reachability-unreachable',
+  'partner-reachability-control-failing',
+  'partner-reachability-probe-broken',
+  'partner-reachability-all-clear',
+  'partner-page-live-channel',
+  'partner-page-live-monitor',
+  'partner-page-live-all-clear',
+  'partner-page-live-miss',
+  // Ops connections.
+  'ops-connection-login',
+  'ops-connection-login-all-clear',
+  'ops-connection-write-back',
+  'ops-connection-write-back-all-clear',
+  'ops-key-reseal',
+  'ops-key-reseal-all-clear',
+  'ops-connection-owner',
+  'ops-connection-owner-all-clear',
+  'http-money-host',
+  'http-money-host-all-clear',
+] as const
 
 export type SlackAlertKind = (typeof SLACK_ALERT_KINDS)[number]
 
@@ -82,8 +213,8 @@ export interface SlackPostOutcomeLine {
   /** The Retry-After of a refused post, when Slack sent one. */
   retry_after: string | null
   title: string | null
-  /** The alert's fixed kind name, or null when the sender named none (#2948). */
-  alert_kind: SlackAlertKind | null
+  /** The alert's fixed kind name (#2948). Every sender names one. */
+  alert_kind: SlackAlertKind
 }
 
 export interface SlackPostOutcomeInput {
@@ -93,7 +224,7 @@ export interface SlackPostOutcomeInput {
   channel: string
   retryAfter?: string | null
   title: string | null
-  alertKind?: SlackAlertKind | null
+  alertKind: SlackAlertKind
 }
 
 const EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]+/g
@@ -144,7 +275,7 @@ export function slackPostOutcomeLine(input: SlackPostOutcomeInput): SlackPostOut
     channel: input.channel,
     retry_after: input.retryAfter ?? null,
     title: input.title,
-    alert_kind: input.alertKind ?? null,
+    alert_kind: input.alertKind,
   }
 }
 

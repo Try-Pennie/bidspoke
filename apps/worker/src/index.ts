@@ -1139,7 +1139,7 @@ const scheduledJobs = {
                 log: (line) => console.error(line),
                 logPrefix: '[incident-drain]',
               }),
-              send: (slack, message) => sendTitledAlert(slack, null, message),
+              send: (slack, message, alertKind) => sendTitledAlert(slack, null, message, alertKind),
               log: (line) => console.log(line),
             }))
             .then((s) => {

@@ -80,7 +80,7 @@ function fakeClaims(clock: { now: number }) {
   }
 }
 
-type Sent = { kind: 'short' | 'unreadable' | 'recovery'; payload: Record<string, unknown> }
+type Sent = { kind: 'short' | 'unreadable' | 'recovery'; payload: Record<string, unknown>; alertKind?: unknown }
 
 function harness(opts: { slack?: Array<{ bot_token: string; default_channel: string }>; slackRefuses?: boolean; env?: Record<string, string> } = {}) {
   const clock = { now: Date.parse('2026-10-09T13:00:00Z') }
@@ -89,8 +89,8 @@ function harness(opts: { slack?: Array<{ bot_token: string; default_channel: str
   const logs: string[] = []
   let slackResolves = 0
   let next: FeedAnswer = { kind: 'read', reading: { totalBytes: TOTAL, availableBytes: 3 * GB, swapTotalBytes: GB, swapFreeBytes: GB, swapOutPages: 0 } }
-  const answer = (send: Sent['kind']) => (_s: unknown, _c: string, payload: Record<string, unknown>) => {
-    sent.push({ kind: send, payload })
+  const answer = (send: Sent['kind']) => (_s: unknown, _c: string, payload: Record<string, unknown>, alertKind?: unknown) => {
+    sent.push({ kind: send, payload, alertKind })
     if (opts.slackRefuses) return Promise.resolve(send === 'recovery' ? false : null)
     return Promise.resolve(send === 'recovery' ? true : 'ts')
   }
@@ -273,6 +273,8 @@ describe('paging only near the danger level (#1928)', () => {
     // Back to the benign overnight level, well below the 500 MB clear line: the all-clear follows.
     await h.runFor(RECOVERY_REARM_MINUTES + 5, () => h.reading(PLENTY, 0, GB - 300_000_000))
     expect(h.sent.map((s) => s.kind)).toEqual(['short', 'recovery'])
+    // The all-clear is logged under its fixed kind (#2948).
+    expect(h.sent[1].alertKind).toBe('supabase-memory-all-clear')
   })
 })
 
