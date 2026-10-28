@@ -42,12 +42,11 @@ import { loadEnvVars } from './env-loader'
 import { buildSandboxEnv } from './sandbox-env'
 import { salesforceBulkheads } from './bulkhead-client'
 import { isSalesforceApiName, isSalesforceRecordId } from './salesforce-names'
-import { salesforceApexUrl, salesforceDataUrl, salesforceInstanceUrl } from './salesforce-api'
+import { salesforceApexUrl, salesforceDataUrl, salesforceInstanceUrl, salesforceRejectedTheWrite } from './salesforce-api'
 import {
   getSalesforceToken,
   isSalesforceBulkheadShed,
   performSalesforceCall,
-  salesforceRejectedTheWrite,
   salesforceTokenCacheKey,
 } from '../engine/nodes/salesforce'
 import { WRITE_MARKER_FIELD } from '../engine/write-marker'
