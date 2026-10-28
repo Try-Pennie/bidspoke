@@ -71,8 +71,10 @@ export function replaceWorstMsPerWorkflow(): number {
 export const REPLACE_WORKFLOWS_MAX = Math.floor((REPLACE_CLIENT_WAIT_MS - REPLACE_WORST_MS.before - REPLACE_WORST_MS.margin) / replaceWorstMsPerWorkflow())
 
 /**
- * How long after it starts the route may still be answering (#2903): the
- * page's wait less the request's own trip, the same reserve the cap keeps.
+ * How long after the request arrives the route may still be answering (#2903,
+ * #2920): the page's wait less the request's own trip, the same reserve the
+ * cap keeps. It counts from arrival, before the sign in, so `margin` is only
+ * the trip to and from the Worker.
  * The cap is worked out from measured call times, not a hard worst case, so
  * one call hanging to its own 30 s timeout could otherwise carry a Replace past
  * the page's wait, and the page would say it cannot tell whether the workflows
@@ -83,9 +85,34 @@ export const REPLACE_DEADLINE_MS = REPLACE_CLIENT_WAIT_MS - REPLACE_WORST_MS.mar
 /** The clock the route keeps its deadline by. A test replaces `now`, so nothing waits for real (L524). */
 export const replaceClock: { now: () => number } = { now: () => Date.now() }
 
+/** Where stampReplaceArrival leaves the time the request arrived, for the route to read. */
+export type ReplaceVariables = { replaceArrivedAt: number }
+
+/**
+ * Stamps when a Replace request arrived (#2920), by replaceClock. Mounted in
+ * routes/api/index.ts ahead of jwtAuth, so the deadline also counts the sign
+ * in (the token check and the auth_user_with_allowlist lookup), which can take
+ * up to that lookup's own 30 s timeout and was otherwise covered only by the
+ * margin. Only the Replace path is stamped; no other route reads it.
+ */
+export async function stampReplaceArrival(c: { set: (key: 'replaceArrivedAt', value: number) => void }, next: () => Promise<void>): Promise<void> {
+  c.set('replaceArrivedAt', replaceClock.now())
+  await next()
+}
+
+/**
+ * When the Replace request arrived, as stampReplaceArrival stamped it. A route
+ * reached without the stamp is a wiring fault, so it throws rather than start
+ * the clock late, which would hide the sign in's time again.
+ */
+export function replaceArrivedAt(stamp: number | undefined): number {
+  if (typeof stamp !== 'number') throw new Error('replace_arrival_not_stamped: stampReplaceArrival must run before jwtAuth for POST /api/connections/:id/replace')
+  return stamp
+}
+
 /**
  * Whether a workflow started at `now` still finishes, at its slowest measured
- * run, by the deadline of a Replace that started at `startedAt`. Asked only
+ * run, by the deadline of a Replace whose request arrived at `startedAt`. Asked only
  * before a workflow starts: one started is always finished, never stopped
  * part way through its write.
  */

@@ -3,6 +3,7 @@ import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { jwtAuth } from '../../middleware/jwt-auth'
+import { stampReplaceArrival, type ReplaceVariables } from '../../lib/connection-replace'
 import workflows from './workflows'
 import executions from './executions'
 import env from './env'
@@ -35,9 +36,14 @@ import mutedAlertRoutes from './muted-alerts'
 import incidentRoutes from './incidents'
 import partnerUsageRoutes from './partner-usage'
 
-type Variables = AuthVariables
+type Variables = AuthVariables & Partial<ReplaceVariables>
 
 const api = new Hono<{ Bindings: Env; Variables: Variables }>()
+
+// A Replace's deadline counts from when the request arrived (#2920), so its
+// arrival is stamped here, ahead of jwtAuth, whose sign in lookup spends the
+// page's wait too. Only that one path; it reads and refuses nothing.
+api.use('/connections/:id/replace', stampReplaceArrival)
 
 // All API routes require JWT auth
 api.use('*', jwtAuth)

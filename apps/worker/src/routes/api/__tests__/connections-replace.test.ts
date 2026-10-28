@@ -112,6 +112,8 @@ type RpcAnswer = { data: unknown; error: { code: string; message: string; detail
 interface StoreOptions {
   /** Runs before write_workflow judges a call: a concurrent save landing between the route's read and its write. */
   beforeWrite?: (workflowId: string, rows: Row[]) => void
+  /** Runs inside jwtAuth's auth_user_with_allowlist lookup: a sign in that is slow to answer (#2920). */
+  onSignIn?: () => void
   rpc?: Partial<Record<string, (args: Record<string, unknown>) => RpcAnswer>>
 }
 
@@ -198,6 +200,7 @@ function storeDouble(opts: StoreOptions = {}) {
 
   const rpc = (name: string, args: Record<string, unknown>) => {
     if (name === 'auth_user_with_allowlist') {
+      opts.onSignIn?.()
       return Promise.resolve({ data: [{ id: USER, organization_id: ORG, email: 'dan@pennie.com', display_name: 'Dan Wright', allowed: true }], error: null })
     }
     order.push(`rpc:${name}`)
@@ -417,8 +420,11 @@ describe('Replace stops before a workflow it has no time left to finish', () => 
   })
 
   /** The first workflow's save takes until `at`, so the second is judged at that time. */
-  function firstSaveEndsAt(at: number) {
-    use(storeDouble({ beforeWrite: (id) => { if (id === ACHIEVE) now = at } }))
+  function firstSaveEndsAt(at: number, signInEndsAt?: number) {
+    use(storeDouble({
+      onSignIn: () => { if (signInEndsAt !== undefined) now = signInEndsAt },
+      beforeWrite: (id) => { if (id === ACHIEVE) now = at },
+    }))
   }
 
   it('starts a workflow whose slowest run just finishes by the deadline', async () => {
@@ -456,12 +462,36 @@ describe('Replace stops before a workflow it has no time left to finish', () => 
     expect(vi.mocked(writeAuditLog).mock.calls.map((c) => c[3])).toEqual([ACHIEVE])
   })
 
+  // The deadline counts from when the request arrived, not from when the route began (#2920): the sign in
+  // lookup ahead of it (jwtAuth's auth_user_with_allowlist) spends the page's wait too.
+  it('counts a slow sign in against the time left, so a workflow that fits only without it is left', async () => {
+    firstSaveEndsAt(lastStart + 1, START + 5_000)
+    const res = await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE, CLEANUP] })
+    const body = (await res.json()) as Answer
+    expect(body).toMatchObject({ outcome: 'incomplete', workflows: [{ id: ACHIEVE, outcome: 'replaced' }, { id: CLEANUP, outcome: 'refused', why: 'not_reached' }] })
+    expect(db.writes.map((w) => w.p_id)).toEqual([ACHIEVE])
+  })
+
+  it('a slow sign in still starts a workflow that finishes by the deadline counted from arrival', async () => {
+    firstSaveEndsAt(lastStart, START + 5_000)
+    const res = await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE, CLEANUP] })
+    expect(await res.json()).toMatchObject({ outcome: 'replaced', workflows: [{ id: ACHIEVE, outcome: 'replaced' }, { id: CLEANUP, outcome: 'replaced' }] })
+  })
+
+  it('a sign in slow enough to spend the whole wait writes nothing', async () => {
+    firstSaveEndsAt(START, START + REPLACE_DEADLINE_MS - replaceWorstMsPerWorkflow() + 1)
+    const res = await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE] })
+    expect(await res.json()).toMatchObject({ outcome: 'incomplete', workflows: [{ id: ACHIEVE, outcome: 'refused', why: 'not_reached' }] })
+    expect(db.writes).toEqual([])
+  })
+
   it('logs that it stopped, and how many it left, so a Replace cut short is seen', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    firstSaveEndsAt(lastStart + 1)
+    firstSaveEndsAt(lastStart + 1, START + 5_000)
     await replace(PENNIE, { with: TPL2, workflows: [ACHIEVE, CLEANUP] })
     const line = warn.mock.calls.map((c) => String(c[0])).find((s) => s.includes('"connection_replace_out_of_time"'))
-    expect(JSON.parse(line!)).toMatchObject({ organization_id: ORG, connection_id: PENNIE, not_reached: 1 })
+    // Elapsed counts from the request's arrival, the same start the deadline keeps (#2920).
+    expect(JSON.parse(line!)).toMatchObject({ organization_id: ORG, connection_id: PENNIE, not_reached: 1, elapsed_ms: lastStart + 1 - START })
   })
 
   it('writes nothing when the reads before the first workflow took the time', async () => {
