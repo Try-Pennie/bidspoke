@@ -59,7 +59,7 @@ import {
   type RefusalContext, type RouteRefusalContext, type VerifyRefusalCode,
 } from '../../lib/connection-create-refusals'
 import {
-  readReplaceBody, replaceComplete, replaceConnectionId, REPLACE_OUTCOMES, REPLACE_SAVE_ATTEMPTS, type ReplacedWorkflow, type ReplaceRefusal,
+  readReplaceBody, replaceClock, replaceComplete, replaceConnectionId, replaceHasTimeFor, REPLACE_OUTCOMES, REPLACE_SAVE_ATTEMPTS, type ReplacedWorkflow, type ReplaceRefusal,
 } from '../../lib/connection-replace'
 import { checkDefinitionConnections, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
 import { copiedDefinitionStamp, writtenDefinitionStamp } from '../../lib/definition-stamp'
@@ -1178,6 +1178,13 @@ function replaceRefusalOf(refusal: ConnectionCheckRefusal, replacement: string):
 // its new version pushed to the GitHub backup by writeWorkflow, as the canvas
 // save is (#2868).
 //
+// It keeps a deadline, the page's wait less the request's own trip
+// (REPLACE_DEADLINE_MS, #2903): before it starts each workflow it asks whether
+// that workflow's slowest measured run still finishes by then, and when it
+// cannot, the workflow is left as refused, not_reached, read and written not at
+// all, so the page names it and keeps it ticked. A workflow once started is
+// always finished, never stopped part way through its write.
+//
 // Who may call it: any signed in user of the organization (jwtAuth). Whose
 // data: both connections and every workflow are read by the caller's
 // organization from the verified token, the body may name no organization,
@@ -1186,6 +1193,7 @@ function replaceRefusalOf(refusal: ConnectionCheckRefusal, replacement: string):
 // and not someone else's own Google account, which only its owner may use in a
 // workflow (Dan, 2026-10-23); the executor refuses a step bound by anyone else.
 connections.post('/:id/replace', async (c) => {
+  const startedAt = replaceClock.now()
   const { orgId, userId, email, name } = c.get('user')
   const id = c.req.param('id').toLowerCase()
   const refuse = (code: ConnectionRouteRefusalCode, ctx: Partial<RouteRefusalContext> = {}) => {
@@ -1235,6 +1243,8 @@ connections.post('/:id/replace', async (c) => {
     if (!ref) { results.push({ id: workflowId, name: null, outcome: 'not_using' }); continue }
     if (ref.deleted) { results.push({ id: workflowId, name: ref.name, outcome: 'deleted' }); continue }
     const named = { id: workflowId, name: ref.name }
+    // Started only when its slowest run still answers inside the page's wait (#2903), never stopped once started.
+    if (!replaceHasTimeFor(startedAt, replaceClock.now())) { results.push({ ...named, outcome: 'refused', why: 'not_reached' }); continue }
     let result: ReplacedWorkflow | null = null
     for (let attempt = 1; attempt <= REPLACE_SAVE_ATTEMPTS && result === null; attempt += 1) {
       const { data: read, error: readError } = await supabase
@@ -1303,6 +1313,10 @@ connections.post('/:id/replace', async (c) => {
     results.push(result ?? { ...named, outcome: 'changed' })
   }
 
+  const notReached = results.filter((r) => r.why === 'not_reached').length
+  if (notReached > 0) {
+    console.warn(JSON.stringify({ event: 'connection_replace_out_of_time', organization_id: orgId, connection_id: id, not_reached: notReached, elapsed_ms: replaceClock.now() - startedAt }))
+  }
   const complete = replaceComplete(results)
   console.log(JSON.stringify({
     event: 'connection_replaced', organization_id: orgId, connection_id: id, with_connection: body.with,
