@@ -277,6 +277,14 @@ describe('runWritebackDrain', () => {
     for (const secret of ['Funded', 'No Bid', '5000', 'a0B000000000001AAA', rows[0].execution_id, rows[0].id]) expect(said).not.toContain(secret)
   })
 
+  it('leaves out a moved field nobody needs to decide without an alert (QUIET_MOVED_FIELDS)', async () => {
+    rows.push(await row({ sf_object: 'Submission__c', body: { EQXCreditPullStatus__c: 'Success', PDFlow_4__c: 'https://bidspoke.example/run/1' } }))
+    const sf = salesforce({ read: () => ({ status: 200, text: JSON.stringify({ LastModifiedDate: '2026-10-15T20:10:00.000+0000', EQXCreditPullStatus__c: null, PDFlow_4__c: 'https://relay.example/inspect/1' }) }) })
+    expect(await runWritebackDrain(deps(sf.port))).toMatchObject({ replayed: 1, moved: 0 })
+    expect(JSON.parse(sf.patches()[0].body!)).toEqual({ EQXCreditPullStatus__c: 'Success' })
+    expect(alerts).toEqual([])
+  })
+
   it('stops the tick at the first call Salesforce does not answer', async () => {
     rows.push(await row({ sf_record_id: 'a0B000000000001AAA' }), await row({ sf_record_id: 'a0B000000000002AAA' }))
     const sf = salesforce({ patch: () => 'hang' })

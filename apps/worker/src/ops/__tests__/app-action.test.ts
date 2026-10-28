@@ -14,6 +14,7 @@ import { ACCESS_TOKEN, CONN, LOGIN_SECRET, ORG, exampleRules, makeDoubles, makeK
 import type { ClaimedRun, CompleteOutcome, OpsStepRecord, SendIntent } from '../ops-writes'
 import { invokeRun, stepRequestId, type RunBody, type RunDb, type RunInvocationReport } from '../run-invocation'
 import { walkOpsDefinition } from '../run-walk'
+import { OPS_STEP_REQUEUE_MAX } from '../run-vocabulary'
 
 let keys: TestKeys
 let envelope: SealedEnvelope
@@ -97,7 +98,7 @@ class FakeRunDb implements RunDb {
   async readCheckpoint(): Promise<never> {
     throw new Error('no checkpoint is read with continuation off')
   }
-  async complete(_run: ClaimedRun, end: CompleteOutcome) {
+  async complete(_run: ClaimedRun, end: CompleteOutcome): Promise<{ outcome: 'completed'; runStatus: string }> {
     this.completes.push(end)
     return { outcome: 'completed' as const, runStatus: end.outcome }
   }
@@ -116,9 +117,8 @@ interface World {
   run(def: unknown): Promise<RunInvocationReport>
 }
 
-function world(over: Partial<AppActionDeps> = {}): World {
+function world(over: Partial<AppActionDeps> = {}, db: FakeRunDb = new FakeRunDb()): World {
   const d = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec)])
-  const db = new FakeRunDb()
   const logs: unknown[] = []
   const outputs: Record<string, unknown> = {}
   const deps: AppActionDeps = {
@@ -299,6 +299,60 @@ describe('how an action\'s failure ends the run', () => {
     const w = world()
     w.d.respond(new TypeError('network connection lost'))
     expect(await w.run(definition(step()))).toMatchObject({ end: { outcome: 'needs_human', reason: 'send_outcome_unknown' } })
+  })
+})
+
+// #2859: a service that keeps answering 429 is waited on without spending a
+// retry attempt (#1693 7.4), and the step is stopped by name at the requeue cap.
+// complete_run_request holds the cap itself (supabase-ops/supabase/tests/
+// step_requeue_cap.test.sql proves it in a real Postgres); this double answers
+// a wait past OPS_STEP_REQUEUE_MAX waits of one step failed, as that function
+// does, so these tests prove the Worker's half: every attempt asks for the wait
+// under the same step key with the status and time the service gave, never as a
+// charged retry, and the capped end is reported by name.
+describe('a step a service keeps rate limiting (#2859)', () => {
+  /** The database's answer to a rate_limit_wait: failed once the step has had OPS_STEP_REQUEUE_MAX waits. */
+  class CappingRunDb extends FakeRunDb {
+    waits = new Map<string, number>()
+    override async complete(run: ClaimedRun, end: CompleteOutcome) {
+      const answer = await super.complete(run, end)
+      if (end.outcome !== 'suspend' || end.reason !== 'rate_limit_wait') return answer
+      const taken = this.waits.get(end.step) ?? 0
+      if (taken >= OPS_STEP_REQUEUE_MAX) return { ...answer, runStatus: 'failed' }
+      this.waits.set(end.step, taken + 1)
+      return { ...answer, runStatus: 'suspended' }
+    }
+  }
+
+  const capped = (): World => world({}, new CappingRunDb())
+
+  it('a 429 that never clears waits on every attempt without spending one, then stops at the cap by name', async () => {
+    const w = capped()
+    w.d.respond(new Response('slow down', { status: 429, headers: { 'retry-after': '120' } }))
+    const reports: RunInvocationReport[] = []
+    for (let i = 0; i <= OPS_STEP_REQUEUE_MAX; i++) reports.push(await w.run(definition(step())))
+    // Every attempt reached the service and was told to wait.
+    expect(w.d.rec.sent).toHaveLength(OPS_STEP_REQUEUE_MAX + 1)
+    // None was a retry, which would spend an attempt: each is a wait, under the one step key, with the status and time.
+    expect(w.db.completes.map((c) => c.outcome)).toEqual(Array(OPS_STEP_REQUEUE_MAX + 1).fill('suspend'))
+    for (const c of w.db.completes) {
+      expect(c).toMatchObject({ reason: 'rate_limit_wait', step: 'notify', status: 429, error: expect.stringContaining('POST api.example.test') })
+    }
+    expect(reports.slice(0, -1).every((r) => r.outcome === 'completed' && r.runStatus === 'suspended')).toBe(true)
+    // The last wait was refused at the cap: the run ended failed, named in the log with its host and status.
+    expect(reports.at(-1)).toMatchObject({ outcome: 'completed', runStatus: 'failed' })
+    expect(w.logs.filter((e) => (e as { step?: string }).step === 'requeue_cap_reached')).toEqual([
+      expect.objectContaining({ node_id: 'notify', host: 'api.example.test', status: 429 }),
+    ])
+  })
+
+  it('a 429 that clears before the cap still succeeds, with the step\'s answer as its output', async () => {
+    const w = capped()
+    w.d.respond(new Response('slow down', { status: 429, headers: { 'retry-after': '30' } }), Response.json({ id: 9 }))
+    expect(await w.run(definition(step()))).toMatchObject({ outcome: 'completed', end: { outcome: 'suspend', reason: 'rate_limit_wait' }, runStatus: 'suspended' })
+    expect(await w.run(definition(step()))).toMatchObject({ outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' })
+    expect(w.outputs.notify).toEqual({ version: 1, answer: { id: 9 } })
+    expect(w.logs.some((e) => (e as { step?: string }).step === 'requeue_cap_reached')).toBe(false)
   })
 })
 

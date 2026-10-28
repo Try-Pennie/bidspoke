@@ -40,6 +40,9 @@
  * it would put the record back; and it is not a conflict, since nobody has a
  * choice to make, so neither resender alerts it. Each counts it on its own.
  *
+ * A QUIET field is a moved field nobody needs to decide (QUIET_MOVED_FIELDS):
+ * left out and counted like any other, but never alerted on its own.
+ *
  * Here rather than in either job so the drain's send path (writeback-replay.ts),
  * which the read-back itself imports, can reach it without a cycle.
  */
@@ -104,6 +107,26 @@ export function sameSalesforceValue(current: unknown, sent: unknown): boolean {
 export const LATER_STATES: ReadonlyArray<{ sfObject: string; field: string; from: string; later: readonly string[] }> = [
   { sfObject: 'Prospect__c', field: 'BidStatus__c', from: 'Bid', later: ['Converted'] },
 ]
+
+/**
+ * Fields whose moved value nobody needs to decide, so neither resender pages
+ * for one (2026-10-27). Each is still left out, as any moved field is, and
+ * still counted; only the alert is withheld, and a moved field a person must
+ * decide beside it still names it.
+ *
+ * PDFlow_4__c on a Submission holds a run link, written by Main Flow's Send
+ * Salesforce and by the Pipedream Inquiries relay the same run calls just
+ * before it, so every resend found it moved (2 of 2 that day). Remove it when
+ * #2176 takes the relay's Submission write away.
+ */
+export const QUIET_MOVED_FIELDS: ReadonlyArray<{ sfObject: string; field: string }> = [
+  { sfObject: 'Submission__c', field: 'PDFlow_4__c' },
+]
+
+/** The fields of `moved` a person must decide, so an alert names them: any not in QUIET_MOVED_FIELDS. */
+export function movedFieldsToAlert(sfObject: string, moved: string[]): string[] {
+  return moved.filter((f) => !QUIET_MOVED_FIELDS.some((q) => q.sfObject === sfObject && q.field === f))
+}
 
 /** The fields of `fields` that `current` holds at a later state of the value `body` sends (LATER_STATES). */
 export function laterStateFields(args: { sfObject: string; fields: string[]; body: Record<string, unknown>; current: Record<string, unknown> }): string[] {

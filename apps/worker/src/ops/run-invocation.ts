@@ -60,6 +60,16 @@
  * the last, CheckpointNotNamed says why, and nothing about the run's end
  * follows from it.
  *
+ * A WAIT (#2334, #2859). A requeue the connection answers (RequeueAt) spends
+ * no retry attempt (#1693 7.4): a refused Salesforce lease suspends the run as
+ * a resource_wait naming its cause, and a service asking to wait (a 429, a 503
+ * with Retry-After, a token endpoint's 429) suspends it as a rate_limit_wait
+ * naming the step, the status and the time it was asked to wait until. The
+ * database counts a step's rate limit waits and ends the run failed with
+ * requeue_cap_reached at the requeue cap (OPS_STEP_REQUEUE_MAX waits, or
+ * OPS_STEP_REQUEUE_WAIT_MAX_MS after the first), which is logged here by name
+ * with the step, host and status, so a host that keeps refusing is seen.
+ *
  * HOW THE RUN ENDS. The first answer that decides the run (a lost claim, an
  * unknown send, a requeue) holds, whatever the body returns after it: a body
  * that catches the error and says done is still needs_human. A run that has
@@ -363,12 +373,20 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
   /** A retry, unless a send already made cannot be repeated: then failed. */
   const retryOr = (error: string, notBefore?: Date): CompleteOutcome =>
     mayRepeat() ? { outcome: 'retry', error, ...(notBefore ? { notBefore } : {}) } : { outcome: 'failed', error }
-  const requeueEnd = (nodeId: string, a: { notBefore: Date; cause: RequeueCause }): CompleteOutcome => {
+  /** The host each rate limit wait was asked by, for the requeue cap's log line. */
+  const waitHosts = new Map<string, string>()
+  const requeueEnd = (nodeId: string, method: string, host: string, a: { notBefore: Date; cause: RequeueCause; status: number | null }): CompleteOutcome => {
     if (!mayRepeat()) return { outcome: 'failed', error: `step ${nodeId} was asked to wait (${a.cause}) after a send that cannot be repeated` }
     if ((RESOURCE_WAIT_CAUSES as readonly string[]).includes(a.cause)) {
       return { outcome: 'suspend', reason: 'resource_wait', cause: a.cause as ResourceWaitCause, notBefore: a.notBefore }
     }
-    return { outcome: 'retry', error: `step ${nodeId}: ${a.cause}`, notBefore: a.notBefore }
+    // A deferral, not a failure (#1693 7.4): no attempt is spent, and the database caps the step's waits (#2859).
+    if (!waitHosts.has(nodeId)) waitHosts.set(nodeId, host)
+    const asked = a.status === null ? 'no request was made' : `answered ${a.status}`
+    return {
+      outcome: 'suspend', reason: 'rate_limit_wait', step: nodeId, status: a.status, notBefore: a.notBefore,
+      error: `step ${nodeId} (${method} ${host}): ${a.cause}, ${asked}, asked to wait until ${a.notBefore.toISOString()}`,
+    }
   }
   const unknown = (nodeId: string, method: string, host: string, why: string): CompleteOutcome =>
     ({ outcome: 'needs_human', reason: 'send_outcome_unknown', error: `step ${nodeId} (${method} ${host}): ${why}; it may have landed` })
@@ -445,7 +463,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
       const a = r.value
       if (a.kind === 'answered') return { status: a.status, value: a.value }
       if (a.kind === 'not_sent') throw new StepNotSent(step.nodeId, a.reason)
-      endWith(requeueEnd(step.nodeId, a))
+      endWith(requeueEnd(step.nodeId, method, host, a))
       throw new RunStopped()
     }
 
@@ -509,12 +527,12 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
         if (a.status === null || a.status === 429) {
           // Nothing was applied: no request, or a 429.
           await markResult(ledgerId, step.nodeId, a.status === null ? { status: 'failed' } : { status: 'failed', responseStatus: a.status })
-          endWith(requeueEnd(step.nodeId, a))
+          endWith(requeueEnd(step.nodeId, method, host, a))
           throw new RunStopped()
         }
         await markResult(ledgerId, step.nodeId, { status: 'forwarded', responseStatus: a.status })
         if (step.idempotent) {
-          endWith(requeueEnd(step.nodeId, a))
+          endWith(requeueEnd(step.nodeId, method, host, a))
         } else {
           unrepeatable = true
           endWith(unknown(step.nodeId, method, host, `answered ${a.status} with Retry-After, which does not prove it was not applied`))
@@ -628,6 +646,9 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
     const r = await within(clock, RUN_DB_DEADLINE_MS, () => db.complete(run, end))
     if (r.kind === 'ok') {
       log('completed', { outcome: end.outcome, run_status: r.value.runStatus })
+      if (end.outcome === 'suspend' && end.reason === 'rate_limit_wait' && r.value.runStatus === 'failed') {
+        log('requeue_cap_reached', { node_id: end.step, host: waitHosts.get(end.step) ?? null, status: end.status })
+      }
       return { outcome: 'completed', end, runStatus: r.value.runStatus }
     }
     if (r.kind === 'threw' && r.error instanceof OpsClaimLostError) {

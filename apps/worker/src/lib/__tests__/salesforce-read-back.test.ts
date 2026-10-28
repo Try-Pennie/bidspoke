@@ -477,6 +477,53 @@ describe('a field another writer has moved', () => {
   })
 })
 
+// Main Flow's inquiry relay writes the Submission's PDFlow_4__c with its own
+// run link, so every Send Salesforce resend found it moved and paged for a
+// field nobody needs to decide (2 of 2 resends on 2026-10-27). It is still
+// left out, and still counted, but never paged (QUIET_MOVED_FIELDS).
+describe('a moved field nobody needs to decide', () => {
+  const RELAY_LINK = 'https://relay.example/inspect/1'
+  const SEND = { EQXCreditPullStatus__c: 'Success', PDFlow_4__c: 'https://bidspoke.example/run/1' }
+
+  it('is left out and counted, and the resend of the rest pages nobody', async () => {
+    const r = rig({ [SUBMISSION]: { EQXCreditPullStatus__c: null, PDFlow_4__c: RELAY_LINK, LastModifiedDate: SINCE_THE_RUNS } })
+    await hold(r.kv, { step: 'send_salesforce', object: 'Submission__c', record: SUBMISSION, body: SEND })
+    const s = await runSalesforceReadBack(r.deps)
+    expect(patches(r).map((p) => p.body)).toEqual([{ EQXCreditPullStatus__c: 'Success', [WRITE_MARKER_FIELD]: `${EXEC_A}:send_salesforce:1` }])
+    expect(r.sf.records[SUBMISSION].PDFlow_4__c).toBe(RELAY_LINK)
+    expect(s.conflict_fields['Submission__c.PDFlow_4__c']).toEqual({ conflicts: 1, candidates: 1 })
+    expect(r.alerts).toEqual([])
+    // Settled: a later tick neither resends it nor pages for it.
+    r.clock.now += SF_READ_BACK_MIN_AGE_MS
+    await runSalesforceReadBack(r.deps)
+    expect(patches(r)).toHaveLength(1)
+    expect(r.alerts).toEqual([])
+  })
+
+  it('pages nobody when it is the only field the write set', async () => {
+    const r = rig({ [SUBMISSION]: { PDFlow_4__c: RELAY_LINK, LastModifiedDate: SINCE_THE_RUNS } })
+    await hold(r.kv, { step: 'send_salesforce', object: 'Submission__c', record: SUBMISSION, body: { PDFlow_4__c: SEND.PDFlow_4__c } })
+    await runSalesforceReadBack(r.deps)
+    expect(patches(r)).toEqual([])
+    expect(r.alerts).toEqual([])
+  })
+
+  it('is still named when a field a person must decide moved beside it', async () => {
+    const r = rig({ [SUBMISSION]: { EQXCreditPullStatus__c: 'Fail', PDFlow_4__c: RELAY_LINK, LastModifiedDate: SINCE_THE_RUNS } })
+    await hold(r.kv, { step: 'send_salesforce', object: 'Submission__c', record: SUBMISSION, body: SEND })
+    await runSalesforceReadBack(r.deps)
+    expect(r.alerts).toHaveLength(1)
+    expect(r.alerts[0]).toMatchObject({ kind: 'conflict', writes: [{ conflict_fields: ['EQXCreditPullStatus__c', 'PDFlow_4__c'], resent: false }] })
+  })
+
+  it('is quiet only on the object it is listed for', async () => {
+    const r = rig({ [PROSPECT]: { PDFlow_4__c: RELAY_LINK, LastModifiedDate: SINCE_THE_RUNS } })
+    await hold(r.kv, { step: 'patch_prospect', body: { PDFlow_4__c: SEND.PDFlow_4__c } })
+    await runSalesforceReadBack(r.deps)
+    expect(r.alerts[0]).toMatchObject({ kind: 'conflict', writes: [{ conflict_fields: ['PDFlow_4__c'] }] })
+  })
+})
+
 describe('the resend claim', () => {
   it('sends nothing when the claim gets no answer, since it fails closed', async () => {
     const r = rig({ [PROSPECT]: { BidStatus__c: 'No Bid' } }, { resendClaims: { claim: () => Promise.resolve('unanswered' as const), release: async () => {} } })
