@@ -18,6 +18,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { refreshWorkflowCaches } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { makeSupabase } from './_supabase-mock'
+import { recordingContext } from '../../../test-setup/wait-until'
 import api from '../index'
 
 // ── Supabase chain mock ───────────────────────────────────────────────────────
@@ -51,9 +52,13 @@ function req(method: string, path: string, opts: { auth?: string; body?: unknown
   }
 }
 
+// A create pushes its first version to the GitHub backup through waitUntil
+// since #2879, so a request carries an execution context as production's does.
+const ctx = recordingContext()
+
 function request(app: { request: Function }, method: string, path: string, opts: { auth?: string; body?: unknown } = {}) {
   const { headers, body } = req(method, path, opts)
-  return app.request(path, { method, headers, body }, testEnv)
+  return app.request(path, { method, headers, body }, testEnv, ctx)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
