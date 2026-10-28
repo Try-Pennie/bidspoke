@@ -424,6 +424,80 @@ describe('Reconnect of an OpenAI project key (#2715)', () => {
   })
 })
 
+// Reconnect keeps what the connection names (reconnect_target_changed), so by either path, a new login or the stored
+// one checked again, no refusal may send the person to check it (L111, #2910). The sentences themselves are walked
+// code by code in connection-create-refusals.test.ts; these prove the route says the target is stored on both paths.
+describe('Reconnect never asks the person to check what the connection names (#2910)', () => {
+  const SLACK_CONN = 'c0000000-0000-4000-8000-000000000006'
+  const ANTHROPIC_CONN = 'c0000000-0000-4000-8000-000000000007'
+  const SLACK_MISMATCH = 'Slack says this bot is in another workspace than this connection\'s Workspace ID. Nothing was saved. Use a bot token from the ops Slack app in this connection\'s workspace and save again.'
+  const ANTHROPIC_MISMATCH = 'Anthropic says this API key runs in another workspace than this connection\'s Workspace ID. Nothing was saved. Check the key is from this connection\'s workspace and save again.'
+  const sendsToTarget = /Check the (Workspace ID|address|account)|Check both|entered/
+  function world(order: string[]) {
+    const db = storeDouble(order)
+    db.table.push(
+      {
+        id: SLACK_CONN, organization_id: ORG, service_type: 'slack', name: 'Ops bot 2', sealed_for: 'ops_key', credential_generation: 1,
+        credential_enc: JSON.stringify(STORED_ENVELOPE), config: {}, target: { team_id: 'T0PENNIE' }, acts_as: 'bidspoke_ops in Pennie', person_bound: false,
+      },
+      {
+        id: ANTHROPIC_CONN, organization_id: ORG, service_type: 'anthropic', name: 'Lead notes', sealed_for: 'ops_key', credential_generation: 1,
+        credential_enc: JSON.stringify(STORED_ENVELOPE), config: {}, target: { workspace_id: 'wrkspc_0PS2910' }, acts_as: 'Workspace wrkspc_0PS2910', person_bound: false,
+      },
+    )
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    return db
+  }
+  const refusing = (refused: string) => async () => ({ ok: false, refused, detail: 'named on ops', retry_at: null })
+
+  it('a new Slack token for another workspace is answered as the token, and nothing is committed', async () => {
+    const order: string[] = []
+    const db = world(order)
+    const { env } = makeEnv(order, { verify: refusing('verify_slack_workspace_mismatch') })
+    const res = await reconnect(env, SLACK_CONN, { fields: { bot_token: 'canary-new-ops-bot-token-2910' } })
+    expect(res.status).toBe(422)
+    const body = (await res.json()) as Answer
+    expect(body).toMatchObject({ error: 'verify_slack_workspace_mismatch', message: SLACK_MISMATCH })
+    expect(body.message).not.toMatch(sendsToTarget)
+    expect(db.rpcs).toEqual([])
+  })
+
+  it('a check of the stored Slack token says the same', async () => {
+    const order: string[] = []
+    world(order)
+    const { env } = makeEnv(order, { clearReauth: refusing('verify_slack_workspace_mismatch') })
+    expect(await (await reconnect(env, SLACK_CONN)).json()).toMatchObject({ error: 'verify_slack_workspace_mismatch', message: SLACK_MISMATCH })
+  })
+
+  it('a new Anthropic key of another workspace is answered as the key, by either path', async () => {
+    const order: string[] = []
+    world(order)
+    const { env } = makeEnv(order, { verify: refusing('verify_anthropic_workspace_mismatch'), clearReauth: refusing('verify_anthropic_workspace_mismatch') })
+    for (const body of [{ fields: { api_key: 'canary-ant-key-2910' } }, undefined]) {
+      const answer = (await (await reconnect(env, ANTHROPIC_CONN, body)).json()) as Answer
+      expect(answer).toMatchObject({ error: 'verify_anthropic_workspace_mismatch', message: ANTHROPIC_MISMATCH })
+      expect(answer.message).not.toMatch(sendsToTarget)
+    }
+  })
+
+  it('a stored address Bidspoke cannot use sends the person to a new connection, by either path', async () => {
+    const order: string[] = []
+    world(order)
+    const { env } = makeEnv(order, { verify: refusing('connection_target_invalid'), clearReauth: refusing('connection_host_not_declared') })
+    const fresh = (await (await reconnect(env, CONN, { fields: { client_secret: NEW_SECRET } })).json()) as Answer
+    expect(fresh).toMatchObject({
+      error: 'connection_target_invalid',
+      message: 'The Salesforce address this connection names is not one Bidspoke can use. Nothing was saved. To use another, add a new connection.',
+    })
+    const rechecked = (await (await reconnect(env, CONN)).json()) as Answer
+    expect(rechecked).toMatchObject({
+      error: 'connection_host_not_declared',
+      message: 'Salesforce sent the check to an address this connection does not name. Nothing was saved. Tell Dan, or add a new connection if this one names the wrong address.',
+    })
+    for (const answer of [fresh, rechecked]) expect(answer.message).not.toMatch(sendsToTarget)
+  })
+})
+
 describe('Reconnect without a new login: clearReauth alone', () => {
   it('checks the row\'s own envelope at its own generation, commits nothing, and audits who asked', async () => {
     const order: string[] = []

@@ -11,11 +11,11 @@ import { OPS_CONNECTIONS_REFUSAL_CODES } from '../ops-connections-contract'
 import { CONNECTION_REFUSAL_CODES } from '../../ops/connections/refusals'
 import {
   CONNECTION_ROUTE_REFUSAL_CODES, CREATE_REFUSAL_CODES, CREATE_ROUTE_REFUSAL_CODES, NOT_VERIFY_REFUSALS, connectionRouteSentence, createRefusalSentence,
-  type RefusalContext, type RouteRefusalContext,
+  type RefusalContext, type RouteRefusalContext, type TargetFrom,
 } from '../connection-create-refusals'
 
 const CTX: RefusalContext = {
-  service: 'Salesforce', secret: 'client secret', org: 'lendco.my.salesforce.com', names: ['Client id'], money: 'snowflake_user',
+  service: 'Salesforce', secret: 'client secret', org: 'lendco.my.salesforce.com', names: ['Client id'], money: 'snowflake_user', targetFrom: 'form',
 }
 
 /** The writing rule's forbidden marks (long dashes, curly quotes), built from char codes so this file holds none. */
@@ -78,7 +78,7 @@ describe('the create refusals', () => {
   // Reconnect takes the Project ID from the stored connection and refuses a changed one (reconnect_target_changed),
   // so there a refusal may only send the person to the key, the one thing they can change (L111, #2715 review).
   it('on Reconnect, where the Project ID cannot change, sends the person to the key alone (#2715)', () => {
-    const fixed: RefusalContext = { ...CTX, service: 'OpenAI', secret: 'api key', org: null, names: [], keyScope: { key: 'API key', scope: 'Project ID', owner: 'project', fixed: true } }
+    const fixed: RefusalContext = { ...CTX, service: 'OpenAI', secret: 'api key', org: null, names: [], keyScope: { key: 'API key', scope: 'Project ID', owner: 'project' }, targetFrom: 'stored' }
     const reauth = createRefusalSentence('connection_needs_reauth', fixed)
     expect(reauth).toBe(
       'OpenAI refused the API key with this connection\'s Project ID, so the key is wrong or belongs to another project. Nothing was saved. Check the key is from this connection\'s project and save again.',
@@ -92,7 +92,7 @@ describe('the create refusals', () => {
       expect(sentence).not.toMatch(/Project ID is wrong/)
     }
     // Where the Project ID can still be changed (Add), both keep sending the person to it.
-    const open: RefusalContext = { ...fixed, keyScope: { key: 'API key', scope: 'Project ID', owner: 'project' } }
+    const open: RefusalContext = { ...fixed, targetFrom: 'form' }
     expect(createRefusalSentence('connection_needs_reauth', open)).toMatch(/Check the Project ID first, then the key/)
     expect(createRefusalSentence('verify_openai_project_mismatch', open)).toBe('OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.')
   })
@@ -138,6 +138,164 @@ describe('the create refusals', () => {
   it('names each mailbox or drive not on the company list', () => {
     expect(createRefusalSentence('google_subject_not_listed', { ...CTX, names: ['ops@trypennie.com', 'Finance drive'] }))
       .toContain('ops@trypennie.com and Finance drive are not on the company list')
+  })
+})
+
+// Reconnect takes what a connection names (its target: a Workspace ID, a Project ID, an address) from the stored
+// row and refuses a changed one (reconnect_target_changed), and a Google sign in, new or a Reconnect, is for the
+// person's own account, which nobody types, so no sentence either shows may send the person to check or change it
+// (L111, #2910). These walk every code by the state reached, never a list of the sentences known to name a target
+// (L247), for every catalogue service, since each names its target in its own words.
+describe('on Reconnect, where the target is stored, and on a sign in, where nobody types one (#2910)', () => {
+  const KEPT: readonly Exclude<TargetFrom, 'form'>[] = ['stored', 'sign_in']
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  /** Words for what a connection names that a sentence uses besides the form's own labels. */
+  const TARGET_WORDS = ['address', 'host', 'account', 'mailbox', 'workspace', 'project', 'org', 'connected app', 'client id', 'both', 'what the connection names', 'the services']
+  /** An instruction to the person: the verbs a remedy uses to send them to a field. */
+  const INSTRUCTION = /\b(check|choose|use|change|enter|tick|fill|fix|type|correct|pick|edit)\b/i
+
+  /**
+   * Each part of the sentence that sends the person to something they cannot change there, or says it is wrong.
+   * Allowed: what "this connection" names as the thing to match (it is read, not changed), the login's own
+   * fields, and on Reconnect adding a new connection, which is where a stored target that is itself wrong is
+   * fixed. A sign in is itself the adding of a connection, so there a new connection is no remedy either.
+   */
+  function asksForTarget(sentence: string, service: ServiceSchema, from: Exclude<TargetFrom, 'form'> = 'stored'): string[] {
+    const found: string[] = []
+    if (from === 'sign_in' && /add a new connection/i.test(sentence)) found.push('add a new connection')
+    const targetLabels = service.connection.fields.filter((f) => f.target !== undefined).map((f) => f.label)
+    const loginLabels = [secretLabelOf(service), ...service.connection.fields.filter((f) => f.login !== undefined && f.target === undefined).map((f) => f.label)]
+      .sort((a, b) => b.length - a.length)
+    let text = sentence
+      .replace(/add a new connection[^.]*/gi, '')
+      .replace(/(the one )?this (connection|one) names/gi, '')
+      .replace(/this connection's [A-Za-z]+( (ID|URL|id|path|app))?/g, '')
+    for (const label of loginLabels) text = text.replace(new RegExp(escape(label), 'gi'), '')
+    const terms = new RegExp(`\\b(${[...targetLabels, ...TARGET_WORDS].map(escape).join('|')})\\b`, 'i')
+    const [, remedy = ''] = text.split(/Nothing was (?:saved|changed|removed|added)\./)
+    for (const part of remedy.split(/(?<=\.)\s+/)) {
+      if (INSTRUCTION.test(part) && terms.test(part)) found.push(part.trim())
+    }
+    const wrong = new RegExp(`\\b(${[...targetLabels, ...TARGET_WORDS].map(escape).join('|')}) is wrong\\b`, 'i')
+    if (wrong.test(text)) found.push(text.match(wrong)![0])
+    return found
+  }
+
+  const keptCtx = (s: ServiceSchema, from: Exclude<TargetFrom, 'form'> = 'stored'): RefusalContext => ({
+    service: s.name, secret: secretLabelOf(s), org: 'lendco.my.salesforce.com', names: ['Finance drive', 'Salesforce'], money: 'snowflake_user',
+    keyScope: keyScopeOf(s), targetFrom: from,
+  })
+
+  it('no sentence sends the person to check or change what the connection names, for any service, on Reconnect or a sign in', () => {
+    const asks: string[] = []
+    for (const s of CATALOGUE) {
+      for (const from of KEPT) {
+        for (const code of CREATE_REFUSAL_CODES) {
+          const sentence = createRefusalSentence(code, keptCtx(s, from))
+          for (const part of asksForTarget(sentence, s, from)) asks.push(`${from} ${s.key} ${code}: "${part}" in "${sentence}"`)
+        }
+      }
+      for (const code of CONNECTION_ROUTE_REFUSAL_CODES) {
+        const sentence = connectionRouteSentence(code, { service: s.name, secret: secretLabelOf(s), names: ['api.lender.example'], deleted: false })
+        for (const part of asksForTarget(sentence, s)) asks.push(`${s.key} ${code}: "${part}" in "${sentence}"`)
+      }
+    }
+    expect(asks).toEqual([])
+  })
+
+  it('the check itself catches a sentence that sends the person to the target (it is seen to fail)', () => {
+    const service = (key: string) => CATALOGUE.find((s) => s.key === key)!
+    expect(asksForTarget('Slack says no. Nothing was saved. Check the Workspace ID and save again.', service('slack'))).not.toEqual([])
+    expect(asksForTarget('A says no. Nothing was saved. Check the address and save again.', service('http'))).not.toEqual([])
+    expect(asksForTarget('OpenAI refused it, so either the key or the Project ID is wrong. Nothing was saved. Save again.', service('openai'))).not.toEqual([])
+    expect(asksForTarget('No. Nothing was saved. Check the Header value and save again.', service('http'))).toEqual([])
+    expect(asksForTarget('No. Nothing was saved. Add a new connection with another host.', service('http'))).toEqual([])
+    // A sign in is the adding of a connection, so a new one is no remedy there.
+    expect(asksForTarget('No. Nothing was saved. Add a new connection with another host.', service('google'), 'sign_in')).not.toEqual([])
+  })
+
+  it.each([...CREATE_REFUSAL_CODES])('%s keeps the pattern on Reconnect and a sign in: what failed, that nothing was saved, what to do', (code) => {
+    for (const s of CATALOGUE) {
+      for (const from of KEPT) {
+        const sentence = createRefusalSentence(code, keptCtx(s, from))
+        expect(sentence, `${from} ${s.key}`).toMatch(/^[A-Z0-9].*\. Nothing was saved\. [A-Z].*\.$/)
+        for (const mark of [...FORBIDDEN_MARKS, SPACED_HYPHEN]) expect(sentence, `${from} ${s.key}`).not.toContain(mark)
+      }
+    }
+  })
+
+  it('gives each code a sentence of its own on Reconnect and a sign in too (L11)', () => {
+    for (const s of CATALOGUE) {
+      for (const from of KEPT) {
+        const seen = new Map<string, string>()
+        const shared: string[] = []
+        for (const code of CREATE_REFUSAL_CODES) {
+          const sentence = createRefusalSentence(code, keptCtx(s, from))
+          if (seen.has(sentence)) shared.push(`${code} and ${seen.get(sentence)}`)
+          seen.set(sentence, code)
+        }
+        expect(shared, `${from} ${s.key}`).toEqual([])
+      }
+    }
+  })
+
+  it('on a Google sign in, new or a Reconnect, sends the person to signing in again, or to Dan where Bidspoke decides it', () => {
+    const signIn: RefusalContext = { ...CTX, service: 'Google', secret: 'login', org: null, names: [], targetFrom: 'sign_in' }
+    expect(createRefusalSentence('connection_target_invalid', signIn)).toBe(
+      'Bidspoke asked Google for a sign in it cannot use. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
+    )
+    expect(createRefusalSentence('connection_not_allowed', signIn)).toBe('A Bidspoke rule refused this Google login before it was tried. Nothing was saved. Tell Dan.')
+    expect(createRefusalSentence('connection_host_not_declared', signIn)).toBe(
+      'Google sent the check to an address this connection does not name. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
+    )
+    expect(createRefusalSentence('verify_google_mailbox_mismatch', signIn)).toBe(
+      'Google says this acts as another mailbox than the one this connection names. Nothing was saved. Sign in with Google again, and tell Dan if it keeps happening.',
+    )
+  })
+
+  it('words the four the issue names for the key, or a new connection where the stored target is wrong', () => {
+    const stored: RefusalContext = { ...CTX, org: null, names: [], targetFrom: 'stored' }
+    expect(createRefusalSentence('verify_slack_workspace_mismatch', { ...stored, service: 'Slack', secret: 'Bot token' })).toBe(
+      'Slack says this bot is in another workspace than this connection\'s Workspace ID. Nothing was saved. Use a bot token from the ops Slack app in this connection\'s workspace and save again.',
+    )
+    expect(createRefusalSentence('verify_anthropic_workspace_mismatch', { ...stored, service: 'Anthropic', secret: 'API key' })).toBe(
+      'Anthropic says this API key runs in another workspace than this connection\'s Workspace ID. Nothing was saved. Check the key is from this connection\'s workspace and save again.',
+    )
+    expect(createRefusalSentence('connection_target_invalid', { ...stored, service: 'Snowflake' })).toBe(
+      'The Snowflake address this connection names is not one Bidspoke can use. Nothing was saved. To use another, add a new connection.',
+    )
+    expect(createRefusalSentence('connection_host_not_declared', { ...stored, service: 'Salesforce' })).toBe(
+      'Salesforce sent the check to an address this connection does not name. Nothing was saved. Tell Dan, or add a new connection if this one names the wrong address.',
+    )
+  })
+
+  it('keeps a Slack alert bot refusal on the token, which Reconnect can change, and sends any other bidding identity to a new connection', () => {
+    const stored: RefusalContext = { ...CTX, targetFrom: 'stored' }
+    expect(createRefusalSentence('connection_money_identity', { ...stored, money: 'slack_alert_bot' })).toMatch(/Nothing was saved\. Use a login made for workflows\.$/)
+    for (const money of ['supabase_project', 'salesforce_client_id', 'snowflake_user'] as const) {
+      expect(createRefusalSentence('connection_money_identity', { ...stored, money }), money).toMatch(/Nothing was saved\. Add a new connection with a login made for workflows\.$/)
+    }
+  })
+
+  it('leaves every Add sentence as it was', () => {
+    const add: RefusalContext = { ...CTX, targetFrom: 'form' }
+    expect(createRefusalSentence('verify_slack_workspace_mismatch', add)).toBe('Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.')
+    expect(createRefusalSentence('verify_anthropic_workspace_mismatch', add)).toBe('Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.')
+    expect(createRefusalSentence('connection_target_invalid', add)).toBe('The Salesforce address entered is not one Bidspoke can use. Nothing was saved. Check the address and save again.')
+    expect(createRefusalSentence('connection_url_invalid', add)).toBe('The check was sent to an address that is not a secure Salesforce one. Nothing was saved. Check the address and save again.')
+    expect(createRefusalSentence('connection_host_not_declared', add)).toBe('Salesforce sent the check to an address this connection does not name. Nothing was saved. Check the address and save again.')
+    expect(createRefusalSentence('verify_client_id_mismatch', add)).toBe('The client secret belongs to another connected app than the client id. Nothing was saved. Check both and save again.')
+    expect(createRefusalSentence('verify_identity_mismatch', add)).toBe('Salesforce says this login belongs to another account than the one entered. Nothing was saved. Check the account and save again.')
+    expect(createRefusalSentence('verify_google_mailbox_mismatch', add)).toBe('Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.')
+    expect(createRefusalSentence('verify_http_check_refused', add)).toBe('The Check path did not answer with this header value. Nothing was saved. Check the Check path, the Header and the Header value, and save again.')
+    expect(createRefusalSentence('verify_supabase_lane_project', add)).toBe('This is one of the Supabase projects Bidspoke itself runs on, which a workflow connection may never use. Nothing was saved. Use a project made for workflows.')
+    expect(createRefusalSentence('connection_not_allowed', add)).toBe('A Bidspoke rule refused this Salesforce login before it was tried. Nothing was saved. Check what the connection names and save again.')
+    expect(createRefusalSentence('connection_service_undeclared', add)).toBe('Bidspoke cannot connect to Salesforce yet. Nothing was saved. Choose one of the services the form offers.')
+    expect(createRefusalSentence('connection_host_owned', { ...add, names: ['api.slack.com', 'Slack'] })).toBe('The host api.slack.com belongs to Slack, which an HTTP connection may never reach. Nothing was saved. Use another host, or a Slack connection where Bidspoke offers one.')
+    expect(createRefusalSentence('connection_money_host', { ...add, names: ['api.lender.example'] })).toBe('The host api.lender.example is one Bidspoke\'s bidding sends to, which a workflow connection may never reach. Nothing was saved. Use another host.')
+    expect(createRefusalSentence('google_subject_is_drive', { ...add, names: ['Finance drive'] })).toBe('Finance drive is a shared drive, and a Google connection acts as a mailbox. Nothing was saved. Choose a mailbox under Acts as, tick the drive under Shared drives, then save again.')
+    expect(createRefusalSentence('money_identity_match', add)).toBe('This login signs in as the Salesforce user Bidspoke bids as, which a workflow connection may never use. Nothing was saved. Use a login made for workflows.')
+    expect(createRefusalSentence('connection_money_identity', add)).toBe('This is a Snowflake user Bidspoke\'s bidding signs in as, which a workflow connection may never use. Nothing was saved. Use a login made for workflows.')
   })
 })
 

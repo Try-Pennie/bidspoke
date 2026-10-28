@@ -132,16 +132,6 @@ export function keyScopeOf(service: ServiceSchema): KeyScope | null {
   return { key, scope, owner: keys.owner }
 }
 
-/**
- * keyScopeOf for Reconnect, where the scope is the stored connection's and a
- * changed one is refused (reconnect_target_changed), so the sentences name the
- * key alone as the thing to fix (L111, #2715).
- */
-export function storedKeyScopeOf(service: ServiceSchema): KeyScope | null {
-  const scope = keyScopeOf(service)
-  return scope === null ? null : { ...scope, fixed: true }
-}
-
 /** The Salesforce org a target declares, by its host, for the sentences that name it (#2556). */
 export function orgHostOf(target: Readonly<Record<string, unknown>>): string | null {
   const url = Object.hasOwn(target, 'instance_url') ? target.instance_url : undefined

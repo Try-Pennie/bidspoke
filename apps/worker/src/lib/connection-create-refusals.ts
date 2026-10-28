@@ -142,7 +142,26 @@ export interface RefusalContext {
    * form shows them; null or absent for every other service (connection-create.ts, keyScopeOf).
    */
   keyScope?: KeyScope | null
+  /**
+   * Where what the connection names (its target: a Workspace ID, a Project ID,
+   * an address) comes from, which every sentence about the target reads (L111,
+   * #2910). Required, so a new caller decides it rather than inheriting Add's
+   * wording by omission.
+   */
+  targetFrom: TargetFrom
 }
+
+/**
+ * Where a connection's target comes from (#2910):
+ * - 'form': typed in the Add form, so a sentence may send the person to it.
+ * - 'stored': the stored row's, on Reconnect, which refuses a changed one
+ *   (reconnect_target_changed), so a sentence sends the person to the login,
+ *   or to adding a new connection where the stored target itself is wrong.
+ * - 'sign_in': the person's own account a sign in is for, which nobody types,
+ *   on a new connection and a Reconnect alike, so a sentence sends the person
+ *   to signing in again, or to Dan where a Bidspoke rule or fault decides it.
+ */
+export type TargetFrom = 'form' | 'stored' | 'sign_in'
 
 /** A key's label and the label of the field it only works within, as the form shows them (#2715). */
 export interface KeyScope {
@@ -150,12 +169,6 @@ export interface KeyScope {
   scope: string
   /** What the scope field identifies, in the service's own word (OpenAI's project). */
   owner: string
-  /**
-   * True where the scope cannot be changed: Reconnect takes it from the stored
-   * connection and refuses a changed one (reconnect_target_changed), so its
-   * sentences send the person to the key alone (L111).
-   */
-  fixed?: boolean
 }
 
 /** "A", "A and B", "A, B and C". */
@@ -175,23 +188,47 @@ const MONEY_WORDS: Readonly<Record<MoneyTargetKind, string>> = {
   slack_alert_bot: 'the Slack bot that posts Bidspoke\'s own alerts',
 }
 
+/** Where a stored target is itself wrong, Reconnect cannot fix it: the remedy is a new connection, worded as reconnect_target_changed's. */
+const NEW_CONNECTION = 'To use another, add a new connection.'
+/** A fault that is either Bidspoke's or a stored address that is wrong: Dan first, then a new connection. */
+const DAN_OR_NEW = 'Tell Dan, or add a new connection if this one names the wrong address.'
+/** A sign in names nothing anyone types, so the person can sign in again, and Dan looks into one that repeats. */
+const signInAgain = (c: RefusalContext) => `Sign in with ${c.service} again, and tell Dan if it keeps happening.`
+
+/**
+ * The remedy of a sentence about what the connection names, by where that
+ * comes from (TargetFrom): the form's, the stored row's, or a sign in's, which
+ * is signing in again unless the sentence names one of its own.
+ */
+function remedy(c: RefusalContext, form: string, stored: string, signIn: string = signInAgain(c)): string {
+  return c.targetFrom === 'form' ? form : kept(c, stored, signIn)
+}
+
+/** remedy for a sentence whose Add wording is written out whole beside it: the stored row's, or a sign in's. */
+function kept(c: RefusalContext, stored: string, signIn: string = signInAgain(c)): string {
+  return c.targetFrom === 'sign_in' ? signIn : stored
+}
+
 /** "Tell Dan" closes a sentence about a fault only Dan can fix: the person in the ops team who runs the Workers. */
 const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => string } = {
   // ── the route's own ────────────────────────────────────────────────────────
   connection_request_invalid: () => 'The form sent something Bidspoke cannot read. Nothing was saved. Reload the page and try again.',
-  connection_service_undeclared: (c) => `Bidspoke cannot connect to ${c.service} yet. Nothing was saved. Choose one of the services the form offers.`,
+  connection_service_undeclared: (c) => c.targetFrom === 'stored'
+    ? `Bidspoke cannot connect to ${c.service} any more, so this connection cannot be reconnected. Nothing was saved. Tell Dan.`
+    : `Bidspoke cannot connect to ${c.service} yet. Nothing was saved. ${c.targetFrom === 'form' ? 'Choose one of the services the form offers.' : 'Tell Dan.'}`,
   connection_name_missing: () => 'The connection has no name. Nothing was saved. Give it a name and save again.',
   connection_name_invalid: () => `The name is longer than ${CONNECTION_NAME_MAX} characters or holds a character a name cannot. Nothing was saved. Shorten the name and save again.`,
   connection_fields_missing: (c) => `${listed(c.names)} ${isAre(c.names)} empty. Nothing was saved. Fill ${itThem(c.names)} in and save again.`,
   connection_fields_undeclared: (c) => `The form sent ${listed(c.names)}, which a ${c.service} connection does not have. Nothing was saved. Reload the page and fill the form in again.`,
   connection_name_reserved: (c) => `That name belongs to Bidspoke's own ${c.service} alert login. Nothing was saved. Choose another name and save again.`,
   connection_name_taken: (c) => `Another ${c.service} connection already has that name. Nothing was saved. Choose another name and save again.`,
-  connection_money_identity: (c) => `This is ${c.money ? MONEY_WORDS[c.money] : 'a login Bidspoke\'s bidding uses'}, which a workflow connection may never use. Nothing was saved. Use a login made for workflows.`,
+  // A Slack alert bot is matched by its token, which a Reconnect replaces; every other bidding identity is what the stored connection names.
+  connection_money_identity: (c) => `This is ${c.money ? MONEY_WORDS[c.money] : 'a login Bidspoke\'s bidding uses'}, which a workflow connection may never use. Nothing was saved. ${remedy(c, 'Use a login made for workflows.', c.money === 'slack_alert_bot' ? 'Use a login made for workflows.' : 'Add a new connection with a login made for workflows.', 'Sign in with an account made for workflows.')}`,
   connection_money_targets_unreadable: () => 'Bidspoke could not check whether this is one of its own bidding logins. Nothing was saved. Save again in a minute.',
-  connection_host_owned: (c) => `The host ${c.names[0] ?? 'entered'} belongs to ${c.names[1] ?? 'another service'}, which an HTTP connection may never reach. Nothing was saved. Use another host, or a ${c.names[1] ?? 'service'} connection where Bidspoke offers one.`,
-  connection_money_host: (c) => `The host ${c.names[0] ?? 'entered'} is one Bidspoke's bidding sends to, which a workflow connection may never reach. Nothing was saved. Use another host.`,
+  connection_host_owned: (c) => `The host ${c.names[0] ?? 'entered'} belongs to ${c.names[1] ?? 'another service'}, which an HTTP connection may never reach. Nothing was saved. ${remedy(c, `Use another host, or a ${c.names[1] ?? 'service'} connection where Bidspoke offers one.`, `Add a new connection with another host, or a ${c.names[1] ?? 'service'} connection where Bidspoke offers one.`)}`,
+  connection_money_host: (c) => `The host ${c.names[0] ?? 'entered'} is one Bidspoke's bidding sends to, which a workflow connection may never reach. Nothing was saved. ${remedy(c, 'Use another host.', 'Add a new connection with another host.')}`,
   google_subject_not_listed: (c) => `${listed(c.names)} ${isAre(c.names)} not on the company list of mailboxes and drives. Nothing was saved. Add ${itThem(c.names)} to the list on this page, then save again.`,
-  google_subject_is_drive: (c) => `${c.names[0] ?? 'That'} is a shared drive, and a Google connection acts as a mailbox. Nothing was saved. Choose a mailbox under Acts as, tick the drive under Shared drives, then save again.`,
+  google_subject_is_drive: (c) => `${c.names[0] ?? 'That'} is a shared drive, and a Google connection acts as a mailbox. Nothing was saved. ${remedy(c, 'Choose a mailbox under Acts as, tick the drive under Shared drives, then save again.', 'Add a new connection that acts as a mailbox, with the drive under Shared drives.')}`,
   google_list_unavailable: () => 'The company list of mailboxes and drives could not be read. Nothing was saved. Save again in a minute.',
   connection_seal_failed: () => 'Bidspoke could not lock the login away for safe keeping. Nothing was saved. Save again, and tell Dan if it keeps happening.',
   connections_unavailable: () => 'Bidspoke\'s database did not answer. Nothing was saved. Save again in a minute.',
@@ -208,21 +245,33 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   ops_connections_failed: (c) => `The login check with ${c.service} failed unexpectedly. Nothing was saved. Save again, and tell Dan if it keeps happening.`,
   money_identity_unavailable: () => 'Bidspoke could not read which Salesforce user it bids as, so it cannot rule this login out. Nothing was saved. Save again in a minute.',
   money_identity_unmeasured: () => 'Bidspoke has no recent reading of which Salesforce user it bids as, so it cannot rule this login out. Nothing was saved. Tell Dan.',
-  money_identity_match: () => 'This login signs in as the Salesforce user Bidspoke bids as, which a workflow connection may never use. Nothing was saved. Use a login made for workflows.',
-  verify_client_id_mismatch: () => 'The client secret belongs to another connected app than the client id. Nothing was saved. Check both and save again.',
+  // The user a Salesforce login signs in as is its connected app's, whose client id the stored connection names.
+  money_identity_match: (c) => `This login signs in as the Salesforce user Bidspoke bids as, which a workflow connection may never use. Nothing was saved. ${remedy(c, 'Use a login made for workflows.', 'Add a new connection with a login made for workflows.', 'Sign in with an account made for workflows.')}`,
+  verify_client_id_mismatch: (c) => c.targetFrom === 'form'
+    ? 'The client secret belongs to another connected app than the client id. Nothing was saved. Check both and save again.'
+    : `The client secret belongs to another connected app than this connection's client id. Nothing was saved. ${kept(c, 'Check the client secret is from this connection\'s connected app and save again.')}`,
   candidate_not_refreshable: (c) => `A personal ${c.service} login is added by signing in, not with this form. Nothing was saved. Use the sign in button instead.`,
   verify_identity_unmeasurable: (c) => `Bidspoke cannot yet check who a ${c.service} login acts as. Nothing was saved. Tell Dan.`,
   verify_identity_unreadable: (c) => `${c.service} did not say who this login acts as. Nothing was saved. Save again, and tell Dan if it keeps happening.`,
-  verify_identity_mismatch: (c) => `${c.service} says this login belongs to another account than the one entered. Nothing was saved. Check the account and save again.`,
+  verify_identity_mismatch: (c) => c.targetFrom === 'form'
+    ? `${c.service} says this login belongs to another account than the one entered. Nothing was saved. Check the account and save again.`
+    : `${c.service} says this login belongs to another account than the one this connection names. Nothing was saved. ${kept(c, `Check the ${c.secret} is for this connection's account and save again.`)}`,
   verify_slack_not_a_bot: () => 'This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.',
-  verify_slack_workspace_mismatch: () => 'Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
-  verify_openai_project_mismatch: (c) => c.keyScope?.fixed
-    ? 'OpenAI says this API key belongs to another project than this connection\'s Project ID. Nothing was saved. Check the key is from this connection\'s project and save again.'
-    : 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.',
-  verify_google_mailbox_mismatch: () => 'Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.',
-  verify_anthropic_workspace_mismatch: () => 'Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
-  verify_http_check_refused: () => 'The Check path did not answer with this header value. Nothing was saved. Check the Check path, the Header and the Header value, and save again.',
-  verify_supabase_lane_project: () => 'This is one of the Supabase projects Bidspoke itself runs on, which a workflow connection may never use. Nothing was saved. Use a project made for workflows.',
+  verify_slack_workspace_mismatch: (c) => c.targetFrom === 'form'
+    ? 'Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'
+    : `Slack says this bot is in another workspace than this connection's Workspace ID. Nothing was saved. ${kept(c, 'Use a bot token from the ops Slack app in this connection\'s workspace and save again.')}`,
+  verify_openai_project_mismatch: (c) => c.targetFrom === 'form'
+    ? 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.'
+    : `OpenAI says this API key belongs to another project than this connection's Project ID. Nothing was saved. ${kept(c, 'Check the key is from this connection\'s project and save again.')}`,
+  // A Google connection has no login of its own to replace (Bidspoke's delegation key signs it in), so on Reconnect the mailbox is Dan's to look into.
+  verify_google_mailbox_mismatch: (c) => c.targetFrom === 'form'
+    ? 'Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.'
+    : `Google says this acts as another mailbox than the one this connection names. Nothing was saved. ${kept(c, 'Tell Dan, or add a new connection if the mailbox is wrong.')}`,
+  verify_anthropic_workspace_mismatch: (c) => c.targetFrom === 'form'
+    ? 'Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'
+    : `Anthropic says this API key runs in another workspace than this connection's Workspace ID. Nothing was saved. ${kept(c, 'Check the key is from this connection\'s workspace and save again.')}`,
+  verify_http_check_refused: (c) => `The Check path did not answer with this header value. Nothing was saved. ${remedy(c, 'Check the Check path, the Header and the Header value, and save again.', 'Check the Header value and save again, or add a new connection if the Check path or the Header is wrong.')}`,
+  verify_supabase_lane_project: (c) => `This is one of the Supabase projects Bidspoke itself runs on, which a workflow connection may never use. Nothing was saved. ${remedy(c, 'Use a project made for workflows.', 'Add a new connection to a project made for workflows.')}`,
   identity_changed: (c) => `${c.service} names another user for this login than it did before. Nothing was saved. Tell Dan before it is used.`,
   measured_identity_unrecorded: () => 'The login worked, but the workflows server could not record who it acts as. Nothing was saved. Save again.',
 
@@ -238,9 +287,14 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   connection_generation_older: () => 'The workflows server holds a newer login under this connection. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
   connection_candidate_not_allowed: () => 'The workflows server would not check a new login in this way. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.',
   connection_seal_refused: () => 'The workflows server could not unlock the login Bidspoke locked. Nothing was saved. Tell Dan, since the two servers\' keys may not match.',
-  connection_target_invalid: (c) => `The ${c.service} address entered is not one Bidspoke can use. Nothing was saved. Check the address and save again.`,
-  connection_url_invalid: (c) => `The check was sent to an address that is not a secure ${c.service} one. Nothing was saved. Check the address and save again.`,
-  connection_host_not_declared: (c) => `${c.service} sent the check to an address this connection does not name. Nothing was saved. Check the address and save again.`,
+  // A sign in's target is Bidspoke's own (the person's account at the service's token address), so one it cannot use is Bidspoke's fault.
+  connection_target_invalid: (c) => c.targetFrom === 'sign_in'
+    ? `Bidspoke asked ${c.service} for a sign in it cannot use. Nothing was saved. Tell Dan, since this is a fault in Bidspoke.`
+    : c.targetFrom === 'stored'
+    ? `The ${c.service} address this connection names is not one Bidspoke can use. Nothing was saved. ${NEW_CONNECTION}`
+    : `The ${c.service} address entered is not one Bidspoke can use. Nothing was saved. Check the address and save again.`,
+  connection_url_invalid: (c) => `The check was sent to an address that is not a secure ${c.service} one. Nothing was saved. ${remedy(c, 'Check the address and save again.', DAN_OR_NEW, 'Tell Dan, since this is a fault in Bidspoke.')}`,
+  connection_host_not_declared: (c) => `${c.service} sent the check to an address this connection does not name. Nothing was saved. ${remedy(c, 'Check the address and save again.', DAN_OR_NEW, 'Tell Dan, since this is a fault in Bidspoke.')}`,
   sf_pool_busy: () => 'Salesforce is busy with other Bidspoke work. Nothing was saved. Save again in a minute.',
   sf_org_unmeasured: (c) => `Bidspoke has not yet measured the Salesforce org ${orgOf(c)}. Nothing was saved. Save again in a minute.`,
   // Dan's words, design round 33 (2026-10-21): what is missing and what happens next, in the person's terms.
@@ -254,13 +308,15 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   // OpenAI answers a valid key sent with a wrong Project ID with the same 401 as a bad key, and its error reference
   // documents no code that tells the two apart (#2715), so a key scoped to a field names both, and which to check first.
   // On Reconnect the scope is the stored connection's and cannot change there, so only the key is named as the fix (L111).
-  connection_needs_reauth: (c) => c.keyScope?.fixed
+  connection_needs_reauth: (c) => c.keyScope && c.targetFrom !== 'form'
     ? `${c.service} refused the ${c.keyScope.key} with this connection's ${c.keyScope.scope}, so the key is wrong or belongs to another ${c.keyScope.owner}. Nothing was saved. Check the key is from this connection's ${c.keyScope.owner} and save again.`
     : c.keyScope
     ? `${c.service} refused the ${c.keyScope.key} with this ${c.keyScope.scope}, so either the key or the ${c.keyScope.scope} is wrong. Nothing was saved. Check the ${c.keyScope.scope} first, then the key, and save again.`
     : `${c.service} refused the ${c.secret}. Nothing was saved. Check the ${c.secret === 'login' ? 'login' : 'secret'} and save again.`,
   connection_auth_unavailable: (c) => `${c.service} did not answer the sign in. Nothing was saved. Save again in a minute.`,
-  connection_not_allowed: (c) => `A Bidspoke rule refused this ${c.service} login before it was tried. Nothing was saved. Check what the connection names and save again.`,
+  // Most of these rules judge what the connection names (target_invalid); on Reconnect that is stored, so the remedy is Dan or a
+  // new connection. A sign in's are Bidspoke's own settings (its sign in app, its token address), so the remedy is Dan.
+  connection_not_allowed: (c) => `A Bidspoke rule refused this ${c.service} login before it was tried. Nothing was saved. ${remedy(c, 'Check what the connection names and save again.', 'Tell Dan, or add a new connection if what this one names is wrong.', 'Tell Dan.')}`,
   connection_auth_check_unavailable: () => 'The workflows server could not read the list it checks this login against. Nothing was saved. Save again in a minute.',
   connection_token_object_unavailable: () => 'The workflows server could not reach where it keeps sign ins. Nothing was saved. Save again in a minute.',
   connection_auth_failed: (c) => `The sign in to ${c.service} failed for a reason it did not give. Nothing was saved. Check the login and save again.`,

@@ -75,7 +75,7 @@ import { DELEGATION_KINDS, type DelegationKind } from '../../ops/run-vocabulary'
 import { readGoogleTarget } from '../../ops/connections/minters/google-target'
 import {
   actsAsOf, AUTH_TYPE_OF, connectionNameOf, connectionsNamingSubject, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
-  keyScopeOf, listedDriveNamedAsMailbox, secretLabelOf, storedKeyScopeOf, unlistedGoogleSubjects,
+  keyScopeOf, listedDriveNamedAsMailbox, secretLabelOf, unlistedGoogleSubjects,
 } from '../../lib/connection-create'
 import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
 import {
@@ -524,8 +524,9 @@ connections.post('/', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const catalogue = CATALOGUE
 
-  const refuse = (code: CreateRefusalCode, ctx: Partial<RefusalContext> & { service: string }, extra: Record<string, unknown> = {}) => {
-    const context: RefusalContext = { secret: 'login', org: null, names: [], money: null, ...ctx }
+  const refuse = (code: CreateRefusalCode, ctx: Partial<Omit<RefusalContext, 'targetFrom'>> & { service: string }, extra: Record<string, unknown> = {}) => {
+    // Add: the target is typed in this form, so a sentence may send the person to it (#2910).
+    const context: RefusalContext = { secret: 'login', org: null, names: [], money: null, ...ctx, targetFrom: 'form' }
     console.warn(JSON.stringify({ event: 'connection_create_refused', code, organization_id: orgId, service: ctx.service }))
     const status = (CREATE_STATUS as Partial<Record<CreateRefusalCode, number>>)[code] ?? (VERIFY_STATUS as Partial<Record<CreateRefusalCode, number>>)[code] ?? 422
     return c.json({ error: code, message: createRefusalSentence(code, context), ...extra }, status as 400)
@@ -808,7 +809,8 @@ async function readSlackAlertRow(supabase: ReturnType<typeof createSupabaseClien
 }
 
 type OwnRefusal = (code: ConnectionRouteRefusalCode, ctx?: Partial<RouteRefusalContext>, extra?: Record<string, unknown>) => Response
-type CreateRefusalAnswer = (code: CreateRefusalCode, ctx?: Partial<RefusalContext>, extra?: Record<string, unknown>) => Response
+/** The Reconnect's sentences: the target is the stored row's on every one, so no caller can say otherwise (#2910). */
+type CreateRefusalAnswer = (code: CreateRefusalCode, ctx?: Partial<Omit<RefusalContext, 'targetFrom'>>, extra?: Record<string, unknown>) => Response
 
 /**
  * Reconnect on the Slack alerts login. Ops never holds this login, so Slack is
@@ -926,12 +928,14 @@ async function reconnectSlackAlertLogin(
 connections.post('/:id/reconnect', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id')
-  const words: Pick<RefusalContext, 'service' | 'secret' | 'keyScope'> = { service: 'the service', secret: 'login', keyScope: null }
+  // A Reconnect keeps what the connection names (reconnect_target_changed), so every sentence built here, by
+  // either path, reads the target as stored and never sends the person to change it (L111, #2910).
+  const words: Pick<RefusalContext, 'service' | 'secret' | 'keyScope' | 'targetFrom'> = { service: 'the service', secret: 'login', keyScope: null, targetFrom: 'stored' }
   const ownRefusal = (code: ConnectionRouteRefusalCode, ctx: Partial<RouteRefusalContext> = {}, extra: Record<string, unknown> = {}) => {
     console.warn(JSON.stringify({ event: 'connection_reconnect_refused', code, organization_id: orgId, connection_id: UUID.test(id) ? id : null }))
     return c.json({ error: code, message: connectionRouteSentence(code, { ...words, names: [], deleted: false, ...ctx }), ...extra }, ROUTE_STATUS[code])
   }
-  const createRefusal = (code: CreateRefusalCode, ctx: Partial<RefusalContext> = {}, extra: Record<string, unknown> = {}) => {
+  const createRefusal: CreateRefusalAnswer = (code, ctx = {}, extra = {}) => {
     console.warn(JSON.stringify({ event: 'connection_reconnect_refused', code, organization_id: orgId, connection_id: UUID.test(id) ? id : null }))
     const status = (CREATE_STATUS as Partial<Record<CreateRefusalCode, number>>)[code] ?? (VERIFY_STATUS as Partial<Record<CreateRefusalCode, number>>)[code] ?? 422
     return c.json({ error: code, message: createRefusalSentence(code, { org: null, names: [], money: null, ...words, ...ctx }), ...extra }, status as 400)
@@ -967,7 +971,7 @@ connections.post('/:id/reconnect', async (c) => {
   const row = data as ReconnectRow
   const service = declaredService(CATALOGUE, row.service_type)
   if (!service) return createRefusal('connection_service_undeclared', { service: row.service_type })
-  Object.assign(words, { service: service.name, secret: secretLabelOf(service), keyScope: storedKeyScopeOf(service) })
+  Object.assign(words, { service: service.name, secret: secretLabelOf(service), keyScope: keyScopeOf(service) })
   const target = isRecordValue(row.target) ? row.target : null
   const publicConfig = isRecordValue(row.config) ? row.config : {}
 
@@ -1383,11 +1387,11 @@ connections.get('/google/subjects', async (c) => {
 connections.post('/google/subjects', async (c) => {
   const { orgId, userId, email, name } = c.get('user')
   if (declaredBodyTooLarge(c.req.header('content-length'))) {
-    return c.json({ error: 'connection_request_invalid', message: createRefusalSentence('connection_request_invalid', { service: 'Google', secret: 'login', org: null, names: [], money: null }) }, 400)
+    return c.json({ error: 'connection_request_invalid', message: createRefusalSentence('connection_request_invalid', { service: 'Google', secret: 'login', org: null, names: [], money: null, targetFrom: 'form' }) }, 400)
   }
   const body = readDelegationEntryBody(await c.req.text())
   if (!body.ok) {
-    return c.json({ error: 'connection_request_invalid', message: createRefusalSentence('connection_request_invalid', { service: 'Google', secret: 'login', org: null, names: [], money: null }), detail: body.problem }, 400)
+    return c.json({ error: 'connection_request_invalid', message: createRefusalSentence('connection_request_invalid', { service: 'Google', secret: 'login', org: null, names: [], money: null, targetFrom: 'form' }), detail: body.problem }, 400)
   }
   const shown = body.subject.trim() === '' ? 'An empty entry' : body.subject.trim()
   if (body.subject.trim() === '' || body.subject.length > DELEGATION_SUBJECT_MAX) return delegationRefuse(c, orgId, 'delegation_subject_invalid', [shown.slice(0, 80)])
@@ -1410,7 +1414,7 @@ connections.delete('/google/subjects/:kind/:subject', async (c) => {
   const kind = c.req.param('kind')
   const subject = c.req.param('subject')
   if (!(DELEGATION_KINDS as readonly string[]).includes(kind)) {
-    return c.json({ error: 'connection_request_invalid', message: createRefusalSentence('connection_request_invalid', { service: 'Google', secret: 'login', org: null, names: [], money: null }), detail: 'kind is not mailbox or drive' }, 400)
+    return c.json({ error: 'connection_request_invalid', message: createRefusalSentence('connection_request_invalid', { service: 'Google', secret: 'login', org: null, names: [], money: null, targetFrom: 'form' }), detail: 'kind is not mailbox or drive' }, 400)
   }
   if (subject.trim() === '' || subject.length > DELEGATION_SUBJECT_MAX) return delegationRefuse(c, orgId, 'delegation_subject_not_listed', ['That entry'])
 
@@ -1520,7 +1524,9 @@ function signInRefuse(c: Context, orgId: string, code: SignInRefusalCode | Creat
   }
   const shared = code as CreateRefusalCode
   const status = (CREATE_STATUS as Partial<Record<CreateRefusalCode, number>>)[shared] ?? (VERIFY_STATUS as Partial<Record<CreateRefusalCode, number>>)[shared] ?? 422
-  return c.json({ error: shared, message: createRefusalSentence(shared, { service: 'Google', secret: 'login', org: null, names: [], money: null }), ...extra }, status as 400)
+  // A sign in, new or a Reconnect, is for the person's own account, which nobody types: its sentences send the
+  // person to signing in again, or to Dan, never to an address (#2910).
+  return c.json({ error: shared, message: createRefusalSentence(shared, { service: 'Google', secret: 'login', org: null, names: [], money: null, targetFrom: 'sign_in' }), ...extra }, status as 400)
 }
 
 // POST /api/connections/google/sign-in   body { name } | { connection_id }
