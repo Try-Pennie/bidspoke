@@ -455,8 +455,9 @@ frozen version 169 with the first canary applied. It also walks the ported write
 through the real engine for every Salesforce answer and requires each failure to
 end the same way as the invalid state write the first canary passed on.
 `save-route-contract.test.ts` now holds the save route contract on the next
-stage still to apply, `outcome_posts`, and requires both canaries to answer
-`nothing_to_do` over the live definition.
+stage still to apply, `outcome_posts`, and requires both canaries and the
+`collections` stage (version 177, #2832) to answer `nothing_to_do` over the live
+definition.
 
 **Switching it on** (after the pull request that adds the watch is merged,
 deployed, and the live commit confirmed): the runbook above, steps 2 to 5, with

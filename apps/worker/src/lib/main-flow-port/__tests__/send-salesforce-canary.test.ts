@@ -67,7 +67,12 @@ const asBuilt = (): Definition => portMainFlow(beforeCanary(), PORT_STAGES.canar
  * the 4,500 ms the port built to 5,250 ms, a canvas save the later stages keep, so
  * a check of the live write reads it rather than OUTCOME_WRITE_TIMEOUT_MS.
  */
-const liveWriteTimeoutMs = (): number => Number(nodeByNamespace(live(), 'send_salesforce').config.timeout_ms)
+const liveWriteTimeoutMs = (): number => {
+  const ms = nodeByNamespace(live(), 'send_salesforce').config.timeout_ms
+  // A missing or unreadable value must fail here, never pass a window comparison as NaN.
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) throw new Error(`live send_salesforce has no timeout_ms: ${JSON.stringify(ms)}`)
+  return ms
+}
 
 describe('the send_salesforce canary stage over the live Main Flow', () => {
   it('is live: send_salesforce and invalid_state_sf_post native, the other seven on the relay, the inquiry where it was', () => {

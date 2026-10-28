@@ -1,6 +1,6 @@
 /**
  * The money gate's Main Flow fixture holds every stage applied to Main Flow so far
- * (#2173, then canary_send_salesforce, #2174).
+ * (#2173, then canary_send_salesforce, #2174, then collections, #2832).
  *
  * Step 5 of the runbook (docs/main-flow-relay-port.md) refreshes the gate's
  * fixtures from production after each apply. This holds the result as a check:
