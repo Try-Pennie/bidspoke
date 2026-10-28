@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MAX_REPORT_LOGINS, MAX_REPORT_PROBLEMS, MAX_REPORT_WRITE_BACKS, OPS_TICK_PROBLEM_RULES, OPS_TICK_PROBLEM_SWEEPS, capTickProblems, parseOpsTickReport,
-  problemRuleOf, sweepOfProblemKey, tickProblem,
+  OPS_RESEAL_PAGED_VERDICTS, OPS_RESEAL_VERDICTS, problemRuleOf, sweepOfProblemKey, tickProblem,
 } from '../ops-gateway-contract'
 import { OPS_SWEEPS } from '../../ops/run-vocabulary'
 
@@ -29,6 +29,8 @@ const THREE_IN_A_ROW = [
   'definitions_failed', 'definition_save_failed',
   // Live mode (#1950): the claim is asked again next tick; a run outcome rate is judged over three ticks (L77).
   'claim_failed', 'runs_failing',
+  // The reseal watch (#2486): its state is read again next tick.
+  'reseal_state_failed',
 ]
 const AT_ONCE = [
   // The frozen definition copies (#1950): a person must decide, and no later tick changes it.
@@ -127,6 +129,43 @@ describe('the sweeps a report says its tick ran (#2340)', () => {
     ['too long a list', { sweeps_run: Array.from({ length: 21 }, (_, i) => `s${i}`) }],
   ])('refuses a report whose sweeps run are %s, so it pages as unreadable', (_label, over) => {
     expect(() => parseOpsTickReport(report(over))).toThrow(/sweeps run/)
+  })
+})
+
+describe('the reseal watch a report carries (#2486)', () => {
+  const report = (over: Record<string, unknown>) => ({
+    tick_id: 't', mode: 'observe', scheduled_time: null, started_at: '2026-10-27T16:00:00Z', finished_at: '2026-10-27T16:00:10Z',
+    db_now: null, outcome: 'ok', problems: [], problem_keys: [], counts: {}, ...over,
+  })
+  const reseal = {
+    verdict: 'logins_left', mode: 'apply', since: '2026-10-27T13:46:00.000Z', nothing_left_since: null, last_run_at: '2026-10-27T15:59:00.000Z',
+    last_run_left: 3, db_now: '2026-10-27T16:00:00.000Z',
+  }
+
+  it('reads a report from an ops release before it, or a tick that judged none, as null: unjudged, never read as off', () => {
+    expect(parseOpsTickReport(report({})).reseal).toBeNull()
+    expect(parseOpsTickReport(report({ reseal: null })).reseal).toBeNull()
+  })
+
+  it('keeps each verdict as sent', () => {
+    expect(parseOpsTickReport(report({ reseal })).reseal).toEqual(reseal)
+    const off = { verdict: 'off', mode: null, since: null, nothing_left_since: null, last_run_at: null, last_run_left: null, db_now: null }
+    expect(parseOpsTickReport(report({ reseal: off })).reseal).toEqual(off)
+    expect(OPS_RESEAL_VERDICTS).toEqual(['off', 'running', 'logins_left', 'preview_left_on', 'finished_left_on', 'switch_unknown'])
+    expect(OPS_RESEAL_PAGED_VERDICTS).toEqual(['logins_left', 'preview_left_on', 'finished_left_on', 'switch_unknown'])
+  })
+
+  it.each([
+    ['not an object', 'logins_left'],
+    ['a verdict it does not know', { ...reseal, verdict: 'stuck' }],
+    ['a mode it does not know', { ...reseal, mode: 'yes' }],
+    ['an unreadable time', { ...reseal, since: 'soon' }],
+    ['a negative count', { ...reseal, last_run_left: -1 }],
+    ['a count that is not whole', { ...reseal, last_run_left: 1.5 }],
+    ['a paged verdict with no time it was judged at', { ...reseal, db_now: null }],
+    ['a verdict about a switch that is on with no mode', { ...reseal, mode: null }],
+  ])('refuses a reseal watch that is %s, so the report pages as unreadable', (_label, bad) => {
+    expect(() => parseOpsTickReport(report({ reseal: bad }))).toThrow(/reseal/)
   })
 })
 

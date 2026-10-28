@@ -43,8 +43,17 @@ describe('the connections fixtures', () => {
     expect(fx.remove.ops.told).toBe(false)
   })
 
+  it('hold a Replace of Pennie Salesforce with TPL2 Salesforce that moved all but one, so the dialog stays open with its red line', () => {
+    expect(fx.replace.connection.id).toBe(idOf('Pennie Salesforce'))
+    expect(fx.replace.with).toEqual({ id: idOf('TPL2 Salesforce'), name: 'TPL2 Salesforce' })
+    expect(fx.replace.outcome).toBe('incomplete')
+    const pennie = fx.list.connections.find((c) => c.name === 'Pennie Salesforce')!
+    expect(fx.replace.workflows.map((w) => w.id)).toEqual(pennie.workflows!.map((w) => w.id))
+    expect(fx.replace.workflows.filter((w) => w.outcome !== 'replaced').map((w) => [w.name, w.outcome])).toEqual([['Lead Completed sync', 'changed']])
+  })
+
   it('carry no real identity: every address is an example one', () => {
-    const all = stringsIn([fx.list, fx.history, fx.googleSubjects, fx.slackAlerts, fx.remove])
+    const all = stringsIn([fx.list, fx.history, fx.googleSubjects, fx.slackAlerts, fx.remove, fx.replace])
     const addresses = all.filter((s) => /@/.test(s))
     expect(addresses.length).toBeGreaterThan(0)
     expect(addresses.filter((s) => !/@[a-z0-9.-]*example(\.com)?$/i.test(s))).toEqual([])
@@ -78,6 +87,13 @@ describe('answerConnectionsFor', () => {
     expect(answerConnectionsFor('POST', `${W}/api/connections`, fx)).toBeNull()
     expect(answerConnectionsFor('POST', `${W}/api/connections/${idOf('Achieve Salesforce')}/reconnect`, fx)).toBeNull()
     expect(answerConnectionsFor('PATCH', `${W}/api/integrations/slack/settings`, fx)).toBeNull()
+  })
+
+  it('answers the one Replace the scan makes, and no other', () => {
+    const pennie = idOf('Pennie Salesforce')
+    expect(answerConnectionsFor('POST', `${W}/api/connections/${pennie}/replace`, fx)).toEqual({ status: 200, body: fx.replace })
+    expect(answerConnectionsFor('POST', `${W}/api/connections/${idOf('Achieve Salesforce')}/replace`, fx)).toBeNull()
+    expect(answerConnectionsFor('GET', `${W}/api/connections/${pennie}/replace`, fx)).toBeNull()
   })
 
   it('answers no route it was not written for', () => {

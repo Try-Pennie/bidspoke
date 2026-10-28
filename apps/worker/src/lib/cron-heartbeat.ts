@@ -467,6 +467,22 @@ export const CRON_JOBS: CronJob[] = [
       'a new ops login the ops Worker holds and Bidspoke has not saved is never paged, and an open one never gets its all clear, though the ops tick still finds it with the connection check (#2340)',
   },
   {
+    // The fourth report job (#2486, ops-key-reseal.ts), watched for the same
+    // reason as ops-connection-logins: it reads the reseal verdict the tick
+    // reports and pages every organization with Slack.
+    id: 'ops-key-reseal',
+    label: 'Ops key reseal page',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack, matching the other minute jobs.
+    staleMs: 10 * MIN,
+    // One KV read of the report and a few of its incident keys, then at most
+    // one Slack post per organization. Judged by the drought below.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'an ops key reseal that keeps leaving logins on the old key, or a reseal switch left on after it finished, is never paged, and an open page never gets its all clear, though the ops tick still judges it every minute (#2486)',
+  },
+  {
     // The partner ping failure page (#2582, partner-error-rate.ts). Since #2582 a
     // failed LendSwift ping ends the lead as a completed no bid, so the failure
     // saturation page cannot see a LendSwift outage and this job is the only one

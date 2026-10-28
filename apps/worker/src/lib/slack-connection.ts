@@ -69,8 +69,9 @@ export const SLACK_ROW_COLUMNS = 'config, credential_enc'
 // which the database merges into the row in one statement, so two saves at once
 // never put back each other's old values. Each list is the one its database
 // function accepts (save_slack_alert_token and save_slack_alert_settings,
-// migration 20261027170000), which refuses any other key by name; a test
-// compares the two.
+// migration 20261027170000, and the five argument save_slack_alert_settings the
+// route calls, migration 20261027230000, #2870), which refuses any other key by
+// name; a test compares each list with each migration.
 
 /** The keys the token save (a Reconnect, or the first connect) may write. A Reconnect sends only workspace_name. */
 export const SLACK_ALERT_TOKEN_SAVE_KEYS = ['workspace_name', 'default_channel'] as const

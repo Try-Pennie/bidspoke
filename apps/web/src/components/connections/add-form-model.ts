@@ -263,14 +263,30 @@ export function workingLabel(serviceName: string): string {
   return `Checking the login with ${serviceName}`
 }
 
-/** What a time taking change was doing, for the sentences about it. */
-export type ChangeKind = 'saved' | 'reconnected' | 'removed'
-
-const WORDS: Readonly<Record<ChangeKind, { what: string; verb: string; again: string; redo: string }>> = {
-  saved: { what: 'the connection', verb: 'saved', again: 'saving again', redo: 'save again' },
-  reconnected: { what: 'the new login', verb: 'saved', again: 'reconnecting again', redo: 'reconnect again' },
-  removed: { what: 'the connection', verb: 'removed', again: 'removing it again', redo: 'remove it again' },
+/** "1 workflow", "6 workflows": the count the Replace dialog's button, its working line and its notice say. */
+export function workflowsCount(n: number): string {
+  return `${n} ${n === 1 ? 'workflow' : 'workflows'}`
 }
+
+/** What the working line says while a Replace runs (Dan's decision 1, 2026-10-27): how many workflows, and where to. */
+export function replaceWorkingLabel(n: number, replacement: string): string {
+  return `Moving ${workflowsCount(n)} to ${replacement}`
+}
+
+/** What a time taking change was doing, for the sentences about it. */
+export type ChangeKind = 'saved' | 'reconnected' | 'removed' | 'replaced'
+
+/** `was`: what the change did, as "whether <was>" says it; `nothing`: as "so nothing was <nothing>" says it. */
+const WORDS: Readonly<Record<ChangeKind, { was: string; nothing: string; again: string; redo: string }>> = {
+  saved: { was: 'the connection was saved', nothing: 'saved', again: 'saving again', redo: 'save again' },
+  reconnected: { was: 'the new login was saved', nothing: 'saved', again: 'reconnecting again', redo: 'reconnect again' },
+  removed: { was: 'the connection was removed', nothing: 'removed', again: 'removing it again', redo: 'remove it again' },
+  // Replace moves workflows, in the words its working line uses (Dan, 2026-10-27).
+  replaced: { was: 'the workflows were moved', nothing: 'moved', again: 'replacing again', redo: 'replace again' },
+}
+
+/** The changes that check no login, so their stall is Bidspoke's own, never a service's. */
+const NO_LOGIN_CHECK: ReadonlySet<ChangeKind> = new Set(['removed', 'replaced'])
 
 /**
  * What the line says when the change has not answered by its deadline (R13): a
@@ -280,8 +296,8 @@ const WORDS: Readonly<Record<ChangeKind, { what: string; verb: string; again: st
 export function stalledSentence(serviceName: string, deadlineMs: number, kind: ChangeKind): string {
   const w = WORDS[kind]
   const seconds = Math.round(deadlineMs / 1000)
-  if (kind === 'removed') return `Bidspoke did not answer within ${seconds} seconds, so it cannot tell whether ${w.what} was ${w.verb}. Reload the page to see before ${w.again}.`
-  return `The login check with ${serviceName} did not answer within ${seconds} seconds, so Bidspoke cannot tell whether ${w.what} was ${w.verb}. Reload the page to see before ${w.again}.`
+  if (NO_LOGIN_CHECK.has(kind)) return `Bidspoke did not answer within ${seconds} seconds, so it cannot tell whether ${w.was}. Reload the page to see before ${w.again}.`
+  return `The login check with ${serviceName} did not answer within ${seconds} seconds, so Bidspoke cannot tell whether ${w.was}. Reload the page to see before ${w.again}.`
 }
 
 /**
@@ -297,9 +313,8 @@ export function saveFailureSentence(err: unknown, serviceName: string, deadlineM
   if (typeof sentence === 'string' && sentence.trim() !== '') return sentence
   if (e.timedOut === true) return stalledSentence(serviceName, deadlineMs, kind)
   const w = WORDS[kind]
-  const nothing = kind === 'removed' ? 'removed' : 'saved'
-  if (e.status === 401) return `Your sign in has ended, so nothing was ${nothing}. Sign in again in a new tab, then ${w.redo}.`
-  if (e.status === 403) return `Your account no longer has access to Bidspoke, so nothing was ${nothing}.`
+  if (e.status === 401) return `Your sign in has ended, so nothing was ${w.nothing}. Sign in again in a new tab, then ${w.redo}.`
+  if (e.status === 403) return `Your account no longer has access to Bidspoke, so nothing was ${w.nothing}.`
   const why = err instanceof TypeError ? 'could not be reached' : 'failed while answering'
-  return `Bidspoke's server ${why}, so whether ${w.what} was ${w.verb} is not known. Reload the page to see before ${w.again}.`
+  return `Bidspoke's server ${why}, so whether ${w.was} is not known. Reload the page to see before ${w.again}.`
 }
