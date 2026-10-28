@@ -35,7 +35,7 @@ const rel = (full: string) => path.relative(WORKER_SRC, full).replace(/\\/g, '/'
 const calls = listTsFiles(WORKER_SRC)
   .map((full) => ({ rel: rel(full), n: callsOfConnectionReferences(readFileSync(full, 'utf8')) }))
   // Tests answer the function in their Supabase doubles, which is not a read.
-  .filter((f) => !f.rel.includes('/__tests__/') && f.n > 0)
+  .filter((f) => !`/${f.rel}`.includes('/__tests__/') && f.n > 0)
 
 describe('connection_references is called only through readConnectionReferences (#2946)', () => {
   it('finds the one call in its home, so it cannot pass by matching nothing', () => {
