@@ -245,7 +245,7 @@ export interface ReadBackSummary {
   conflicts: number
   /** Field history queries made (#2264), counted in reads too. */
   history_reads: number
-  /** Fields the record read called moved that their own history showed nobody changed, so they were sent. */
+  /** Fields the record read called moved that the history read cleared, so they were sent: no change recorded, or an untracked checkbox still at false (#2492). */
   history_cleared: number
   /** Left for a later tick: the claim said no, or the attempt could not be recorded. */
   deferred: number

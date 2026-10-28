@@ -31,6 +31,19 @@
  * only for a record whose fields the rule above called moved, and nothing on
  * the run's own path, so the reject patch's 1,500 ms budget is untouched.
  *
+ * AN UNTRACKED CHECKBOX AT FALSE is blank (#2492). Salesforce cannot hold a
+ * blank checkbox: one nothing ever wrote holds false, its default from when the
+ * record was created. On 2026-10-28 Engine Bidding's bid patch timed out just
+ * after the run's own trades update, and Collections_Bid_Discount__c, still at
+ * that default false, was called moved for differing from the true being sent,
+ * with no history to clear it. So a Checkbox the field definitions say is not
+ * history tracked, holding false, reads as blank, and a resend may set it. The
+ * cost, accepted by Dan on 2026-10-28: another writer DELIBERATELY unchecking
+ * such a field after the write began is overwritten by the resend, the same
+ * risk this rule already takes for a field another writer cleared to blank. A
+ * tracked checkbox is still judged by its history, and a checkbox whose
+ * definitions were not read stays moved.
+ *
  * A LATER STATE is never a conflict (#2895). Some fields only move forward, and
  * another writer moving one past the value we send is the lead going on, not a
  * clash: an offered Prospect's BidStatus__c goes from "Bid" to "Converted" when
@@ -143,12 +156,14 @@ export function laterStateFields(args: { sfObject: string; fields: string[]; bod
  * margin before the write began. `not_kept`: the object has no field history
  * this code reads. `unread`: the history could not be read, with why.
  * `quotable`, when the field definitions were read, are the asked fields whose
- * values an alert may quote (QUOTABLE_FIELD_TYPES).
+ * values an alert may quote (QUOTABLE_FIELD_TYPES), and `untrackedCheckboxes`
+ * the asked fields that are Checkboxes Salesforce keeps no history of (#2492),
+ * which hold false when nothing set them. Absent, no checkbox reads as blank.
  */
 export type FieldHistory =
-  | { kind: 'read'; tracked: string[]; changes: Array<{ field: string; atMs: number }>; quotable: string[] }
+  | { kind: 'read'; tracked: string[]; changes: Array<{ field: string; atMs: number }>; quotable: string[]; untrackedCheckboxes?: string[] }
   | { kind: 'not_kept'; quotable?: string[] }
-  | { kind: 'unread'; why: string; quotable?: string[] }
+  | { kind: 'unread'; why: string; quotable?: string[]; untrackedCheckboxes?: string[] }
 
 /**
  * The Salesforce field types whose values the conflict alert quotes (#2264): a
@@ -250,17 +265,20 @@ export async function readFieldHistory(
   // Only an explicit true is tracked, and only a listed type is quotable: anything else is the side that clears and quotes nothing.
   const tracked = names(asked.filter((r) => r.IsFieldHistoryTracked === true))
   const quotable = names(asked.filter((r) => typeof r.DataType === 'string' && QUOTABLE_FIELD_TYPES.includes(r.DataType)))
-  if (tracked.length === 0) return { kind: 'read', tracked: [], changes: [], quotable }
+  // Only an explicit Checkbox with an explicit false for tracking: a missing or odd answer reads no checkbox as blank (#2492).
+  const untrackedCheckboxes = names(asked.filter((r) => r.DataType === 'Checkbox' && r.IsFieldHistoryTracked === false))
+  if (tracked.length === 0) return { kind: 'read', tracked: [], changes: [], quotable, untrackedCheckboxes }
   const changeRows = await ask(queries.changes(tracked), 'field history')
-  if (!Array.isArray(changeRows)) return changeRows.kind === 'unread' ? { ...changeRows, quotable } : changeRows
+  // A failed history query says nothing about an untracked field, which has no history to read.
+  if (!Array.isArray(changeRows)) return changeRows.kind === 'unread' ? { ...changeRows, quotable, untrackedCheckboxes } : changeRows
   const changes: Array<{ field: string; atMs: number }> = []
   for (const r of changeRows) {
     const atMs = salesforceTimeMs(r.CreatedDate)
     // A row with no readable field or time is a change nobody can place: it clears nothing.
-    if (typeof r.Field !== 'string' || !Number.isFinite(atMs)) return { kind: 'unread', why: 'a field history row had no readable field or time', quotable }
+    if (typeof r.Field !== 'string' || !Number.isFinite(atMs)) return { kind: 'unread', why: 'a field history row had no readable field or time', quotable, untrackedCheckboxes }
     changes.push({ field: r.Field, atMs })
   }
-  return { kind: 'read', tracked, changes, quotable }
+  return { kind: 'read', tracked, changes, quotable, untrackedCheckboxes }
 }
 
 /**
@@ -273,6 +291,17 @@ function historyClears(field: string, history: FieldHistory | undefined, sinceMs
   if (!history || history.kind !== 'read' || sinceMs === undefined || !Number.isFinite(sinceMs)) return false
   if (!history.tracked.includes(field)) return false
   return !history.changes.some((c) => c.field === field && c.atMs + LAST_MODIFIED_MARGIN_MS > sinceMs)
+}
+
+/**
+ * Whether `now` is an untracked checkbox's "never set" value (#2492): false, on
+ * a field the definitions read as an untracked Checkbox. The header says why
+ * that reads as blank, and what it costs (a deliberate uncheck by another writer
+ * is overwritten, as a field cleared to blank already is).
+ */
+function untrackedCheckboxUnset(field: string, now: unknown, history: FieldHistory | undefined): boolean {
+  if (!history || history.kind === 'not_kept' || !history.untrackedCheckboxes?.includes(field)) return false
+  return sameSalesforceValue(now, false)
 }
 
 /**
@@ -301,6 +330,8 @@ export function fieldsMovedSince(args: {
   return fields.filter((f) => {
     const now = current[f]
     if (isBlank(now) || sameSalesforceValue(now, body[f])) return false
+    // An untracked checkbox at false is blank: nothing set it (#2492, the header).
+    if (untrackedCheckboxUnset(f, now, history)) return false
     // A value an earlier write of ours sent is ours, and this newer write replaces it.
     if (earlier.some((e) => Object.hasOwn(e, f) && sameSalesforceValue(now, e[f]))) return false
     // The field's own history says nobody changed it since: it still holds its
