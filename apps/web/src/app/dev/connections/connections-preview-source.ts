@@ -13,7 +13,7 @@ import { loadedOf, type ConnectionsSource } from '@/components/connections/Conne
 import { keptSignInsIn } from '@/components/connections/google-sign-in-kept'
 import { CHANGE_DEADLINES, LIST_NO_ANSWER, type Chosen, type ConnectionsEvent } from '@/components/connections/connections-state'
 import type { DelegationEntry, HistoryEntry } from '@/components/connections/connection-model'
-import { catalogueServices, createdView, stalledSentence, type FormService } from '@/components/connections/add-form-model'
+import { catalogueServices, createdView, replaceWorkingLabel, stalledSentence, type FormService } from '@/components/connections/add-form-model'
 import { alertSettingsOf, channelFailed, switchFailed, type AlertSettings } from '@/components/connections/alert-settings-model'
 
 /** The moment every frame is drawn at: 12:00 PM ET on the day the design was settled. */
@@ -203,6 +203,19 @@ export function previewSource(frame: string | undefined, moreGoogle = 0): Connec
     },
     reconnect: (id) => Promise.resolve({ outcome: 'reconnected' as const, connection: { id, acts_as: null } }),
     remove: () => Promise.resolve({ outcome: 'removed' as const, ops: { told: true as const } }),
+    // Every ticked workflow moves, as the route answers a Replace that wrote each one.
+    replace: (id, body) => {
+      const rows = answer.connections
+      const replacement = rows.find((r) => r.id === body.with)
+      const workflows = rows.find((r) => r.id === id)?.workflows ?? []
+      if (!replacement) return Promise.reject(new Error('the preview holds no such connection'))
+      return Promise.resolve({
+        outcome: 'replaced' as const,
+        connection: { id },
+        with: { id: replacement.id, name: replacement.name },
+        workflows: body.workflows.map((w) => ({ id: w, name: workflows.find((x) => x.id === w)?.name ?? null, outcome: 'replaced' as const, version: 2 })),
+      })
+    },
     list: () => {
       if (shape.list === 'loading') return new Promise(() => {})
       if (shape.list === 'failed') return Promise.reject(Object.assign(new Error('Timed out'), { timedOut: true, timeoutMs: 45_000 }))
@@ -258,6 +271,8 @@ const ANTHROPIC_OTHER_WORKSPACE = 'Anthropic says this API key runs in another w
 /** The create route's sentence for verify's Google mailbox refusal (#2337). */
 const GOOGLE_OTHER_MAILBOX = 'Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.'
 const IN_USE = 'Daily Salesforce cleanup uses this connection, so it cannot be removed. Nothing was removed. Take it out of that workflow first.'
+/** The Replace route's sentence for a workflow someone else saved while it ran (lib/connection-create-refusals.ts, build PR 12). */
+const LEFT_BY_OTHER = 'Lead Completed sync was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it.'
 const OPS_NOT_TOLD = 'The connection is removed. The workflows server could not be told straight away, so it stops using the login at its next minute check, and within 6 hours at the latest if it cannot reach Bidspoke.'
 const ADD_REFUSED = 'ops@trypennie is not one mailbox address or one shared drive id. Nothing was added. Check it and add it again.'
 const REMOVE_REFUSED = 'Ops mailbox acts as ops@trypennie.com, so it cannot be taken off the list. Nothing was removed. Remove that connection first.'
@@ -285,6 +300,8 @@ export const SCRIPTED_FRAMES = [
   'add-stalled', 'add-failed-no-cap', 'add-snowflake', 'add-leave-ask', 'add-saving-leave-ask',
   'reconnect-saving', 'reconnect-failed', 'reconnect-stalled', 'reconnect-snowflake',
   'remove-removing', 'remove-refused-in-use', 'remove-ops-not-told',
+  // Build PR 12: the Replace dialog's states, settled in the Replace rounds (Dan, 2026-10-27).
+  'replace-working', 'replace-partial', 'replace-deleted', 'replace-done',
   // Build PR 14: the Slack alerts login's alert settings and its Reconnect. alert-login and
   // alert-reconnect are settled frames; the rest are states the settled design never drew.
   'alert-reconnect', 'alert-reconnect-checking', 'alert-reconnect-refused', 'alert-login-refused',
@@ -485,6 +502,21 @@ function formScript(frame: string, moreGoogle: number): PreviewScript | null {
   const reconnectOf = (name: string): ConnectionsEvent[] => [listed(), google, choose(name), { type: 'dialog_opened', dialog: 'reconnect', id: idOf(name) }]
   const removeOf = (): ConnectionsEvent[] => [listed([justSaved]), google, choose(fixture.justSaved.name), { type: 'dialog_opened', dialog: 'remove', id: idOf(fixture.justSaved.name) }]
   const typedSecret: ConnectionsEvent = { type: 'dialog_field', field: 'client_secret', text: 'plainsecrets' }
+  // Replace on Pennie Salesforce, its six workflows ticked and TPL2 Salesforce chosen (build PR 12).
+  const pennie = rows.find((r) => r.name === 'Pennie Salesforce')!
+  const tpl2 = rows.find((r) => r.name === fixture.replaceWith)!
+  const replaceOf = (over: (r: ConnectionListRow) => ConnectionListRow = (r) => r): ConnectionsEvent[] => [
+    { type: 'list_answered', attempt: 1, data: loadedOf({ connections: rows.map(over), statuses }) }, google, choose('Pennie Salesforce'),
+    { type: 'dialog_opened', dialog: 'replace', id: pennie.id },
+  ]
+  const replacePressed = (at: number): ConnectionsEvent => ({
+    type: 'connection_replace_requested', attempt: 1, at, stalled: stalledSentence('Salesforce', CHANGE_DEADLINES.replaceDeadlineMs, 'replaced'),
+    label: replaceWorkingLabel(pennie.workflows?.length ?? 0, tpl2.name),
+  })
+  const replaceAnswered = (sentence: string | null, outcome: (name: string) => 'replaced' | 'changed'): ConnectionsEvent => ({
+    type: 'connection_replace_answered', attempt: 1, id: pennie.id, withId: tpl2.id, withName: tpl2.name, sentence, warning: null,
+    workflows: (pennie.workflows ?? []).map((w) => ({ id: w.id, name: w.name, outcome: outcome(w.name) })),
+  })
   const script = (events: ConnectionsEvent[], more: Partial<PreviewScript> = {}): PreviewScript => ({ events, orgNames: known, ...more })
   const S = T - ELAPSED_MS
   switch (frame) {
@@ -518,7 +550,16 @@ function formScript(frame: string, moreGoogle: number): PreviewScript | null {
     case 'reconnect':
       return script(reconnectOf('Achieve Salesforce'))
     case 'replace':
-      return script([listed(), google, choose('Pennie Salesforce'), { type: 'dialog_opened', dialog: 'replace', id: idOf('Pennie Salesforce') }])
+      return script(replaceOf())
+    // Build PR 12, the Replace rounds (Dan, 2026-10-27): running 3 s in, moved all but one, a deleted workflow left out, and done.
+    case 'replace-working':
+      return script([...replaceOf(), replacePressed(T - 3_000), { type: 'tick', at: T }])
+    case 'replace-partial':
+      return script([...replaceOf(), replacePressed(S), replaceAnswered(LEFT_BY_OTHER, (name) => (name === 'Lead Completed sync' ? 'changed' : 'replaced'))])
+    case 'replace-deleted':
+      return script(replaceOf((r) => (r.name === 'Pennie Salesforce' ? { ...r, used_by: r.used_by + 1, workflows: [...(r.workflows ?? []), { id: idOf('Old lead import'), name: 'Old lead import', deleted: true }] } : r)))
+    case 'replace-done':
+      return script([...replaceOf(), replacePressed(S), replaceAnswered(null, () => 'replaced')])
     case 'remove':
       return script(removeOf())
     case 'add-stalled':

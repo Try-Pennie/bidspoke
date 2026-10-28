@@ -31,6 +31,15 @@
 //                                                        (all passed in review, 2026-10-22)
 //   {state: "google", add: "drive"}                      a shared drive pasted and named, ready to add (rounds 29 to 31)
 //   {state: "google", edit: "removing"}                  an entry being removed, 4 s in (review, round 32)
+//   {state: "detail", chosen: "Pennie Salesforce", dialog: "replace", replace: {stage: "working", working: "<line>"}}
+//                                                        a Replace running: its button held, the working line under it
+//   {..., dialog: "replace", replace: {stage: "partial", all: [<workflow>], left: "<workflow>"}, inUse: [<left>]}
+//                                                        a Replace that moved only some: every workflow listed, the moved
+//                                                        ones greyed with ", moved", the one left ticked, its red line
+//   {..., dialog: "replace", replace: {stage: "deleted", all: [<workflow>]}, inUse: [...all, <deleted>]}
+//                                                        a deleted workflow left out of the list, with nothing said
+//   {state: "detail", chosen, inUse: [], dialog: "notice", notice: "<sentence>"}   the notice once every
+//                                                        ticked workflow moved (the Replace rounds 1 to 4, Dan 2026-10-27)
 //   extra: true adds the fixture's justSaved connection to the list (rounds 18 and 21).
 //
 // What a check reads is marked with data-part attributes (and roles for tabs and dialogs), never a
@@ -543,6 +552,64 @@ function replaceDialog(c) {
   g.append(ft); dl.box.append(g);
   return dl.scrim;
 }
+// The Replace rounds (build PR 12, Dan 2026-10-27): the states the dialog above never drew,
+// copied from those rounds' builder; replaceDialog above still draws the settled replace frame alone.
+function workingLine(text) {
+  var line = part(el("div", "ad-line"), "save-line"); line.setAttribute("data-state", "saving");
+  var w = el("p", "outcome outcome-working"); w.setAttribute("role", "status");
+  w.innerHTML = SPIN; w.firstChild.setAttribute("data-part", "spinner");
+  w.append(document.createTextNode(text));
+  line.append(w);
+  return line;
+}
+function checkRow(name, state) {
+  var r = el("div", "rp-check"); r.setAttribute("role", "checkbox");
+  var box = el("span", "rp-box", TICK); box.setAttribute("aria-hidden", "true");
+  // Round 2: a workflow the Replace moved stays listed, greyed, unticked and held, with ", moved" after it.
+  if (state === "moved") {
+    r.setAttribute("aria-checked", "false"); r.setAttribute("aria-disabled", "true");
+    box.textContent = ""; box.style.background = "transparent"; box.style.border = "1px solid #C9C4BA";
+    r.style.color = "#697081";
+    r.append(box, document.createTextNode(name + ", moved"));
+    return r;
+  }
+  r.setAttribute("aria-checked", "true");
+  r.append(box, document.createTextNode(name));
+  return r;
+}
+function replaceStateDialog(c, variant) {
+  var rp = variant.replace;
+  var dl = dialog("Replace " + c.name, 500);
+  var g = el("div", "ad-form");
+  g.append(field("Replace with", pick(FX().replaceWith)));
+  var lst = part(el("div"), "replace-workflows"); lst.append(el("span", "ad-label", "In these workflows"));
+  // Round 3: a deleted workflow is left out of the list, with nothing said; it still counts in Used by.
+  var rows = rp.all.map(function (w) { return { name: w, state: rp.stage === "partial" && w !== rp.left ? "moved" : "ticked" }; });
+  rows.forEach(function (r) { lst.append(checkRow(r.name, r.state)); });
+  g.append(lst);
+  var ticked = rows.filter(function (r) { return r.state === "ticked"; }).length;
+  g.append(el("div", null, "Each ticked workflow gets a new version with " + FX().replaceWith + "."));
+  var go = el("button", "cx-btn-dangerfill", "Replace in " + ticked + (ticked === 1 ? " workflow" : " workflows"));
+  var ft = el("div", "ad-foot"); ft.append(go, el("button", "cx-btn-quiet", "Cancel"));
+  g.append(ft);
+  // Round 1: the red button greys out and the working line under the buttons says what is moving where.
+  if (rp.stage === "working") { go.disabled = true; g.append(workingLine(rp.working)); }
+  // Round 2: the red line names each workflow left and why, with no count of those moved.
+  if (rp.stage === "partial") g.append(failedLine(rp.left + " was saved by someone else while this ran, so it still uses " + c.name + ". Replace again to move it."));
+  dl.box.append(g);
+  return dl.scrim;
+}
+// Round 4: once every ticked workflow moved, a notice over the page, closed with Close, as a Remove's notice is.
+function noticeDialog(title, text) {
+  var dl = dialog(title, 460);
+  dl.box.append(el("div", null, text));
+  var ft = el("div", "foot"); ft.append(el("button", "cx-btn-quiet", "Close"));
+  dl.box.append(ft);
+  return dl.scrim;
+}
+function afterBuild(page, chosen, variant) {
+  if (variant.dialog === "notice") page.append(noticeDialog(chosen.name, variant.notice));
+}
 // Round 21: removing one no workflow uses asks once, with what cannot be undone.
 function removeDialog(c, variant) {
   var dl = dialog("Remove " + c.name + "?", 460);
@@ -589,7 +656,8 @@ function buildScreen(variant) {
   split.append(listColumn(variant), right);
   page.append(split);
   if (variant.dialog === "reconnect") page.append(reconnectDialog(chosen, variant));
-  if (variant.dialog === "replace") page.append(replaceDialog(chosen));
+  if (variant.dialog === "replace") page.append(variant.replace ? replaceStateDialog(chosen, variant) : replaceDialog(chosen));
   if (variant.dialog === "remove") page.append(removeDialog(chosen, variant));
+  afterBuild(page, chosen, variant);
   return page;
 }

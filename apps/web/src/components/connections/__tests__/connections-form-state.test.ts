@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ConnectionView } from '../connection-model'
 import { EMPTY_ADD_DRAFT } from '../add-form-model'
+import { CONNECTION_REPLACE_MOST } from '@/lib/api'
 import {
   chosenConnection, connectionsReducer, initialConnectionsState, unsavedWork, type ConnectionsEvent, type ConnectionsState, type LoadedList,
 } from '../connections-state'
@@ -14,6 +15,7 @@ import {
 const T0 = Date.parse('2026-10-20T16:00:00Z')
 const SAVE_DEADLINE = 75_000
 const REMOVE_DEADLINE = 30_000
+const REPLACE_DEADLINE = 90_000
 
 const conn = (over: Partial<ConnectionView>): ConnectionView => ({
   id: 'c1', name: 'Pennie Salesforce', service: 'salesforce', serviceName: 'Salesforce', actsAs: 'integration@trypennie.com', status: 'ok',
@@ -34,7 +36,7 @@ const SAVED = conn({ id: 'new1', name: 'Achieve Salesforce 2', workflows: [], la
 const STALLED = 'The login check with Salesforce did not answer within 75 seconds, so Bidspoke cannot tell whether the connection was saved. Reload the page to see before saving again.'
 
 function run(events: ConnectionsEvent[], from?: ConnectionsState): ConnectionsState {
-  const start = from ?? initialConnectionsState(T0, 45_000, undefined, { saveDeadlineMs: SAVE_DEADLINE, removeDeadlineMs: REMOVE_DEADLINE })
+  const start = from ?? initialConnectionsState(T0, 45_000, undefined, { saveDeadlineMs: SAVE_DEADLINE, removeDeadlineMs: REMOVE_DEADLINE, replaceDeadlineMs: REPLACE_DEADLINE })
   return events.reduce(connectionsReducer, start)
 }
 
@@ -245,7 +247,7 @@ describe('Remove (R21)', () => {
 
   it("says so when the workflows server could not be told, since the removal stands", () => {
     const s = run([{ type: 'dialog_opened', dialog: 'remove', id: 'c3' }, { type: 'connection_remove_requested', attempt: 1, at: T0, stalled: 's' }, { type: 'connection_remove_answered', attempt: 1, id: 'c3', notice: 'The connection is removed. The workflows server could not be told straight away.' }], loaded())
-    expect(s.dialog).toEqual({ kind: 'removed', name: 'Spare Salesforce', notice: 'The connection is removed. The workflows server could not be told straight away.' })
+    expect(s.dialog).toEqual({ kind: 'notice', name: 'Spare Salesforce', notice: 'The connection is removed. The workflows server could not be told straight away.' })
     expect(run([{ type: 'dialog_closed' }], s).dialog).toBeNull()
   })
 
@@ -261,14 +263,159 @@ describe('Remove (R21)', () => {
   })
 })
 
-describe('Replace, drawn and inert until build PR 12 (R20)', () => {
+describe('Replace (R20, build PR 12)', () => {
   it('opens with the first other working connection of the service and every using workflow ticked; a tick can be taken off', () => {
     const s = run([{ type: 'dialog_opened', dialog: 'replace', id: 'c1' }], loaded())
     // Spare Salesforce works; Achieve Salesforce needs reconnecting, so it is not offered first.
-    expect(s.dialog).toEqual({ kind: 'replace', id: 'c1', with: 'c3', ticked: ['w1'] })
+    expect(s.dialog).toEqual({
+      kind: 'replace', id: 'c1', with: 'c3', listed: [{ id: 'w1', name: 'Lead Completed sync', deleted: false }], moved: [], ticked: ['w1'], save: { kind: 'editing' }, started: null,
+    })
     expect(run([{ type: 'replace_tick', workflow: 'w1' }], s).dialog).toMatchObject({ ticked: [] })
     expect(run([{ type: 'replace_tick', workflow: 'w1' }, { type: 'replace_tick', workflow: 'w1' }], s).dialog).toMatchObject({ ticked: ['w1'] })
     expect(run([{ type: 'replace_with', id: 'c2' }], s).dialog).toMatchObject({ with: 'c2' })
+  })
+
+  // Six workflows on Pennie Salesforce, as the settled design draws it, and one soft deleted, which no route can give a new version.
+  const SIX = ['Achieve report import', 'Daily Salesforce cleanup', 'Lead Completed sync', 'Partner report email', 'Reserve My Loan intake', 'Tripoint submission']
+  const idOfName = (name: string) => `w-${SIX.indexOf(name)}`
+  const live = SIX.map((name) => ({ id: idOfName(name), name, deleted: false }))
+  const withDeleted = (): ConnectionsState => run([
+    { type: 'list_answered', attempt: 1, data: { ...LIST, connections: LIST.connections.map((c) => (c.id === 'c1' ? { ...c, workflows: [...live, { id: 'w9', name: 'Old lead import', deleted: true }] } : c)) } },
+    { type: 'choose', chosen: { kind: 'connection', id: 'c1' } },
+    { type: 'dialog_opened', dialog: 'replace', id: 'c1' },
+  ])
+  const listOf = (s: ConnectionsState) => (s.list.kind === 'loaded' ? s.list.data.connections : [])
+  const answered = (over: Partial<Extract<ConnectionsEvent, { type: 'connection_replace_answered' }>> = {}): ConnectionsEvent => ({
+    type: 'connection_replace_answered', attempt: 1, id: 'c1', withId: 'c3', withName: 'Spare Salesforce', sentence: null, warning: null,
+    workflows: live.map((w) => ({ id: w.id, name: w.name, outcome: 'replaced' as const })),
+    ...over,
+  })
+
+  it('leaves a deleted workflow out of the list entirely, and ticks every other one (decision 3)', () => {
+    const d = withDeleted().dialog
+    expect(d).toMatchObject({ listed: live, ticked: live.map((w) => w.id), moved: [] })
+    // It still counts in Used by.
+    expect(listOf(withDeleted()).find((c) => c.id === 'c1')?.workflows).toHaveLength(7)
+  })
+
+  it(`ticks at most ${CONNECTION_REPLACE_MOST}, the most one Replace moves, in the order listed`, () => {
+    const many = Array.from({ length: CONNECTION_REPLACE_MOST + 2 }, (_, i) => ({ id: `m${i}`, name: `Workflow ${String(i).padStart(2, '0')}`, deleted: false }))
+    const at = (n: number) => run([
+      { type: 'list_answered', attempt: 1, data: { ...LIST, connections: LIST.connections.map((c) => (c.id === 'c1' ? { ...c, workflows: many.slice(0, n) } : c)) } },
+      { type: 'choose', chosen: { kind: 'connection', id: 'c1' } },
+      { type: 'dialog_opened', dialog: 'replace', id: 'c1' },
+    ]).dialog
+    expect(at(CONNECTION_REPLACE_MOST)).toMatchObject({ ticked: many.slice(0, CONNECTION_REPLACE_MOST).map((w) => w.id) })
+    const over = at(CONNECTION_REPLACE_MOST + 2)
+    expect(over).toMatchObject({ listed: many, ticked: many.slice(0, CONNECTION_REPLACE_MOST).map((w) => w.id) })
+  })
+
+  const MOVING = 'Moving 6 workflows to Spare Salesforce'
+  const replacing = (): ConnectionsState => run([{ type: 'connection_replace_requested', attempt: 1, at: T0, stalled: 'not known', label: MOVING }], withDeleted())
+
+  it('says it started in its own words, holds a second press, and is the work the leave question names', () => {
+    const s = replacing()
+    expect(s.dialog).toMatchObject({ save: { kind: 'saving', attempt: 1, startedAt: T0, label: MOVING }, started: 1 })
+    expect(run([{ type: 'connection_replace_requested', attempt: 2, at: T0 + 1, stalled: 'x', label: 'y' }], s)).toBe(s)
+    expect(unsavedWork(s)).toBe('replacing')
+    // A tick changed while it runs is for the next press: the running one keeps its words.
+    expect(run([{ type: 'replace_tick', workflow: 'w-0' }], s).dialog).toMatchObject({ ticked: live.slice(1).map((w) => w.id), save: { kind: 'saving', label: MOVING } })
+  })
+
+  it('moved every ticked workflow: closes, and a notice over the page says how many moved where, and that nothing uses it now only when Used by is 0 (decision 4)', () => {
+    // The deleted one stays on it, so Used by is still 1 and the second sentence is not said.
+    const kept = run([answered()], replacing())
+    expect(kept.dialog).toEqual({ kind: 'notice', name: 'Pennie Salesforce', notice: 'Moved 6 workflows to Spare Salesforce.' })
+    expect(listOf(kept).find((c) => c.id === 'c1')?.workflows).toEqual([{ id: 'w9', name: 'Old lead import', deleted: true }])
+    expect(listOf(kept).find((c) => c.id === 'c3')?.workflows.map((w) => w.name)).toEqual(SIX)
+    expect(unsavedWork(kept)).toBeNull()
+
+    const none = run([
+      { type: 'list_answered', attempt: 1, data: { ...LIST, connections: LIST.connections.map((c) => (c.id === 'c1' ? { ...c, workflows: live } : c)) } },
+      { type: 'choose', chosen: { kind: 'connection', id: 'c1' } },
+      { type: 'dialog_opened', dialog: 'replace', id: 'c1' },
+      { type: 'connection_replace_requested', attempt: 1, at: T0, stalled: 'not known', label: MOVING },
+      answered(),
+    ])
+    expect(none.dialog).toEqual({ kind: 'notice', name: 'Pennie Salesforce', notice: 'Moved 6 workflows to Spare Salesforce. Nothing uses Pennie Salesforce now.' })
+    expect(run([{ type: 'dialog_closed' }], none).dialog).toBeNull()
+  })
+
+  it('says one workflow in the singular', () => {
+    const one = run([{ type: 'dialog_opened', dialog: 'replace', id: 'c1' }, { type: 'connection_replace_requested', attempt: 1, at: T0, stalled: '', label: 'Moving 1 workflow to Spare Salesforce' }, answered({ workflows: [{ id: 'w1', name: 'Lead Completed sync', outcome: 'replaced' }] })], loaded())
+    expect(one.dialog).toEqual({ kind: 'notice', name: 'Pennie Salesforce', notice: 'Moved 1 workflow to Spare Salesforce. Nothing uses Pennie Salesforce now.' })
+  })
+
+  it("appends the route's stored copy warning to the same notice, as its own sentence", () => {
+    const s = run([answered({ warning: 'A stored copy could not be refreshed.' })], replacing())
+    expect(s.dialog).toEqual({ kind: 'notice', name: 'Pennie Salesforce', notice: 'Moved 6 workflows to Spare Salesforce. A stored copy could not be refreshed.' })
+  })
+
+  it('a workflow found no longer using it leaves its list, and is not claimed for the replacement', () => {
+    const s = run([answered({ workflows: live.map((w, i) => ({ id: w.id, name: i === 1 ? null : w.name, outcome: i === 1 ? 'not_using' as const : 'replaced' as const })) })], replacing())
+    expect(listOf(s).find((c) => c.id === 'c1')?.workflows.map((w) => w.id)).toEqual(['w9'])
+    expect(listOf(s).find((c) => c.id === 'c3')?.workflows.map((w) => w.id)).not.toContain('w-1')
+    expect(s.dialog).toMatchObject({ notice: 'Moved 5 workflows to Spare Salesforce.' })
+  })
+
+  const LEFT_WHY = 'Lead Completed sync was saved by someone else while this ran, so it still uses Pennie Salesforce. Replace again to move it.'
+  const partial = (): ConnectionsState => run([answered({
+    sentence: LEFT_WHY,
+    workflows: live.map((w) => ({ id: w.id, name: w.name, outcome: w.name === 'Lead Completed sync' ? 'changed' as const : 'replaced' as const })),
+  })], replacing())
+
+  it('moved only some: stays open with every workflow it opened with, the moved ones marked and unticked, the one left ticked, and the red line naming it (decision 2)', () => {
+    const s = partial()
+    expect(s.dialog).toMatchObject({
+      kind: 'replace', listed: live, moved: live.filter((w) => w.name !== 'Lead Completed sync').map((w) => w.id), ticked: [idOfName('Lead Completed sync')],
+      save: { kind: 'failed', sentence: LEFT_WHY, unconfirmed: false },
+    })
+    expect(listOf(s).find((c) => c.id === 'c1')?.workflows.map((w) => w.name)).toEqual(['Lead Completed sync', 'Old lead import'])
+    // A moved workflow cannot be ticked again; a tick of the one left clears the line, since what failed is being changed.
+    expect(run([{ type: 'replace_tick', workflow: 'w-0' }], s)).toBe(s)
+    expect(run([{ type: 'replace_tick', workflow: idOfName('Lead Completed sync') }], s).dialog).toMatchObject({ ticked: [], save: { kind: 'editing' } })
+  })
+
+  it('a second Replace from the partial state moves the one left, and its notice counts only what that press moved', () => {
+    const s = run([
+      { type: 'connection_replace_requested', attempt: 2, at: T0 + 5_000, stalled: '', label: 'Moving 1 workflow to Spare Salesforce' },
+      answered({ attempt: 2, workflows: [{ id: idOfName('Lead Completed sync'), name: 'Lead Completed sync', outcome: 'replaced' }] }),
+    ], partial())
+    expect(s.dialog).toEqual({ kind: 'notice', name: 'Pennie Salesforce', notice: 'Moved 1 workflow to Spare Salesforce.' })
+  })
+
+  it('a workflow deleted while it ran stays listed, unticked, and still counts in Used by', () => {
+    const s = run([answered({
+      sentence: 'Lead Completed sync was deleted, so it cannot get a new version.',
+      workflows: live.map((w) => ({ id: w.id, name: w.name, outcome: w.name === 'Lead Completed sync' ? 'deleted' as const : 'replaced' as const })),
+    })], replacing())
+    expect(s.dialog).toMatchObject({ ticked: [], listed: live })
+    expect(listOf(s).find((c) => c.id === 'c1')?.workflows).toEqual([{ id: idOfName('Lead Completed sync'), name: 'Lead Completed sync', deleted: true }, { id: 'w9', name: 'Old lead import', deleted: true }])
+  })
+
+  it("an incomplete answer's stored copy warning follows its red line, so it is not lost", () => {
+    const s = run([answered({ sentence: LEFT_WHY, warning: 'A stored copy could not be refreshed.', workflows: [{ id: idOfName('Lead Completed sync'), name: 'Lead Completed sync', outcome: 'changed' }] })], replacing())
+    expect(s.dialog).toMatchObject({ save: { kind: 'failed', sentence: `${LEFT_WHY} A stored copy could not be refreshed.` } })
+  })
+
+  it('refused: says the sentence and changes nothing', () => {
+    const s = run([{ type: 'connection_replace_refused', attempt: 1, sentence: 'Nothing was changed.' }], replacing())
+    expect(s.dialog).toMatchObject({ kind: 'replace', ticked: live.map((w) => w.id), moved: [], save: { kind: 'failed', sentence: 'Nothing was changed.', unconfirmed: false } })
+    expect(s.list).toEqual(withDeleted().list)
+  })
+
+  it('stalls at its own deadline, and an answer arriving after still lands', () => {
+    const stalled = run([{ type: 'tick', at: T0 + REPLACE_DEADLINE }], replacing())
+    expect(stalled.dialog).toMatchObject({ save: { kind: 'failed', sentence: 'not known', unconfirmed: true } })
+    expect(run([{ type: 'tick', at: T0 + REPLACE_DEADLINE - 1 }], replacing()).dialog).toMatchObject({ save: { kind: 'saving' } })
+    expect(run([answered()], stalled).dialog).toMatchObject({ kind: 'notice' })
+  })
+
+  it('an answer to an earlier press is ignored by a dialog opened since, but its workflows still move', () => {
+    const reopened = run([{ type: 'dialog_closed' }, { type: 'dialog_opened', dialog: 'replace', id: 'c1' }], replacing())
+    const s = run([answered({ workflows: [{ id: 'w-0', name: SIX[0], outcome: 'replaced' }] })], reopened)
+    expect(s.dialog).toMatchObject({ kind: 'replace', save: { kind: 'editing' } })
+    expect(listOf(s).find((c) => c.id === 'c3')?.workflows.map((w) => w.id)).toEqual(['w-0'])
   })
 })
 

@@ -311,7 +311,7 @@ export const CONNECTION_ROUTE_REFUSAL_CODES = [
   // Replace (build PR 12; R20). Each refuses the whole request before anything is written.
   /** The body is not the dialog's: no replacement, no workflow ticked, an id that is not one, or a key the route does not read. */
   'replace_body_invalid',
-  /** More workflows ticked than one Replace may write (REPLACE_WORKFLOWS_MAX). */
+  /** More workflows ticked than one Replace may write inside the page's wait (REPLACE_WORKFLOWS_MAX). */
   'replace_too_many',
   /** The Slack alerts login: no workflow can name it, so there is nothing to replace. */
   'connection_not_replaceable',
@@ -382,7 +382,7 @@ const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: Route
   delegation_list_unavailable: () => 'The company list of mailboxes and drives could not be read. Nothing was changed. Try again in a minute.',
   delegation_change_refused: () => 'The workflows server would not make the change to the list. Nothing was changed. Tell Dan, since this is a fault in Bidspoke.',
   replace_body_invalid: () => 'Choose a connection to replace it with and tick at least one workflow. Nothing was changed.',
-  replace_too_many: () => `Replace can give at most ${REPLACE_WORKFLOWS_MAX} workflows a new version at a time. Nothing was changed. Untick some and replace again.`,
+  replace_too_many: () => `Replace moves at most ${REPLACE_WORKFLOWS_MAX} workflows at a time. Nothing was changed. Untick some and replace again.`,
   connection_not_replaceable: () => 'Bidspoke\'s own alerts post through this Slack login, and no workflow can use it, so there is nothing to replace. Nothing was changed.',
   replace_with_not_found: () => 'The connection chosen to replace it with is not in your organization any more. Nothing was changed. Reload the page and choose another.',
   replace_with_same: () => 'A connection cannot replace itself. Nothing was changed. Choose another connection.',
@@ -401,19 +401,19 @@ const wasWere = (names: readonly string[]) => (names.length === 1 ? 'was' : 'wer
 const itThey = (names: readonly string[]) => (names.length === 1 ? 'it' : 'they')
 const useUses = (names: readonly string[]) => (names.length === 1 ? 'uses' : 'use')
 const nameNames = (names: readonly string[]) => (names.length === 1 ? 'names' : 'name')
-const workflowsWord = (n: number) => (n === 1 ? 'workflow' : 'workflows')
 
 /**
  * What an incomplete Replace says (build PR 12; R20), or null when every
- * ticked workflow names the replacement now. Said in the dialog's line as a
- * refusal is (R14): how many were given a new version (or that nothing was
- * changed), each workflow left on the old connection by name with why, and
- * what to do. A save it could not confirm is never claimed either way (L11).
+ * ticked workflow names the replacement now. Said in the dialog's red line as
+ * a refusal is (R14): each workflow left on the old connection by name with
+ * why, and what to do. Never a count of those moved: the dialog lists every
+ * workflow and marks each moved one, so the count would say it twice (Dan,
+ * 2026-10-27, #2338 Replace round 2). A save it could not confirm is never
+ * claimed either way (L11).
  */
 export function replaceIncompleteSentence(workflows: readonly ReplacedWorkflow[], source: string, replacement: string): string | null {
   const named = (pick: (w: ReplacedWorkflow) => boolean) => workflows.filter(pick).map((w) => w.name ?? 'A workflow')
   const refused = (why: ReplacedWorkflow['why']) => named((w) => w.outcome === 'refused' && w.why === why)
-  const replaced = workflows.filter((w) => w.outcome === 'replaced').length
   const changed = named((w) => w.outcome === 'changed')
   const deleted = named((w) => w.outcome === 'deleted')
   const failed = named((w) => w.outcome === 'failed')
@@ -424,7 +424,7 @@ export function replaceIncompleteSentence(workflows: readonly ReplacedWorkflow[]
   const malformed = refused('write_refused')
   if (replaceComplete(workflows)) return null
 
-  const parts: string[] = [replaced > 0 ? `Replaced in ${replaced} ${workflowsWord(replaced)}.` : 'Nothing was changed.']
+  const parts: string[] = []
   if (gone.length) parts.push(`${replacement} was removed while this ran, so ${listed(gone)} still ${useUses(gone)} ${source}.`)
   if (changed.length) parts.push(`${listed(changed)} ${wasWere(changed)} saved by someone else while this ran, so ${itThey(changed)} still ${useUses(changed)} ${source}.`)
   if (unchecked.length) parts.push(`Bidspoke could not check the connections ${listed(unchecked)} ${nameNames(unchecked)}, so ${itThey(unchecked)} still ${useUses(unchecked)} ${source}.`)
