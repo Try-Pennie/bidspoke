@@ -1168,7 +1168,8 @@ function stepHead(f: { label: string | null; namespace: string; type: string }, 
 export function losingRunsLine(f: LosingRunsFinding, nodeUrl: string): string {
   const burst = f.burst ? ` ${f.burst.count} of them came ${etSpan(f.burst.start, f.burst.end)}.` : ''
   const tryValue = f.suggested_ms != null ? ` Try ${timeoutMs(f.suggested_ms)}.` : ''
-  return `${stepHead(f, nodeUrl)}${f.timed_out.toLocaleString('en-US')} runs failed on its ${timeoutMs(f.configured_ms)} timeout in the last ${AUDIT_PERIOD_DAYS} days, the latest at ${etClock(f.latest_at)} ET ${etDay(f.latest_at)}.${burst}${tryValue}`
+  const latest = f.latest_at ? `, the latest at ${etClock(f.latest_at)} ET ${etDay(f.latest_at)}` : ''
+  return `${stepHead(f, nodeUrl)}${f.timed_out.toLocaleString('en-US')} runs failed on its ${timeoutMs(f.configured_ms)} timeout in the last ${AUDIT_PERIOD_DAYS} days${latest}.${burst}${tryValue}`
 }
 
 /** A step whose lost runs all came in one short burst: its count and window, and no value. */

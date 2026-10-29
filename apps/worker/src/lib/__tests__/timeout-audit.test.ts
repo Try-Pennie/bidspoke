@@ -399,6 +399,18 @@ describe('collectPeriodStats (#2934)', () => {
     expect(stats?.get('a')).toEqual({ p50: null, p99: null, max_ms: null, sample_size: 0, timed_out: 7, timed_out_at: ['2026-10-29T06:25:08.989Z'] })
   })
 
+  it('answers nothing, and names the failure, when a count does not parse, never a quiet zero', async () => {
+    const { supabase } = recordingClient(() => ({
+      data: [{ step_namespace: 'a', p50: 1, p99: 2, max_ms: 3, sample_size: 40, timed_out: 'seven', timed_out_at: [] }],
+      error: null,
+    }))
+    const failures: string[] = []
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(await collectPeriodStats(supabase, 'wf', ['a'], NOW, failures)).toBeNull()
+    expect(failures).toEqual(['five day step timeouts for workflow wf'])
+    error.mockRestore()
+  })
+
   it('answers nothing, and names the failure, when any call fails, so the org is not judged on part of a workflow', async () => {
     let n = 0
     const { supabase } = recordingClient(() => (++n === 2 ? { data: null, error: { message: 'canceling statement due to statement timeout' } } : { data: [], error: null }))

@@ -80,7 +80,8 @@ export interface LosingRunsFinding extends StepRef {
   kind: 'losing_runs'
   retries: number
   timed_out: number
-  latest_at: string
+  /** When the latest started; null only if the reading carried no readable time for them. */
+  latest_at: string | null
   /** The densest short burst among them, when it holds two or more but not all. */
   burst: Burst | null
   /** The five day suggestion, only when it is above the setting. */
@@ -175,7 +176,7 @@ export function findPeriodFindings(
         ...ref,
         retries,
         timed_out: stats.timed_out,
-        latest_at: iso(Math.max(...times)),
+        latest_at: times.length > 0 ? iso(Math.max(...times)) : null,
         burst: burst && burst.count >= TIMED_OUT_RUNS_TO_LIST ? { count: burst.count, start: iso(burst.start), end: iso(burst.end) } : null,
         suggested_ms: judged?.suggested_ms ?? null,
       })

@@ -490,12 +490,22 @@ export async function collectPeriodStats(
       return null
     }
     for (const r of (data ?? []) as Array<{ step_namespace: string; p50: number | null; p99: number | null; max_ms: number | null; sample_size: number | string; timed_out: number | string; timed_out_at: string[] | null }>) {
+      const sampleSize = Number(r.sample_size)
+      const timedOut = Number(r.timed_out)
+      // A count that does not parse would compare false against every
+      // threshold and read as a step that lost nothing (L50), so it is a failed
+      // read, never a quiet zero.
+      if (!Number.isInteger(sampleSize) || !Number.isInteger(timedOut)) {
+        console.error(`[timeout-audit] five day reading for workflow ${workflowId} step ${r.step_namespace} answered counts that are not whole numbers: sample_size ${String(r.sample_size)}, timed_out ${String(r.timed_out)}`)
+        failures?.push(`five day step timeouts for workflow ${workflowId}`)
+        return null
+      }
       stats.set(r.step_namespace, {
         p50: r.p50 ?? null,
         p99: r.p99 ?? null,
         max_ms: r.max_ms ?? null,
-        sample_size: Number(r.sample_size),
-        timed_out: Number(r.timed_out),
+        sample_size: sampleSize,
+        timed_out: timedOut,
         timed_out_at: r.timed_out_at ?? [],
       })
     }

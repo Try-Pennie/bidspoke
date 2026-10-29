@@ -185,6 +185,14 @@ describe('2026-10-29 10:41 AM to 12:08 PM ET, the outage where outbound calls hu
   })
 })
 
+describe('a reading that counts lost runs but carries no readable time for them', () => {
+  it('still lists the step, without a latest time or a burst, rather than throwing', () => {
+    const d = def([{ id: 'w', type: 'webhook', label: 'W', config: { timeout_ms: 3000, retries: 0 } }])
+    const found = findPeriodFindings(d, new Map([['w', stats({ p99: 100, max_ms: 200, sample_size: 500, timed_out: 3, timed_out_at: ['not a time'] })]]))
+    expect(found).toEqual([expect.objectContaining({ kind: 'losing_runs', timed_out: 3, latest_at: null, burst: null })])
+  })
+})
+
 describe('what is never listed by the period findings', () => {
   it('a step below the reliable minimum, which has its own section', () => {
     const d = def([{ id: 'c', type: 'code', config: { timeout_ms: 20, retries: 0 } }])

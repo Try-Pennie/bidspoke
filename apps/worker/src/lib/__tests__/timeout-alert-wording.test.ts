@@ -38,6 +38,14 @@ describe('a step losing runs to its timeout', () => {
   })
 })
 
+describe('a losing runs line without a readable latest time', () => {
+  it('leaves the time out rather than printing an invalid one', () => {
+    expect(losingRunsLine({ ...collections, latest_at: null, burst: null }, URL)).toBe(
+      `• <${URL}|Credit Collections> (salesforce): 7 runs failed on its 4,500ms timeout in the last 5 days.`,
+    )
+  })
+})
+
 describe('a likely upstream outage', () => {
   const gigfi: OutageFinding = {
     kind: 'outage', node_id: 'n1', namespace: 'ping_gigfi', label: 'Ping GigFi', type: 'webhook',
