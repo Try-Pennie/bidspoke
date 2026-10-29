@@ -27,7 +27,7 @@ import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
   claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeOpsStepRecords, purgeScheduleObservations, purgeStepTestResults, readConnectionCheckTargets,
-  readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
+  purgeRunVariables, readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
   removeUnservedMeasuredIdentities, saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions, observeOpsReseal,
 } from './ops-writes'
@@ -103,6 +103,7 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     purgeObservations: (limit) => purgeScheduleObservations(client, limit, rpc),
     purgeStepTests: (limit) => purgeStepTestResults(client, limit, rpc),
     purgeStepRecords: (limit) => purgeOpsStepRecords(client, limit, rpc),
+    purgeRunVariables: (limit) => purgeRunVariables(client, limit, rpc),
     recordFire: (org, fire) => recordScheduleFire(client, org, fire, rpc),
     claimRuns: (claim) => claimRunRequests(client, claim, rpc),
     completeRun: (run, end) => completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, end, rpc),
@@ -225,10 +226,11 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
   const mode = tickModeFrom(env.OPS_TICK_MODE)
   return {
     mode: mode.mode,
-    dispatchRun: async (run: ClaimedRun): Promise<RunInvocationReport> => {
+    dispatchRun: async (run: ClaimedRun, variables): Promise<RunInvocationReport> => {
       if (!self) throw new Error('the SELF binding is missing from this deploy')
+      // The run's variables ride its signed item (#2998): never logged, never kept here.
       const signed = await signDispatch(await dispatchKey(env.PORTING_CAPTURE_MASTER), {
-        v: 1, tick_id: tickId, signed_at: new Date(now()).toISOString(), item: { kind: 'run', run },
+        v: 1, tick_id: tickId, signed_at: new Date(now()).toISOString(), item: { kind: 'run', run, variables },
       })
       const left = startedAt + RUN_DISPATCH_DEADLINE_MS - now()
       if (left <= 0) throw new Error('the tick had no time left to run it, so it was not dispatched; its lease lapses and the sweep returns it')
@@ -265,6 +267,11 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
       fetchDefinitions: (request) => {
         if (!gateway) throw noGateway()
         return bounded('the bidding Worker\'s workflow definitions', () => gateway.opsWorkflowDefinitions(request), GATEWAY_DEADLINE_MS, options.delay)
+      },
+      // #2998: one organization's claimed runs, under the same deadline as every gateway call.
+      fetchRunVariables: (request) => {
+        if (!gateway) throw noGateway()
+        return bounded('the bidding Worker\'s run variables', () => gateway.opsRunVariables(request), GATEWAY_DEADLINE_MS, options.delay)
       },
       started: async () => {
         if (!gateway) throw noGateway()

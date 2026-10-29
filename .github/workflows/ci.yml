@@ -857,6 +857,34 @@ jobs:
           export PR_FILES PR_FILES_READ
           node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON .github/scripts/ops-exports-entrypoint.mjs
 
+      # The other direction (#2998): the DEPLOYED bidding Worker's OpsGateway has
+      # every method the ops Worker calls (OPS_GATEWAY_METHODS), so an ops change
+      # calling a method the bidding deploy does not carry yet (since #2998,
+      # opsRunVariables, which every run's variables come through) cannot merge
+      # on a green check. Pull requests only, and only those that change the ops
+      # Worker, the gateway contract, wrangler.ops.toml or either check; a file
+      # list it cannot read is skipped with a warning, never held, as above.
+      - name: Deployed bidding Worker serves every OpsGateway method (live)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ] && { [ "${IS_FORK}" = "true" ] || [ "${GITHUB_ACTOR}" = "dependabot[bot]" ]; }; then
+            echo "::notice::No CLOUDFLARE_API_TOKEN on a fork or Dependabot PR, so the deployed bidding Worker was not read."
+            exit 0
+          fi
+          PR_FILES="${RUNNER_TEMP}/pr-files-gateway.jsonl"
+          if gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[] | {filename, patch} | @json' > "${PR_FILES}"; then
+            PR_FILES_READ=true
+          else
+            PR_FILES_READ=false
+          fi
+          export PR_FILES PR_FILES_READ
+          node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON .github/scripts/bidding-exports-gateway.mjs
+
       # EVERY SCANNER BELOW RUNS WITH ITS OWN EXIT CODE DISARMED, ON PURPOSE (#779).
       #
       # This job reported success on every run from 2026-07-27 to 2026-08-14 while

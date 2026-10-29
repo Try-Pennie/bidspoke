@@ -41,8 +41,12 @@ function opsDb(answers: Record<string, unknown>) {
   return { fetch, calls, names: () => calls.map((c) => c.name) }
 }
 
+/** What the tick was served for the run (#2998): none, unless a test says. */
+const VARS = { source: 'bidding', servedAt: '2026-10-17T10:02:30.000Z', values: {}, secretValues: {} }
+
 const LIFECYCLE = {
-  start_run_execution: [{ outcome: 'started', state_version: 3, attempt: 1, continuations: 0 }],
+  // A first start: the run records what it was sent, and answers it (#2998).
+  start_run_execution: (b: Record<string, unknown>) => [{ outcome: 'started', state_version: 3, attempt: 1, continuations: 0, run_variables: b.p_variables ?? null }],
   extend_run_lease: true,
   complete_run_request: [{ outcome: 'completed', run_status: 'failed', state_version: 4 }],
   save_workflow_definition: 'saved',
@@ -64,15 +68,15 @@ const deps = (fetch: typeof globalThis.fetch) => ({ nowMs: NOW, opsFetch: fetch,
 describe('OpsInternal.run', () => {
   it('refuses outside the ops lane, a signature that does not verify, and an item that is not a run, each by name', async () => {
     const db = opsDb(LIFECYCLE)
-    expect(await runDispatched({ ...env(), LANE: 'money' } as OpsEnv, await signed({ kind: 'run', run: RUN }), deps(db.fetch))).toMatchObject({ refused: 'lane_not_ops (money)' })
-    expect(await runDispatched(env(), await signed({ kind: 'run', run: RUN }, 'another-master'), deps(db.fetch))).toEqual({ refused: 'bad_signature' })
+    expect(await runDispatched({ ...env(), LANE: 'money' } as OpsEnv, await signed({ kind: 'run', run: RUN, variables: VARS }), deps(db.fetch))).toMatchObject({ refused: 'lane_not_ops (money)' })
+    expect(await runDispatched(env(), await signed({ kind: 'run', run: RUN, variables: VARS }, 'another-master'), deps(db.fetch))).toEqual({ refused: 'bad_signature' })
     expect(await runDispatched(env(), await signed({ kind: 'probe' }), deps(db.fetch))).toEqual({ refused: 'not_a_run' })
     expect(db.calls).toEqual([])
   })
 
   it('runs a run whose definition ops holds: reads it in the run\'s organization, starts under the claim token, and ends the claim', async () => {
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [{ definition: DEF, saved_at: '2026-10-17T09:00:00Z' }] })
-    const report = await runDispatched(env(), await signed({ kind: 'run', run: RUN }), deps(db.fetch))
+    const report = await runDispatched(env(), await signed({ kind: 'run', run: RUN, variables: VARS }), deps(db.fetch))
     expect(report).toMatchObject({ outcome: 'completed' })
     const read = db.calls.find((c) => c.name === 'workflow_definition')
     expect(read?.body).toEqual({ p_organization_id: ORG, p_workflow_id: WF, p_version_number: 3 })
@@ -83,7 +87,7 @@ describe('OpsInternal.run', () => {
   it('records each step through record_ops_step, under the run\'s organization, claim token and execution (#2703)', async () => {
     const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'trigger.payload.amount', target: 'amount' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [{ definition: def, saved_at: '2026-10-17T09:00:00Z' }], record_ops_step: 'recorded' })
-    const report = await runDispatched(env(), await signed({ kind: 'run', run: { ...RUN, payload: { amount: 7 } } }), deps(db.fetch))
+    const report = await runDispatched(env(), await signed({ kind: 'run', run: { ...RUN, payload: { amount: 7 } }, variables: VARS }), deps(db.fetch))
     expect(report).toMatchObject({ outcome: 'completed' })
     expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({
       p_organization_id: ORG, p_run_request_id: RUN.runRequestId, p_claim_token: RUN.claimToken, p_execution_id: '0192f4a0-0000-7000-8000-0000000000ee',
@@ -96,50 +100,73 @@ describe('OpsInternal.run', () => {
     const asked: unknown[] = []
     const gateway = { opsWorkflowDefinitions: async (r: unknown) => { asked.push(r); return { definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: DEF }], unserved: [] } } }
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [] })
-    const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))
+    const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables: VARS }), deps(db.fetch))
     expect(asked).toEqual([{ versions: [{ workflow_id: WF, version_number: 3 }] }])
     expect(db.names()).toContain('save_workflow_definition')
     expect(report).toMatchObject({ outcome: 'completed' })
   })
 
-  it('runs on the variables ops froze with the version, never asking the bidding Worker for them again (#2702)', async () => {
-    const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'env.API_BASE', target: 'base' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
-    const asked: unknown[] = []
-    const gateway = { opsWorkflowDefinitions: async (r: unknown) => { asked.push(r); return { definitions: [], unserved: [] } } }
+  // #2998: a run reads its variables when it starts, carried in its dispatch; the version's kept capture is no longer what it runs on.
+  const readsBase = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'env.API_BASE', target: 'base' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
+
+  it('runs on the variables its dispatch carried, recorded by its start, never the version\'s kept capture (#2998)', async () => {
     const db = opsDb({
       ...LIFECYCLE, record_ops_step: 'recorded',
-      workflow_definition: [{ definition: def, saved_at: '2026-10-17T09:00:00Z', variables: { values: { API_BASE: 'kept-at-save' }, secret_keys: [] } }],
+      workflow_definition: [{ definition: readsBase, saved_at: '2026-10-17T09:00:00Z', variables: { values: { API_BASE: 'kept-at-save' }, secret_keys: [] } }],
     })
-    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
-    expect(asked).toEqual([])
-    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_status: 'completed', p_output: { base: 'kept-at-save' } })
+    const variables = { ...VARS, values: { API_BASE: 'current' } }
+    expect(await runDispatched(env(), await signed({ kind: 'run', run: RUN, variables }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
+    expect(db.calls.find((c) => c.name === 'start_run_execution')?.body.p_variables).toEqual({
+      source: 'bidding', served_at: '2026-10-17T10:02:30.000Z', values: { API_BASE: 'current' }, secret_keys: [],
+    })
+    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_status: 'completed', p_output: { base: 'current' } })
   })
 
-  it('freezes the variables served with a version it fetches, and runs on them (#2702)', async () => {
-    const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'env.API_BASE', target: 'base' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
-    const variables = { values: { API_BASE: 'served' }, secret_keys: [] }
-    const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: def, variables }], unserved: [] }) }
+  it('a retry or a continued slice runs on the plain values its first start recorded, whatever its dispatch now carries (#2998)', async () => {
+    const first = { source: 'bidding', served_at: '2026-10-17T09:30:00.000Z', values: { API_BASE: 'first' }, secret_keys: [] }
+    const db = opsDb({
+      ...LIFECYCLE, record_ops_step: 'recorded',
+      start_run_execution: [{ outcome: 'started', state_version: 5, attempt: 2, continuations: 0, run_variables: first }],
+      workflow_definition: [{ definition: readsBase, saved_at: '2026-10-17T09:00:00Z' }],
+    })
+    const variables = { ...VARS, values: { API_BASE: 'changed since' } }
+    expect(await runDispatched(env(), await signed({ kind: 'run', run: { ...RUN, attempts: 1, resumeReason: 'retry' }, variables }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
+    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'first' } })
+  })
+
+  it('freezes the variables served with a version it fetches, as before, and still runs on its dispatch\'s (#2702, #2998)', async () => {
+    const kept = { values: { API_BASE: 'served' }, secret_keys: [] }
+    const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: readsBase, variables: kept }], unserved: [] }) }
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [], record_ops_step: 'recorded' })
-    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
-    expect(db.calls.find((c) => c.name === 'save_workflow_definition')?.body).toMatchObject({ p_variables: variables })
-    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'served' } })
+    const variables = { ...VARS, values: { API_BASE: 'current' } }
+    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
+    expect(db.calls.find((c) => c.name === 'save_workflow_definition')?.body).toMatchObject({ p_variables: kept })
+    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'current' } })
   })
 
-  it('a run of a version holding a secret variable ends failed by name, before any step (#2702)', async () => {
+  it('gives a run the secret its dispatch carried, records the secret\'s name only, and masks its value from every record and log line (#2998)', async () => {
+    const PLANTED = 'sk_live_PLANTED_run_live_2998'
     const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'env.TOKEN', target: 't' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
-    const db = opsDb({
-      ...LIFECYCLE, record_ops_step: 'recorded',
-      workflow_definition: [{ definition: def, saved_at: '2026-10-17T09:00:00Z', variables: { values: {}, secret_keys: ['TOKEN'] } }],
-    })
-    await runDispatched(env(), await signed({ kind: 'run', run: RUN }), deps(db.fetch))
-    expect(db.names()).not.toContain('record_ops_step')
-    expect(String(db.calls.find((c) => c.name === 'complete_run_request')?.body.p_error)).toMatch(/secret variable env\.TOKEN.*connection/)
+    const db = opsDb({ ...LIFECYCLE, record_ops_step: 'recorded', workflow_definition: [{ definition: def, saved_at: '2026-10-17T09:00:00Z' }] })
+    const lines: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((line: unknown) => { lines.push(String(line)) })
+    try {
+      const report = await runDispatched(env(), await signed({ kind: 'run', run: RUN, variables: { ...VARS, secretValues: { TOKEN: PLANTED } } }), deps(db.fetch))
+      expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'done' } })
+    } finally {
+      spy.mockRestore()
+    }
+    expect(db.calls.find((c) => c.name === 'start_run_execution')?.body.p_variables).toEqual({ source: 'bidding', served_at: '2026-10-17T10:02:30.000Z', values: {}, secret_keys: ['TOKEN'] })
+    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_status: 'completed', p_output: { t: 'TOKEN' } })
+    // Nothing ops stored or logged holds the value.
+    expect(JSON.stringify(db.calls)).not.toContain(PLANTED)
+    expect(lines.join('\n')).not.toContain(PLANTED)
   })
 
   it('a version the bidding Worker refused to serve returns the run to the queue, naming why (#2702)', async () => {
     const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [], unserved: [], refused: [{ workflow_id: WF, version_number: 3, reason: 'its kept variables cannot be read' }] }) }
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [], complete_run_request: [{ outcome: 'completed', run_status: 'queued', state_version: 3 }] })
-    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))).toMatchObject({ outcome: 'definition_unavailable' })
+    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables: VARS }), deps(db.fetch))).toMatchObject({ outcome: 'definition_unavailable' })
     expect(db.names()).not.toContain('start_run_execution')
     expect(String(db.calls.find((c) => c.name === 'complete_run_request')?.body.p_error)).toMatch(/its kept variables cannot be read/)
   })
@@ -147,7 +174,7 @@ describe('OpsInternal.run', () => {
   it('a definition it cannot have returns the run to the queue a minute on, without starting it', async () => {
     const gateway = { opsWorkflowDefinitions: async () => { throw new Error('the bidding Worker did not answer') } }
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [], complete_run_request: [{ outcome: 'completed', run_status: 'queued', state_version: 3 }] })
-    const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))
+    const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables: VARS }), deps(db.fetch))
     expect(db.names()).not.toContain('start_run_execution')
     const complete = db.calls.find((c) => c.name === 'complete_run_request')
     expect(complete?.body).toMatchObject({ p_outcome: 'retry', p_not_before: new Date(NOW + RUN_DEFINITION_RETRY_MS).toISOString() })
@@ -157,14 +184,14 @@ describe('OpsInternal.run', () => {
 
   it('answers a value, never a throw, when the ops database is not configured or the retry cannot be recorded', async () => {
     const db = opsDb(LIFECYCLE)
-    const unconfigured = await runDispatched({ ...env(), OPS_SUPABASE_SECRET_KEY: '' } as OpsEnv, await signed({ kind: 'run', run: RUN }), deps(db.fetch))
+    const unconfigured = await runDispatched({ ...env(), OPS_SUPABASE_SECRET_KEY: '' } as OpsEnv, await signed({ kind: 'run', run: RUN, variables: VARS }), deps(db.fetch))
     expect(unconfigured).toMatchObject({ refused: expect.stringMatching(/^ops_database_not_configured/) })
     expect(db.calls).toEqual([])
 
     const gateway = { opsWorkflowDefinitions: async () => { throw new Error('the bidding Worker did not answer') } }
     const { complete_run_request: _unanswered, ...noComplete } = LIFECYCLE
     const down = opsDb({ ...noComplete, workflow_definition: [] })
-    const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(down.fetch))
+    const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables: VARS }), deps(down.fetch))
     expect(down.names()).toContain('complete_run_request')
     expect(down.names()).not.toContain('start_run_execution')
     // Not started, so the lapsed lease is swept back to the queue; the tick counts it by this answer.
@@ -183,7 +210,7 @@ describe('OpsInternal.run: the workflow\'s retry setting (#1693)', () => {
     const lines: string[] = []
     const spy = vi.spyOn(console, 'log').mockImplementation((line: unknown) => { lines.push(String(line)) })
     try {
-      await runDispatched(env(), await signed({ kind: 'run', run: RUN }), { ...deps(db.fetch), clock })
+      await runDispatched(env(), await signed({ kind: 'run', run: RUN, variables: VARS }), { ...deps(db.fetch), clock })
     } finally {
       spy.mockRestore()
     }
@@ -258,7 +285,7 @@ describe('OpsInternal.run: time sliced continuation (#1951)', () => {
     const db = namingDb()
     const b = bucket()
     const report = await runDispatched({ ...env(), OPS_CONTINUATION: 'observe', OPS_CHECKPOINTS: b.binding } as OpsEnv,
-      await signed({ kind: 'run', run: { ...RUN, payload: { amount: 7 } } }), { ...deps(db.fetch), continuationBudget: oneStepSlices })
+      await signed({ kind: 'run', run: { ...RUN, payload: { amount: 7 } }, variables: VARS }), { ...deps(db.fetch), continuationBudget: oneStepSlices })
     expect(report).toMatchObject({ outcome: 'completed' })
     const names = db.calls.filter((c) => c.name === 'record_run_checkpoint')
     expect(names.map((c) => c.body.p_steps)).toEqual([1, 2])
@@ -270,7 +297,7 @@ describe('OpsInternal.run: time sliced continuation (#1951)', () => {
   it('off (unset) writes and names nothing, whatever the budget', async () => {
     const db = namingDb()
     const b = bucket()
-    await runDispatched({ ...env(), OPS_CHECKPOINTS: b.binding } as OpsEnv, await signed({ kind: 'run', run: RUN }), { ...deps(db.fetch), continuationBudget: oneStepSlices })
+    await runDispatched({ ...env(), OPS_CHECKPOINTS: b.binding } as OpsEnv, await signed({ kind: 'run', run: RUN, variables: VARS }), { ...deps(db.fetch), continuationBudget: oneStepSlices })
     expect(db.names()).not.toContain('record_run_checkpoint')
     expect(b.objects.size).toBe(0)
   })
@@ -280,7 +307,7 @@ describe('OpsInternal.run: time sliced continuation (#1951)', () => {
     const lines: string[] = []
     const spy = vi.spyOn(console, 'log').mockImplementation((line: unknown) => { lines.push(String(line)) })
     try {
-      const report = await runDispatched({ ...env(), OPS_CONTINUATION: 'observe' } as OpsEnv, await signed({ kind: 'run', run: RUN }), { ...deps(db.fetch), continuationBudget: oneStepSlices })
+      const report = await runDispatched({ ...env(), OPS_CONTINUATION: 'observe' } as OpsEnv, await signed({ kind: 'run', run: RUN, variables: VARS }), { ...deps(db.fetch), continuationBudget: oneStepSlices })
       expect(report).toMatchObject({ outcome: 'completed' })
     } finally {
       spy.mockRestore()

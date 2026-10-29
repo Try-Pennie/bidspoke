@@ -39,6 +39,7 @@ import {
   RESOURCE_WAIT_CAUSES,
   RESUME_REASONS,
   RUN_REQUEST_STATUSES,
+  RUN_VARIABLE_SOURCES,
   SEND_LEDGER_STATUSES,
   SF_BUDGET_SOURCES,
   SF_LEASE_OUTCOMES,
@@ -112,6 +113,8 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     ['step_test_results_status_check', STEP_TEST_STATUSES],
     // Each step of an ops run (#2703).
     ['ops_step_records_status_check', OPS_STEP_RECORD_STATUSES],
+    // Where a run's recorded variables came from (#2998).
+    ['run_requests_run_variables_check', RUN_VARIABLE_SOURCES],
   ] as const)('%s', (name, values) => {
     expect(sorted(constraintValues(SQL, name))).toEqual(sorted(values))
   })

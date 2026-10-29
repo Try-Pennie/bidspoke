@@ -316,13 +316,14 @@ describe('the answer, as the ops Worker reads it', () => {
   })
 })
 
-describe('the gate: ops cannot call opsRunVariables before the bidding deploy carries it', () => {
+describe('the gate: ops calls opsRunVariables once the bidding deploy carries it', () => {
   it('the entrypoint serves exactly the methods ops calls and the ones served ahead of it', async () => {
     const { OpsGateway } = await import('../ops-gateway-entrypoint')
     const names = Object.getOwnPropertyNames(OpsGateway.prototype).filter((n) => n !== 'constructor').sort()
     expect(names).toEqual([...OPS_GATEWAY_METHODS, ...OPS_GATEWAY_SERVED_AHEAD].sort())
-    expect(OPS_GATEWAY_SERVED_AHEAD).toEqual(['opsRunVariables'])
-    expect(OPS_GATEWAY_METHODS as readonly string[]).not.toContain('opsRunVariables')
+    // #2998 (phase 2) moved it onto the binding, once #3008's bidding deploy carried it.
+    expect(OPS_GATEWAY_SERVED_AHEAD).toEqual([])
+    expect(OPS_GATEWAY_METHODS as readonly string[]).toContain('opsRunVariables')
   })
 
   // No ops Worker source names a method served ahead: the web guard

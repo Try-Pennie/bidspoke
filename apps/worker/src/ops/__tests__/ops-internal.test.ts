@@ -48,7 +48,9 @@ describe('OpsInternal over the binding', () => {
       claimExpiresAt: 'x', stateVersion: 1, attempts: 0, unchargedAttempts: 0, maxAttempts: 3, resumeReason: null, executionChainId: 'c',
       resumedFromExecutionId: null, payload: null, payloadRef: null,
     }
-    const signed = await signDispatch(await dispatchKey('master-secret'), { v: 1, tick_id: 'tick-1', signed_at: new Date(NOW).toISOString(), item: { kind: 'run', run } as never })
+    // A run item carries its variables (#2998).
+    const variables = { source: 'bidding', servedAt: new Date(NOW).toISOString(), values: {}, secretValues: {} }
+    const signed = await signDispatch(await dispatchKey('master-secret'), { v: 1, tick_id: 'tick-1', signed_at: new Date(NOW).toISOString(), item: { kind: 'run', run, variables } as never })
     await expect(observeDispatch(env, signed, NOW)).rejects.toThrow(/not_observed_a_run/)
   })
 

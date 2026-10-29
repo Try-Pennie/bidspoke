@@ -43,7 +43,8 @@
  * And since #2997 (phase 1 of #2982), the current variables of the runs the
  * tick claims (opsRunVariables): each version's plain values and decrypted
  * secrets, the names derived by the bidding Worker from the version it holds.
- * Served ahead of any ops caller (OPS_GATEWAY_SERVED_AHEAD, below).
+ * The tick asks for them since #2998 (phase 2), and carries each run's in its
+ * signed dispatch (ops/run-variables.ts).
  */
 import { CURRENT_OPS_KID, KID_PATTERN } from '@bidspoke/connection-seal'
 import type { OpsSweep } from '../ops/run-vocabulary'
@@ -116,6 +117,8 @@ export interface OpsGatewayBinding {
   moneyIdentities(organizationId: string): Promise<unknown>
   /** An OpsDefinitionRequest in; a ServedOpsDefinitions out, for parseServedOpsDefinitions (#1950). */
   opsWorkflowDefinitions(request: unknown): Promise<unknown>
+  /** An OpsRunVariablesRequest in; a ServedOpsRunVariables out, for parseServedOpsRunVariables (#2997, called since #2998). */
+  opsRunVariables(request: unknown): Promise<unknown>
 }
 
 /**
@@ -125,7 +128,7 @@ export interface OpsGatewayBinding {
  */
 export const OPS_GATEWAY_METHODS = [
   'opsWorkflows', 'opsTickStarted', 'opsTickCompleted', 'opsJobStarted', 'opsJobCompleted', 'storeRotatedEnvelope', 'replaceConnectionEnvelope',
-  'opsConnections', 'moneyIdentities', 'opsWorkflowDefinitions',
+  'opsConnections', 'moneyIdentities', 'opsWorkflowDefinitions', 'opsRunVariables',
 ] as const
 export type OpsGatewayMethod = (typeof OPS_GATEWAY_METHODS)[number]
 
@@ -133,13 +136,15 @@ export type OpsGatewayMethod = (typeof OPS_GATEWAY_METHODS)[number]
  * Methods the bidding Worker serves ahead of the ops Worker calling them, kept
  * off OpsGatewayBinding so no ops code can call one (#2997): an ops deploy
  * that called a method its bidding Worker did not export yet would fail every
- * call. opsRunVariables (phase 1 of #2982) ships on bidding first; the ops
- * change that calls it (phase 2) moves it onto OPS_GATEWAY_METHODS and the
- * binding once the bidding deploy carries it. The entrypoint test requires
+ * call. A new method ships on bidding first, listed here; the ops change that
+ * calls it moves it onto OPS_GATEWAY_METHODS and the binding once the bidding
+ * deploy carries it, and CI reads the deployed bidding script before merging
+ * that change (.github/scripts/bidding-exports-gateway.mjs, #2998).
+ * opsRunVariables (#2997) went across with #2998. The entrypoint test requires
  * the entrypoint to serve exactly both lists, and fails on any ops source
  * naming a method on this one.
  */
-export const OPS_GATEWAY_SERVED_AHEAD = ['opsRunVariables'] as const
+export const OPS_GATEWAY_SERVED_AHEAD = [] as const
 
 type SameNames<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never
 /** Fails to compile when OpsGatewayBinding and OPS_GATEWAY_METHODS name different methods. */

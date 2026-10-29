@@ -16,12 +16,21 @@
  * WHAT IT REFUSES BEFORE RUNNING. A definition that is not nodes and edges, has
  * no step or no entry, or names a type nothing runs. And one reading an
  * environment variable (env.X, {{env.X}}) it was not given, so no step ever
- * runs on a blank (#2702, Dan's decisions of 2026-10-28): a run is given the
- * plain variables kept with its version at its save (options.variables), and
- * only those its definition reads. A secret variable is refused by name, since
- * an ops run is never given a secret and a credential belongs in a connection;
- * a variable the version did not keep is refused by name as missing; and any
- * variable is refused when the version kept none (saved before they were kept).
+ * runs on a blank (#2998, Dan's decisions of 2026-10-28 and 29): a run is
+ * given the variables it read when it started (run-variables.ts runVariablesFor),
+ * only those its definition reads: each plain one as the run recorded it at its
+ * first start (ctx.runVariables), and each secret one as served for this start
+ * (options.secretValues), since a secret's value is never kept. A variable that
+ * did not exist when the run started is refused by name as missing, a secret
+ * not served again by name, and any variable when the run has no record.
+ *
+ * A SECRET IS NEVER KEPT (#2998). Every secret value the run was given is
+ * masked (mask-secrets.ts, replaced by its variable's name) in each step's
+ * record, output and error, and in the error the run ends with, so neither
+ * ops_step_records nor the run's last_error holds one. A slice boundary whose
+ * checkpoint would hold one (a step output carrying it) is skipped, logged once
+ * as checkpoint_skipped, and the slice carries on: a checkpoint is written to
+ * R2, and masking it would change what the next slice's steps read.
  *
  * HOW IT ENDS. Done when a step has no next edge, an exit or a filter's exit
  * route is reached. Failed, naming the step, when a step reports an error or
@@ -76,15 +85,16 @@ import { executeBranchNode } from '../engine/nodes/branch'
 import { executeFilterNode } from '../engine/nodes/filter'
 import { executeResponseNode } from '../engine/nodes/response'
 import { executeTransformNode } from '../engine/nodes/transform'
-import { envReferences, judgeVariables, namedVariables as named } from '../lib/definition-env-references'
+import { envReferences } from '../lib/definition-env-references'
 import { formatErr } from '../lib/format-error'
-import type { OpsVersionVariables } from '../lib/ops-gateway-contract'
 import type { EdgeDefinition, ExecutionContext, NodeDefinition, StepExecutionResult } from '../types'
 import type { CheckpointStep } from './checkpoint'
 import {
   checkpointBoundary, NOTHING_CARRIED, overBudget, resumeFromCheckpoint, type CarriedTotals, type OpsWalkContinuation, type SliceSpend,
 } from './continuation'
+import { holdsSecret, maskSecrets } from './mask-secrets'
 import { RunStopped, StepUnrecorded, type RunBodyEnd, type RunContext } from './run-invocation'
+import { runVariablesFor } from './run-variables'
 import type { OpsStepRecordStatus } from './run-vocabulary'
 import { clipError, keepOutput } from './step-output'
 
@@ -126,34 +136,32 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 
 const failed = (error: string): Extract<RunBodyEnd, { outcome: 'failed' }> => ({ outcome: 'failed', error })
 
-/**
- * The values a run is given: the plain variables kept with its version that
- * its definition reads, or why it can be given none, as the run's error.
- */
-function runVariables(definition: Record<string, unknown>, variables: OpsVersionVariables | null, version: number): { env: Record<string, string> } | { refused: string } {
-  const reads = envReferences(definition)
-  const judged = judgeVariables(reads, variables)
-  if (judged.kind === 'given') return { env: judged.env }
-  if (judged.kind === 'none_kept') {
-    return { refused: `the definition reads ${named(reads)}, and version ${version} was saved before ops kept the values of its variables with it, so nothing was run; save the workflow again` }
-  }
-  const { secret, missing } = judged
-  const secretSaid = `reads the secret ${secret.length === 1 ? 'variable' : 'variables'} ${named(secret)}, and an ops run is never given a secret: a credential an ops step uses belongs in a connection`
-  const missingSaid = `${named(missing)}, which ${missing.length === 1 ? 'was not a variable' : 'were not variables'} of this workflow when version ${version} was saved, so nothing was run`
-  if (secret.length > 0 && missing.length > 0) return { refused: `the definition ${secretSaid}; and it reads ${missingSaid}` }
-  if (secret.length > 0) return { refused: `the definition ${secretSaid}, so nothing was run` }
-  return { refused: `the definition reads ${missingSaid}; add ${missing.length === 1 ? 'it' : 'them'} and save the workflow again` }
-}
-
 export interface OpsWalkOptions {
   /** Time sliced continuation (#1951): absent or off, the walk never stops at a boundary. */
   continuation?: OpsWalkContinuation
-  /** The variables kept with the run's version (#2702); absent or null, a definition reading any is refused. */
-  variables?: OpsVersionVariables | null
+  /**
+   * The secret variables' values served for this start (#2998), carried in the
+   * run's dispatch and never kept; the plain ones come from the run's record
+   * (ctx.runVariables). Absent, a definition reading a secret is refused.
+   */
+  secretValues?: Readonly<Record<string, string>>
+}
+
+/** The end with its error masked of every secret the run was given (#2998). */
+function maskedEnd(end: RunBodyEnd, secrets: Readonly<Record<string, string>>): RunBodyEnd {
+  return 'error' in end && typeof end.error === 'string' ? { ...end, error: maskSecrets(end.error, secrets) as string } : end
 }
 
 export async function walkOpsDefinition(
   definition: unknown, run: RunContext, handlers: Readonly<Record<string, OpsStepHandler>>, options: OpsWalkOptions = {},
+): Promise<RunBodyEnd> {
+  /** The secrets the run was given, set once they are known; every end's error is masked of them. */
+  const given: { secrets: Record<string, string> } = { secrets: {} }
+  return maskedEnd(await walk(definition, run, handlers, options, given), given.secrets)
+}
+
+async function walk(
+  definition: unknown, run: RunContext, handlers: Readonly<Record<string, OpsStepHandler>>, options: OpsWalkOptions, masking: { secrets: Record<string, string> },
 ): Promise<RunBodyEnd> {
   if (!isRecord(definition) || !Array.isArray(definition.nodes) || !Array.isArray(definition.edges)) {
     return failed('the definition is not nodes and edges, so nothing was run')
@@ -166,9 +174,11 @@ export async function walkOpsDefinition(
   if (unrunnable.length > 0) {
     return failed(`an ops run cannot take a step of type ${unrunnable.join(', ')} yet, so nothing was run`)
   }
-  // Steps and edge conditions alike resolve against the run's environment: only what the version kept.
-  const given = runVariables(definition, options.variables ?? null, run.run.workflowVersion)
+  // Steps and edge conditions alike resolve against the run's environment: what it read when it started.
+  const given = runVariablesFor(envReferences(definition), run.runVariables ?? null, options.secretValues ?? {})
   if ('refused' in given) return failed(given.refused)
+  masking.secrets = given.secrets
+  const secrets = given.secrets
 
   let current: NodeDefinition | undefined
   try {
@@ -200,7 +210,7 @@ export async function walkOpsDefinition(
   // The clock is read only when slicing, so a walk with continuation off reads it exactly as before.
   const walkStartedAt = continuation === null ? 0 : run.now()
   const spend: SliceSpend = { startedAt: walkStartedAt, steps: 0, sends: 0 }
-  const said = { storeMissing: false }
+  const said = { storeMissing: false, holdsSecret: false }
   // A handler's sends are counted against the slice; otherwise they are the run's own.
   const counted: RunContext = continuation === null ? run : { ...run, send: (s) => { spend.sends++; return run.send(s) } }
   while (current !== undefined) {
@@ -217,11 +227,12 @@ export async function walkOpsDefinition(
     const startedAt = run.now()
     /** Records this step (#2703); answers why its record was not kept, or null once it is. RunStopped passes on. */
     const keep = async (status: OpsStepRecordStatus, output: unknown, error: string | null): Promise<string | null> => {
-      const kept = status === 'completed' ? keepOutput(output) : { output: null, outputBytes: null }
+      // Masked before it is measured or kept (#2998): a record never holds a secret's value.
+      const kept = status === 'completed' ? keepOutput(maskSecrets(output, secrets)) : { output: null, outputBytes: null }
       try {
         await run.recordStep({
           seq, nodeId: step.id, namespace: step.namespace, stepType: String(step.type), status, startedAt: new Date(startedAt),
-          durationMs: Math.max(0, run.now() - startedAt), output: kept.output, outputBytes: kept.outputBytes, error: error === null ? null : clipError(error),
+          durationMs: Math.max(0, run.now() - startedAt), output: kept.output, outputBytes: kept.outputBytes, error: error === null ? null : clipError(maskSecrets(error, secrets) as string),
         })
         return null
       } catch (err) {
@@ -266,9 +277,21 @@ export async function walkOpsDefinition(
       path.push({ seq: place, nodeId: step.id, namespace: step.namespace, output: result.output, edgeId: next.id })
       spend.steps++
       if (overBudget(continuation.budget, spend, run.now())) {
-        const verdict = await checkpointBoundary({ continuation, run, nodes, edges, path, next: current, ctx, spend, walkStartedAt, carried, said })
-        // Suspended only once its checkpoint is named and verified; otherwise the slice carries on.
-        if (verdict === 'verified' && continuation.mode === 'on') return { outcome: 'continue' }
+        // A checkpoint is written to R2, so one that would hold a secret is never written (#2998): the slice carries on.
+        if (holdsSecret(path, secrets)) {
+          if (!said.holdsSecret) {
+            try {
+              continuation.log({ event: 'ops_continuation', step: 'checkpoint_skipped', reason: 'holds_secret', run_request_id: run.run.runRequestId, workflow_id: run.run.workflowId, steps: path.length })
+            } catch {
+              // A log line never changes how the run goes.
+            }
+          }
+          said.holdsSecret = true
+        } else {
+          const verdict = await checkpointBoundary({ continuation, run, nodes, edges, path, next: current, ctx, spend, walkStartedAt, carried, said })
+          // Suspended only once its checkpoint is named and verified; otherwise the slice carries on.
+          if (verdict === 'verified' && continuation.mode === 'on') return { outcome: 'continue' }
+        }
         Object.assign(spend, { startedAt: run.now(), steps: 0, sends: 0 })
       }
     }

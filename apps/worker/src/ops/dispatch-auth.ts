@@ -13,6 +13,11 @@
  * The comparison is the shared constant time verifier (@bidspoke/porting-evidence
  * verifyBodySignature), never a bespoke `===`.
  *
+ * A run's item carries the variables the tick was served for it (#2998,
+ * run-variables.ts), secret values included. The body is signed, not
+ * encrypted: it crosses only this Worker's own SELF binding, is never stored
+ * or logged, and is held by OpsInternal only for the run it names.
+ *
  * Replay. A replayed observe changes nothing: it is read only. A replayed run
  * (#1950) is refused by the database, not here: its item carries the run's
  * claim token, which is its nonce, and start_run_execution starts a claim once
@@ -21,6 +26,7 @@
  */
 import { deriveHexKey, signBody, verifyBodySignature } from '@bidspoke/porting-evidence'
 import { OpsInternalRefused } from './internal'
+import { isDispatchedRunVariables } from './run-variables'
 import type { DispatchItem } from './tick'
 
 export const DISPATCH_KEY_LABEL = 'ops-internal-dispatch:v1'
@@ -75,7 +81,8 @@ function isClaimedRun(v: unknown): boolean {
 function isDispatchItem(v: unknown): v is DispatchItem {
   if (!isRecord(v)) return false
   if (v.kind === 'probe') return Object.keys(v).length === 1
-  if (v.kind === 'run') return Object.keys(v).length === 2 && isClaimedRun(v.run)
+  // A run carries its variables (#2998): this start's, for this run only, secrets included.
+  if (v.kind === 'run') return Object.keys(v).length === 3 && isClaimedRun(v.run) && isDispatchedRunVariables(v.variables)
   return v.kind === 'would_fire' && typeof v.workflowId === 'string' && typeof v.organizationId === 'string' &&
     typeof v.scheduledFor === 'string' && typeof v.dispatchAt === 'string'
 }

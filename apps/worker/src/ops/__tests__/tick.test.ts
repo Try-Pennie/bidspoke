@@ -29,11 +29,12 @@ import type {
   ClaimRunRequests, ClaimedRun, CompleteOutcome, CompletedRun, ConnectionCheckTarget, ScheduleFire, ScheduleFireResult, SfLimitsTarget,
 } from '../ops-writes'
 import { RUN_LEASE_SECONDS, type RunInvocationReport } from '../run-invocation'
+import type { DispatchedRunVariables } from '../run-variables'
 import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
 import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
 import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
 import {
-  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
+  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -113,6 +114,10 @@ interface Fake {
   ranRuns: string[]
   /** The definition requests sent to the bidding Worker (#1950). */
   definitionRequests: Array<{ versions: Array<{ workflow_id: string; version_number: number }> }>
+  /** The run variables requests sent to the bidding Worker (#2998). */
+  variableRequests: Array<{ organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> }>
+  /** The variables each run's dispatch carried, by run request id (#2998). */
+  ranVariables: Record<string, DispatchedRunVariables>
   dispatched: DispatchItem[]
   stamps: string[]
   reports: unknown[]
@@ -205,6 +210,10 @@ function fake(opts: {
   resealState?: Partial<OpsResealState>
   /** The measured identities of connections bidding never stored that a complete serve removes (#2573); none by default. */
   unservedRemoved?: UnservedIdentityRemoved[]
+  /** What the bidding Worker answers a run variables request with (#2998); each run served no variables by default. */
+  serveRunVariables?: (request: { organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> }) => Promise<unknown>
+  /** What each page of the run variables purge answers (#2998). */
+  runVariablesPurge?: { purged: number; more: boolean }
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
@@ -267,6 +276,7 @@ function fake(opts: {
     async purgeObservations(limit: number) { fail('purgeObservations'); calls.push(`purgeObservations:${limit}`); return opts.observationsPurge ?? { purged: 0, more: false } },
     async purgeStepTests(limit: number) { fail('purgeStepTests'); calls.push(`purgeStepTests:${limit}`); return opts.stepTestsPurge ?? { purged: 0, more: false } },
     async purgeStepRecords(limit: number) { fail('purgeStepRecords'); calls.push(`purgeStepRecords:${limit}`); return opts.stepRecordsPurge ?? { purged: 0, more: false } },
+    async purgeRunVariables(limit: number) { fail('purgeRunVariables'); calls.push(`purgeRunVariables:${limit}`); return opts.runVariablesPurge ?? { purged: 0, more: false } },
     async sfLimitsTargets(limit: number) {
       fail('sfLimitsTargets'); calls.push(`sfLimitsTargets:${limit}`)
       return { targets: opts.sfTargets ?? [], reachedLimit: false }
@@ -308,10 +318,13 @@ function fake(opts: {
   const objectReads: string[] = []
   const definitionRequests: Array<{ versions: Array<{ workflow_id: string; version_number: number }> }> = []
   const ranRuns: string[] = []
+  const variableRequests: Array<{ organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> }> = []
+  const ranVariables: Record<string, DispatchedRunVariables> = {}
   const ports: OpsTickPorts = {
     mode: opts.mode ?? 'observe',
-    dispatchRun: async (run) => {
+    dispatchRun: async (run, variables) => {
       ranRuns.push(run.runRequestId)
+      ranVariables[run.runRequestId] = variables
       return (opts.runReport ?? (async () => ({ outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' }) as RunInvocationReport))(run)
     },
     tickId: 'tick-1',
@@ -337,6 +350,11 @@ function fake(opts: {
           definitions: request.versions.map((v) => ({ workflow_id: v.workflow_id, organization_id: ORG, version_number: v.version_number, definition: { nodes: [] } })),
           unserved: [],
         }
+      },
+      fetchRunVariables: async (request) => {
+        variableRequests.push(request)
+        if (opts.serveRunVariables) return opts.serveRunVariables(request)
+        return servedVariables(request)
       },
       jobStarted: async (job) => { jobStamps.push(`started:${job}`); if (opts.jobStampFails) throw new Error('the gateway is not deployed') },
       jobCompleted: async (job) => { jobStamps.push(`completed:${job}`); if (opts.jobStampFails) throw new Error('the gateway is not deployed') },
@@ -370,7 +388,21 @@ function fake(opts: {
       dispatched.push(item)
     },
   }
-  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes, objectReads, definitionRequests, ranRuns }
+  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes, objectReads, definitionRequests, ranRuns, variableRequests, ranVariables }
+}
+
+/** The bidding Worker's answer to a run variables request (#2998): each run asked about served what `per` says, none by default. */
+function servedVariables(
+  request: { organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> },
+  per: (r: { workflow_id: string; version_number: number }) => Record<string, unknown> = () => ({ values: {}, secret_values: {} }),
+) {
+  return {
+    organization_id: request.organization_id,
+    runs: request.runs.map((r) => {
+      const answer = per(r)
+      return 'refused' in answer ? { ...r, keys: [], ...answer } : { ...r, values: {}, secret_values: {}, served_at: '2026-10-17T10:02:29.000Z', ...answer }
+    }),
+  }
 }
 
 describe('a healthy tick', () => {
@@ -1165,6 +1197,24 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     expect(failed.problem_keys).toContain('sweep_failed:observation_purge')
   })
 
+  // #2998: a run's recorded variables are cleared 7 days after it ends, the same as its step records.
+  it('clears the recorded variables of runs ended more than 7 days ago in the same night, paging while there is more, and counts them', async () => {
+    const f = fake({ dbNow: NIGHT, runVariablesPurge: { purged: 1000, more: true } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls).toContain('purgeRunVariables:1000')
+    expect(f.db.calls.filter((c) => c === 'purgeRunVariables')).toHaveLength(10)
+    expect(report.counts.run_variables_purged).toBe(10_000)
+    const quiet = fake({})
+    await runOpsTick(quiet.ports)
+    expect(quiet.db.calls).not.toContain('purgeRunVariables')
+    // Run whatever the others did, and its own failure is the sweep's.
+    const failing = fake({ dbNow: NIGHT, failing: { purgeObservations: new Error('lock timeout'), purgeRunVariables: new Error('lock timeout') }, stepRecordsPurge: { purged: 2, more: false } })
+    const failed = await runOpsTick(failing.ports)
+    expect(failing.db.calls).toContain('purgeRunVariables')
+    expect(failed.counts.step_records_purged).toBe(2)
+    expect(failed.problem_keys).toContain('sweep_failed:observation_purge')
+  })
+
   it('a failed step test purge is the sweep\'s problem and stops nothing else', async () => {
     const f = fake({ dbNow: NIGHT, failing: { purgeStepTests: new Error('lock timeout') } })
     const report = await runOpsTick(f.ports)
@@ -1677,5 +1727,112 @@ describe('the reseal watch (#2486)', () => {
     const report = await runOpsTick(fake({ resealSwitch: 'apply', db: 'not_configured' }).ports)
     expect(report.reseal).toBeNull()
     expect(report.outcome).toBe('not_configured')
+  })
+})
+
+describe('the variables of the runs a live tick claims (#2998, phase 2 of #2982)', () => {
+  const ORG_2 = organizationIdFrom('7a2d3c9f-1e4b-4d2f-8b66-2c3d4e5f6071')
+  const PLANTED = 'sk_live_PLANTED_tick_2998'
+
+  it('asks the bidding Worker once per organization for every run it will start, each workflow and version once, and puts each run\'s answer in its own dispatch', async () => {
+    const f = fake({
+      mode: 'live',
+      copies: [copy(), copy({ workflowId: WF_B })],
+      claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2), claimedRun(WF_B, 3, { workflowVersion: 4 })],
+      serveRunVariables: async (request) => servedVariables(request, (r) => r.workflow_id === WF_A
+        ? { values: { API_BASE: 'https://a.example.test' }, secret_values: { API_TOKEN: PLANTED } }
+        : { values: { REGION: 'us' } }),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.variableRequests).toEqual([{ organization_id: ORG, runs: [{ workflow_id: WF_A, version_number: 3 }, { workflow_id: WF_B, version_number: 4 }] }])
+    expect(f.ranRuns.sort()).toEqual([1, 2, 3].map((n) => claimedRun(WF_A, n).runRequestId))
+    const a = { source: 'bidding', servedAt: '2026-10-17T10:02:29.000Z', values: { API_BASE: 'https://a.example.test' }, secretValues: { API_TOKEN: PLANTED } }
+    expect(f.ranVariables[claimedRun(WF_A, 1).runRequestId]).toEqual(a)
+    expect(f.ranVariables[claimedRun(WF_A, 2).runRequestId]).toEqual(a)
+    expect(f.ranVariables[claimedRun(WF_B, 3).runRequestId]).toEqual({ source: 'bidding', servedAt: '2026-10-17T10:02:29.000Z', values: { REGION: 'us' }, secretValues: {} })
+    expect(report.counts).toMatchObject({ runs_claimed: 3, runs_done: 3 })
+    // A secret value travels in the dispatch only: never in the report the bidding Worker keeps.
+    expect(JSON.stringify(report)).not.toContain(PLANTED)
+  })
+
+  it('asks once for each organization with runs claimed, and never for a run it ends unrun', async () => {
+    const f = fake({
+      mode: 'live',
+      copies: [copy(), copy({ workflowId: WF_B, organizationId: ORG_2 }), copy({ workflowId: '00000000-0000-4000-8000-0000000019a3', isActive: false, mayStart: false })],
+      claimed: [claimedRun(WF_A, 1), claimedRun(WF_B, 2, { organizationId: ORG_2 }), claimedRun('00000000-0000-4000-8000-0000000019a3', 3)],
+    })
+    await runOpsTick(f.ports)
+    expect(f.variableRequests.map((r) => r.organization_id).sort()).toEqual([ORG, ORG_2].sort())
+    expect(f.variableRequests.flatMap((r) => r.runs.map((x) => x.workflow_id)).sort()).toEqual([WF_A, WF_B].sort())
+    expect(f.db.completed.map((c) => c.end)).toEqual([{ outcome: 'dead', reason: 'workflow_inactive' }])
+  })
+
+  it('ends a run the bidding Worker refused unrun, by its own reason, and runs the others', async () => {
+    const WF_C = '00000000-0000-4000-8000-0000000019a3'
+    const WF_D = '00000000-0000-4000-8000-0000000019a4'
+    const f = fake({
+      mode: 'live',
+      copies: [copy(), copy({ workflowId: WF_B }), copy({ workflowId: WF_C }), copy({ workflowId: WF_D })],
+      claimed: [claimedRun(WF_A, 1), claimedRun(WF_B, 2), claimedRun(WF_C, 3), claimedRun(WF_D, 4)],
+      serveRunVariables: async (request) => servedVariables(request, (r) => {
+        if (r.workflow_id === WF_B) return { refused: 'workflow_deleted' }
+        if (r.workflow_id === WF_C) return { refused: 'version_missing' }
+        if (r.workflow_id === WF_D) return { refused: 'secret_unreadable', keys: ['API_TOKEN'] }
+        return {}
+      }),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.ranRuns).toEqual([claimedRun(WF_A, 1).runRequestId])
+    const ends = Object.fromEntries(f.db.completed.map((c) => [c.runRequestId, c.end]))
+    expect(ends[claimedRun(WF_B, 2).runRequestId]).toEqual({ outcome: 'dead', reason: 'workflow_deleted' })
+    expect(ends[claimedRun(WF_C, 3).runRequestId]).toEqual({
+      outcome: 'failed', error: 'variables_refused (version_missing): the bidding Worker holds no version 3 of this workflow, so nothing was run',
+    })
+    expect(ends[claimedRun(WF_D, 4).runRequestId]).toEqual({
+      outcome: 'failed', error: 'variables_refused (secret_unreadable): the secret variable env.API_TOKEN would not decrypt on the bidding Worker, so nothing was run',
+    })
+    expect(report.counts).toMatchObject({ runs_variables_refused: 3, runs_done: 1, runs_ended: 1, runs_failed: 2 })
+  })
+
+  for (const [why, serve] of [
+    ['the bidding Worker throws', async () => { throw new Error('the bidding Worker\'s run variables did not answer within 15 s') }],
+    ['its answer is not the shape at all', async () => ({ runs: 'nope' })],
+    ['it answers for another organization', async () => ({ organization_id: '7a2d3c9f-1e4b-4d2f-8b66-2c3d4e5f6071', runs: [] })],
+  ] as const) {
+    it(`returns every claimed run to the queue unstarted, spending no attempt, when ${why}`, async () => {
+      const f = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2), claimedRun(WF_A, 3)], serveRunVariables: serve })
+      const report = await runOpsTick(f.ports)
+      expect(f.ranRuns).toEqual([])
+      expect(RUN_VARIABLES_RETRY_MS).toBe(60_000)
+      for (const c of f.db.completed) {
+        expect(c.end).toMatchObject({ outcome: 'retry', notBefore: new Date(Date.parse(DB_NOW) + RUN_VARIABLES_RETRY_MS) })
+        expect((c.end as { error: string }).error).toMatch(/^the run's variables could not be had from the bidding Worker \(.+\), so it was returned to the queue unstarted$/)
+      }
+      expect(f.db.completed).toHaveLength(3)
+      expect(report.counts).toMatchObject({ runs_variables_unavailable: 3, runs_requeued: 3 })
+      // Counted against the rate as requeued runs are, so a gateway that keeps failing pages (L77).
+      expect(report.problem_keys).toContain(`runs_failing:${WF_A}`)
+    })
+  }
+
+  it('returns only the run whose own answer could not be read, and runs the rest', async () => {
+    const f = fake({
+      mode: 'live', copies: [copy(), copy({ workflowId: WF_B })], claimed: [claimedRun(WF_A, 1), claimedRun(WF_B, 2)],
+      serveRunVariables: async (request) => {
+        const answer = servedVariables(request)
+        // WF_B's entry comes back in a shape the ops Worker does not read.
+        return { ...answer, runs: answer.runs.map((r) => r.workflow_id === WF_B ? { ...r, values: { B: 7 } } : r) }
+      },
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.ranRuns).toEqual([claimedRun(WF_A, 1).runRequestId])
+    expect(f.db.completed).toEqual([{ runRequestId: claimedRun(WF_B, 2).runRequestId, end: expect.objectContaining({ outcome: 'retry' }) }])
+    expect(report.counts).toMatchObject({ runs_variables_unavailable: 1, runs_done: 1 })
+  })
+
+  it('in observe mode asks for nothing', async () => {
+    const f = fake({ claimed: [claimedRun(WF_A, 1)] })
+    await runOpsTick(f.ports)
+    expect(f.variableRequests).toEqual([])
   })
 })

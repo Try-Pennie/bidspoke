@@ -276,6 +276,17 @@ export type OpsStepRecordStatus = (typeof OPS_STEP_RECORD_STATUSES)[number]
 export const OPS_STEP_RECORD_OUTCOMES = ['recorded', 'already_recorded', 'stale'] as const
 export type OpsStepRecordOutcome = (typeof OPS_STEP_RECORD_OUTCOMES)[number]
 
+// ── a run's variables (#2998, supabase-ops migration 20261029180000) ────────
+
+/**
+ * Where the variables a run recorded at its first start came from
+ * (run_requests.run_variables, its source): the bidding Worker, asked by the
+ * tick that claimed it (phase 2 of #2982), or the last copy ops kept of them
+ * while bidding could not be reached (phase 3, #2999, not yet written).
+ */
+export const RUN_VARIABLE_SOURCES = ['bidding', 'copy'] as const
+export type RunVariableSource = (typeof RUN_VARIABLE_SOURCES)[number]
+
 // ── time sliced continuation (#1951, supabase-ops migration 20261027150000) ──
 
 /**

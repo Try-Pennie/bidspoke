@@ -33,18 +33,38 @@ const RUN = {
   resumedFromExecutionId: null, payload: { slot: '2026-10-17T10:00:00Z' }, payloadRef: null,
 }
 
+/** The variables the tick was served for the run (#2998), a planted secret value among them. */
+const VARIABLES = {
+  source: 'bidding' as const, servedAt: '2026-10-17T10:02:30.000Z', values: { API_BASE: 'https://api.example.test' }, secretValues: { API_TOKEN: 'sk_live_planted_dispatch' },
+}
+
 describe('a run dispatch (#1950)', () => {
-  it('carries a claimed run, signed and verified whole', async () => {
+  it('carries a claimed run and its variables (#2998), signed and verified whole', async () => {
     const key = await dispatchKey('master-secret')
-    const runEnvelope = { ...envelope, item: { kind: 'run' as const, run: RUN } }
+    const runEnvelope = { ...envelope, item: { kind: 'run' as const, run: RUN, variables: VARIABLES } }
     expect(await verifyDispatch(key, await signDispatch(key, runEnvelope), NOW)).toEqual(runEnvelope)
   })
 
   it('refuses a run item missing its claim token, with a bad organization, or with a field of the wrong type', async () => {
     const key = await dispatchKey('master-secret')
     for (const run of [{ ...RUN, claimToken: undefined }, { ...RUN, organizationId: 'nope' }, { ...RUN, stateVersion: '2' }, { ...RUN, extra: 1 }]) {
-      const signed = await signDispatch(key, { ...envelope, item: { kind: 'run', run } as never })
+      const signed = await signDispatch(key, { ...envelope, item: { kind: 'run', run, variables: VARIABLES } as never })
       expect(await refusal(verifyDispatch(key, signed, NOW))).toBe('malformed')
+    }
+  })
+
+  it('refuses a run item without its variables or with variables of another shape (#2998)', async () => {
+    const key = await dispatchKey('master-secret')
+    const items: unknown[] = [
+      { kind: 'run', run: RUN },
+      { kind: 'run', run: RUN, variables: null },
+      { kind: 'run', run: RUN, variables: { ...VARIABLES, secretValues: undefined } },
+      { kind: 'run', run: RUN, variables: { ...VARIABLES, values: { API_BASE: 1 } } },
+      { kind: 'run', run: RUN, variables: VARIABLES, extra: true },
+    ]
+    for (const item of items) {
+      const signed = await signDispatch(key, { ...envelope, item: item as never })
+      expect(await refusal(verifyDispatch(key, signed, NOW)), JSON.stringify(item)).toBe('malformed')
     }
   })
 })
