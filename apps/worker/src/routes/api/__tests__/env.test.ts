@@ -25,6 +25,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { setCfSecret, deleteCfSecret, listCfSecretNames } from '../../../lib/cf-secrets'
+import { encryptSecret } from '../../../lib/secret-crypto'
 import { makeSupabase } from './_supabase-mock'
 import api from '../index'
 
@@ -275,6 +276,81 @@ describe('PUT /env/:id', () => {
     const res = await request(app, 'PUT', '/env/v6', { body: { key: 'NEW_KEY' } })
     expect(res.status).toBe(400)
     expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+  })
+
+  // #3029: an empty value saved over a secret was encrypted and stored, and the
+  // runs reading it got a blank instead of failing by name as missing. Create
+  // has always refused one, so the update refuses it the same way, by the same
+  // status and words, before anything is written to Cloudflare or the table.
+  describe('an empty value over a secret (#3029)', () => {
+    async function createRefusal() {
+      vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser } }) as never)
+      const res = await request(app, 'POST', '/env', { body: { key: 'PARTNER_TOKEN', value: '', is_secret: true } })
+      return { status: res.status, body: await res.json() }
+    }
+
+    it.each([
+      ['an org secret', { scope: 'global', workflow_id: null }],
+      ["a workflow's own secret", { scope: 'workflow', workflow_id: '00000000-0000-4000-8000-000000000001' }],
+    ])('refuses it on %s with the status and error create gives, writing nothing', async (_label, where) => {
+      const created = await createRefusal()
+      expect(created).toEqual({ status: 400, body: { error: 'value is required for secrets' } })
+      vi.clearAllMocks()
+      vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+
+      const existing = { id: 'v8', key: 'PARTNER_TOKEN', value: 'old-ciphertext', is_secret: true, ...where }
+      const sb = makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { updateResult: { ...existing, value: 'encrypted-test-value' } }] })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+      const res = await request(app, 'PUT', '/env/v8', { body: { value: '' } })
+
+      expect({ status: res.status, body: await res.json() }).toEqual(created)
+      expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+      expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
+      expect(vi.mocked(encryptSecret)).not.toHaveBeenCalled()
+      expect((sb.calls['environment_variables'] ?? []).some(([m]) => m === 'update')).toBe(false)
+      expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    })
+
+    it('refuses it alongside a rename too, before the new name reaches Cloudflare', async () => {
+      const existing = { id: 'v9', key: 'OLD_KEY', value: 'old-ciphertext', is_secret: true, scope: 'global', workflow_id: null }
+      const sb = makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { single: null }, { updateResult: { ...existing, key: 'NEW_KEY' } }] })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+      const res = await request(app, 'PUT', '/env/v9', { body: { key: 'NEW_KEY', value: '' } })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'value is required for secrets' })
+      expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+      expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
+      expect((sb.calls['environment_variables'] ?? []).some(([m]) => m === 'update')).toBe(false)
+    })
+
+    it('still saves a new non-empty value over a secret', async () => {
+      const existing = { id: 'v10', key: 'PARTNER_TOKEN', value: 'old-ciphertext', is_secret: true, scope: 'global', workflow_id: null }
+      const sb = makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { updateResult: { ...existing, value: 'encrypted-test-value' } }] })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+      const res = await request(app, 'PUT', '/env/v10', { body: { value: 'fake-rotated-value' } })
+
+      expect(res.status).toBe(200)
+      expect(vi.mocked(setCfSecret)).toHaveBeenCalledWith('PARTNER_TOKEN', 'fake-rotated-value', 'acct-123', 'tok-abc')
+      const update = (sb.calls['environment_variables'] ?? []).find(([m]) => m === 'update') as [string, [Record<string, unknown>]]
+      expect(update[1][0].value).toBe('encrypted-test-value')
+    })
+
+    it('leaves a plain variable as it was: an empty value is saved as the empty string', async () => {
+      const existing = { id: 'v11', key: 'API_URL', value: 'https://old.example.com', is_secret: false, scope: 'global', workflow_id: null }
+      const sb = makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { updateResult: { ...existing, value: '' } }] })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+      const res = await request(app, 'PUT', '/env/v11', { body: { value: '' } })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ value: '' })
+      const update = (sb.calls['environment_variables'] ?? []).find(([m]) => m === 'update') as [string, [Record<string, unknown>]]
+      expect(update[1][0].value).toBe('')
+    })
   })
 })
 
