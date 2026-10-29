@@ -29,6 +29,7 @@ import { LeadValidationConfigFault } from './nodes/lead-validation'
 import { reportLeadValidationEvent, type LeadValidationAlertDeps } from '../lib/lead-validation-config-alert'
 import { constantsNamespacesOf, type TriggerType } from '@bidspoke/workflow-definition'
 import { withRetry } from './retry'
+import { stepTimeoutMarkerOf, timeoutMarker, PARALLEL_BLOCK_DEADLINE, type StepTimeoutMarker } from './step-timeout'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
 import { fieldPresenceColumns, fieldPresenceForCapture, shouldLogCapture } from './field-presence'
 import { detectDroppedEmail } from './dropped-fields'
@@ -1874,7 +1875,9 @@ export async function walkGraph(
             const child = resolvedChildren[childIndex]
             const errMsg = `Parallel group timed out after ${timeoutMs}ms before this child completed`
             recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
-            logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, childOrderBase + childIndex, node.id)
+            // Marked as the block's deadline, not the child's own (#3047), so a
+            // reader of step timeouts tells the two apart without the text.
+            logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, childOrderBase + childIndex, node.id, undefined, timeoutMarker(PARALLEL_BLOCK_DEADLINE, timeoutMs))
           }
         }
       } catch (err) {
@@ -2450,6 +2453,8 @@ export async function walkGraph(
     let output: unknown = null
     let errorMessage: string | undefined
     let errorType: ErrorType = null
+    // Set when the step's own deadline stopped it (#3047), on every row it writes.
+    let stepTimeout: StepTimeoutMarker | null = null
     let retriesUsed = 0
     // Mutated in place by withRetry (below) on both the success and throw path,
     // then copied into retriesUsed so every logStep call records the real count.
@@ -2571,6 +2576,7 @@ export async function walkGraph(
       // helper, one behavior.
       errorType = classifyStepError(err)
       suppressAlert = suppressAlertOf(err)
+      stepTimeout = stepTimeoutMarkerOf(err)
 
       errorMessage = formatErr(err)
       const onError = node.config.on_error ?? 'fail'
@@ -2585,7 +2591,7 @@ export async function walkGraph(
         const fallback = findNode(node.config.fallback_node as string, definition.nodes)
         if (fallback) {
           recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, { nodeType: node.type, chainStep: true })
-          logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
+          logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs, stepTimeout)
           current = fallback
           stepOrder++
           continue
@@ -2595,7 +2601,7 @@ export async function walkGraph(
         stepStatus = 'failed'
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, { nodeType: node.type, chainStep: true })
-        logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
+        logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs, stepTimeout)
         throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(err), salesforceAnswerOf(err), null, ctx.afterAnswer === true)
       }
     }
@@ -2607,7 +2613,8 @@ export async function walkGraph(
       const seqDurationMs = Date.now() - new Date(stepStartedAt).getTime()
       log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs })
       recordStepOutput(ctx, node.namespace, { output, status: stepStatus }, { nodeType: node.type, chainStep: true })
-      logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
+      // A step skipped after its deadline (on_error 'skip') says so too.
+      logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs, stepTimeout)
     }
 
     // Exit node — return immediately. Response nodes also terminate, unless
@@ -2725,7 +2732,10 @@ function logStep(
   startedAt: string,
   stepOrder: number,
   parallelGroupId?: string,
-  logs?: import('../types').StepLogEntry[]
+  logs?: import('../types').StepLogEntry[],
+  // The deadline the step hit (#3047). Absent from the row, never null, when it
+  // hit none, so an ordinary step write never names the marker's columns.
+  timeout?: StepTimeoutMarker | null
 ): void {
   const completedAt = new Date().toISOString()
   const durationMs = Date.now() - new Date(startedAt).getTime()
@@ -2748,6 +2758,7 @@ function logStep(
     duration_ms: durationMs,
     step_order: stepOrder,
     parallel_group_id: parallelGroupId,
+    ...(timeout ? { timeout_kind: timeout.timeout_kind, timed_out_after_ms: timeout.timed_out_after_ms } : {}),
   })
 }
 
@@ -2844,6 +2855,8 @@ export async function runParallelChild(
     let errorMessage: string | undefined
     let errorType: ErrorType = null
     let suppressAlert = false
+    // Set when the child's own deadline stopped it (#3047), as in the walk.
+    let stepTimeout: StepTimeoutMarker | null = null
     let stepLogs: import('../types').StepLogEntry[] | undefined
     let resolvedInput: ResolvedStepInput | null = null
     // Captures the real retry count from withRetry (mutated in place on both the
@@ -2911,6 +2924,7 @@ export async function runParallelChild(
       // disagreed.
       errorType = classifyStepError(err)
       suppressAlert = suppressAlertOf(err)
+      stepTimeout = stepTimeoutMarkerOf(err)
       const errLogs = (err as { logs?: import('../types').StepLogEntry[] }).logs
       if (errLogs) stepLogs = errLogs
       const errResolvedInput = extractResolvedInput(err)
@@ -2934,7 +2948,7 @@ export async function runParallelChild(
       return { namespace: slotNamespace, status: 'timeout' }
     }
     recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
-    logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retryStats.retries, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs)
+    logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retryStats.retries, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs, stepTimeout)
 
     if (stepStatus === 'failed') {
       tracking?.onFailure(new StepFailureError(errorMessage ?? 'the step failed', node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(caught), salesforceAnswerOf(caught), null, ctx.afterAnswer === true))

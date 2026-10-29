@@ -40,7 +40,7 @@ import {
 } from '../invalid-state-canary-watch'
 import { MAIN_FLOW_WORKFLOW_ID, recordIdTemplateFor } from '../main-flow-port/transform'
 import { nodeByNamespace, productionMainFlow } from '../main-flow-port/__tests__/production-fixture'
-import { stepTimeoutMessage } from '../../engine/retry'
+import { stepTimeoutMessage } from '../../engine/step-timeout'
 import type { SalesforceRead } from '../../engine/inquiry-post'
 import type { JobRunEnding } from '../job-run-record'
 

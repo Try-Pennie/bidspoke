@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { withRetry, linkAbort, stepTimeoutMessage, stepTimeoutMs } from '../retry'
+import { withRetry, linkAbort } from '../retry'
+import { StepTimeoutError, stepTimeoutMarkerOf, stepTimedOutAfterMs } from '../step-timeout'
 import { formatErr } from '../../lib/format-error'
 import { classifyStepError } from '../error-classifier'
 import { PartnerApiError } from '../partner-bid-error'
@@ -185,21 +186,24 @@ describe('saturation signals (2026-06-10 create_prospect incident)', () => {
       .rejects.toThrow(/Step timed out after 10ms \(in-flight upstream call canceled/)
   })
 
-  // #2938: the daily direct write report finds a timed out step by the error its
-  // step row records, so the reader and this writer must agree on the words.
-  it('the error a timed out step records is the one stepTimeoutMs reads its deadline back from', async () => {
+  // #3047: the timeout is classified where it happens. The step row is marked
+  // from this error's type, and its message stays the one rows written before
+  // the marker carry (#2938), which the text fallback still reads.
+  it('rejects with a StepTimeoutError that marks the step row with its deadline', async () => {
     const never = () => new Promise(() => {})
     const err = await withRetry(never, { retries: 0, backoff: 'linear', timeout_ms: 10 }, alwaysTransient).catch((e: unknown) => e)
-    expect(stepTimeoutMs(formatErr(err))).toBe(10)
-    expect(stepTimeoutMs(stepTimeoutMessage(5_250))).toBe(5_250)
+    expect(err).toBeInstanceOf(StepTimeoutError)
+    expect(stepTimeoutMarkerOf(err)).toEqual({ timeout_kind: 'step', timed_out_after_ms: 10 })
+    expect(stepTimedOutAfterMs({ error_message: formatErr(err) })).toBe(10)
   })
 
-  it('stepTimeoutMs reads nothing from any other error, nor from no error', () => {
-    expect(stepTimeoutMs('Salesforce token fetch timed out after 10000 ms')).toBeNull()
-    expect(stepTimeoutMs('Parallel group timed out after 20000ms before this child completed')).toBeNull()
-    expect(stepTimeoutMs('HTTP 503: Step timed out after 10ms')).toBeNull()
-    expect(stepTimeoutMs(null)).toBeNull()
-    expect(stepTimeoutMs(undefined)).toBeNull()
+  it('a timed out attempt is still classified and retried as a transient failure', async () => {
+    const never = vi.fn(() => new Promise(() => {}))
+    // No real wait: each backoff and each deadline passes the moment it is set.
+    const err = await withRetry(never, { retries: 2, backoff: 'linear', timeout_ms: 10 }, classifyStepError, undefined, async () => {}, () => Promise.resolve()).catch((e: unknown) => e)
+    expect(classifyStepError(err)).toBe('transient')
+    expect(never).toHaveBeenCalledTimes(3)
+    expect(err).toBeInstanceOf(StepTimeoutError)
   })
 
   // #66: the per-attempt signal must actually abort on timeout, so the executor's

@@ -97,5 +97,9 @@ export const ARCHIVED_STEP_COLUMNS: readonly ArchivedColumn[] = [
   { name: 'step_order', carriesPersonalData: false },
   { name: 'step_subtype', carriesPersonalData: false },
   { name: 'step_type', carriesPersonalData: false },
+  // Which deadline stopped the step and its length (#3047): an engine constant
+  // and a number, never anything the lead sent.
+  { name: 'timed_out_after_ms', carriesPersonalData: false },
+  { name: 'timeout_kind', carriesPersonalData: false },
   { name: 'workflow_id', carriesPersonalData: false },
 ]
