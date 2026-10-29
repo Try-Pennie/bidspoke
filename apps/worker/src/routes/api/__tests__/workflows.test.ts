@@ -2932,6 +2932,115 @@ describe('an invalid schedule is refused by a named 400 on create and save (#195
   })
 })
 
+// An ops workflow's retry setting (#1693, Dan's decision of 2026-10-28) saves
+// through the existing routes, and a bad one is refused by name, as a schedule is.
+describe('a bad retry setting is refused by a named 400 on every definition write (#1693)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const withRetry = (retry: unknown) => ({ nodes: [], edges: [], trigger: { type: 'http_webhook', config: {} }, retry })
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    app = await makeApp()
+  })
+
+  it.each([
+    ['the default', { mode: 'backoff' }],
+    ['a configured base and cap', { mode: 'backoff', base_seconds: 5, cap_seconds: 120 }],
+    ['no retry', { mode: 'none' }],
+  ])('PUT saves %s on an ops workflow, as sent', async (_, retry) => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, lane: 'ops' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: withRetry(retry) } })
+    expect(res.status).toBe(200)
+    const writes = writesOf(sb, 'save')
+    expect(writes).toHaveLength(1)
+    expect(JSON.stringify(writes[0])).toContain(JSON.stringify(retry))
+  })
+
+  it.each([
+    ['a mode it does not know', { mode: 'sometimes' }, 'retry_mode_unknown'],
+    ['a base of zero', { mode: 'backoff', base_seconds: 0 }, 'retry_base_invalid'],
+    ['a cap over an hour', { mode: 'backoff', cap_seconds: 7200 }, 'retry_cap_invalid'],
+    ['a base above the cap', { mode: 'backoff', base_seconds: 120, cap_seconds: 60 }, 'retry_base_above_cap'],
+    ['a misspelt field', { mode: 'backoff', cap_second: 60 }, 'retry_field_unknown'],
+    ['waits on no retry', { mode: 'none', base_seconds: 15 }, 'retry_none_takes_no_waits'],
+    ['a setting that is not an object', 'none', 'retry_not_an_object'],
+  ])('PUT refuses %s by name on a switched off ops workflow and writes nothing', async (_, retry, reason) => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, lane: 'ops', is_active: false } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: withRetry(retry) } })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string; reason: string; problems: Array<{ reason: string; message: string }> }
+    expect(body.reason).toBe('retry_invalid')
+    expect(body.error.startsWith('Nothing was saved. The workflow\'s retry setting is not valid: ')).toBe(true)
+    expect(body.problems.map((p) => p.reason)).toEqual([reason])
+    for (const p of body.problems) expect(body.error).toContain(p.message)
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('PUT refuses any retry setting on a money workflow, whose engine does not read it', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: withRetry({ mode: 'none' }) } })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { problems: Array<{ reason: string }> }).problems.map((p) => p.reason)).toEqual(['retry_on_money_lane'])
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('POST refuses one on the new workflow, which is a money workflow, and creates nothing', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { insertResult: { id: 'wf-new' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition: withRetry({ mode: 'none' }) } })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { reason: string }).reason).toBe('retry_invalid')
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  // A bad setting can be stored only by hand, since every save refuses it; the
+  // routes that carry a stored definition into a new write, or make one live, refuse it too.
+  const storedInvalid = withRetry({ mode: 'backoff', base_seconds: 0 })
+
+  it('duplicate refuses a source whose stored setting is bad, and copies nothing', async () => {
+    const source = { name: 'Ops', description: null, definition: storedInvalid, folder_id: null, is_active: false, lane: 'ops', version: 3 }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: source } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(400)
+    expect((await res.json() as { reason: string }).reason).toBe('retry_invalid')
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('restore refuses a version whose setting is bad, and writes nothing', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { single: { ...existingWorkflow, lane: 'ops', is_active: false } },
+      workflow_versions: { single: { id: 'ver-1', definition: storedInvalid, version_number: 1 } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(400)
+    expect((await res.json() as { reason: string }).reason).toBe('retry_invalid')
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('switching on refuses a workflow whose stored setting is bad, and switching off never does', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, lane: 'ops', is_active: false, definition: storedInvalid } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const on = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(on.status).toBe(400)
+    expect((await on.json() as { reason: string }).reason).toBe('retry_invalid')
+    expect(definitionWrites(sb)).toEqual([])
+
+    const live = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, lane: 'ops', is_active: true, definition: storedInvalid } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(live as unknown as ReturnType<typeof createSupabaseClient>)
+    expect((await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })).status).toBe(200)
+  })
+})
+
 // #1947 PR 3: validateDefinition runs report only on every money lane write. It
 // logs what it would refuse and refuses nothing new; the five saved shapes the
 // production calibration found are each written as they were.

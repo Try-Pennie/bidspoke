@@ -81,15 +81,27 @@
  * it made, and the next holder resumes after it (complete_run_request refuses
  * a continuation whose attempt named none).
  *
+ * THE WAIT BEFORE A RETRY (#1693 item 7.4, Dan's decision of 2026-10-28). A
+ * run that ends to be retried after a real failure (not a wait) is given
+ * notBefore by its workflow's retry setting (options.retry, read from the
+ * definition by run-live.ts; packages/workflow-definition/src/retry.ts): by
+ * default 15 s after its first charged attempt fails, doubling with each, never
+ * more than 8 minutes. The count is the run's CHARGED attempts with this start,
+ * so a rate limit, resource or continuation start never grows it. A later time
+ * the body asked for is kept. Set to none, the first real failure ends the run
+ * failed instead, saying so, whatever max_attempts allows. A wait is unchanged
+ * either way. The time is fixed once, so every try of complete sends the same.
+ *
  * DEADLINES. Every wait here is bounded on the injected clock (L524): each
  * database call by RUN_DB_DEADLINE_MS, each forward by SEND_DEADLINE_MS, which
  * is shorter than the lease. callOpsRpc bounds the live calls too; the bound
  * here holds whatever the database port is.
  */
+import { DEFAULT_RETRY_POLICY, retryDelaySeconds, type RetryPolicy } from '@bidspoke/workflow-definition'
 import { formatErr } from '../lib/format-error'
 import type { RequeueCause } from './connections/refusals'
 import {
-  OPS_RPC_DEADLINE_MS, OpsClaimLostError,
+  OPS_RPC_DEADLINE_MS, OpsClaimLostError, chargedAttemptsWithThisStart,
   type CheckpointAck, type ClaimedRun, type CompleteOutcome, type CompletedRun, type NamedCheckpoint, type OpsStepRecord, type RunCheckpointRead,
   type SendIntent, type SendIntentResult, type StartedRun,
 } from './ops-writes'
@@ -136,6 +148,22 @@ export interface RunInvocationDeps {
   newExecutionId(): string
   /** One line per event, names and counts only, never a payload (L658). */
   log(event: Record<string, string | number | boolean | null>): void
+}
+
+/** What one run is invoked under, from its workflow's definition. */
+export interface RunInvocationOptions {
+  /** The workflow's retry setting (#1693); the default when absent. */
+  retry?: RetryPolicy
+}
+
+/**
+ * Which charged attempt of the run this start is, from 1 (chargedAttemptsWithThisStart):
+ * a start resumed from a wait or to continue is not charged, so it never grows
+ * the wait. At least 1, so a run whose first start a lapse refunded still counts
+ * as its first failure.
+ */
+export function chargedFailureNumber(run: Pick<ClaimedRun, 'attempts' | 'unchargedAttempts' | 'resumeReason'>): number {
+  return Math.max(1, chargedAttemptsWithThisStart(run))
 }
 
 /** What a forward answered. */
@@ -332,8 +360,9 @@ async function within<T>(clock: RunClock, ms: number, work: (signal: AbortSignal
 
 const END_RANK: Record<CompleteOutcome['outcome'], number> = { done: 0, retry: 1, suspend: 1, dead: 2, failed: 2, needs_human: 3 }
 
-export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: RunBody): Promise<RunInvocationReport> {
+export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: RunBody, options: RunInvocationOptions = {}): Promise<RunInvocationReport> {
   const { db, clock } = deps
+  const retry = options.retry ?? DEFAULT_RETRY_POLICY
   const ids = { run_request_id: run.runRequestId, workflow_id: run.workflowId }
   const log = (event: string, fields: Record<string, string | number | boolean | null> = {}) => {
     try {
@@ -384,9 +413,16 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
     halt.abort()
   }
   const mayRepeat = () => !unrepeatable && unrepeatableInFlight === 0
-  /** A retry, unless a send already made cannot be repeated: then failed. */
-  const retryOr = (error: string, notBefore?: Date): CompleteOutcome =>
-    mayRepeat() ? { outcome: 'retry', error, ...(notBefore ? { notBefore } : {}) } : { outcome: 'failed', error }
+  /**
+   * A retry after the workflow's wait (#1693), unless a send already made
+   * cannot be repeated, or the workflow is set not to retry: then failed.
+   */
+  const retryOr = (why: string, notBefore?: Date): CompleteOutcome => {
+    if (!mayRepeat()) return { outcome: 'failed', error: why }
+    if (retry.mode === 'none') return { outcome: 'failed', error: `${why}; the workflow is set not to retry, so the run ended at its first failure` }
+    const waited = clock.now() + retryDelaySeconds(retry, chargedFailureNumber(run)) * 1000
+    return { outcome: 'retry', error: why, notBefore: notBefore !== undefined && notBefore.getTime() > waited ? notBefore : new Date(waited) }
+  }
   /** The host each rate limit wait was asked by, for the requeue cap's log line. */
   const waitHosts = new Map<string, string>()
   const requeueEnd = (nodeId: string, method: string, host: string, a: { notBefore: Date; cause: RequeueCause; status: number | null }): CompleteOutcome => {
