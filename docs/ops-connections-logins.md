@@ -393,7 +393,7 @@ reaches a token object.
 | The provider refused the login (`invalid_grant`, `invalid_client`, `unauthorized_client`, ...), or the stored login is malformed | `needs_reauth` at once, cause `login_refused: <reason>` | `connection_needs_reauth` |
 | The token endpoint timed out, could not be reached, answered 5xx or an edge page | one more failure in the connection's refresh streak (`record_connection_refresh`); status `refresh_failing` | `connection_auth_unavailable` |
 | The streak reaches 5 failures AND began 15 minutes ago | `needs_reauth`, cause `refresh_failing_exhausted: <reason>`, written by the database through `record_connection_needs_reauth` | `connection_needs_reauth` |
-| The token endpoint answered 429 | nothing | a `RequeueAt` at its Retry-After |
+| The token endpoint answered 429 | nothing | a `RequeueAt` at its Retry-After, else its reset header, read as a service's own 429 is (below) |
 | A token endpoint answered a token | the streak ends | the response |
 | A rule of ours refused the mint (below) | nothing | `connection_not_allowed`, naming the rule |
 
@@ -404,8 +404,30 @@ in `record_connection_refresh` (supabase-ops migration 20261018170000). A
 Reconnect starts a new streak. Nothing is recorded for a credential that is only
 being verified.
 
-A service's own 429 is a `RequeueAt` too, at its Retry-After or the default,
-unless the service's rules say that 429 is no rate limit (`notRateLimited` in
+A service's own 429 is a `RequeueAt` too, at its Retry-After, else its
+`x-ratelimit-reset` style header (`x-ratelimit-reset`, `x-rate-limit-reset`,
+`ratelimit-reset`, in that order, #1693 7.4), else the default. A reset header's
+number is read by its size, each range a named rule: from 1e12 epoch
+milliseconds, from 1e9 epoch seconds, below that seconds from now
+(`rateLimitResetAt` in `rate-limit-headers.ts`). Either is held between 1 second
+and 1 hour, as a Retry-After always was. Retry-After wins when both are present.
+A header present that cannot be read (a date, a unit, a sign) is never read as
+now: it is reported as `rate_limit_header_unparseable`, cause the header's name,
+and the next header, or the default, decides. A 503 is a wait only with a
+Retry-After; a reset header alone leaves it the caller's to judge.
+
+The token endpoint's 429 (a minter's token request, or a person bound login's
+refresh and code exchange in its ConnectionTokenObject) is read by the same
+function, `rateLimitRetryAt` in `rate-limit-headers.ts`, so it waits the same
+time for the same headers, and a header it cannot read is reported the same way:
+by connectionFetch for a minter (`AuthorizeInput.noteUnreadableRateLimitHeader`),
+and for the token object, which has no console, from the header names its
+answer hands back (`unreadableHeaders`), purpose `verify` for a code exchange.
+`rate-limit-headers-one-reader.test.ts` fails on any other ops module reading
+these headers itself. These times are read against the Worker's clock; reading
+them against the database's (plan L736) is left to the backoff slice.
+
+None of that applies when the service's rules say a 429 is no rate limit (`notRateLimited` in
 `service-rules.ts`, #2673). OpenAI's says so of `insufficient_quota`, its 429
 for an account out of credit or at its spend limit, which no wait clears: the
 step's action gets the answer and fails as `openai_insufficient_quota`, and

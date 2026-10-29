@@ -16,14 +16,15 @@ import { STEP_STATEMENT_URL, fakeSnowflake, partition, resultSet, statementError
  * retry=true, so the executor may send it again and Snowflake runs it once.
  */
 
-function action(key: string): RuntimeAction {
-  const resolved = resolveRuntimeAction(key, 1)
+function action(key: string, version = 1): RuntimeAction {
+  const resolved = resolveRuntimeAction(key, version)
   if (!resolved.ok) throw new Error(resolved.message)
   return resolved.action
 }
 
 const SQL = action('snowflake.execute-sql-query')
 const INSERT = action('snowflake.insert-multiple-rows')
+const INSERT_V2 = action('snowflake.insert-multiple-rows', 2)
 
 async function failure(promise: Promise<unknown>): Promise<ActionFailure> {
   try {
@@ -51,13 +52,14 @@ describe('both actions decide their own traits', () => {
   // #2339: each statement carries the step's stable request id with retry=true,
   // which Snowflake runs at most once, so a resend after a lost answer is safe.
   it('are side effecting and idempotent through the step request id, and say why', () => {
-    for (const a of [SQL, INSERT]) {
+    for (const a of [SQL, INSERT, INSERT_V2]) {
       expect([a.sideEffect, a.idempotent]).toEqual([true, true])
       expect(a.idempotentBecause).toContain('retry=true')
     }
     expect(catalogueActions(CATALOGUE).map((a) => `${a.key}@${a.version}`).filter((id) => id.startsWith('snowflake.'))).toEqual([
       'snowflake.execute-sql-query@1',
       'snowflake.insert-multiple-rows@1',
+      'snowflake.insert-multiple-rows@2',
     ])
   })
 
@@ -229,5 +231,92 @@ describe('snowflake.insert-multiple-rows@1', () => {
     const f = fakeSnowflake()
     f.respond(partition([['2']]))
     expect((await failure(INSERT.run(f.ctx, INSERT_ARGS))).outcome).toBe('applied')
+  })
+})
+
+/**
+ * Version 2 (#2487) differs from version 1 only in its caps, checked against
+ * Snowflake's docs on 2026-10-28: at most 1 MB of statement text, binds
+ * included, because Snowflake cannot rerun or retry a larger statement
+ * (https://docs.snowflake.com/en/user-guide/query-size-limits), and the same
+ * 16,384 rows. The figures are written out here rather than read from the run
+ * file, so a cap changed there fails these tests.
+ */
+describe('snowflake.insert-multiple-rows@2', () => {
+  const ONE_MB = 1_048_576
+  const ROWS = 16_384
+  const NOTE_STATEMENT = 'INSERT INTO ANALYTICS.ENROLLMENT.DAILY_SYNC (NOTE) VALUES (?)'
+  const EMPTY_BIND = JSON.stringify({ 1: { type: 'TEXT', value: '' } })
+  /** One row of one text value, whose statement and binds come to exactly `bytes`. */
+  const oneNoteOf = (bytes: number): ActionArgs => ({
+    ...INSERT_ARGS,
+    columns: ['NOTE'],
+    values: [['x'.repeat(bytes - NOTE_STATEMENT.length - EMPTY_BIND.length)]],
+  })
+
+  it('sends exactly what version 1 sends for the same rows', async () => {
+    const one = fakeSnowflake()
+    one.respond(INSERTED())
+    const two = fakeSnowflake()
+    two.respond(INSERTED())
+    expect(await INSERT_V2.run(two.ctx, INSERT_ARGS)).toEqual(await INSERT.run(one.ctx, INSERT_ARGS))
+    expect(two.sent).toHaveLength(1)
+    expect(two.sent[0].url).toBe(STEP_STATEMENT_URL)
+    expect(two.sent[0].body).toEqual(one.sent[0].body)
+  })
+
+  it('sends an insert of exactly 1 MB, statement and binds together', async () => {
+    const f = fakeSnowflake()
+    f.respond(INSERTED())
+    await INSERT_V2.run(f.ctx, oneNoteOf(ONE_MB))
+    expect(f.sent).toHaveLength(1)
+    const sent = f.sent[0].body
+    const bytes = new TextEncoder().encode(String(sent?.statement)).length + new TextEncoder().encode(JSON.stringify(sent?.bindings)).length
+    expect(bytes).toBe(ONE_MB)
+  })
+
+  it('refuses by name, before anything is sent, an insert one byte over 1 MB, naming the 1024 KB cap', async () => {
+    const f = fakeSnowflake()
+    const big = await failure(INSERT_V2.run(f.ctx, oneNoteOf(ONE_MB + 1)))
+    expect([big.code, big.outcome]).toEqual(['snowflake_insert_over_cap', 'not_applied'])
+    expect(big.message).toContain('1024 KB cap')
+    expect(f.sent).toEqual([])
+  })
+
+  it('leaves version 1 as released: it still sends the insert version 2 refuses', async () => {
+    const f = fakeSnowflake()
+    f.respond(INSERTED())
+    await INSERT.run(f.ctx, oneNoteOf(ONE_MB + 1))
+    expect(f.sent).toHaveLength(1)
+  })
+
+  it('sends 16,384 rows in one statement, and refuses by name one row more before anything is sent', async () => {
+    const most = fakeSnowflake()
+    most.respond(INSERTED())
+    await INSERT_V2.run(most.ctx, { ...INSERT_ARGS, columns: ['ID'], values: Array.from({ length: ROWS }, (_, i) => [i]) })
+    expect(most.sent).toHaveLength(1)
+
+    const tooMany = fakeSnowflake()
+    const many = await failure(INSERT_V2.run(tooMany.ctx, { ...INSERT_ARGS, columns: ['ID'], values: Array.from({ length: ROWS + 1 }, (_, i) => [i]) }))
+    expect([many.code, many.outcome]).toEqual(['snowflake_insert_over_cap', 'not_applied'])
+    expect(many.message).toContain(`more than the ${ROWS} one insert may carry`)
+    expect(tooMany.sent).toEqual([])
+  })
+
+  it('refuses, before anything is sent, the same malformed names and rows version 1 refuses', async () => {
+    const cases: ActionArgs[] = [
+      { ...INSERT_ARGS, table: 'daily_sync; drop table x' },
+      { ...INSERT_ARGS, columns: ['ID', 'ID', 'NOTE', 'META'] },
+      { ...INSERT_ARGS, values: [[1, 2]] },
+      { ...INSERT_ARGS, values: { not: 'rows' } },
+    ]
+    for (const args of cases) {
+      const one = fakeSnowflake()
+      const two = fakeSnowflake()
+      const refusedOne = await failure(INSERT.run(one.ctx, args))
+      const refusedTwo = await failure(INSERT_V2.run(two.ctx, args))
+      expect([refusedTwo.code, refusedTwo.outcome, refusedTwo.message]).toEqual([refusedOne.code, refusedOne.outcome, refusedOne.message])
+      expect(two.sent).toEqual([])
+    }
   })
 })

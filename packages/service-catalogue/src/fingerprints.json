@@ -39,6 +39,7 @@
   "slack.send-message@1": "575fd5de1d15138c45bb1b7089187236139ae91025a7fb7f352ffec70e0e813b",
   "snowflake.execute-sql-query@1": "2d43a2563ac2f9777794105a982e7c315b918e13789c6fd84cb4da295a4f5f1b",
   "snowflake.insert-multiple-rows@1": "086648106d34f3ad63feb7bb108049b00e056b6ca1477b654bb688b0003b3f57",
+  "snowflake.insert-multiple-rows@2": "56bfd7d9a8711e3e501b7e903cacd48e69a30dea20e79fd25c232b780973d81b",
   "supabase.insert-row@1": "bcf7dfd52bbf3715865d317ef0a90f01c917d05692e69db5fb44f666eb41124e",
   "supabase.select-row@1": "e9cdc61b57215d0130e22cc0a0314f573b6fec988cd1cda89e64a82a22f91fba",
   "supabase.update-row@1": "9a5fbc28bac79326410c6f029d4a37f4d7eba5b78928599b3195fd35a1029366"

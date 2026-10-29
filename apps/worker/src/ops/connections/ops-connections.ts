@@ -404,7 +404,7 @@ export async function exchangeConnectionCode(deps: OpsConnectionsDeps, request: 
   const oauthUser = deps.services(request.candidate.service)?.oauthUser
   if (oauthUser === undefined) return refuse('connection_service_unknown', `the ${request.candidate.service} service has no person bound login on this Worker`)
   try {
-    const { generation, account } = await exchangeOAuthCode({ tokens: deps.tokens, readCopy: deps.connection.readCopy }, oauthUser, {
+    const { generation, account } = await exchangeOAuthCode({ tokens: deps.tokens, readCopy: deps.connection.readCopy, report: deps.connection.report }, oauthUser, {
       organizationId, connectionId: request.connection_id, candidate: candidateOf(request.candidate), code: request.code, verifier: request.verifier, redirectUri: request.redirect_uri,
       expectedAccount: request.expected_account,
     })

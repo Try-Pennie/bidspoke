@@ -161,7 +161,7 @@ describe('the HTTP entry', () => {
     const auth = await httpServiceEntry().rules.authorize({
       organizationId: ORG, connectionId: CONN, service: 'http', generation: 1, target: { ...TARGET, header: 'Authorization' }, publicConfig: {},
       envelope: null, login: { plaintext: JSON.stringify({ api_key: `Bearer ${BEARER_TOKEN}` }) }, candidate: true, renew: null,
-      noteMint: () => undefined, fetch: () => Promise.reject(new Error('a static key asks no token endpoint')),
+      noteMint: () => undefined, noteUnreadableRateLimitHeader: () => undefined, fetch: () => Promise.reject(new Error('a static key asks no token endpoint')),
     })
     expect(auth.headers).toEqual({ authorization: `Bearer ${BEARER_TOKEN}` })
     expect(auth.secrets).toEqual([`Bearer ${BEARER_TOKEN}`, BEARER_TOKEN])
@@ -171,7 +171,7 @@ describe('the HTTP entry', () => {
     const err = await httpServiceEntry().rules.authorize({
       organizationId: ORG, connectionId: CONN, service: 'http', generation: 1, target: { ...TARGET, host: 'api.openai.com' }, publicConfig: {},
       envelope: null, login: { plaintext: 'not json' }, candidate: true, renew: null,
-      noteMint: () => undefined, fetch: () => Promise.reject(new Error('never')),
+      noteMint: () => undefined, noteUnreadableRateLimitHeader: () => undefined, fetch: () => Promise.reject(new Error('never')),
     }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(LoginMintError)
     expect([(err as LoginMintError).kind, (err as LoginMintError).reason]).toEqual(['not_allowed', 'target_invalid'])
