@@ -119,7 +119,7 @@ import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type
 import {
   CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, MAX_RUN_VARIABLES_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsRunVariables,
   parseServedOpsWorkflows, tickProblem,
-  type ConnectionLoginsReport, type OpsDefinitionRequest, type OpsRunVariablesRequest, type RunVariablesRefusal, type OpsGatewayJob, type OpsJobReport, type OpsVersionVariables,
+  type ConnectionLoginsReport, type OpsDefinitionRequest, type OpsRunVariablesRequest, type RunVariablesRefusal, type OpsGatewayJob, type OpsJobReport,
   type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem, type WriteBacksReport,
 } from '../lib/ops-gateway-contract'
 import { runWriteBackCheck, type WriteBackCheckDeps } from './write-back-check'
@@ -304,9 +304,9 @@ export interface OpsTickDb extends ConnectionServeDb, VariableCopyDb {
   claimRuns(claim: ClaimRunRequests): Promise<ClaimedRun[]>
   /** Ends a claimed run without running it (complete_run_request): a workflow switched off or deleted. */
   completeRun(run: ClaimedRun, end: CompleteOutcome): Promise<CompletedRun>
-  /** One version's frozen definition (save_workflow_definition, #1950), with the variables served beside it (#2702). */
+  /** One version's frozen definition (save_workflow_definition, #1950). */
   saveDefinition(
-    organizationId: OrganizationId, workflowId: string, versionNumber: number, definition: Record<string, unknown>, variables: OpsVersionVariables | null,
+    organizationId: OrganizationId, workflowId: string, versionNumber: number, definition: Record<string, unknown>,
   ): Promise<'saved' | 'already_saved' | 'conflict' | 'no_copy'>
   /** The Salesforce lease sweep (sweep_sf_leases). */
   sweepSfLeases(limit: number): Promise<{ swept: number; more: boolean }>
@@ -562,12 +562,12 @@ async function copyDefinitionBatch(
       continue
     }
     try {
-      const outcome = await db.saveDefinition(want.organizationId, def.workflowId, def.versionNumber, def.definition, def.variables)
+      const outcome = await db.saveDefinition(want.organizationId, def.workflowId, def.versionNumber, def.definition)
       if (outcome === 'saved') bump(counts, 'definitions_saved')
       else if (outcome === 'already_saved') bump(counts, 'definitions_already_saved')
       else if (outcome === 'no_copy') bump(counts, 'definitions_no_copy')
       else {
-        problem('definition_conflict', `Version ${def.versionNumber} of workflow ${def.workflowId} as the bidding Worker serves it now differs from the copy ops froze (its definition or its variables), so a saved version changed; ops keeps its copy and a person must decide which is right.`, def.workflowId)
+        problem('definition_conflict', `Version ${def.versionNumber} of workflow ${def.workflowId} as the bidding Worker serves it now differs from the copy ops froze, so a saved version changed; ops keeps its copy and a person must decide which is right.`, def.workflowId)
       }
     } catch (err) {
       problem('definition_save_failed', `The ops tick could not save version ${def.versionNumber} of workflow ${def.workflowId} (${formatErr(err)}); it asks again next minute.`, def.workflowId)

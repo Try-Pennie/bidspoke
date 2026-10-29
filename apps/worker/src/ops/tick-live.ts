@@ -115,7 +115,7 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     claimRuns: (claim) => claimRunRequests(client, claim, rpc),
     completeRun: (run, end) => completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, end, rpc),
     missingDefinitions: (limit) => readMissingWorkflowDefinitions(client, limit, rpc),
-    saveDefinition: (org, workflowId, versionNumber, definition, variables) => saveWorkflowDefinition(client, org, workflowId, versionNumber, definition, variables, rpc),
+    saveDefinition: (org, workflowId, versionNumber, definition) => saveWorkflowDefinition(client, org, workflowId, versionNumber, definition, rpc),
     sweepSfLeases: (limit) => sweepSfLeases(client, limit, rpc),
     queueDisagreements: (limit) => runQueueDisagreements(client, limit, rpc),
     saveCopies: (servedAt, complete, copies) => saveWorkflowCopies(client, servedAt, complete, copies, rpc),

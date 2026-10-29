@@ -39,7 +39,8 @@ import type { WorkflowBackupContext } from '../../lib/workflow-backup'
 import { stampAppActionBinders } from '../../lib/app-action-binders'
 import { readOpsStepTest, testOpsStep } from './ops-step-test'
 import { envReferences, judgeVariables, namedVariables } from '../../lib/definition-env-references'
-import { servedVersionVariables } from '../../lib/version-variables'
+import { readCurrentVariableRows } from '../../lib/current-variables'
+import { resolveVariables } from '../../lib/resolve-variables'
 import { assertNever } from '@bidspoke/node-types'
 
 type Variables = AuthVariables
@@ -224,18 +225,20 @@ function unfinishedStepRefusal(
 }
 
 /**
- * An ops workflow made live that reads a secret environment variable, or one
- * that does not exist for it (#2702, Dan's answer of 2026-10-28), refused up
- * front, naming each, as an unfinished step is. Asked by the save of a switched
- * on ops workflow, the switch on and a restore onto a switched on ops workflow.
- * What exists is read now, by the env loader's own rules (the version a write
- * makes keeps the same rows, capture_version_env_variables): the variables
- * this organization saved under the names the definition reads, the
- * workflow's own over the organization's (rowReach, through
- * servedVersionVariables). A money workflow, and one reading no variable, is
- * never read for. A read that fails refuses with 503 rather than passing as if
- * every variable existed (L42). The run's own refusal (ops/run-walk.ts) stays
- * as the backstop.
+ * An ops workflow made live that reads an environment variable that does not
+ * exist for it, refused up front, naming each, as an unfinished step is.
+ * Asked by the save of a switched on ops workflow, the switch on and a restore
+ * onto a switched on ops workflow. What exists is what a run starting now
+ * would read (#2982: a run reads each variable's current value when it
+ * starts): the variables this organization saved under the names the
+ * definition reads, the workflow's own over the organization's, by the one
+ * resolver (resolve-variables.ts, through current-variables.ts). A secret is
+ * a variable like any other here: ops is given its value (Dan, 2026-10-29,
+ * "Any secret, no exceptions", #3003), and its value is never read. A money
+ * workflow, and one reading no variable, is never read for. A read that fails
+ * refuses with 503 rather than passing as if every variable existed (L42). The
+ * run's own refusal (ops/run-variables.ts) stays as the backstop, for a
+ * variable deleted after the save.
  */
 async function opsVariableRefusal(
   c: Context<{ Bindings: Env; Variables: Variables }>,
@@ -244,51 +247,26 @@ async function opsVariableRefusal(
   workflow: { id: string; lane: unknown; definition: unknown },
 ): Promise<Response | null> {
   if (workflow.lane !== 'ops' || workflow.definition === null || typeof workflow.definition !== 'object' || Array.isArray(workflow.definition)) return null
-  const definition = workflow.definition as Record<string, unknown>
-  const reads = envReferences(definition)
+  const reads = envReferences(workflow.definition as Record<string, unknown>)
   if (reads.length === 0) return null
-  const unreadable = () => c.json({
-    error: 'variables_unavailable',
-    message: 'Nothing was saved. The workflow\'s environment variables could not be read, so whether each one it reads exists cannot be told. Try again in a moment.',
-  }, 503)
-  // One organization's rows under the names this definition reads: a handful, far under the limit.
-  const { data, error } = await supabase
-    .from('environment_variables')
-    .select('key, value, is_secret, scope, workflow_id')
-    .eq('organization_id', orgId)
-    .in('key', reads)
-    .order('created_at')
-    .order('id')
-    .limit(1000)
-  if (error) {
-    console.error(`[workflows] the environment variables of workflow ${workflow.id} could not be read: ${formatErr(error)}`)
-    return unreadable()
-  }
-  // As a version keeps them: a secret by its name alone, an empty value as none.
-  const rows = ((data ?? []) as Array<{ key: string; value: string | null; is_secret: boolean; scope: string; workflow_id: string | null }>)
-    .filter((r) => r.value !== null && r.value !== '')
-    .map((r) => ({ ...r, value: r.is_secret ? null : r.value }))
-  let served
+  let rows
   try {
-    served = servedVersionVariables(rows, workflow.id, definition, `workflow ${workflow.id}`)
+    rows = await readCurrentVariableRows(supabase, orgId, reads, `the environment variables of workflow ${workflow.id}`)
   } catch (err) {
-    console.error(`[workflows] the environment variables of workflow ${workflow.id} could not be judged: ${formatErr(err)}`)
-    return unreadable()
+    console.error(`[workflows] the environment variables of workflow ${workflow.id} could not be read: ${formatErr(err)}`)
+    return c.json({
+      error: 'variables_unavailable',
+      message: 'Nothing was saved. The workflow\'s environment variables could not be read, so whether each one it reads exists cannot be told. Try again in a moment.',
+    }, 503)
   }
-  const judged = judgeVariables(reads, served === null ? null : { values: served.values, secretKeys: served.secret_keys })
-  if (judged.kind !== 'refused') return null
-  const { secret, missing } = judged
-  const said: string[] = []
-  if (secret.length > 0) {
-    said.push(`It reads the secret ${secret.length === 1 ? 'variable' : 'variables'} ${namedVariables(secret)}, and an ops workflow is never given a secret: a credential belongs in a connection.`)
-  }
-  if (missing.length > 0) {
-    said.push(`It ${secret.length > 0 ? 'also ' : ''}reads ${namedVariables(missing)}, which ${missing.length === 1 ? 'is not a variable' : 'are not variables'} of this workflow: add ${missing.length === 1 ? 'it' : 'them'} first.`)
-  }
+  const judged = judgeVariables(reads, resolveVariables(rows, workflow.id, reads).keys())
+  if (judged.kind === 'given') return null
+  const { missing } = judged
+  const one = missing.length === 1
   return c.json({
     error: 'variable_unavailable',
-    message: `Nothing was saved. ${said.join(' ')} A switched on ops workflow cannot read a secret variable or one that does not exist.`,
-    variables: { secret, missing },
+    message: `Nothing was saved. It reads ${namedVariables(missing)}, which ${one ? 'is not a variable' : 'are not variables'} of this workflow. Add ${one ? 'it' : 'them'} on the environment variables page first.`,
+    variables: { missing },
   }, 422)
 }
 
@@ -723,7 +701,7 @@ workflows.put('/:id', async (c) => {
     if (existing.is_active === true) {
       const unfinished = unfinishedStepRefusal(c, def, existing.lane, writtenDefinitionStamp())
       if (unfinished) return unfinished
-      // A live ops workflow reads no secret variable and none that does not exist (#2702).
+      // A live ops workflow reads no variable that does not exist for it (#3003).
       const variables = await opsVariableRefusal(c, supabase, orgId, { id, lane: existing.lane, definition: body.definition })
       if (variables) return variables
     }
@@ -969,11 +947,12 @@ workflows.patch('/:id', async (c) => {
   // a move needs no version. The function refuses a folder of another
   // organization as folder not found.
   //
-  // Switching an ops workflow on writes a new version of it first (#2702, Dan's
-  // answer of 2026-10-28), through the same save a canvas makes, sending no
-  // definition: the version snapshots the stored one, and the database keeps
-  // today's values of the variables it reads with it, so a switched on ops
-  // workflow always runs with the values it was switched on with. First, so a
+  // Switching an ops workflow on writes a new version of it first (#2702),
+  // through the same save a canvas makes, sending no definition: the version
+  // snapshots the stored one. It was written so the version kept that day's
+  // variable values; since #2982 a run reads each variable's current value when
+  // it starts, so nothing reads those any more, and whether to keep this
+  // version write is decided with the contract step of #3003. First, so a
   // switch on whose version cannot be written switches nothing on; and the
   // switch on is then made from the version that save left.
   let fromVersion = owner.version
