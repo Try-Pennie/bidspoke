@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@babel/parser": "^7.29.9",
+    "@babel/parser": "^8.0.7",
     "ast-types": "^0.16.1",
     "recast": "^0.24.0"
   },
