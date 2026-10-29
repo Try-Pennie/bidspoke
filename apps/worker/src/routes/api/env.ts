@@ -11,7 +11,10 @@ import { invalidateEnvCache } from '../../lib/env-loader'
 import { encryptSecret, decryptSecret, secretKeys } from '../../lib/secret-crypto'
 import { isUuid } from '../../lib/query-validators'
 import { isOrgOnlyEnvKey } from '../../lib/org-only-env-keys'
+import { liveWorkflowsLosingVariable, variableInUseMessage, type VariableChange, type VariableRow } from '../../lib/variable-in-use'
+import { formatErr } from '../../lib/format-error'
 import type { Database } from '../../types/database'
+import type { Context } from 'hono'
 
 type Variables = AuthVariables
 
@@ -34,6 +37,31 @@ function mirroredToWorker(row: { is_secret: boolean; scope: string }): boolean {
 /** Why a workflow cannot hold its own value for this key (lib/org-only-env-keys.ts). */
 function orgOnlyRefusal(key: string): string {
   return `${key} is the organization's Salesforce connection and cannot be set for one workflow`
+}
+
+/**
+ * The refusal of a delete, an emptying or a rename that would leave a live
+ * workflow without a variable it reads (#3001, Dan's decision of 2026-10-29),
+ * or null when it breaks none. 409 `variable_in_use` names each workflow by id
+ * and name, never a value. Every lane is asked, money and ops. A check that
+ * could not be made is a 503, never a pass (L42).
+ */
+async function variableInUseRefusal(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  row: VariableRow,
+  change: VariableChange,
+): Promise<Response | null> {
+  let workflows
+  try {
+    workflows = await liveWorkflowsLosingVariable(supabase, orgId, row)
+  } catch (err) {
+    console.error(`[env] which live workflows read ${row.key} could not be checked, so its ${change} was refused: ${formatErr(err)}`)
+    return c.json({ error: `Nothing was changed. Which live workflows read ${row.key} could not be checked. Try again in a moment.` }, 503)
+  }
+  if (workflows.length === 0) return null
+  return c.json({ error: 'variable_in_use', message: variableInUseMessage(change, row.key, workflows), workflows }, 409)
 }
 
 // GET /api/env — list vars; secret values omitted
@@ -215,6 +243,17 @@ env.put('/:id', async (c) => {
     if (dup) return c.json({ error: 'An environment variable with that name already exists' }, 409)
   }
 
+  // A rename or an emptied value leaves a workflow reading the old name with
+  // nothing, so either is refused while a live workflow reads it (#3001), before
+  // anything is written to Cloudflare or the table. A rename is refused until
+  // #2996 has workflows name a variable by its id. A new value, a rotation or
+  // a folder move breaks nobody and is not checked.
+  const change: VariableChange | null = keyChanged ? 'rename' : body.value === '' ? 'empty' : null
+  if (change !== null) {
+    const inUse = await variableInUseRefusal(c, supabase, orgId, { id, key: existing.key, scope: existing.scope, workflow_id: existing.workflow_id, value: existing.value }, change)
+    if (inUse) return inUse
+  }
+
   let updatedValue: string | null | undefined
   if (existing.is_secret) {
     // Resolve the plaintext to write to Cloudflare: the new value on a rotation,
@@ -385,7 +424,7 @@ env.delete('/:id', async (c) => {
 
   const { data: existing, error: fetchError } = await supabase
     .from('environment_variables')
-    .select('key, is_secret, value, scope')
+    .select('key, is_secret, value, scope, workflow_id')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
@@ -393,6 +432,10 @@ env.delete('/:id', async (c) => {
   const blocked = dbErrorUnlessNotFound(c, fetchError)
   if (blocked) return blocked
   if (!existing) return c.json({ error: 'Variable not found' }, 404)
+
+  // Refused while a live workflow reads it (#3001), before its Cloudflare copy goes.
+  const inUse = await variableInUseRefusal(c, supabase, orgId, { id, key: existing.key, scope: existing.scope, workflow_id: existing.workflow_id, value: existing.value }, 'delete')
+  if (inUse) return inUse
 
   // A workflow's own secret has no Cloudflare copy, and the Worker secret of the
   // same name is the org's, so it is left alone (#1681).
