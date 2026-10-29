@@ -34,7 +34,9 @@
  *     followed: a redirect would leave the declared hosts.
  *  6. A 429, or a 503 with Retry-After, is a RequeueAt carrying that status
  *     (#1950: the runner tells a 503 that may have been applied from a 429
- *     that was not), unless the service's rules say a rate limit on this
+ *     that was not), at its Retry-After, else its x-ratelimit-reset style
+ *     header (#1693 7.4), else RATE_LIMIT_DEFAULT_MS; a header present that
+ *     cannot be read is reported by name, unless the service's rules say a rate limit on this
  *     request is its answer (answersRateLimit: Snowflake's status poll, whose
  *     429 means still running), or that a 429 is no rate limit at all
  *     (notRateLimited: OpenAI's insufficient_quota, which no wait clears,
@@ -99,11 +101,28 @@ export const SF_INTERACTIVE_WAIT_MS = 2_000
 export const SF_INTERACTIVE_POLL_MS = 250
 /** When a step refused a lease with no time of its own is next tried. */
 export const STEP_LEASE_REQUEUE_MS = 60_000
-/** A 429 with no Retry-After. */
+/** A 429 with no Retry-After or reset header that can be read. */
 export const RATE_LIMIT_DEFAULT_MS = 60_000
-/** A Retry-After is held between these, so a wrong or hostile one cannot park a run for days. */
+/** A Retry-After, or a reset header, is held between these, so a wrong or hostile one cannot park a run for days. */
 export const RETRY_AFTER_MIN_MS = 1_000
 export const RETRY_AFTER_MAX_MS = 60 * 60_000
+/**
+ * The x-ratelimit-reset style headers (#1693 7.4, from Trigger.dev's
+ * calculateResetAt in packages/core/src/v3/retry.ts), read in this order when a
+ * rate limit carries no Retry-After that can be read. Retry-After wins over all
+ * of them: it is the standard header, and the one this module honoured first.
+ */
+export const RATE_LIMIT_RESET_HEADERS = ['x-ratelimit-reset', 'x-rate-limit-reset', 'ratelimit-reset'] as const
+/**
+ * A reset header's number is read by its size, each range a named rule:
+ * epoch_ms from 1e12 (September 2001 in milliseconds), epoch_seconds from 1e9
+ * (September 2001 in seconds; 1e12 seconds is 30,000 years away), and
+ * seconds_from_now below that (1e9 seconds is 31 years, so no real wait is read
+ * as an epoch).
+ */
+export const RESET_EPOCH_MS_FROM = 1e12
+export const RESET_EPOCH_SECONDS_FROM = 1e9
+export type RateLimitResetRule = 'epoch_ms' | 'epoch_seconds' | 'seconds_from_now'
 
 /**
  * The causes recorded with needs_reauth (connection_health.needs_reauth_cause).
@@ -153,14 +172,16 @@ export interface ConnectionCall {
 export interface ConnectionEvent {
   readonly event:
     | 'sf_lease_release_failed' | 'needs_reauth_unrecorded' | 'refresh_unrecorded' | 'sf_budget_reading_unrecorded' | 'sf_limit_info_unreadable'
-    | 'rate_limit_check_failed'
+    | 'rate_limit_check_failed' | 'rate_limit_header_unparseable'
   readonly connection_id: string
   readonly purpose: SfLeasePurpose
   /**
    * A name from a closed set, never a value: the parser's refusal for
    * sf_limit_info_unreadable, write_failed or deadline for
-   * sf_budget_reading_unrecorded, and taken_as_rate_limit for
-   * rate_limit_check_failed (the way the 429 was answered: a RequeueAt).
+   * sf_budget_reading_unrecorded, taken_as_rate_limit for
+   * rate_limit_check_failed (the way the 429 was answered: a RequeueAt), and
+   * for rate_limit_header_unparseable the header's name (a RateLimitHeader),
+   * never what it held (#1693 7.4).
    */
   readonly cause?: string
 }
@@ -480,11 +501,55 @@ export function retryAfterAt(header: string, now: number): number | null {
   return Number.isFinite(at) ? at : null
 }
 
-/** A 429, or a 503 that says when to come back, as a RequeueAt; anything else null. */
-function rateLimited(response: Response, now: number): RequeueAt | null {
-  const header = response.headers.get('retry-after')
-  if (response.status !== 429 && !(response.status === 503 && header !== null)) return null
-  const at = header === null ? null : retryAfterAt(header, now)
+/**
+ * An x-ratelimit-reset style header as epoch ms, with the rule that read it
+ * (RESET_EPOCH_MS_FROM, RESET_EPOCH_SECONDS_FROM). Only a plain non negative
+ * decimal number is one; anything else (a date, a sign, an exponent, a unit,
+ * a number too large to hold) is null, never a time and never now.
+ */
+export function rateLimitResetAt(header: string, now: number): { at: number; rule: RateLimitResetRule } | null {
+  const trimmed = header.trim()
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return null
+  const n = Number(trimmed)
+  if (!Number.isFinite(n)) return null
+  if (n >= RESET_EPOCH_MS_FROM) return { at: n, rule: 'epoch_ms' }
+  if (n >= RESET_EPOCH_SECONDS_FROM) return { at: n * 1000, rule: 'epoch_seconds' }
+  return { at: now + n * 1000, rule: 'seconds_from_now' }
+}
+
+/** The header connectionFetch could not read, by name: Retry-After or one of RATE_LIMIT_RESET_HEADERS. */
+export type RateLimitHeader = 'retry-after' | (typeof RATE_LIMIT_RESET_HEADERS)[number]
+
+/**
+ * When a rate limit asked to come back, as epoch ms: its Retry-After, else the
+ * first reset header that can be read, else null. Each header present that
+ * cannot be read is handed to unreadable, so it is counted (#1693 7.4).
+ */
+function rateLimitWaitAt(headers: Headers, now: number, unreadable: (header: RateLimitHeader) => void): number | null {
+  const retryAfter = headers.get('retry-after')
+  if (retryAfter !== null) {
+    const at = retryAfterAt(retryAfter, now)
+    if (at !== null) return at
+    unreadable('retry-after')
+  }
+  for (const name of RATE_LIMIT_RESET_HEADERS) {
+    const value = headers.get(name)
+    if (value === null) continue
+    const reset = rateLimitResetAt(value, now)
+    if (reset !== null) return reset.at
+    unreadable(name)
+  }
+  return null
+}
+
+/**
+ * A 429, or a 503 that says when to come back, as a RequeueAt; anything else
+ * null. Only a Retry-After makes a 503 a wait (#1950): a reset header alone
+ * leaves it the caller's to judge.
+ */
+function rateLimited(response: Response, now: number, unreadable: (header: RateLimitHeader) => void): RequeueAt | null {
+  if (response.status !== 429 && !(response.status === 503 && response.headers.has('retry-after'))) return null
+  const at = rateLimitWaitAt(response.headers, now, unreadable)
   return new RequeueAt(at === null ? new Date(now + RATE_LIMIT_DEFAULT_MS) : clampedRetry(now, at), 'rate_limited', response.status)
 }
 
@@ -735,7 +800,7 @@ async function sendWithRenewal(
     // and some 429s to be no rate limit at all (OpenAI's insufficient_quota, #2673).
     const requeue = rules.answersRateLimit?.({ method, url: new URL(url) }) || await notRateLimited(deps, call, rules, response, deadline)
       ? null
-      : rateLimited(response, deps.now())
+      : rateLimited(response, deps.now(), (header) => safeReport(deps, { event: 'rate_limit_header_unparseable', connection_id: call.connectionId, purpose: call.purpose, cause: header }))
     if (requeue) {
       discard(response)
       return requeue
