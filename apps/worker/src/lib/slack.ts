@@ -1350,7 +1350,24 @@ export interface OutcomeDeadLetterAlert {
       /** ISO: when the held request is deleted. */
       until: string
     }
+    /**
+     * The failed Salesforce step behind a failed write alert (#2949), so the copy
+     * says which side of the answer it ran on and what it was, rather than
+     * assuming a Salesforce update after the answer. Absent when not known.
+     */
+    failed_step?: FailedStepFacts
   }
+}
+
+/** What a failed write alert is told about the step that failed (#2949). */
+export interface FailedStepFacts {
+  step: string
+  /** Whether the step failed after the lead was answered (`ctx.afterAnswer`). */
+  after_answer: boolean
+  /** The credit collections Apex post, recognised by its endpoint (#2832). */
+  collections_post: boolean
+  /** Cut off before Salesforce answered, so whether it landed is not known. */
+  outcome_unknown: boolean
 }
 
 // The sighting strand drain (reduce_finalize_stranded) runs on pg_cron every 30
@@ -1534,9 +1551,12 @@ async function sendLostWritebackAlert(
   const affected = n === 1 ? '1 lead was affected' : `About ${n} leads were affected`
   const period = deadLetterPeriod(n, payload.window_minutes)
   const title = isSalesforce ? 'Salesforce update lost' : 'Update lost after a lead was answered'
+  // Which side of the answer the step failed on (#2949); a run with no step facts
+  // ended its walk after the answer, which is the only way it reached here before.
+  const side = run.failed_step?.after_answer === false ? 'before' : 'after'
   const summary = isSalesforce
-    ? `${run.workflow_name} answered a lead at ${when} ET, but a Salesforce step after the answer failed, so Salesforce is missing that lead's outcome. ${affected} ${period}.`
-    : `${run.workflow_name} answered a lead at ${when} ET, but a step after the answer failed, so its update never landed. ${affected} ${period}.`
+    ? `${run.workflow_name} answered a lead at ${when} ET, but a Salesforce step ${side} the answer failed, so Salesforce is missing that lead's outcome. ${affected} ${period}.`
+    : `${run.workflow_name} answered a lead at ${when} ET, but a step ${side} the answer failed, so its update never landed. ${affected} ${period}.`
   const said = `${isSalesforce ? 'Salesforce said' : 'The error was'}: ${upstreamSaid(payload.error_message)}`
   const fix = isSalesforce
     ? 'Fix: open the run below and enter the outcome in Salesforce by hand. Bidspoke will not retry it.'
@@ -1550,6 +1570,46 @@ async function sendLostWritebackAlert(
     { type: 'section', text: { type: 'mrkdwn', text: link } },
   ]
   return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${run.workflow_name}`, 'outcome-deadletter-writeback-lost')) !== null
+}
+
+/**
+ * A credit collections post that failed (#2832, #2949), from either alert a
+ * failed Salesforce step raises: the failure itself, or the capture finding
+ * nothing a replay could resend. It is not an update and carries no outcome, so
+ * it never says "enter the outcome by hand", and it names the side of the answer
+ * it ran on. A post cut off before Salesforce answered may well have landed (the
+ * 2026-10-28 and 2026-10-29 ones did), so it says that is not known rather than
+ * calling it lost; the read-back that would settle it is #2835. The capture's own
+ * reason is about its replay store, so only the failure alert's error is shown.
+ */
+async function sendCollectionsPostAlert(
+  connection: SlackConnection,
+  payload: OutcomeDeadLetterAlert,
+  run: NonNullable<OutcomeDeadLetterAlert['run']>,
+  step: FailedStepFacts,
+  appUrl: string,
+): Promise<boolean> {
+  const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(run.at))
+  const n = payload.window_loss_count
+  const side = step.after_answer ? 'After' : 'Before'
+  const title = step.outcome_unknown ? 'Salesforce collections post not confirmed' : 'Salesforce collections post failed'
+  const what = step.outcome_unknown
+    ? `${side} the answer, its credit collections post to Salesforce got no answer in time, so it is not known whether the lead's collection records were updated.`
+    : `${side} the answer, its credit collections post to Salesforce failed, so the lead's collection records may not have been updated.`
+  const summary =
+    `${slackText(run.workflow_name)} answered a lead at ${when} ET. ${what} ` +
+    `This happened ${n === 1 ? '1 time' : `about ${n} times`} ${deadLetterPeriod(n, payload.window_minutes)}.`
+  const said = !step.outcome_unknown && payload.label === 'sf_writeback' ? `Salesforce said: ${upstreamSaid(payload.error_message)}` : null
+  const fix = 'Fix: open the run below, then check the lead in Salesforce for a Collections file from that time. Bidspoke will not resend the post.'
+  const link = `<${appUrl}/workflows/${run.workflow_id}?execution=${run.execution_id}|${n === 1 ? 'View the run' : 'View the latest run'} →>`
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: title, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: summary } },
+    ...(said ? [{ type: 'section', text: { type: 'mrkdwn', text: said } }] : []),
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+    { type: 'section', text: { type: 'mrkdwn', text: link } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${run.workflow_name}`, 'outcome-deadletter-collections-post')) !== null
 }
 
 /**
@@ -1569,8 +1629,9 @@ async function sendUncapturableWritebackAlert(
   const run = payload.run
   const n = payload.window_loss_count
   const title = 'Salesforce update cannot be replayed'
+  const side = run?.failed_step?.after_answer === false ? 'before' : 'after'
   const who = run
-    ? `${slackText(run.workflow_name)} answered a lead at ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(run.at))} ET, and a Salesforce step after the answer failed`
+    ? `${slackText(run.workflow_name)} answered a lead at ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(run.at))} ET, and a Salesforce step ${side} the answer failed`
     : 'A Salesforce step after a lead was answered failed'
   const why = upstreamSaid(payload.error_message)
   const summary =
@@ -1748,6 +1809,12 @@ export async function sendOutcomeDeadLetterAlert(
   payload: OutcomeDeadLetterAlert,
   appUrl: string
 ): Promise<boolean> {
+  // A failed credit collections post is neither an update nor an outcome, on
+  // whichever side of the answer it ran (#2949).
+  const collectionsStep = payload.run?.failed_step?.collections_post ? payload.run.failed_step : null
+  if (collectionsStep && payload.run && (payload.label === 'sf_writeback' || payload.label === WRITEBACK_UNCAPTURABLE_LABEL)) {
+    return sendCollectionsPostAlert(connection, payload, payload.run, collectionsStep, appUrl)
+  }
   if (payload.label === 'sf_writeback' && payload.run) return sendLostWritebackAlert(connection, payload, payload.run, appUrl)
   // Unknown and held, never lost or unreplayable (#2163).
   if (payload.label === WRITEBACK_HELD_LABEL) {

@@ -12,6 +12,7 @@ import { decryptSecret } from '../../lib/secret-crypto'
 import {
   writebackFromFailure,
   captureFailedWriteback,
+  failedStepFacts,
   WRITEBACK_STORE_LABEL,
   WRITEBACK_UNCAPTURABLE_LABEL,
   WRITEBACK_HELD_LABEL,
@@ -56,6 +57,7 @@ const run = {
   workflowName: 'Main Flow',
   executionId: '01920000-0000-7000-8000-000000001993',
   stepNamespace: 'patch_submission',
+  failedStep: { step: 'patch_submission', after_answer: true, collections_post: false, outcome_unknown: false },
   isTest: false,
 }
 
@@ -531,5 +533,70 @@ describe('a write the at-risk record keeps for the read-back is not also stored 
     expect(keptInKv).toBe(false)
     expect(result).toEqual({ kind: 'stored' })
     expect(inserts[0]).toMatchObject({ status: 'refused', replayable: false })
+  })
+})
+
+/**
+ * #2949: Main Flow's credit collections post runs before the answer, in a parallel
+ * slot whose failure does not fail the run. Its failures reached this capture,
+ * which is for writes after the answer, and paged "a Salesforce step after the
+ * answer failed ... enter the outcome in Salesforce by hand" for a post that ran
+ * a second before the answer and had in fact landed.
+ */
+describe('a failure from before the answer is not a post-answer write (#2949)', () => {
+  const collectionsBeforeAnswer = { step: 'collections_apex', after_answer: false, collections_post: true, outcome_unknown: true }
+  const timedOut = new Error('Step timed out after 4500ms (in-flight upstream call canceled via abort signal)')
+
+  it('stores nothing and pages nothing for a collections post that timed out before the answer', async () => {
+    const db = fakeSupabase()
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const result = await captureFailedWriteback(
+        { ...run, stepNamespace: 'collections_apex', failedStep: collectionsBeforeAnswer, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: null },
+        { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+      )
+      expect(result).toEqual({ kind: 'skipped', reason: 'before the answer' })
+      expect(logged.mock.calls.map((c) => c.join(' ')).join('\n')).toMatch(/collections_apex.*before the answer/)
+    } finally {
+      logged.mockRestore()
+    }
+    expect(db.inserts).toHaveLength(0)
+    expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
+  })
+
+  it('control: the same post failing after the answer is still dead-lettered, carrying its step facts for the alert', async () => {
+    const after = { ...collectionsBeforeAnswer, after_answer: true }
+    await captureFailedWriteback(
+      { ...run, stepNamespace: 'collections_apex', failedStep: after, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: null },
+      { supabase: fakeSupabase().client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    const call = vi.mocked(recordOutcomeDeadLetter).mock.calls[0]
+    expect(call[0]).toBe(WRITEBACK_UNCAPTURABLE_LABEL)
+    expect(call[3]).toMatchObject({ execution_id: run.executionId, failed_step: after })
+  })
+})
+
+describe('the facts an alert is given about the failed step (#2949)', () => {
+  const collections = { type: 'salesforce', config: { operation: 'apex', apex_path: '/services/apexrest/credit-collections' } }
+  const timedOut = 'Step timed out after 4500ms (in-flight upstream call canceled via abort signal)'
+
+  it('a collections post cut off before the answer: before, a collections post, outcome unknown', () => {
+    expect(failedStepFacts({ stepNamespace: 'collections_apex', afterAnswer: false, salesforceAnswer: null, message: timedOut }, collections))
+      .toEqual({ step: 'collections_apex', after_answer: false, collections_post: true, outcome_unknown: true })
+  })
+
+  it('a refusal Salesforce answered is known, not unknown, even when its words mention a timeout', () => {
+    expect(failedStepFacts({ stepNamespace: 'collections_apex', afterAnswer: false, salesforceAnswer: { status: 500, text: 'the operation was aborted' }, message: 'Salesforce API error (500): the operation was aborted' }, collections).outcome_unknown)
+      .toBe(false)
+  })
+
+  it('a failure that never reached Salesforce for another reason is not called unknown', () => {
+    expect(failedStepFacts({ stepNamespace: 'collections_apex', afterAnswer: false, salesforceAnswer: null, message: 'Salesforce bulkhead: at capacity (salesforce-collections)' }, collections).outcome_unknown)
+      .toBe(false)
+  })
+
+  it('an update is not a collections post, and a failure with no recorded side ended a walk that had already answered', () => {
+    expect(failedStepFacts({ stepNamespace: 'patch_prospect', afterAnswer: null, salesforceAnswer: { status: 400, text: 'x' }, message: 'x' }, { type: 'salesforce', config: { operation: 'update' } }))
+      .toEqual({ step: 'patch_prospect', after_answer: true, collections_post: false, outcome_unknown: false })
   })
 })

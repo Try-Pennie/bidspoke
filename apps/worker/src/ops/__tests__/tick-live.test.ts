@@ -231,6 +231,29 @@ describe('OPS_TICK_MODE (#1950)', () => {
     expect(report.counts).toMatchObject({ runs_claimed: 1, runs_done: 1, fires_enqueued: 1 })
   })
 
+  it('live: writes the claimed run\'s variable copy through save_variable_copies, names and plain values only, confirmed at most every 10 minutes (#2999)', async () => {
+    const reads = { nodes: [{ id: 'n', type: 'transform', config: { mappings: [{ source: 'env.API_BASE', target: 'a' }, { source: 'env.API_TOKEN', target: 't' }, { source: 'env.GONE', target: 'g' }] } }], edges: [] }
+    const db = opsDatabase({
+      record_schedule_fire: [{ outcome: 'enqueued', fire_id: '0192f4a0-0000-7000-a000-000000000001', run_request_id: claimedRow.run_request_id, run_status: 'queued' }],
+      claim_run_requests: [claimedRow],
+      variable_copies: [],
+      workflow_definition: [{ definition: reads, saved_at: '2026-10-17T09:00:00+00:00', variables: null }],
+      save_variable_copies: [{ versions_written: 1, versions_unchanged: 0, keys_written: 3, keys_deleted: 0, refused_no_copy: 0, refused_older: 0 }],
+    })
+    const { env, s } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_TICK_MODE: 'live' } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
+    expect(s.ran).toEqual([claimedRow.run_request_id])
+    expect(db.bodies.save_variable_copies).toEqual({
+      p_confirm_every_seconds: 600,
+      p_copies: [{
+        organization_id: ORG, workflow_id: WF, version_number: 3, served_at: '2026-10-17T10:02:30.000Z',
+        values: { API_BASE: 'https://api.example.test' }, secret_keys: ['API_TOKEN'], absent_keys: ['GONE'],
+      }],
+    })
+    expect(JSON.stringify(db.bodies)).not.toContain('fake-tick-live-secret')
+    expect(report.counts).toMatchObject({ variable_copies_versions_written: 1, variable_copies_keys_written: 3, runs_variables_live: 1 })
+  })
+
   it('a value that names no mode runs observe, and is reported not configured by name', async () => {
     const db = opsDatabase()
     const { env } = configured()

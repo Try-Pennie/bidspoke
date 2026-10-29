@@ -213,14 +213,22 @@ degraded alert, never a failed run or a lost lead.
 collections call never fails `parallel_1`, so it never costs the lead its answer:
 the walk goes on past the block as it does today. The failure is not silent. The
 step's row says it failed, and once the walk is done the engine raises it as the
-run's failure, as it does a failed write after the answer: the run is recorded as
-degraded, the `sf_writeback` dead letter counts it, and the failed write capture
-names it as an Apex call that cannot be replayed. A failed trades chain still
+run's failure: the run is recorded as degraded and the `sf_writeback` dead letter
+counts it, unless the failure reads as an upstream outage (a timeout does), which
+the failure alerts stay quiet for. The failure records that it came before
+the answer (#2949), so the post-answer write capture leaves it alone, and the
+alert reads "Salesforce collections post failed" (or "not confirmed", when it was
+cut off before Salesforce answered and may have landed) with the side of the
+answer it ran on. It never says "enter the outcome by hand": the post is not an
+outcome. On 2026-10-28 and 2026-10-29 the capture had paged two timed out posts
+as unreplayable updates after the answer, and both had landed. The read-back
+that would settle a timed out post is #2835. A failed trades chain still
 fails the block and the run before any answer, as today. Proved by
 `ported-walk.test.ts` (the real walk over live Main Flow with the stage applied:
 success, failure, timeout, a failed trades chain) and by the engine's own test of
 a marked slot before the answer (`post-response-budget-engine.test.ts`), which
-proves the run is degraded and dead lettered.
+proves the run is degraded, a refusal dead lettered with its side of the answer,
+and a timeout before the answer paged by nothing.
 
 **Timing.** `parallel_1` waits for all its slots, at most its 20 s timeout. In the
 worst case its trades chain alone already runs past that (its step settings allow

@@ -1594,6 +1594,10 @@ describe('a failed slot of a parallel block after the answer (#2832)', () => {
     expect((failureDeadLetter?.[1] as { stepNamespace?: string }).stepNamespace).toBe('collections_apex')
     // An Apex post cannot be replayed, so the capture says so for that step.
     expect(uncapturable).toEqual([expect.stringMatching(/^collections_apex: /)])
+    // Both alerts are told the step ran after the answer and is a collections post (#2949).
+    const facts = { step: 'collections_apex', after_answer: true, collections_post: true, outcome_unknown: false }
+    expect(failureDeadLetter?.[3]).toMatchObject({ failed_step: facts })
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.find((c) => c[0] === WRITEBACK_UNCAPTURABLE_LABEL)?.[3]).toMatchObject({ failed_step: facts })
   })
 
   it('the unmarked slot failing: the walk ends before the next step, and the failure is kept as the step inside the block', async () => {
@@ -1653,7 +1657,8 @@ describe('a failed marked slot of a parallel block BEFORE the answer (#2832)', (
       if (node.namespace === failing) {
         throw how === 'refused'
           ? Object.assign(new Error('Salesforce API error (400): INVALID_FIELD money gate refused'), { status: 400, permanent: true, resolvedInput: apexRequest(String(node.config.apex_path)) })
-          : Object.assign(new Error('Step timed out after 4500ms'), { resolvedInput: apexRequest(String(node.config.apex_path)) })
+          // The words the engine's step timeout really throws (engine/retry.ts), with no request logged.
+          : new Error('Step timed out after 4500ms (in-flight upstream call canceled via abort signal)')
       }
       return { output: { ok: node.namespace } }
     })
@@ -1665,15 +1670,30 @@ describe('a failed marked slot of a parallel block BEFORE the answer (#2832)', (
     return { ...outcome, ran, row, failureDeadLetter, uncapturable }
   }
 
-  it.each(['refused', 'timed_out'] as const)('the collections slot %s: the lead is answered, the walk goes on, and the run is degraded and alerted with that step named', async (how) => {
-    const { result, ran, row, failureDeadLetter, deadLetters, uncapturable } = await walkWith('collections_apex', how)
+  it.each(['refused', 'timed_out'] as const)('the collections slot %s: the lead is answered, the walk goes on, and the run is degraded', async (how) => {
+    const { result, ran, row } = await walkWith('collections_apex', how)
     expect(result.status).toBe(200)
     expect(result.response).toEqual(RESPONSE.body)
     expect(ran).toContain('outcome_write')
     expect(row?.status).toBe('degraded')
+  })
+
+  // #2949: the post before the answer reached the post-answer capture, which paged
+  // "a Salesforce step after the answer failed ... enter the outcome in Salesforce
+  // by hand" for a post that ran before the answer and had landed.
+  it('the collections slot refused: alerted once, as a collections post that failed before the answer, and never as a post-answer write', async () => {
+    const { failureDeadLetter, deadLetters, uncapturable } = await walkWith('collections_apex', 'refused')
     expect(deadLetters('sf_writeback')).toHaveLength(1)
     expect((failureDeadLetter?.[1] as { stepNamespace?: string }).stepNamespace).toBe('collections_apex')
-    expect(uncapturable).toEqual([expect.stringMatching(/^collections_apex: /)])
+    expect(failureDeadLetter?.[3]).toMatchObject({ failed_step: { step: 'collections_apex', after_answer: false, collections_post: true, outcome_unknown: false } })
+    expect(uncapturable).toEqual([])
+  })
+
+  it('the collections slot timed out before the answer: no dead letter and no page, since its result is unknown and Salesforce was slow', async () => {
+    const { deadLetters, uncapturable } = await walkWith('collections_apex', 'timed_out')
+    expect(deadLetters('sf_writeback')).toEqual([])
+    expect(uncapturable).toEqual([])
+    expect(vi.mocked(recordOutcomeDeadLetter)).not.toHaveBeenCalled()
   })
 
   // #2847: a collections call shed by its full bulkhead share fails its step like

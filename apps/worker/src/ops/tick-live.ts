@@ -30,7 +30,9 @@ import {
   purgeRunVariables, readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
   removeUnservedMeasuredIdentities, saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions, observeOpsReseal,
+  purgeVariableCopies, readVariableCopies, readWorkflowDefinition, saveVariableCopies,
 } from './ops-writes'
+import { VARIABLE_COPY_CONFIRM_EVERY_SECONDS } from './variable-copies'
 import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps } from './connections/connection-fetch'
 import { boundFetch, type OpsServiceEntry } from './connections/ops-connections'
 import { ConnectionRefusal } from './connections/refusals'
@@ -104,6 +106,11 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     purgeStepTests: (limit) => purgeStepTestResults(client, limit, rpc),
     purgeStepRecords: (limit) => purgeOpsStepRecords(client, limit, rpc),
     purgeRunVariables: (limit) => purgeRunVariables(client, limit, rpc),
+    // The last good copy of each version's plain variables (#2999): its reads, its one write, its purge.
+    purgeVariableCopies: (limit) => purgeVariableCopies(client, limit, rpc),
+    readVariableCopies: (org, versions) => readVariableCopies(client, org, versions, rpc),
+    saveVariableCopies: (copies) => saveVariableCopies(client, copies, VARIABLE_COPY_CONFIRM_EVERY_SECONDS, rpc),
+    readDefinition: async (org, workflowId, versionNumber) => (await readWorkflowDefinition(client, org, workflowId, versionNumber, rpc))?.definition ?? null,
     recordFire: (org, fire) => recordScheduleFire(client, org, fire, rpc),
     claimRuns: (claim) => claimRunRequests(client, claim, rpc),
     completeRun: (run, end) => completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, end, rpc),

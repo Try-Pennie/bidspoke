@@ -64,6 +64,7 @@ import {
   CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, parseOpsVersionVariables, servedVariablesOf, type OpsVersionVariables,
 } from '../lib/ops-gateway-contract'
 import { DELEGATION_LIST_LIMIT } from '../lib/ops-connections-contract'
+import { ENV_KEY } from '../lib/definition-env-references'
 import { parseRunVariablesRecord, recordRow, type RunVariablesRecord } from './run-variables'
 
 /** Past the ops project's 8 s statement timeout, so the database gives up first: the one deadline every ops request has (ops-db.ts). */
@@ -1887,6 +1888,116 @@ export async function readRunCheckpoint(
 /** The records of runs terminal more than 7 days ago, cleared a page at a time (purge_run_variables, #2998). */
 export async function purgeRunVariables(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
   const name = 'purge_run_variables'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+// ── the last good copy of each version's plain variables (#2999, ops migration 20261029220000) ──
+
+/**
+ * The database's bounds on a copy (save_variable_copies), which the tick checks
+ * before it sends, so one oversized version is left out rather than failing the
+ * whole save. variable-copies.test.ts reads them out of the migration.
+ */
+export const MAX_VARIABLE_COPIES_PER_SAVE = 1000
+export const MAX_VARIABLE_COPY_NAMES = 500
+export const MAX_VARIABLE_COPY_VALUE_BYTES = 65536
+export const MAX_VARIABLE_COPY_KEY_BYTES = 256
+
+/**
+ * One version's copy as the tick writes it: every name the version reads, each
+ * a plain value, a secret by name, or absent (bidding has no such variable).
+ * There is no field a secret's value could travel in.
+ */
+export interface VariableCopyInput {
+  organizationId: OrganizationId
+  workflowId: string
+  versionNumber: number
+  /** The bidding Worker's clock when it served the values. */
+  servedAt: string
+  values: Record<string, string>
+  secretKeys: string[]
+  absentKeys: string[]
+}
+
+/** What save_variable_copies did: versions written or left as held, key rows written or deleted, and versions it skipped. */
+export interface SaveVariableCopiesResult {
+  versionsWritten: number
+  versionsUnchanged: number
+  keysWritten: number
+  keysDeleted: number
+  refusedNoCopy: number
+  refusedOlder: number
+}
+
+/**
+ * The tick's one write of the copies (variable-copies.ts is its only caller,
+ * held by ops-variable-copies-one-writer.test.ts). Each version replaces its
+ * rows whole, and the database rewrites only the rows that changed;
+ * confirmEverySeconds is how stale an unchanged version's confirmed_at may get
+ * before it is moved.
+ */
+export async function saveVariableCopies(
+  client: OpsSupabaseClient, copies: readonly VariableCopyInput[], confirmEverySeconds: number, options?: OpsRpcOptions,
+): Promise<SaveVariableCopiesResult> {
+  const name = 'save_variable_copies'
+  const row = oneRow(name, await callOpsRpc(client, name, {
+    p_copies: copies.map((c) => ({
+      organization_id: c.organizationId, workflow_id: c.workflowId, version_number: c.versionNumber, served_at: c.servedAt,
+      values: { ...c.values }, secret_keys: [...c.secretKeys], absent_keys: [...c.absentKeys],
+    })),
+    p_confirm_every_seconds: confirmEverySeconds,
+  }, options))
+  return {
+    versionsWritten: field(name, row, 'versions_written', isCount, 'a count'),
+    versionsUnchanged: field(name, row, 'versions_unchanged', isCount, 'a count'),
+    keysWritten: field(name, row, 'keys_written', isCount, 'a count'),
+    keysDeleted: field(name, row, 'keys_deleted', isCount, 'a count'),
+    refusedNoCopy: field(name, row, 'refused_no_copy', isCount, 'a count'),
+    refusedOlder: field(name, row, 'refused_older', isCount, 'a count'),
+  }
+}
+
+/** One version's kept copy, as variable_copies answers it, with the database clock it was read at. */
+export interface VariableCopy {
+  workflowId: string
+  versionNumber: number
+  servedAt: string
+  /** This database's clock when the copy was last written or confirmed: its age is judged from here. */
+  confirmedAt: string
+  values: Record<string, string>
+  secretKeys: string[]
+  absentKeys: string[]
+  dbNow: string
+}
+
+const isNameList = (v: unknown): v is string[] => Array.isArray(v) && v.every((k) => typeof k === 'string' && ENV_KEY.test(k))
+const isNamedText = (v: unknown): v is Record<string, string> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) && Object.entries(v).every(([k, x]) => ENV_KEY.test(k) && typeof x === 'string')
+
+/** One organization's kept copies of the versions asked about; a version not held is left out. */
+export async function readVariableCopies(
+  client: OpsSupabaseClient, organizationId: OrganizationId, versions: ReadonlyArray<{ workflowId: string; versionNumber: number }>, options?: OpsRpcOptions,
+): Promise<VariableCopy[]> {
+  const name = 'variable_copies'
+  const all = rows(name, await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_versions: versions.map((v) => ({ workflow_id: v.workflowId, version_number: v.versionNumber })),
+  }, options))
+  return all.map((row) => ({
+    workflowId: field(name, row, 'workflow_id', isString, 'an id'),
+    versionNumber: field(name, row, 'version_number', isInt, 'a whole number'),
+    servedAt: field(name, row, 'served_at', isTime, 'a time'),
+    confirmedAt: field(name, row, 'confirmed_at', isTime, 'a time'),
+    values: { ...field(name, row, 'plain_values', isNamedText, 'variable names and text') },
+    secretKeys: [...field(name, row, 'secret_keys', isNameList, 'variable names')],
+    absentKeys: [...field(name, row, 'absent_keys', isNameList, 'variable names')],
+    dbNow: field(name, row, 'db_now', isTime, 'a time'),
+  }))
+}
+
+/** The nightly purge of copies past the age a fallback refuses, and of workflows gone from the lane. */
+export async function purgeVariableCopies(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_variable_copies'
   const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
   return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
 }
