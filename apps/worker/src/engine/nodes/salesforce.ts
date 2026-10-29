@@ -24,6 +24,7 @@ import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
 import { coerceString } from '../../lib/coerce'
 import { linkAbort } from '../retry'
+import { abortAfter, REQUEST_DEADLINE } from '../step-timeout'
 import { classifyHttpErrorWithBody } from '../error-classifier'
 import { shadowSalesforceStub } from '../shadow'
 import { shadowOf } from '../run-reality'
@@ -133,7 +134,8 @@ export async function getSalesforceToken(
 
   const timeoutMs = opts.timeoutMs ?? SALESFORCE_TOKEN_TIMEOUT_MS
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  // Marks the error its own abort caused as the node's request deadline (#3068).
+  const timer = abortAfter(controller, timeoutMs, REQUEST_DEADLINE)
   linkAbort(controller, opts.signal)
   // The deadline covers the body as well as the headers: a body that never
   // finishes holds the lead just as long.
@@ -154,15 +156,15 @@ export async function getSalesforceToken(
   } catch (e) {
     // Unmarked, so the step classifier reads it as transient and retries.
     if (controller.signal.aborted) {
-      throw new Error(
+      throw timer.mark(new Error(
         opts.signal?.aborted
           ? 'Salesforce token fetch stopped: the step ran out of time'
           : `Salesforce token fetch timed out after ${timeoutMs} ms`,
-      )
+      ))
     }
     throw e
   } finally {
-    clearTimeout(timer)
+    timer.clear()
   }
 
   if (!res.ok) {
@@ -696,7 +698,10 @@ export async function performSalesforceCall(
   }
 
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 15000)
+  // Marks the abort it causes as the node's own request deadline (#3068): the
+  // fetch then fails with the platform's "The operation was aborted", the same
+  // words any other abort produces, so the mark is the only way to tell.
+  const timer = abortAfter(controller, 15000, REQUEST_DEADLINE)
   linkAbort(controller, opts.signal)  // also cancel on the step-level timeout (#66)
 
   const fetchStart = Date.now()
@@ -708,8 +713,10 @@ export async function performSalesforceCall(
       ...(bodyStr !== undefined ? { body: bodyStr } : {}),
       signal: controller.signal,
     })
+  } catch (err) {
+    throw timer.mark(err)
   } finally {
-    clearTimeout(timer)
+    timer.clear()
     // Release the slots whether the call succeeded, failed, or timed out.
     await slots.release()
   }
@@ -963,14 +970,17 @@ async function fetchQueryPage(
   }
 
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 15000)
+  // The page's own request deadline, marked as such when it aborts the fetch (#3068).
+  const timer = abortAfter(controller, 15000, REQUEST_DEADLINE)
   linkAbort(controller, opts.signal)
 
   let res: Response
   try {
     res = await fetch(url, { method: 'GET', headers: opts.headers, signal: controller.signal })
+  } catch (err) {
+    throw timer.mark(err)
   } finally {
-    clearTimeout(timer)
+    timer.clear()
     await slots.release()
   }
 

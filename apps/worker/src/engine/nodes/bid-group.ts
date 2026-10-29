@@ -178,6 +178,13 @@ export interface BidGroupOutput {
 interface RunAttemptInput {
   partner_id: string
   attemptIndex: number
+  /**
+   * Set when a highest bid race has a deadline (#3068): its length, and whether
+   * the race has stopped waiting for this attempt, read when the attempt's row
+   * is written. The race keeps no handle on the attempt otherwise, since the
+   * attempt runs on and writes its own row whenever it finishes.
+   */
+  groupDeadline?: { ms: number; passed: () => boolean }
 }
 
 /**
@@ -271,9 +278,15 @@ async function runHighestBid(
 ): Promise<BidGroupOutput> {
   const timeoutMs = config.timeout_ms
   const startedAt = Date.now()
+  const raceMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : null
+  // Which attempts the race has answered for (#3068): stopped waiting for
+  // (cutOff), or seen settle in time (settledInTime), so an attempt that
+  // answered first is never marked by the timer that fires after it.
+  const cutOff = partnerIds.map(() => false)
+  const settledInTime = partnerIds.map(() => false)
 
   const tasks = partnerIds.map((id, idx) =>
-    runAttempt({ partner_id: id, attemptIndex: idx })
+    runAttempt({ partner_id: id, attemptIndex: idx, ...(raceMs !== null ? { groupDeadline: { ms: raceMs, passed: () => cutOff[idx] } } : {}) })
       .catch((err) => ({
         namespace: `attempt-${idx}`,
         partner_id: id,
@@ -291,26 +304,28 @@ async function runHighestBid(
   // returns within the deadline. Underlying fetches keep running (the
   // AbortSignal-propagation gap is separate — see parallel.ts).
   let settled: BidGroupAttempt[]
-  if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+  if (raceMs !== null) {
     settled = await Promise.all(
       tasks.map((p, idx) =>
         Promise.race<BidGroupAttempt>([
-          p,
+          p.then((a) => { settledInTime[idx] = true; return a }),
           new Promise<BidGroupAttempt>((resolve) =>
             setTimeout(
-              () =>
+              () => {
+                if (!settledInTime[idx]) cutOff[idx] = true
                 resolve({
                   namespace: `attempt-${idx}`,
                   partner_id: partnerIds[idx],
                   partner_slug: slugLookup?.(partnerIds[idx]),
                   output: null,
                   status: 'failed',
-                  error: `Partner did not respond within ${timeoutMs}ms`,
+                  error: `Partner did not respond within ${raceMs}ms`,
                   error_type: 'transient',
                   started_at: new Date(startedAt).toISOString(),
-                  duration_ms: timeoutMs,
-                }),
-              timeoutMs
+                  duration_ms: raceMs,
+                })
+              },
+              raceMs
             )
           ),
         ])
@@ -371,9 +386,11 @@ async function runTiered(
   // Wrap runAttempt so each tier-attempt gets a unique global index even though
   // each tier passes its own 0..N internally. The engine maps attemptIndex to a
   // step_order slot, so collisions would trash the ordering in the test panel.
-  const globalRun: RunAttemptFn = async ({ partner_id }) => {
+  // The tier's race deadline passes through, so a highest bid tier marks a late
+  // attempt as the same race outside a tiered group does (#3068).
+  const globalRun: RunAttemptFn = async ({ partner_id, groupDeadline }) => {
     const idx = attemptIndex++
-    return runAttempt({ partner_id, attemptIndex: idx })
+    return runAttempt({ partner_id, attemptIndex: idx, ...(groupDeadline ? { groupDeadline } : {}) })
   }
 
   for (const tier of tiers) {

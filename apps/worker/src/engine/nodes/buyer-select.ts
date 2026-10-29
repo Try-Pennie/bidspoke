@@ -75,6 +75,7 @@ import { makeBidLogger, type BidLogger } from '../bid-logger'
 import { resolveValue } from '../context'
 import { nodeReportsOnly, runRealityOf } from '../run-reality'
 import { resolveSalePayload } from './buyer-select-payload'
+import { timeoutMarker, BUYER_SELECT_DEADLINE, type StepTimeoutMarker } from '../step-timeout'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -258,6 +259,12 @@ export interface BuyerSelectResult {
   output: BuyerSelectOutput
   attempts: BuyerAttemptRow[]
   failure?: BuyerSelectFailure
+  /**
+   * Set only when the node's own budget ended its walk (#3068): the marker the
+   * walker writes on the node's row. The route, the reason and the sale are what
+   * they would have been without it.
+   */
+  deadline?: StepTimeoutMarker
 }
 
 // ── Injectable dependencies ───────────────────────────────────────────────────
@@ -403,7 +410,23 @@ class Run {
     this.out.reason = reason
     if (detail !== undefined) this.out.detail = detail
     this.deps.log({ event: 'buyer_select_reason', step_namespace: this.node.namespace, route, reason, detail, mode_effective: this.modeEffective })
-    return { output: this.out, attempts: this.attempts }
+    const deadline = this.budgetEndedWalk(reason)
+    return { output: this.out, attempts: this.attempts, ...(deadline ? { deadline } : {}) }
+  }
+
+  /**
+   * The marker when the node's own budget ended its walk (#3068), or null. A
+   * rehearsal_deadline is the rehearsal budget ending by construction (the
+   * attempt reports it only under that budget); an object_deadline is the budget
+   * only when the node's budget clock says it is spent, since an object call can
+   * also run out of its own time. Once the buyer call has started no budget
+   * applies (budgetMs is null), so nothing after it is marked.
+   */
+  private budgetEndedWalk(reason: BuyerSelectReason): StepTimeoutMarker | null {
+    const budget = this.budgetMs()
+    if (budget === null) return null
+    if (reason === 'rehearsal_deadline' || (reason === 'object_deadline' && this.pastDeadline())) return timeoutMarker(BUYER_SELECT_DEADLINE, budget)
+    return null
   }
 
   private fail(reason: BuyerSelectReason, errorType: 'transient' | 'permanent', detail: string): BuyerSelectResult {

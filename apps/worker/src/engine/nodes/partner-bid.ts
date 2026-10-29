@@ -38,6 +38,7 @@ import type { ResponseClassificationConfig, AlertConfig } from '../error-classif
 import type { BidResolverType, BidComparisonSource, ExtraExtractionConfig } from '../bid-resolver'
 import { resolveBid, effectiveResolverType } from '../bid-resolver'
 import { linkAbort } from '../retry'
+import { carryDeadline } from '../step-timeout'
 import { PartnerApiError } from '../partner-bid-error'
 import { makeBidLogger } from '../bid-logger'
 import { runRealityOf, shadowOf } from '../run-reality'
@@ -587,7 +588,8 @@ export async function executePartnerBidNode(
 
     const suppress = shouldSuppressAlert(p.alert_config, errorType)
     const message = formatErr(err)
-    const wrapped = new PartnerApiError(message, errorType, suppress) as PartnerApiError & { resolvedInput?: ResolvedStepInput }
+    // The re-wrapped error keeps the deadline marker its own timer set (#3068).
+    const wrapped = carryDeadline(err, new PartnerApiError(message, errorType, suppress) as PartnerApiError & { resolvedInput?: ResolvedStepInput })
     wrapped.resolvedInput = errResolvedInput
     throw wrapped
   }

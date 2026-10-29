@@ -147,8 +147,10 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
   {
     // A run one of OUR deadlines stopped (#3069, L35): its failing step carries
     // the marker the engine writes where the deadline passes (#3047,
-    // engine/step-timeout.ts), its own deadline or its parallel block's. Read
-    // from the marker, so no message is matched for a marked run.
+    // engine/step-timeout.ts): any kind in TIMEOUT_KINDS, its own deadline, its
+    // parallel block's, or, since #3068, a code chain's, a node's own request
+    // timer, the partner bid's timer, a bid group's race or the buyer select
+    // budget. Read from the marker, so no message is matched for a marked run.
     //
     // A gateway timeout (an upstream answering 504) is the upstream's answer, not
     // our deadline: it carries no marker and nothing below names it, so it is
@@ -162,11 +164,12 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
     // THE TEXT FALLBACK, for a run whose failing step carries no marker: rows
     // written before #3047 deployed, and a run the marker read could not reach.
     // #3067 removes it after 2026-11-07, once the unmarked rows have aged out.
-    // Two of our deadlines still fail a run with no marker (measured over the
-    // 7 days to 2026-10-29): a node's own request timer ('the operation was
-    // aborted', 41 Salesforce runs) and a parallel block that fails on its own
-    // deadline ('did not complete in time', 20 runs, whose children get no row).
-    // Removing the fallback before those are marked moves them out of this bucket.
+    // Two of our deadlines failed a run with no marker (measured over the 7 days
+    // to 2026-10-29): a node's own request timer ('the operation was aborted',
+    // 41 Salesforce runs), marked 'request' since #3068 on rows written after it
+    // deployed, and a parallel block that fails on its own deadline ('did not
+    // complete in time', 20 runs, whose children get no row, #3072). Removing
+    // the fallback before the second is marked moves those out of this bucket.
     unmarkedFallback: [
       'the operation was aborted',
       'canceled via abort signal',
@@ -511,6 +514,13 @@ export interface MarkedFailedStep {
   execution_id: string
   step_type: string | null
   parallel_group_id: string | null
+  /**
+   * The node the row belongs to (#3068). A bid group's and a buyer select's own
+   * attempt rows carry the node's id here AND as their parallel_group_id; a
+   * parallel block's child carries its own id under the block's. Absent on a
+   * row read before the column was selected.
+   */
+  step_node_id?: string | null
   timeout_kind: unknown
 }
 
@@ -526,7 +536,10 @@ export interface MarkedFailedStep {
  * Only `failed` rows are read: a step the walk recovered from is `skipped` or
  * `failed_with_fallback`, never `failed`. A marked row of another type outside
  * a block is a failure the run did not stop on (a partner bid a bid group
- * absorbed, a slot marked to continue), so it is not the run's failure.
+ * absorbed, a slot marked to continue), so it is not the run's failure. Nor is
+ * a node's own attempt row (#3068): a bid group's or buyer select's partner
+ * attempt sits in a group named by its own node, never a parallel block, and
+ * the node absorbs its failure, so it is never the child a block failed on.
  *
  * KNOWN LIMIT: a run with two parallel blocks whose earlier block let a marked
  * slot continue, and whose later block then failed for another reason, is
@@ -542,6 +555,8 @@ export function failingStepDeadline(
     if (step.execution_id !== run.id) continue
     const kind = deadlineKindOf(step)
     if (kind === null) continue
+    const ownAttempt = step.parallel_group_id !== null && step.step_node_id != null && step.step_node_id === step.parallel_group_id
+    if (ownAttempt) continue
     const isFailingStep = step.parallel_group_id === null
       ? step.step_type === run.failed_step_type
       : run.failed_step_type === 'parallel'
@@ -570,7 +585,7 @@ export async function readMarkedFailedSteps(
     out.push(...await fetchAllPaged<MarkedFailedStep>(
       (from, to) => supabase
         .from('execution_steps')
-        .select('id, execution_id, step_type, parallel_group_id, timeout_kind')
+        .select('id, execution_id, step_type, parallel_group_id, step_node_id, timeout_kind')
         .in('execution_id', ids)
         .gte('started_at', startedFrom)
         .eq('status', 'failed')

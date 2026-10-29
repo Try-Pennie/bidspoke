@@ -3,8 +3,9 @@
  * the run's message (#3069, L35).
  *
  * Since #3047 the engine marks a step one of our deadlines stopped on its row
- * (`execution_steps.timeout_kind`: 'step' for the step's own deadline,
- * 'parallel_block' for its block's). The aggregated outage check now reads that
+ * (`execution_steps.timeout_kind`, any kind in TIMEOUT_KINDS: 'step' for the
+ * step's own deadline, 'parallel_block' for its block's, and since #3068 a code
+ * chain's, a node's own request timer and the bidding budgets). The aggregated outage check now reads that
  * marker for each failed run's failing step. The old substrings stay only as the
  * fallback for a run whose failing step carries no marker (#3067 removes it).
  *
@@ -29,7 +30,7 @@ import {
   DEFAULT_OUTAGE_THRESHOLD,
   type MarkedFailedStep,
 } from '../upstream-outage'
-import { STEP_DEADLINE, PARALLEL_BLOCK_DEADLINE, stepTimeoutMessage } from '../../engine/step-timeout'
+import { STEP_DEADLINE, PARALLEL_BLOCK_DEADLINE, CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, stepTimeoutMessage } from '../../engine/step-timeout'
 import { sendUpstreamOutageAlert } from '../slack'
 
 // A message no text matcher of any cause recognises, so only the marker can
@@ -107,6 +108,27 @@ describe('failingStepDeadline binds a marker to the step the run failed on (#306
     expect(failingStepDeadline({ id: 'e1', failed_step_type: 'response' }, [marked('e1', 'code', STEP_DEADLINE)])).toBeNull()
   })
 
+  // #3068: our other deadlines are marked too, each as its own kind, and each is our deadline.
+  it('reads every one of our deadlines, the ones #3068 added included', () => {
+    expect(failingStepDeadline({ id: 'e1', failed_step_type: 'salesforce' }, [marked('e1', 'salesforce', REQUEST_DEADLINE)])).toBe(REQUEST_DEADLINE)
+    expect(failingStepDeadline({ id: 'e1', failed_step_type: 'webhook' }, [marked('e1', 'webhook', REQUEST_DEADLINE)])).toBe(REQUEST_DEADLINE)
+    expect(failingStepDeadline({ id: 'e1', failed_step_type: 'code' }, [marked('e1', 'code', CODE_CHAIN_DEADLINE)])).toBe(CODE_CHAIN_DEADLINE)
+    expect(failingStepDeadline({ id: 'e1', failed_step_type: 'partner_bid' }, [marked('e1', 'partner_bid', PARTNER_BID_DEADLINE)])).toBe(PARTNER_BID_DEADLINE)
+    expect(failingStepDeadline({ id: 'e1', failed_step_type: 'parallel' }, [{ ...marked('e1', 'salesforce', REQUEST_DEADLINE, 'block-1'), step_node_id: 'child-1' }])).toBe(REQUEST_DEADLINE)
+  })
+
+  // #3068 marks a bid group's or a buyer select's own attempt rows, which sit in a
+  // group named by the node itself (step_node_id equals parallel_group_id). Such a
+  // row is never a parallel block's child, so a run that failed on a block is not
+  // read as timed out because a bid group earlier in it stopped waiting for a partner.
+  it('never takes a node\'s own attempt row for the child its parallel block failed on', () => {
+    const attempt = (kind: string): MarkedFailedStep => ({ ...marked('e1', 'partner_bid', kind, 'group-node'), step_node_id: 'group-node' })
+    expect(failingStepDeadline({ id: 'e1', failed_step_type: 'parallel' }, [attempt(BID_GROUP_DEADLINE)])).toBeNull()
+    expect(failingStepDeadline({ id: 'e1', failed_step_type: 'parallel' }, [attempt(PARTNER_BID_DEADLINE)])).toBeNull()
+    // A real child of the block beside it still counts.
+    expect(failingStepDeadline({ id: 'e1', failed_step_type: 'parallel' }, [attempt(BID_GROUP_DEADLINE), { ...marked('e1', 'webhook', PARALLEL_BLOCK_DEADLINE, 'block-1'), step_node_id: 'child-1' }])).toBe(PARALLEL_BLOCK_DEADLINE)
+  })
+
   it('ignores another run\'s marker, a value the engine never writes, and a run with no failing step recorded', () => {
     expect(failingStepDeadline({ id: 'e1', failed_step_type: 'code' }, [marked('e2', 'code', STEP_DEADLINE)])).toBeNull()
     expect(failingStepDeadline({ id: 'e1', failed_step_type: 'code' }, [marked('e1', 'code', 'gateway')])).toBeNull()
@@ -132,6 +154,7 @@ type Filter = [string, string, unknown[]]
  */
 function stepsDouble(opts: { failed: unknown[]; markers: unknown[]; markerError?: string }) {
   const markerReads: Filter[][] = []
+  const markerColumns: string[] = []
   const tables: Record<string, unknown[]> = {
     service_connections: [{ organization_id: 'org-1' }],
     workflows: [{ id: 'wf-1', name: 'Engine Bidding Workflow', organization_id: 'org-1' }],
@@ -139,6 +162,7 @@ function stepsDouble(opts: { failed: unknown[]; markers: unknown[]; markerError?
   }
   return {
     markerReads,
+    markerColumns,
     rpc: (name: string) => {
       if (name !== 'execution_counts_per_minute') throw new Error(`unexpected rpc: ${name}`)
       return Promise.resolve({ data: [], error: null })
@@ -153,7 +177,7 @@ function stepsDouble(opts: { failed: unknown[]; markers: unknown[]; markerError?
       }
       chain.select = (cols: string) => {
         columns = cols
-        if (table === 'execution_steps' && cols.includes('timeout_kind')) markerReads.push(filters)
+        if (table === 'execution_steps' && cols.includes('timeout_kind')) { markerReads.push(filters); markerColumns.push(cols) }
         return chain
       }
       chain.range = (from: number, to: number) => { range = [from, to]; return chain }
@@ -212,6 +236,12 @@ describe('runUpstreamOutageCheck reads the failing steps\' markers (#3069)', () 
     expect(has('gte', 'started_at')).toBe(true)
     expect(has('order', 'started_at')).toBe(true)
     expect(has('order', 'id')).toBe(true)
+  })
+
+  it('reads each step\'s node id beside its group, so a node\'s own attempt rows are told from a block\'s children (#3068)', async () => {
+    const sb = stepsDouble({ failed: burst(UNRECOGNISED), markers: [] })
+    await runUpstreamOutageCheck(sb as never, makeKv() as never, 'https://app.example.com')
+    expect(sb.markerColumns.some((cols) => cols.split(',').map((c) => c.trim()).includes('step_node_id'))).toBe(true)
   })
 
   it('a run written before the marker, with no marked step, still pages by its message', async () => {

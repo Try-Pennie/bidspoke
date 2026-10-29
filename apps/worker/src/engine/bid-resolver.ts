@@ -17,6 +17,7 @@ import type { Env } from '../index'
 import type { ResponseClassificationConfig, AlertConfig } from './error-classifier'
 import { evaluateResponseClassification, shouldSuppressAlert } from './error-classifier'
 import { linkAbort } from './retry'
+import { abortAfter, PARTNER_BID_DEADLINE } from './step-timeout'
 import { PartnerApiError } from './partner-bid-error'
 import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
 import { matchTier, type Ladder } from '@bidspoke/buyer-profile'
@@ -224,7 +225,9 @@ async function callBidApi(
     outbound_body: wireBody,
   }
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 15000)
+  // The partner bid's own deadline on its bid request, marked on the error its
+  // abort causes (#3068), never read from the abort's text.
+  const timeout = abortAfter(controller, 15000, PARTNER_BID_DEADLINE)
   linkAbort(controller, signal)  // also cancel on the step-level timeout (#66)
 
   let res: Response
@@ -235,8 +238,10 @@ async function callBidApi(
       body,
       signal: controller.signal,
     })
+  } catch (err) {
+    throw timeout.mark(err)
   } finally {
-    clearTimeout(timeout)
+    timeout.clear()
   }
 
   // Read the body as text once, then parse. Was parseJsonSafe(res), which is

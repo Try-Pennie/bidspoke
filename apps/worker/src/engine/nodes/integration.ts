@@ -23,6 +23,7 @@ import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
 import { coerceString } from '../../lib/coerce'
 import { linkAbort } from '../retry'
+import { abortAfter, REQUEST_DEADLINE } from '../step-timeout'
 import { shadowIntegrationStub } from '../shadow'
 import { shadowOf } from '../run-reality'
 import { buildSandboxEnv } from '../../lib/sandbox-env'
@@ -193,9 +194,10 @@ export async function executeIntegrationNode(
   // walk puts this request on it and the failed step records what it sent.
   ctx.noteStepInput?.(resolvedInput)
 
-  // Fetch with timeout
+  // Fetch with timeout. The timer marks the abort it causes as this node's own
+  // request deadline (#3068); an abort from anywhere else stays unmarked.
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const timer = abortAfter(controller, timeoutMs, REQUEST_DEADLINE)
   linkAbort(controller, signal)  // also cancel on the step-level timeout (#66)
 
   let res: Response
@@ -209,9 +211,9 @@ export async function executeIntegrationNode(
   } catch (err) {
     // A dropped connection or this node's own timer: the same error, carrying the
     // same masked request a completed step returns (#3057).
-    throw carryStepInput(err, resolvedInput)
+    throw carryStepInput(timer.mark(err), resolvedInput)
   } finally {
-    clearTimeout(timer)
+    timer.clear()
   }
 
   // Parse response — try JSON, fall back to text

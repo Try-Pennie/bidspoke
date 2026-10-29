@@ -9,12 +9,20 @@
  * `timed_out_after_ms`. Readers ask the marker, and fall back to the text only
  * for a row written before the marker existed.
  */
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
   StepTimeoutError,
   STEP_DEADLINE,
   PARALLEL_BLOCK_DEADLINE,
+  CODE_CHAIN_DEADLINE,
+  REQUEST_DEADLINE,
+  PARTNER_BID_DEADLINE,
+  BID_GROUP_DEADLINE,
+  BUYER_SELECT_DEADLINE,
   TIMEOUT_KINDS,
+  abortAfter,
+  carryDeadline,
+  markDeadline,
   stepTimeoutMessage,
   stepTimeoutMarkerOf,
   timeoutMarker,
@@ -56,10 +64,17 @@ describe('the step deadline error carries its own classification', () => {
     expect(stepTimeoutMarkerOf(undefined)).toBeNull()
   })
 
-  it('names two kinds of deadline, the step\'s own and its parallel block\'s', () => {
-    expect([...TIMEOUT_KINDS]).toEqual([STEP_DEADLINE, PARALLEL_BLOCK_DEADLINE])
+  it('names each of our deadlines as its own kind (#3068)', () => {
+    expect([...TIMEOUT_KINDS]).toEqual([STEP_DEADLINE, PARALLEL_BLOCK_DEADLINE, CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE])
     expect(STEP_DEADLINE).toBe('step')
     expect(PARALLEL_BLOCK_DEADLINE).toBe('parallel_block')
+    expect(CODE_CHAIN_DEADLINE).toBe('code_chain')
+    expect(REQUEST_DEADLINE).toBe('request')
+    expect(PARTNER_BID_DEADLINE).toBe('partner_bid')
+    expect(BID_GROUP_DEADLINE).toBe('bid_group')
+    expect(BUYER_SELECT_DEADLINE).toBe('buyer_select')
+    // Only the step's own deadline is what the audit and the daily report count.
+    expect(TIMEOUT_KINDS.filter((k) => k === 'step')).toEqual([STEP_DEADLINE])
   })
 })
 
@@ -108,10 +123,93 @@ describe('reading a step row: did the step time out at its own deadline, and aft
   })
 })
 
+/**
+ * #3068: deadlines other than the step's own are marked where they pass. A
+ * node's own request timer aborts its fetch, which fails with the platform's
+ * "The operation was aborted", the same words any other abort produces. So the
+ * error is marked by the timer that fired, never read from its text.
+ */
+describe('our own timers mark the error they caused, and only that one', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  const platformAbort = () => new DOMException('The operation was aborted.', 'AbortError')
+
+  it('a marked error carries its kind and deadline to the step row', () => {
+    const err = markDeadline(platformAbort(), REQUEST_DEADLINE, 15_000)
+    expect(stepTimeoutMarkerOf(err)).toEqual({ timeout_kind: REQUEST_DEADLINE, timed_out_after_ms: 15_000 })
+  })
+
+  it('an abort nothing marked is not a timeout, whatever it says', () => {
+    expect(stepTimeoutMarkerOf(platformAbort())).toBeNull()
+    expect(stepTimeoutMarkerOf(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))).toBeNull()
+  })
+
+  it('the step deadline wins over any mark, since it is what stopped the step', () => {
+    const err = markDeadline(new StepTimeoutError(4_500), REQUEST_DEADLINE, 15_000)
+    expect(stepTimeoutMarkerOf(err)).toEqual({ timeout_kind: STEP_DEADLINE, timed_out_after_ms: 4_500 })
+  })
+
+  it('a node that re-wraps the error carries the mark onto the new one, and an unmarked one stays unmarked', () => {
+    const marked = markDeadline(platformAbort(), PARTNER_BID_DEADLINE, 15_000)
+    const wrapped = carryDeadline(marked, new Error('The operation was aborted.'))
+    expect(stepTimeoutMarkerOf(wrapped)).toEqual({ timeout_kind: PARTNER_BID_DEADLINE, timed_out_after_ms: 15_000 })
+    expect(stepTimeoutMarkerOf(carryDeadline(platformAbort(), new Error('x')))).toBeNull()
+    expect(stepTimeoutMarkerOf(carryDeadline(null, new Error('x')))).toBeNull()
+  })
+
+  it('marking something that is not an object is a no-op, never a throw', () => {
+    expect(markDeadline('a string', REQUEST_DEADLINE, 1)).toBe('a string')
+    expect(markDeadline(null, REQUEST_DEADLINE, 1)).toBeNull()
+    expect(stepTimeoutMarkerOf('a string')).toBeNull()
+  })
+
+  it('a timer that fired aborts the controller and marks what the abort threw', () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const timer = abortAfter(controller, 15_000, REQUEST_DEADLINE)
+    vi.advanceTimersByTime(14_999)
+    expect(controller.signal.aborted).toBe(false)
+    expect(timer.fired()).toBe(false)
+    vi.advanceTimersByTime(1)
+    expect(controller.signal.aborted).toBe(true)
+    expect(timer.fired()).toBe(true)
+    expect(stepTimeoutMarkerOf(timer.mark(platformAbort()))).toEqual({ timeout_kind: REQUEST_DEADLINE, timed_out_after_ms: 15_000 })
+  })
+
+  it('an abort from elsewhere (the step deadline through linkAbort) is not the timer: nothing is marked, even after the timer would have run', () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const timer = abortAfter(controller, 15_000, REQUEST_DEADLINE)
+    controller.abort()
+    vi.advanceTimersByTime(15_000)
+    expect(timer.fired()).toBe(false)
+    expect(stepTimeoutMarkerOf(timer.mark(platformAbort()))).toBeNull()
+  })
+
+  it('a timer cleared before it ran never fires and marks nothing', () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const timer = abortAfter(controller, 15_000, REQUEST_DEADLINE)
+    timer.clear()
+    vi.advanceTimersByTime(60_000)
+    expect(controller.signal.aborted).toBe(false)
+    expect(timer.fired()).toBe(false)
+    expect(stepTimeoutMarkerOf(timer.mark(new Error('fetch failed')))).toBeNull()
+  })
+})
+
 describe('which deadline stopped a step, from the marker alone (#3069)', () => {
-  it('names either deadline the engine marks', () => {
+  it('names the step\'s own deadline and its parallel block\'s', () => {
     expect(deadlineKindOf({ timeout_kind: STEP_DEADLINE })).toBe(STEP_DEADLINE)
     expect(deadlineKindOf({ timeout_kind: PARALLEL_BLOCK_DEADLINE })).toBe(PARALLEL_BLOCK_DEADLINE)
+  })
+
+  // #3068: the outage check counts a run as an upstream timeout by this read, so
+  // each of our other deadlines must be named by it too, not only the first two.
+  it('names every one of our deadlines, the ones #3068 added included', () => {
+    for (const kind of [CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE]) {
+      expect(deadlineKindOf({ timeout_kind: kind })).toBe(kind)
+    }
   })
 
   it('reads nothing from a row with no marker, whatever its text says', () => {
