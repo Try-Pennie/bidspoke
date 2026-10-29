@@ -20,6 +20,7 @@ import {
   timeoutMarker,
   stepTimedOut,
   stepTimedOutAfterMs,
+  deadlineKindOf,
 } from '../step-timeout'
 
 describe('the step deadline error carries its own classification', () => {
@@ -103,6 +104,24 @@ describe('reading a step row: did the step time out at its own deadline, and aft
     ]) {
       expect(stepTimedOut({ error_message })).toBe(false)
       expect(stepTimedOutAfterMs({ error_message })).toBeNull()
+    }
+  })
+})
+
+describe('which deadline stopped a step, from the marker alone (#3069)', () => {
+  it('names either deadline the engine marks', () => {
+    expect(deadlineKindOf({ timeout_kind: STEP_DEADLINE })).toBe(STEP_DEADLINE)
+    expect(deadlineKindOf({ timeout_kind: PARALLEL_BLOCK_DEADLINE })).toBe(PARALLEL_BLOCK_DEADLINE)
+  })
+
+  it('reads nothing from a row with no marker, whatever its text says', () => {
+    expect(deadlineKindOf({ timeout_kind: null, error_message: stepTimeoutMessage(5_250) })).toBeNull()
+    expect(deadlineKindOf({ error_message: stepTimeoutMessage(5_250) })).toBeNull()
+  })
+
+  it('reads nothing from a value the engine never writes', () => {
+    for (const timeout_kind of ['gateway', 'STEP', '', 1, true]) {
+      expect(deadlineKindOf({ timeout_kind })).toBeNull()
     }
   })
 })
