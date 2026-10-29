@@ -5,7 +5,8 @@ import { REPO_ROOT } from './_scan-utils'
 import { compareVersions, resolvedVersions } from './_lockfile-versions'
 
 /**
- * Security floors for advisories published on 2026-10-22, checked against the
+ * Security floors for known advisories (next and dompurify, published on
+ * 2026-10-22, and tar, #2994), checked against the
  * versions the lockfile actually RESOLVES, because a downgrade or a stale copy
  * resolved beside the declared one ships the vulnerable code while package.json
  * looks right.
