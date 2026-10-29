@@ -11,7 +11,7 @@
  *       the first retry, doubling each time, never more than cap_seconds; a
  *       number left out is the default's
  *   { mode: 'none' }                               the first real failure ends
- *       the run failed
+ *       the run failed, with the status reason retry_disabled (#3013)
  *
  * It governs only a retry after a real failure. A rate limit wait follows the
  * service's own reset time and a resource wait or a continuation its own clock,

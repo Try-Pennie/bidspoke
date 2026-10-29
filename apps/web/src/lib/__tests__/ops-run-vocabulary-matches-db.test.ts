@@ -220,6 +220,17 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     for (const reason of ENGINE_FAILED_REASONS) expect(failed).not.toContain(reason)
   })
 
+  /**
+   * A workflow set not to retry ends its run failed at its first real failure
+   * (#2992), and names it (#3013): the holder sends retry_disabled, so the
+   * database must take it from a holder and hold it in the status reason CHECK.
+   */
+  it('retry_disabled is a reason a holder fails a run for, in the code and the database (#3013)', () => {
+    expect(HOLDER_FAILED_REASONS).toContain('retry_disabled')
+    expect(constraintValues(SQL, 'run_requests_status_reason_check')).toContain('retry_disabled')
+    expect(guardIn(functionBody(SQL, 'complete_run_request'), 'failed', 'p_reason')).toContain('retry_disabled')
+  })
+
   it('complete_run_request suspends for every resume reason but retry, and a resource wait names one of its causes', () => {
     const body = functionBody(SQL, 'complete_run_request')
     expect(sorted(guardIn(body, 'suspend', 'p_reason'))).toEqual(sorted(RESUME_REASONS.filter((r) => r !== 'retry')))

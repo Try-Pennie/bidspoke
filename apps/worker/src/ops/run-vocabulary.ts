@@ -4,8 +4,9 @@
  *
  * Each list here is also a CHECK constraint in the ops database
  * (supabase-ops/supabase/migrations/20261016200000_run_engine_1948.sql, widened
- * by 20261017230000_run_engine_resource_wait_2334.sql and
- * 20261027200000_step_requeue_cap_2859.sql), which is
+ * by 20261017230000_run_engine_resource_wait_2334.sql,
+ * 20261027200000_step_requeue_cap_2859.sql and
+ * 20261029233000_retry_disabled_3013.sql), which is
  * what actually refuses a wrong value. The two cannot derive from each other
  * across SQL and TypeScript, so
  * apps/web/src/lib/__tests__/ops-run-vocabulary-matches-db.test.ts reads every
@@ -53,7 +54,7 @@ export const STATUS_REASONS = {
   needs_human: ['lease_expired_after_send', 'send_outcome_unknown'],
   skipped: ['paused', 'rate_limited', 'overlap'],
   expired: ['not_started_in_time'],
-  failed: ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded', 'resource_wait_exceeded', 'lease_lapsed_repeatedly', 'requeue_cap_reached'],
+  failed: ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded', 'retry_disabled', 'resource_wait_exceeded', 'lease_lapsed_repeatedly', 'requeue_cap_reached'],
 } as const satisfies Partial<Record<RunRequestStatus, readonly string[]>>
 export type StatusReason = (typeof STATUS_REASONS)[keyof typeof STATUS_REASONS][number]
 export const ALL_STATUS_REASONS: readonly StatusReason[] = Object.values(STATUS_REASONS).flat()
@@ -64,10 +65,12 @@ export const ALL_STATUS_REASONS: readonly StatusReason[] = Object.values(STATUS_
  * finding F122): resource_wait_exceeded by complete_run_request itself when a
  * resource wait passes 24 hours, lease_lapsed_repeatedly by the lease sweep on
  * a fourth lapse with no send, requeue_cap_reached by complete_run_request
- * when a step's rate limit waits reach the requeue cap (#2859). The vocabulary
+ * when a step's rate limit waits reach the requeue cap (#2859). retry_disabled
+ * (#3013) is the holder's: its workflow is set not to retry (#2992), so the
+ * first real failure ended the run (run-invocation.ts, retryOr). The vocabulary
  * test holds both lists to the database.
  */
-export const HOLDER_FAILED_REASONS = ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded'] as const satisfies readonly StatusReason[]
+export const HOLDER_FAILED_REASONS = ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded', 'retry_disabled'] as const satisfies readonly StatusReason[]
 export type HolderFailedReason = (typeof HOLDER_FAILED_REASONS)[number]
 export const ENGINE_FAILED_REASONS = ['resource_wait_exceeded', 'lease_lapsed_repeatedly', 'requeue_cap_reached'] as const satisfies readonly StatusReason[]
 
