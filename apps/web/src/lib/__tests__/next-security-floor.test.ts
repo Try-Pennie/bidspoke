@@ -20,6 +20,13 @@ import { compareVersions, resolvedVersions } from './_lockfile-versions'
  * by the root `pnpm.overrides` entry:
  *   GHSA-mrv2-3pqr-j5jr  high
  *
+ * tar (#2994), pulled in by vercel 47.0.4 through @vercel/fun 1.1.6, which
+ * builds the site through next-on-pages, fixed in 7.5.19 and forced up by the
+ * root `pnpm.overrides` entry. The 6 line has no fixed release, so tar 6 fails
+ * here as a major with no floor:
+ *   GHSA-23hp-3jrh-7fpw  critical, a crafted archive hangs the unpacker or
+ *                        exhausts its memory
+ *
  * A floor is per major line. A version on a major with no recorded floor fails
  * on purpose: look up that line's fixed release and add it here in the same
  * change.
@@ -34,6 +41,10 @@ const FLOORS: Record<string, Floor> = {
   dompurify: {
     advisories: 'GHSA-mrv2-3pqr-j5jr',
     byMajor: { '3': '3.4.17' },
+  },
+  tar: {
+    advisories: 'GHSA-23hp-3jrh-7fpw',
+    byMajor: { '7': '7.5.19' },
   },
 }
 
@@ -59,7 +70,7 @@ export function floorProblem(name: string, version: string): string | null {
 
 const lockfile = (): string => readFileSync(LOCKFILE, 'utf8')
 
-describe('dependencies stay outside the 2026-10-22 advisories (#2675, #2691)', () => {
+describe('dependencies stay outside known advisories (#2675, #2691, #2994)', () => {
   it('judges versions against each floor', () => {
     expect(floorProblem('next', '15.5.28')).toBeNull()
     expect(floorProblem('next', '15.6.0')).toBeNull()
@@ -68,6 +79,9 @@ describe('dependencies stay outside the 2026-10-22 advisories (#2675, #2691)', (
     expect(floorProblem('next', '^15.5.28')).toMatch(/not an exact/)
     expect(floorProblem('dompurify', '3.4.17')).toBeNull()
     expect(floorProblem('dompurify', '3.2.7')).toMatch(/below 3\.4\.17/)
+    expect(floorProblem('tar', '7.5.19')).toBeNull()
+    expect(floorProblem('tar', '7.5.18')).toMatch(/below 7\.5\.19/)
+    expect(floorProblem('tar', '6.2.1')).toMatch(/no recorded fixed release/)
   })
 
   for (const name of Object.keys(FLOORS)) {
