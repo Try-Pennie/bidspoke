@@ -12,8 +12,9 @@
  *    variable missing, or an older or organization value shows through.
  *
  * Two readers apply it: an ops version's kept variables (version-variables.ts,
- * #2702) and the current variables the ops gateway serves a run
- * (ops-gateway.ts readOpsRunVariables). The money lane's env loader keeps its
+ * #2702) and the current variables (current-variables.ts), which the ops
+ * gateway serves a run (ops-gateway.ts readOpsRunVariables, #2997) and the ops
+ * step test sends with the step (routes/api/ops-step-test.ts, #3002). The money lane's env loader keeps its
  * own loop, because its cache holds the organization's values and each
  * workflow's apart and lays them together at each run; resolve-variables-parity
  * .test.ts proves the two agree over shared rows.

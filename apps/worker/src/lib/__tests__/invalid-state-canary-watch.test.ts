@@ -120,6 +120,8 @@ function fakeSalesforce(records: Record<string, Answer>) {
   const asked: string[] = []
   const read = async (p: string): Promise<SalesforceRead> => {
     asked.push(p)
+    // The field history query (#3005): no rows, as for a field Salesforce keeps no history of.
+    if (p.startsWith('/query?q=') && decodeURIComponent(p).includes('FROM Submission__History')) return ok({ totalSize: 0, done: true, records: [] })
     const m = /^\/sobjects\/(Submission__c|Lead)\/([A-Za-z0-9]+)\?fields=/.exec(p)
     if (!m) return { kind: 'answer', status: 400, text: '[{"errorCode":"MALFORMED_QUERY"}]' }
     return records[m[2]] ?? { kind: 'answer', status: 404, text: '[{"errorCode":"NOT_FOUND"}]' }

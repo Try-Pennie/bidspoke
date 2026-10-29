@@ -20,10 +20,17 @@
  * A TEST SENDS FOR REAL. Ops refuses a step that changes something in its
  * service unless confirm_send is true (step_test_send_unconfirmed, 409 here).
  *
- * ITS VARIABLES (#2702). A step reading env.X is given the plain values the
- * workflow's newest saved version kept, as a run of it would be: this Worker
- * reads that version and sends them with the step, and ops refuses by name a
- * secret variable or one the version did not keep.
+ * ITS VARIABLES (#3002, phase 6 of #2982). A step reading env.X is given the
+ * CURRENT value of each variable it reads (Dan, 2026-10-28: "It should always
+ * read the current version of the variable"), secrets included (2026-10-29:
+ * "Yes, ops reads secrets"): this Worker reads the organization's saved rows of
+ * those names, resolves them with the one resolver and decrypts each secret
+ * (current-variables.ts, shared with the ops gateway), and sends them with the
+ * step. Never a saved version's kept copy, and no fallback copy for a test a
+ * person starts: a failed read refuses the test (503), and a secret that will
+ * not decrypt refuses it by name, never sent blank. A variable with no saved
+ * value is left out, and ops refuses the test naming it. Ops never keeps or
+ * logs a secret's value (ops/mask-secrets.ts); nor does this Worker log one.
  *
  * FROM A PAST RUN (#2339, #2703). With an execution_id, ops rebuilds the step's
  * context from that run's payload and recorded step outputs, within the
@@ -36,10 +43,11 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
 import type { OpsConnectionsRefused, StepTestView, TestStepCall } from '../../lib/ops-connections-contract'
-import { envReferences } from '../../lib/definition-env-references'
+import { readCurrentVariableRows, resolveCurrentVariables, secretOpener } from '../../lib/current-variables'
+import { envReferences, namedVariables } from '../../lib/definition-env-references'
 import { formatErr } from '../../lib/format-error'
+import { secretKeys } from '../../lib/secret-crypto'
 import { createSupabaseClient } from '../../lib/supabase'
-import { servedVersionVariables } from '../../lib/version-variables'
 import { sampleRows } from '@bidspoke/references'
 import { isUuid } from '../../lib/query-validators'
 
@@ -86,25 +94,15 @@ function refusedAnswer(c: Ctx, answer: OpsConnectionsRefused): Response {
 }
 
 /**
- * The workflow's newest saved version and the variables kept with it that the
- * step reads (#2702), which ops gives the step as a run of that version would
- * be given them; null when the workflow has no saved version. Read only for a
- * step that reads a variable. Throws on a failed read or kept variables it
- * cannot read, so the test is refused rather than sent with blanks.
+ * The current values of the variables the step reads (#3002), as ops takes them:
+ * the organization's saved rows of those names, resolved for this workflow by
+ * the one resolver, each secret decrypted through the key ring. Throws on a
+ * failed read, so the test is refused rather than sent with blanks; a secret
+ * that will not decrypt is named in unreadable. Never logs a value.
  */
-async function newestVersionFor(c: Ctx, workflowId: string, step: Record<string, unknown>): Promise<TestStepCall['version']> {
-  const supabase = createSupabaseClient(c.env)
-  const { data, error } = await supabase
-    .from('workflow_versions')
-    .select('version_number, env_capture')
-    .eq('workflow_id', workflowId)
-    .order('version_number', { ascending: false })
-    .limit(1)
-  if (error) throw new Error(`the workflow's saved versions could not be read (${error.code ?? 'no code'}): ${error.message}`)
-  const newest = (data ?? [])[0] as { version_number: number; env_capture: unknown } | undefined
-  if (newest === undefined) return null
-  const variables = servedVersionVariables(newest.env_capture, workflowId, { nodes: [step], edges: [] }, `workflow ${workflowId} version ${newest.version_number}`)
-  return { number: newest.version_number, variables }
+async function currentVariablesFor(c: Ctx, orgId: string, workflowId: string, names: string[]) {
+  const rows = await readCurrentVariableRows(createSupabaseClient(c.env), orgId, names, `the environment variables of workflow ${workflowId}`)
+  return resolveCurrentVariables(rows, workflowId, names, secretOpener(secretKeys(c.env)))
 }
 
 /** POST test-node for an ops workflow's app_action step. `node` is the step as the canvas holds it. */
@@ -117,14 +115,26 @@ export async function testOpsStep(c: Ctx, workflowId: string, body: Record<strin
   const config = isRecord(node.config) ? node.config : {}
   const steps = isRecord(body.steps) ? (body.steps as Record<string, { output: unknown; status: string }>) : null
   const step = { id: node.id, namespace: node.namespace, type: 'app_action', config }
-  let version: TestStepCall['version'] | undefined
-  if (envReferences({ nodes: [step], edges: [] }).length > 0) {
+  let variables: TestStepCall['variables']
+  const reads = envReferences({ nodes: [step], edges: [] })
+  if (reads.length > 0) {
+    let current: Awaited<ReturnType<typeof currentVariablesFor>>
     try {
-      version = await newestVersionFor(c, workflowId, step)
+      current = await currentVariablesFor(c, orgId, workflowId, reads)
     } catch (err) {
       console.error(`[ops-step-test] the variables of workflow ${workflowId} could not be read: ${formatErr(err)}`)
-      return c.json({ error: 'step_test_variables_unavailable', message: 'The workflow\'s saved variables could not be read, so this step could not be given them. Nothing was sent. Try again in a moment.' }, 503)
+      return c.json({ error: 'step_test_variables_unavailable', message: 'The workflow\'s variables could not be read, so this step could not be given them. Nothing was sent. Try again in a moment.' }, 503)
     }
+    if (current.unreadable.length > 0) {
+      const one = current.unreadable.length === 1
+      // Names only, never a value or its ciphertext.
+      console.error(`[ops-step-test] not testing a step of workflow ${workflowId}: the secret ${current.unreadable.join(', ')} of organization ${orgId} could not be decrypted`)
+      return c.json({
+        error: 'step_test_secret_unreadable',
+        message: `The secret ${one ? 'variable' : 'variables'} ${namedVariables(current.unreadable)} could not be decrypted, so this step was not tested. Nothing was sent. Save ${one ? 'its value' : 'their values'} again on the environment variables page, then test again.`,
+      }, 409)
+    }
+    variables = { values: current.values, secret_values: current.secretValues }
   }
   const answer = await callOpsConnections(c.env, 'testStep', {
     organization_id: orgId,
@@ -141,7 +151,7 @@ export async function testOpsStep(c: Ctx, workflowId: string, body: Record<strin
       }
       : { trigger_payload: body.trigger_payload ?? {}, steps: steps ?? {} }),
     confirm_send: body.confirm_send === true,
-    ...(version !== undefined ? { version } : {}),
+    ...(variables !== undefined ? { variables } : {}),
   })
   if (isOpsConnectionsUnavailable(answer)) {
     return c.json({ error: answer.refused, cause: answer.cause, message: answer.detail }, OPS_CONNECTIONS_UNAVAILABLE_STATUS)

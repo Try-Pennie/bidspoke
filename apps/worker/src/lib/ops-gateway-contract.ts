@@ -1033,6 +1033,29 @@ function variableText(raw: unknown): Record<string, string> | null {
   return out
 }
 
+/**
+ * Current variables as the ops Worker reads them (#2997, #3002): the plain
+ * values, and the secret ones decrypted by the bidding Worker. Served on the
+ * wire as { values, secret_values }.
+ */
+export interface CurrentVariables {
+  values: Record<string, string>
+  secretValues: Record<string, string>
+}
+
+/**
+ * A served run's or a step test's current variables (values, secret_values),
+ * or why they cannot be read: every name a variable name, every value text,
+ * and no name both plain and secret. Never quotes a value.
+ */
+export function readCurrentVariables(rawValues: unknown, rawSecretValues: unknown): CurrentVariables | string {
+  const values = variableText(rawValues)
+  const secretValues = variableText(rawSecretValues)
+  if (values === null || secretValues === null) return 'its variables are not names and text'
+  if (Object.keys(secretValues).some((k) => Object.hasOwn(values, k))) return 'it names a variable both plain and secret'
+  return { values, secretValues }
+}
+
 const SERVED_RUN_FIELDS = ['secret_values', 'served_at', 'values', 'version_number', 'workflow_id'].join()
 const REFUSED_RUN_FIELDS = ['keys', 'refused', 'version_number', 'workflow_id'].join()
 
@@ -1041,12 +1064,10 @@ function readRunEntry(row: unknown): ReadRunVariables | string {
   if (!isRecord(row) || typeof row.workflow_id !== 'string' || !UUID.test(row.workflow_id) || !isVersionNumber(row.version_number)) return 'it does not name a workflow and version'
   const fields = Object.keys(row).sort().join()
   if (fields === SERVED_RUN_FIELDS) {
-    const values = variableText(row.values)
-    const secretValues = variableText(row.secret_values)
-    if (values === null || secretValues === null) return 'its variables are not names and text'
-    if (Object.keys(secretValues).some((k) => Object.hasOwn(values, k))) return 'it names a variable both plain and secret'
+    const current = readCurrentVariables(row.values, row.secret_values)
+    if (typeof current === 'string') return current
     if (!isTime(row.served_at)) return 'it has no served_at time'
-    return { kind: 'served', workflowId: row.workflow_id, versionNumber: row.version_number, values, secretValues, servedAt: row.served_at }
+    return { kind: 'served', workflowId: row.workflow_id, versionNumber: row.version_number, values: current.values, secretValues: current.secretValues, servedAt: row.served_at }
   }
   if (fields === REFUSED_RUN_FIELDS) {
     if (!(RUN_VARIABLES_REFUSALS as readonly unknown[]).includes(row.refused)) return 'it is refused for a reason the ops Worker does not know'

@@ -33,7 +33,8 @@ import { DELEGATION_KINDS, type DelegationKind } from '../ops/run-vocabulary'
 import type { SchemaLookupCode } from './schema-sync/errors'
 import type { SchemaLookupAnswer } from './schema-sync/lookup'
 import {
-  clearFieldProblem, OpsGatewayContractError, parseOpsVersionVariables, parseSealedEnvelope, type OpsVersionVariables, type SealedEnvelopeShape, type ServedOpsVariables,
+  clearFieldProblem, OpsGatewayContractError, parseOpsVersionVariables, parseSealedEnvelope, readCurrentVariables,
+  type CurrentVariables, type OpsVersionVariables, type SealedEnvelopeShape, type ServedOpsVariables,
 } from './ops-gateway-contract'
 
 /**
@@ -240,7 +241,10 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'step_test_run_payload_not_held',
   /** The run's records could not be read. */
   'step_test_run_unavailable',
-  /** The step reads a secret variable, or one the workflow's newest saved version did not keep (#2702); the detail names each. Nothing was sent. */
+  /**
+   * The step reads a variable it cannot be given; the detail names each. Nothing was sent. From #3002, one
+   * with no saved value; from a bidding Worker before it, a secret or one the newest saved version did not keep (#2702).
+   */
   'step_test_variable_unavailable',
 ] as const
 export type OpsConnectionsOwnRefusal = (typeof OPS_CONNECTIONS_REFUSAL_CODES)[number]
@@ -631,12 +635,27 @@ export interface TestStepRequest {
   confirm_send: boolean
   /**
    * The workflow's newest saved version and the variables kept with it that the
-   * step reads (#2702), which the step is given as a run of that version would
-   * be; variables null for a version saved before they were kept. Null for a
-   * workflow with no saved version, a step reading no variable, or a bidding
-   * Worker from before #2702, which sends none.
+   * step reads (#2702), as a bidding Worker from before #3002 sends them; ops
+   * reads them only when variables is null. Null for a workflow with no saved
+   * version, a step reading no variable, or a bidding Worker that sends none
+   * (from #3002 on, it never does). Removed once no deploy sends it (#3003).
    */
   version: { number: number; variables: OpsVersionVariables | null } | null
+  /**
+   * The CURRENT values of the variables the step reads (#3002, phase 6 of
+   * #2982; Dan, 2026-10-28: "It should always read the current version of the
+   * variable"), each resolved over the organization's saved rows by the one
+   * resolver and each secret decrypted by the bidding Worker (Dan, 2026-10-29:
+   * "Yes, ops reads secrets"). A variable with no saved value is left out, so
+   * ops names it missing. A secret value is given to the step and never kept or
+   * logged on ops: the kept result holds the variable's name in its place
+   * (mask-secrets.ts). Null for a step reading no variable, or a bidding Worker
+   * from before #3002, which sends none; an ops Worker from before #3002
+   * ignores it. Optional both ways, so neither deploy order breaks a test:
+   * bidding deploys first, and until ops follows, a test of a step reading a
+   * variable is refused by name and sends nothing.
+   */
+  variables: CurrentVariables | null
 }
 
 /**
@@ -644,12 +663,14 @@ export interface TestStepRequest {
  * into a TestStepRequest: from a past run, a payload or steps left out are the
  * run's own (#2703).
  */
-export type TestStepCall = Omit<TestStepRequest, 'execution_id' | 'trigger_payload' | 'steps' | 'version'> & {
+export type TestStepCall = Omit<TestStepRequest, 'execution_id' | 'trigger_payload' | 'steps' | 'version' | 'variables'> & {
   execution_id?: string
   trigger_payload?: unknown
   steps?: TestStepRequest['steps']
-  /** As served: { number, variables: ServedOpsVariables | null } | null. */
+  /** As served: { number, variables: ServedOpsVariables | null } | null. Sent only by a bidding Worker from before #3002. */
   version?: { number: number; variables: ServedOpsVariables | null } | null
+  /** As served: { values, secret_values }, the current values (#3002). */
+  variables?: { values: Record<string, string>; secret_values: Record<string, string> }
 }
 
 export interface StepTestResultRequest {
@@ -727,7 +748,19 @@ export function parseTestStepRequest(raw: unknown): TestStepRequest {
     node: { id, namespace: r.node.namespace, config: r.node.config },
     execution_id, trigger_payload, steps, confirm_send: r.confirm_send === true,
     version: stepTestVersionOf(r.version),
+    variables: stepTestVariablesOf(r.variables),
   }
+}
+
+/** The current variables a step test is given (#3002); absent or null is none. Never quotes a value. */
+function stepTestVariablesOf(raw: unknown): TestStepRequest['variables'] {
+  if (raw === undefined || raw === null) return null
+  if (!isRecord(raw) || Object.keys(raw).sort().join() !== 'secret_values,values') {
+    throw new OpsConnectionsContractError('the request\'s variables are not { values, secret_values }')
+  }
+  const read = readCurrentVariables(raw.values, raw.secret_values)
+  if (typeof read === 'string') throw new OpsConnectionsContractError(`the request's variables cannot be read: ${read}`)
+  return read
 }
 
 /** The newest saved version a step test is given the variables of (#2702); absent or null is none. */

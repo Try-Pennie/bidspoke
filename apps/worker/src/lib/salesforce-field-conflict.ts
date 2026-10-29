@@ -191,7 +191,7 @@ function historyObjectOf(sfObject: string): { object: string; parent: string } |
 }
 
 /** A SOQL datetime literal in whole seconds, rounded down, so a change in that second is included. */
-const soqlTime = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+export const soqlTime = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
 
 /**
  * The two queries that read one record's field history, as `/query?q=` paths
@@ -224,7 +224,7 @@ export function fieldHistoryQueries(
 export type HistoryGet = (path: string) => Promise<{ kind: 'answer'; status: number; text: string } | { kind: 'no_answer'; error: string }>
 
 /** The rows of a query answer, or null when it is not a complete one. */
-function queryRecords(text: string): Array<Record<string, unknown>> | null {
+export function queryRecords(text: string): Array<Record<string, unknown>> | null {
   try {
     const v = JSON.parse(text) as { done?: unknown; totalSize?: unknown; records?: unknown }
     if (!v || v.done !== true || !Array.isArray(v.records)) return null

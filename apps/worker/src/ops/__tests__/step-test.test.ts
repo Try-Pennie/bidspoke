@@ -4,7 +4,7 @@
  * of 2026-10-23: the ops database only, the latest per step, 7 days). Driven
  * with the sealed connection, the service and the ops database as doubles.
  */
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import type { SealedEnvelope } from '@bidspoke/connection-seal'
 import { resolveActionVersion } from '@bidspoke/service-catalogue/schema'
 import { ActionFailure, implement, type ActionRun, type JsonValue, type RuntimeAction } from '@bidspoke/service-catalogue/runtime'
@@ -61,6 +61,7 @@ const request = (over: Partial<TestStepRequest> = {}, config: Record<string, unk
   steps: { earlier: { output: { who: 'ops' }, status: 'completed' } },
   confirm_send: true,
   version: null,
+  variables: null,
   ...over,
 })
 
@@ -405,5 +406,82 @@ describe('a step test\'s environment variables (#2702)', () => {
     const w = world()
     w.d.respond(Response.json({ id: 1 }))
     expect(await runStepTest(w.deps, request({ version: null }), new AbortController().signal)).toMatchObject({ ok: true })
+  })
+})
+
+// #3002 (phase 6 of #2982): bidding sends the CURRENT values of the variables
+// the step reads, secrets decrypted (Dan, 2026-10-29: "Yes, ops reads secrets").
+// The step is given them; a secret's value never reaches what ops keeps or logs,
+// each replaced by the variable's name. A variable with no saved value is
+// refused by name, before anything is sent or kept.
+describe('a step test\'s current variables (#3002)', () => {
+  const SECRET = 'fake-step-test-token-value'
+  const readsSecret = { args: { text: 'Post to {{env.API_BASE}} with {{env.TOKEN}}' } }
+  const current = { values: { API_BASE: 'https://hooks.example.test' }, secretValues: { TOKEN: SECRET } }
+
+  /** Every line written to the console while fn runs, as one string. */
+  async function logged(fn: () => Promise<unknown>): Promise<string> {
+    const lines: unknown[] = []
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m).mockImplementation((...args: unknown[]) => { lines.push(args) }))
+    try {
+      await fn()
+    } finally {
+      for (const s of spies) s.mockRestore()
+    }
+    return JSON.stringify(lines)
+  }
+
+  it('gives the step the current values bidding sent, a secret decrypted among them', async () => {
+    const w = world()
+    w.d.respond(Response.json({ ok: true }))
+    const answer = await runStepTest(w.deps, request({ variables: current }, readsSecret), new AbortController().signal)
+    expect(answer).toMatchObject({ ok: true, result: { status: 'completed' } })
+    expect(JSON.parse(String(w.d.rec.sent[0].init.body))).toEqual({ text: `Post to https://hooks.example.test with ${SECRET}` })
+  })
+
+  it('reads the current values over any saved version a bidding Worker also names', async () => {
+    const w = world()
+    w.d.respond(Response.json({ ok: true }))
+    const saved = { number: 7, variables: { values: { API_BASE: 'https://old.example.test' }, secretKeys: ['TOKEN'] } }
+    await runStepTest(w.deps, request({ variables: current, version: saved }, readsSecret), new AbortController().signal)
+    expect(JSON.parse(String(w.d.rec.sent[0].init.body))).toEqual({ text: `Post to https://hooks.example.test with ${SECRET}` })
+  })
+
+  it('refuses by name a variable with no saved value, sending and keeping nothing', async () => {
+    const w = world()
+    const answer = await runStepTest(w.deps, request({ variables: { values: { API_BASE: 'a' }, secretValues: {} } }, readsSecret), new AbortController().signal)
+    expect(answer).toEqual({
+      ok: false, refused: 'step_test_variable_unavailable', retry_at: null,
+      detail: 'this step reads env.TOKEN, which has no saved value for this workflow, so nothing was sent; add it on the environment variables page and test again',
+    })
+    expect(w.d.rec.sent).toEqual([])
+    expect(w.kept).toEqual([])
+  })
+
+  it('keeps and answers the result with each secret value replaced by its name, and logs none, when the service echoes it', async () => {
+    const responses = [() => Response.json({ id: 42, echo: `got ${SECRET}` }), () => new Response(`refused: ${SECRET}`, { status: 422 })]
+    const records = [undefined, async () => { throw new Error(`the write failed holding ${SECRET}`) }]
+    for (const respond of responses) {
+      for (const record of records) {
+        const w = world(record === undefined ? {} : { record })
+        w.d.respond(respond())
+        let answer: unknown
+        const lines = await logged(async () => { answer = await runStepTest(w.deps, request({ variables: current }, readsSecret), new AbortController().signal) })
+        // The secret really reached the service.
+        expect(String(w.d.rec.sent[0].init.body)).toContain(SECRET)
+        expect(JSON.stringify(answer)).not.toContain(SECRET)
+        expect(JSON.stringify(answer)).toContain('TOKEN')
+        expect(JSON.stringify(w.kept)).not.toContain(SECRET)
+        expect(lines).not.toContain(SECRET)
+      }
+    }
+  })
+
+  it('keeps the requests the step made with the secret replaced by its name', async () => {
+    const w = world()
+    w.d.respond(Response.json({ ok: true }))
+    await runStepTest(w.deps, request({ variables: current }, readsSecret), new AbortController().signal)
+    expect(JSON.stringify(w.kept)).not.toContain(SECRET)
+    expect(JSON.stringify(w.kept[0].result.requests)).toContain('with TOKEN')
   })
 })
