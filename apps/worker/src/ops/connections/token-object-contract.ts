@@ -11,6 +11,7 @@
  * of a kind and a reason from refusals.ts's closed sets (F120). The refresh
  * token never leaves the object.
  */
+import { RATE_LIMIT_HEADERS, type RateLimitHeader } from './rate-limit-headers'
 import { LOGIN_MINT_KINDS, MINT_FAILURE_REASONS, type LoginMintKind, type MintFailureReason } from './refusals'
 
 /** What every call names: the connection, and the login it holds. */
@@ -48,6 +49,14 @@ export interface TokenObjectFailure {
   readonly kind: LoginMintKind
   readonly reason: MintFailureReason
   readonly retryAtMs: number | null
+  /**
+   * The NAMES of the rate limit headers the token endpoint's 429 carried that
+   * could not be read, never their values (#1693 7.4), so the caller counts them
+   * (the object itself has no console, by the guard
+   * connection-seal-open-callers.test.ts). Present only when there is one, so
+   * every other failure is the shape it always was.
+   */
+  readonly unreadableHeaders?: readonly RateLimitHeader[]
 }
 
 export type AccessTokenAnswer =
@@ -135,7 +144,13 @@ function parseFailure(raw: Record<string, unknown>): TokenObjectFailure {
   const reasons = MINT_FAILURE_REASONS[kind as LoginMintKind] as readonly unknown[]
   if (!reasons.includes(reason)) throw new TokenObjectContractError('the object answered a failure for a reason this code does not know')
   if (!(retryAtMs === null || isWhole(retryAtMs))) throw new TokenObjectContractError('the object answered an unreadable retry time')
-  return { ok: false, kind: kind as LoginMintKind, reason: reason as MintFailureReason, retryAtMs }
+  const unreadable = raw.unreadableHeaders
+  // Absent is none (every failure but a rate limit, and an object from before #1693 7.4); present, only names from the closed set.
+  if (unreadable === undefined) return { ok: false, kind: kind as LoginMintKind, reason: reason as MintFailureReason, retryAtMs }
+  if (!Array.isArray(unreadable) || unreadable.length > RATE_LIMIT_HEADERS.length || !unreadable.every((h) => (RATE_LIMIT_HEADERS as readonly unknown[]).includes(h))) {
+    throw new TokenObjectContractError('the object answered an unreadable header this code does not know')
+  }
+  return { ok: false, kind: kind as LoginMintKind, reason: reason as MintFailureReason, retryAtMs, unreadableHeaders: unreadable as RateLimitHeader[] }
 }
 
 export function parseAccessTokenAnswer(raw: unknown): AccessTokenAnswer {

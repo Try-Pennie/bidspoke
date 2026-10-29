@@ -3,7 +3,8 @@ import { TokenMemo } from '../../../../lib/token-memo'
 import { LoginMintError } from '../../refusals'
 import type { Authorization, AuthorizeInput } from '../../service-rules'
 import { authorizeThroughMemo } from '../memo-authorize'
-import { TOKEN_ENDPOINT_TIMEOUT_MS, readAccessToken, requestToken } from '../token-endpoint'
+import { RETRY_AFTER_MAX_MS, RETRY_AFTER_MIN_MS } from '../../rate-limit-headers'
+import { TOKEN_ENDPOINT_TIMEOUT_MS, readAccessToken, requestToken, type TokenEndpointDeps } from '../token-endpoint'
 import { tokenEndpoint } from './minter-harness'
 
 /**
@@ -29,6 +30,7 @@ function input(overrides: Partial<AuthorizeInput> = {}): AuthorizeInput & { mint
     candidate: false,
     renew: null,
     noteMint: () => { counted.mints += 1 },
+    noteUnreadableRateLimitHeader: () => undefined,
     // The memo's own tests mint through a function they pass, never through a token endpoint.
     fetch: async (): Promise<Response> => { throw new Error('the memo asked a token endpoint itself') },
     ...overrides,
@@ -109,7 +111,9 @@ describe('authorizeThroughMemo', () => {
 })
 
 describe('requestToken: one classification of a token endpoint\'s answer', () => {
-  const deps = (endpoint: ReturnType<typeof tokenEndpoint>, timeoutMs?: number) => ({ fetch: endpoint.fetch, now: () => T0, tokenTimeoutMs: timeoutMs })
+  const deps = (endpoint: ReturnType<typeof tokenEndpoint>, timeoutMs?: number): TokenEndpointDeps => ({
+    fetch: endpoint.fetch, now: () => T0, tokenTimeoutMs: timeoutMs, unreadableRateLimitHeader: () => undefined,
+  })
   const body = () => new URLSearchParams({ grant_type: 'client_credentials' })
 
   async function failure(promise: Promise<unknown>): Promise<LoginMintError> {
@@ -162,7 +166,7 @@ describe('requestToken: one classification of a token endpoint\'s answer', () =>
   })
 
   it('a refusal the fetch itself raised by rule passes through as itself, never as an unreachable endpoint (#2337)', async () => {
-    const refusing = { fetch: async (): Promise<Response> => { throw new LoginMintError('not_allowed', 'token_host_not_declared') }, now: () => T0 }
+    const refusing = { fetch: async (): Promise<Response> => { throw new LoginMintError('not_allowed', 'token_host_not_declared') }, now: () => T0, unreadableRateLimitHeader: () => undefined }
     const err = await failure(requestToken(refusing, 'https://login.example.test/token', body()))
     expect([err.kind, err.reason]).toEqual(['not_allowed', 'token_host_not_declared'])
   })
@@ -182,6 +186,42 @@ describe('requestToken: one classification of a token endpoint\'s answer', () =>
     expect([at.kind, at.reason, at.retryAt?.getTime()]).toEqual(['rate_limited', 'token_endpoint_rate_limited', T0 + 30_000])
     const none = await failure(requestToken(deps(tokenEndpoint(new Response('slow down', { status: 429 }))), 'https://login.example.test/token', body()))
     expect([none.kind, none.retryAt]).toEqual(['rate_limited', null])
+  })
+
+  describe('a 429 is read by the one rate limit reader connectionFetch uses (#1693 7.4)', () => {
+    /** A 429 carrying these headers, its time (or null), and the header names counted as unreadable. */
+    async function waitFor(headers: Record<string, string>): Promise<{ at: number | null; unreadable: string[]; err: LoginMintError }> {
+      const unreadable: string[] = []
+      const endpoint = tokenEndpoint(new Response('slow down', { status: 429, headers }))
+      const err = await failure(requestToken({ ...deps(endpoint), unreadableRateLimitHeader: (header) => { unreadable.push(header) } }, 'https://login.example.test/token', body()))
+      return { at: err.retryAt?.getTime() ?? null, unreadable, err }
+    }
+
+    it('a reset header alone sets the wait, in each format and spelling', async () => {
+      expect(await waitFor({ 'x-ratelimit-reset': '45' })).toMatchObject({ at: T0 + 45_000, unreadable: [] })
+      expect(await waitFor({ 'x-ratelimit-reset': String((T0 + 90_000) / 1000) })).toMatchObject({ at: T0 + 90_000, unreadable: [] })
+      expect(await waitFor({ 'x-rate-limit-reset': String(T0 + 90_000) })).toMatchObject({ at: T0 + 90_000, unreadable: [] })
+      expect(await waitFor({ 'ratelimit-reset': '45' })).toMatchObject({ at: T0 + 45_000, unreadable: [] })
+    })
+
+    it('with both headers present Retry-After decides', async () => {
+      expect(await waitFor({ 'retry-after': '30', 'x-ratelimit-reset': '300' })).toMatchObject({ at: T0 + 30_000, unreadable: [] })
+    })
+
+    it('an unreadable header is counted by its name, never its value, and the next header or no time decides', async () => {
+      expect(await waitFor({ 'retry-after': 'later', 'x-ratelimit-reset': '45' })).toMatchObject({ at: T0 + 45_000, unreadable: ['retry-after'] })
+      expect(await waitFor({ 'x-ratelimit-reset': 'soon', 'ratelimit-reset': '20' })).toMatchObject({ at: T0 + 20_000, unreadable: ['x-ratelimit-reset'] })
+      // Nothing readable is a rate limit with no time of its own, as a 429 with no header always was.
+      const none = await waitFor({ 'x-ratelimit-reset': 'soon' })
+      expect(none).toMatchObject({ at: null, unreadable: ['x-ratelimit-reset'] })
+      expect([none.err.kind, none.err.reason]).toEqual(['rate_limited', 'token_endpoint_rate_limited'])
+    })
+
+    it('a time is held between 1 second and 1 hour, as connectionFetch holds one', async () => {
+      expect(await waitFor({ 'x-ratelimit-reset': String((T0 + 10 * 3600_000) / 1000) })).toMatchObject({ at: T0 + RETRY_AFTER_MAX_MS })
+      expect(await waitFor({ 'x-ratelimit-reset': String((T0 - 3600_000) / 1000) })).toMatchObject({ at: T0 + RETRY_AFTER_MIN_MS })
+      expect(await waitFor({ 'retry-after': '999999' })).toMatchObject({ at: T0 + RETRY_AFTER_MAX_MS })
+    })
   })
 
   it('nothing the token endpoint said, nor the request body, rides out on the error (F120)', async () => {

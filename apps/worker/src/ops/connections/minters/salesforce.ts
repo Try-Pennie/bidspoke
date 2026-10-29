@@ -74,7 +74,8 @@ export function salesforceClientCredentialsAuth(deps: MinterClockDeps): MinterRu
       const key = { connectionId: input.connectionId, generation: input.generation, sub: '', scope: '' }
       return authorizeThroughMemo(memo, key, input, async (nowMs) => {
         // connectionFetch's fetch (AuthorizeInput.fetch), held to the declared hosts: the minter holds none of its own (#2337).
-        const json = await requestToken({ ...deps, fetch: input.fetch }, `${instance.origin}/services/oauth2/token`, new URLSearchParams({
+        // An unreadable rate limit header is counted by connectionFetch (#1693 7.4).
+        const json = await requestToken({ ...deps, fetch: input.fetch, unreadableRateLimitHeader: input.noteUnreadableRateLimitHeader },`${instance.origin}/services/oauth2/token`, new URLSearchParams({
           grant_type: 'client_credentials',
           client_id: clientId,
           client_secret: clientSecret,
