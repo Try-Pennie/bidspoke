@@ -384,12 +384,69 @@ describe("the inquiry relay's Pipedream link in PDFlow_4__c", () => {
     expect(recorded[0]).toMatchObject({ summary: { inquiry_link_replaced: 1, superseded_by_later_write: 1 } })
   })
 
-  it('a Pipedream link on a Submission not written since the write began cannot be shown to come after it, so it did not arrive complete', async () => {
+  it('a write that sent no stamp, with a Pipedream link on a Submission not written since the write began, cannot be shown to come before that link, so it did not arrive complete', async () => {
+    const { Bidspoke_Write__c: _stamp, ...unstampedBody } = sentBody(runId(1))
+    const step = directStep(1, { input: { resolved: { operation: 'update', object: 'Submission__c', record_id: subId(1), body: unstampedBody } } })
     const records = (id: string) => (id === subId(1) ? ok({ ...landed(1), PDFlow_4__c: PIPEDREAM_INQUIRY_LINK }) : landedRecords(id))
-    const { d, posted } = deps({ steps: [directStep(1)], records })
+    const { d, posted } = deps({ steps: [step], records })
     const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
     expect(report.native).toEqual([{ kind: 'not_landed', executionId: runId(1), problems: ['1 of its fields holds a different value from the one this run sent'], fields: ['PDFlow_4__c'] }])
     expect(posted[0].alert).toBe(true)
+  })
+
+  /**
+   * The 2026-10-28 report (#2937): run 01a17eab-cf20-7e95-a6b5-63e3d057ea44's
+   * step began at 18:42:37.175 UTC, and Pipedream's inquiry PATCH left the
+   * Submission last modified at 18:42:39.000, Salesforce keeping whole seconds.
+   * 39.000 less the 2 s margin is before 37.175, so the time test could not show
+   * the link came after the write. The Submission held this run's own stamp, and
+   * an update saves all its fields or none, so the write landed and the link
+   * that differs from what it sent was written after it.
+   */
+  const STARTED = '2026-10-27T18:42:37.175Z'
+  const WHOLE_SECOND_AFTER = '2026-10-27T18:42:39.000+0000'
+  const raceStep = (i: number) => directStep(i, { started_at: STARTED })
+
+  it("this run's own stamp with only the inquiry link differing arrived complete, even when Salesforce's whole second last modified time is inside the margin", async () => {
+    const records = (id: string) => (id === subId(1) ? ok({ ...landed(1), PDFlow_4__c: PIPEDREAM_INQUIRY_LINK, LastModifiedDate: WHOLE_SECOND_AFTER }) : landedRecords(id))
+    const { d, posted, recorded } = deps({ steps: [raceStep(1)], records })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native).toEqual([{ kind: 'moved_on', executionId: runId(1), laterWrite: ['PDFlow_4__c'], newerSubmission: false }])
+    expect(posted[0].alert).toBe(false)
+    expect(posted[0].fixHint).toBeUndefined()
+    expect(recorded[0]).toMatchObject({ outcome: 'all_landed', summary: { not_landed: 0, inquiry_link_replaced: 1 } })
+  })
+
+  it("the same timing on a Submission without this run's stamp still did not arrive complete: no stamp, another step's stamp, or another run's", async () => {
+    const run = runId(1)
+    for (const stamp of [null, '', `${run}:other_step:0`, `${runId(9)}:send_salesforce:0`]) {
+      const records = (id: string) => (id === subId(1) ? ok({ ...landed(1), Bidspoke_Write__c: stamp, PDFlow_4__c: PIPEDREAM_INQUIRY_LINK, LastModifiedDate: WHOLE_SECOND_AFTER }) : landedRecords(id))
+      const { d, posted } = deps({ steps: [raceStep(1)], records })
+      const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+      expect(report.native[0], String(stamp)).toMatchObject({ kind: 'not_landed', fields: ['PDFlow_4__c'] })
+      expect(posted[0].alert, String(stamp)).toBe(true)
+    }
+  })
+
+  it("the same timing with this run's stamp and any field besides the inquiry link differing still did not arrive complete", async () => {
+    const step = directStep(1, {
+      started_at: STARTED,
+      input: { resolved: { operation: 'update', object: 'Submission__c', record_id: subId(1), body: { ...sentBody(runId(1)), External_Exchange_Status__c: 'Pending' } } },
+    })
+    for (const extra of [{ InternalDebtRouting__c: 50000 }, { External_Exchange_Status__c: 'Completed' }]) {
+      const records = (id: string) => (id === subId(1) ? ok({ ...landed(1), External_Exchange_Status__c: 'Pending', ...extra, PDFlow_4__c: PIPEDREAM_INQUIRY_LINK, LastModifiedDate: WHOLE_SECOND_AFTER }) : landedRecords(id))
+      const { d, posted } = deps({ steps: [step], records })
+      const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+      expect(report.native[0], Object.keys(extra)[0]).toMatchObject({ kind: 'not_landed', fields: [...Object.keys(extra), 'PDFlow_4__c'] })
+      expect(posted[0].alert).toBe(true)
+    }
+  })
+
+  it("this run's stamp does not excuse a non Pipedream value in the inquiry link field, whatever the timing", async () => {
+    const records = (id: string) => (id === subId(1) ? ok({ ...landed(1), PDFlow_4__c: 'https://pipedream.com.example/@penniefinancial/inspect/1', LastModifiedDate: WHOLE_SECOND_AFTER }) : landedRecords(id))
+    const { d } = deps({ steps: [raceStep(1)], records })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native[0]).toMatchObject({ kind: 'not_landed', fields: ['PDFlow_4__c'] })
   })
 
   it('the inquiry link beside any other differing field still did not arrive complete, naming both', async () => {

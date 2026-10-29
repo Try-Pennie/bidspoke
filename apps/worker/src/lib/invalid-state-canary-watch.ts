@@ -106,8 +106,10 @@
  * after), so Pipedream's PATCH sometimes arrives last. A pipedream.com link
  * there is therefore a LATER_WRITE_FIELDS rule like the sale's own completion:
  * landed, moved on since, counted (`inquiry_link_replaced`) and said apart. Any
- * other value there still reads as did not land. The rule ends with the
- * inquiry's own move (#2175).
+ * other value there still reads as did not land. On a record holding this run's
+ * own stamp it needs no time test, which Salesforce's whole seconds defeat when
+ * the PATCH lands within 2 s (#2937, at supersededByLaterWrite). The rule ends
+ * with the inquiry's own move (#2175).
  *
  * NOT CHECKED HERE, from #2173's acceptance: that fields the body did not send
  * are unchanged (that needs a snapshot taken before the write, which only the
@@ -744,20 +746,31 @@ function earlierRunAmong(writes: readonly SubmissionWrite[], w: SubmissionWrite,
  * a PATCH saves all its fields or none, so a field that differs since was changed
  * by a write after it. A record not written since the post began cannot have
  * been, and a post whose start is not known cannot be shown to come before it.
+ *
+ * Except the inquiry link on a record holding this run's own stamp (#2937).
+ * The stamp went in the same update as the link this run sent, so the update
+ * landed, and a pipedream.com link there now was written after it whatever
+ * LastModifiedDate says. The time test cannot show that when Pipedream's PATCH
+ * is the record's last write and lands within the margin: Salesforce keeps
+ * whole seconds, so on 2026-10-28 a step begun at 18:42:37.175 read as last
+ * modified at 18:42:39.000, which less the margin is before it. A sale's own
+ * completion fields keep the time test, stamp or not.
  */
-function supersededByLaterWrite(differing: string[], current: Record<string, unknown>, sent: Record<string, unknown>, startedAt: string): boolean {
+function supersededByLaterWrite(differing: string[], current: Record<string, unknown>, sent: Record<string, unknown>, startedAt: string, ownStamp: boolean): boolean {
+  const rules = differing.map((k) => (Object.hasOwn(LATER_WRITE_FIELDS, k) ? LATER_WRITE_FIELDS[k] : null))
+  const explained = differing.every((k, i) => {
+    const now = current[k]
+    if (rules[i] === 'set') return now !== null && now !== undefined && now !== ''
+    if (rules[i] === 'later') return salesforceTimeMs(now) > salesforceTimeMs(sent[k])
+    if (rules[i] === 'inquiry_link') return isPipedreamLink(now)
+    return false
+  })
+  if (!explained) return false
+  if (ownStamp && rules.every((r) => r === 'inquiry_link')) return true
   const started = salesforceTimeMs(startedAt)
   const lastModified = salesforceTimeMs(current.LastModifiedDate)
   // The margin is Salesforce keeping whole seconds on its own clock; here it errs towards "not since".
-  if (!Number.isFinite(started) || !Number.isFinite(lastModified) || lastModified - LAST_MODIFIED_MARGIN_MS <= started) return false
-  return differing.every((k) => {
-    const rule = Object.hasOwn(LATER_WRITE_FIELDS, k) ? LATER_WRITE_FIELDS[k] : null
-    const now = current[k]
-    if (rule === 'set') return now !== null && now !== undefined && now !== ''
-    if (rule === 'later') return salesforceTimeMs(now) > salesforceTimeMs(sent[k])
-    if (rule === 'inquiry_link') return isPipedreamLink(now)
-    return false
-  })
+  return Number.isFinite(started) && Number.isFinite(lastModified) && lastModified - LAST_MODIFIED_MARGIN_MS > started
 }
 
 /** What the Submission's write stamp says, when it is not this run's. */
@@ -865,7 +878,8 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
   }
   const linkFinding = link === null || link === undefined || link === '' ? 'none' : link !== expectedLink ? 'other' : null
   const differing = sentFields.filter((k) => sent[k] !== REDACTED && (!(k in current) || !sameSalesforceValue(current[k], sent[k]))).sort()
-  const laterWrite = stampFinding === null && linkFinding === null && differing.length > 0 && supersededByLaterWrite(differing, current, sent, w.startedAt) ? differing : []
+  // With no stamp finding, a stamped write's record holds this run's own stamp (#2937).
+  const laterWrite = stampFinding === null && linkFinding === null && differing.length > 0 && supersededByLaterWrite(differing, current, sent, w.startedAt, stamped) ? differing : []
   const fieldsDiffering = laterWrite.length === 0 ? differing : []
   // What the Lead check found, said after what the Submission holds.
   const leadProblems: string[] = []
