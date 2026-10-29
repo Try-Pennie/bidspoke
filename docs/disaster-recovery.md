@@ -141,7 +141,7 @@ Everything here is redeployable from git — no data loss, since state lives in 
 ### F. Secret loss or compromise
 
 1. Re-provision from each source (Secret inventory). For a compromise, rotate at the source first, then update the worker secret.
-2. **Special case — `SECRET_ENCRYPTION_KEY`:** rotating it breaks "reveal" for env-var secrets created before the rotation (users see "rotate to enable reveal" until they re-save). See CLAUDE.md.
+2. **Special case, `SECRET_ENCRYPTION_KEY`:** rotating it breaks "reveal" for env-var secrets created before the rotation (users see "rotate to enable reveal" until they re-save). Rotate only with the steps under Rotating `SECRET_ENCRYPTION_KEY` (in Secret inventory).
 3. **Special case, `SSN_HASH_PEPPER`:** never generate a new one. The execution archive stores its hash of each lead's SSN to find a person's records for an erasure request, so a new value leaves every earlier record unfindable. Restore it from 1Password.
 4. **Special case, `OPS_CONNECTIONS_PRIVATE_KEY` (on `bidspoke-worker-ops`):** restore it from 1Password (the file `ops-connections-private.pem` attached to `Bidspoke recovery keys`, see Secret inventory); a new key opens none of the stored ops connection logins, so generating one means re-entering every ops connection. During a rotation, restore `OPS_CONNECTIONS_PRIVATE_KEY_NEXT` the same way from `ops-connections-private-next.pem`: from rotation step 3 until step 4 the current kid opens only with that key, so restoring the current secret alone opens no new login. No rotation is under way since the practice rotation completed on 2026-10-19, so today `ops-connections-private.pem` alone opens the only kid, `ops-2026-10-19`. For a compromise, rotate with the outline under Secret inventory, then re-enter the logins themselves at their sources, since whoever held the key could open every one.
 
@@ -187,9 +187,10 @@ under the narrowed list since, so no header value reaches that vendor from then
 on. Dan decided the same day not to pursue what the vendor already holds (who
 owns the account, its retention, a purge); that decision is recorded on #1007 so
 the exposure is stated rather than silent. The R2 job (#1008) was measured
-delivering nothing for months, so it forwards nothing. Reading a job's field list
-needs the Cloudflare API plugin's credential, not one this codebase holds
-(#1010).
+delivering nothing for months, so it forwards nothing. The daily
+`logpush-destinations` check reads the job list itself (#1010, closed), with
+`CLOUDFLARE_LOGS_TOKEN`, a token that carries Logs Write because Cloudflare
+offers no read only scope for that API.
 
 **Logpush was off from 2026-09-26 to 2026-09-28 (#1613).** Cloudflare refused
 the account's job list with `1004 logpush is not enabled for this account`, and
@@ -201,13 +202,21 @@ any change to its fields, destination or delivery, or Logpush going off again.
 
 ## Secret inventory (and escrow)
 
-The authoritative live list is `wrangler secret list --name bidspoke-worker`. Two of them are escrowed (see Escrow status below); every other one is re-obtained from its origin if lost. Categories (re-provision source in parentheses):
+Worker secrets are set with `wrangler secret put <NAME> --name bidspoke-worker` (the value piped in, never typed on a command line) and never committed to git. There are about 20 on `bidspoke-worker`. The authoritative live list is `wrangler secret list --name bidspoke-worker`; the categories below say where each is re-obtained, and are not guaranteed exhaustive. Two of them are escrowed (see Escrow status below); every other one is re-obtained from its origin if lost.
 
-- Supabase: `SUPABASE_SECRET_KEY` (a secret key of the new `sb_secret_` kind, from the dashboard under Settings, API Keys; NOT the legacy JWT service_role key), `SUPABASE_JWKS_URL`. `bidspoke-worker-tail` holds its own copy of `SUPABASE_SECRET_KEY`, so it is set twice. Rotation is zero downtime because several secret keys can be live at once: create a new key in the dashboard, `wrangler secret put SUPABASE_SECRET_KEY` on both workers (pipe the value in, never on the command line), confirm `workflow_executions` keeps gaining rows with `cost_usd` filled, update `apps/worker/.dev.vars`, then delete the old key, which is irreversible. Last rotated 2026-09-25 (the old key had sat in plain text in a local permission rules file). Other workers and Pages projects in the same Cloudflare account hold same named secrets for OTHER Supabase projects (Slate, PaperBoi, PET, Migo, Eavesly); measured 2026-09-25, none reads this project.
+What checks the list:
+
+- The secrets with no default are guarded at runtime: a daily cron check (`apps/worker/src/lib/required-secrets.ts`, #386) alerts Slack if any is unset in production. It reads `REQUIRED_SECRETS` (the core secrets) and `REQUIRED_PARTNER_SECRETS` (the live partner secrets: Salesforce, Equifax, Tripoint, the Achieve firewall key, the link token key) from `apps/worker/src/lib/secret-lists.ts`. Feature gated partners (Achieve's own login, Eligibility Scout) are left out to avoid false alarms.
+- The ops Worker (`bidspoke-worker-ops`) may hold only the secrets `OPS_ALLOWED_SECRETS` names in that same module (#1709), never the main service key, the encryption key, the SSN pepper or a partner credential. CI's Worker secret parity step (Security scans, push to main) reads both Workers' secret names through the Cloudflare API and fails on a required secret missing from either, or any secret on ops outside its allowlist. The daily guard reads the same module.
+- The Worker's `Env` TypeScript interface (`apps/worker/src/env.ts`, re-exported from `src/index.ts`) is NOT a complete list. Several partner secrets (Salesforce, Achieve, Equifax) are read dynamically and are not declared there.
+
+Categories (re-provision source in parentheses):
+
+- Supabase: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY` (a secret key of the new `sb_secret_` kind, from the dashboard under Settings, API Keys; NOT the legacy JWT service_role key), `SUPABASE_JWKS_URL`. `bidspoke-worker-tail` holds its own copy of `SUPABASE_SECRET_KEY`, so it is set twice. Rotation is zero downtime because several secret keys can be live at once: create a new key in the dashboard, `wrangler secret put SUPABASE_SECRET_KEY` on both workers (pipe the value in, never on the command line), confirm `workflow_executions` keeps gaining rows with `cost_usd` filled, update `apps/worker/.dev.vars`, then delete the old key, which is irreversible. Last rotated 2026-09-25 (the old key had sat in plain text in a local permission rules file). Other workers and Pages projects in the same Cloudflare account hold same named secrets for OTHER Supabase projects (Slate, PaperBoi, PET, Migo, Eavesly); measured 2026-09-25, none reads this project.
 - Cloudflare: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (for partner-secret sync).
-- Encryption/PII: `SECRET_ENCRYPTION_KEY` (unlocks every secret environment variable on every run; in 1Password; rotate only with the steps in CLAUDE.md), `SSN_HASH_PEPPER` (never rotate; in 1Password), `PII_REDACTION_FIELDS`.
+- Encryption/PII: `SECRET_ENCRYPTION_KEY` (unlocks every secret environment variable on every run, and reveal, plus the `app_settings` encrypted values, the held Salesforce write-back deadletters and the sealed Slack bot token; in 1Password; rotate only with the steps under Rotating `SECRET_ENCRYPTION_KEY` below), `SSN_HASH_PEPPER` (the archive's erasure resolver; never rotate; in 1Password), `PII_REDACTION_FIELDS`.
 - Salesforce: `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET`, `SALESFORCE_INSTANCE_URL` (External Client App in SF Setup).
-- Partners: Equifax (`EQ_USER`, `EQ_PASS`), Eligibility Scout (`SCOUT_KEY`), Tripoint proxy secret, Achieve (`ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, ...), webhook keys (`API_KEY_MAP`).
+- Partners: Equifax (`EQUIFAX_PASSWORD`; `EQUIFAX_USERNAME` is an `environment_variables` row, not a worker secret, and `EQ_USER` / `EQ_PASS` were never real keys, per `secret-lists.ts`), Eligibility Scout (`SCOUT_KEY`), Tripoint proxy secret, Achieve (`ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, ...), webhook keys (`API_KEY_MAP`).
 - Achieve firewall identity: `ACHIEVE_PARTNER_KEY`, a secret we choose and share with Achieve. Their Cloudflare Skip rule matches on it, so without it every call to `oauth.prd.ffngcp.com`, `fdrapis-gateway.prd.fdrgcp.com` and `api.freedomfinancialnet.com` is refused with a 403 before reaching them (that outage ran 2026-09-05 to 09-10). Re-provisioning it means generating a new value AND telling Achieve, because both sides hold it. Set it in the Bidspoke Environment Variables page as a secret, not with `wrangler secret put`: that page stores it for the Eligibility Scout code node and syncs it to the worker binding the Achieve node reads, in one write.
 - Link token signing key: `LINK_TOKEN_SECRET` (#2089). The Engine Bidding and Lead Economy code nodes sign every trypennie.com offer link with it, the three RML bidding flows sign their reservemyloan.com links and the Forms flow its submit link (#2092) (`?t=`, HMAC-SHA256 of the record id), and trypennie.com refuses a link to a record created after its cutoff without a valid one. The same value is held by Salesforce (its `LinkToken` class), trypennie.com and the Pipedream bidding workflows, so it is re-obtained from whoever holds it there, never regenerated here alone: a new value on one side only breaks every new customer link. trypennie.com also accepts `LINK_TOKEN_SECRET_PREVIOUS`, which is how a rotation is staged. Set it in the Bidspoke Environment Variables page as an organization wide secret, which stores it for the code nodes and syncs it to the worker binding the daily required secrets check reads. Unset, runs still succeed and the step output says `link_token: missing_secret`.
 - Data export: `SNOWFLAKE_*` (account/user/private key/role/db/schema/warehouse).
@@ -227,7 +236,18 @@ To restore either: set it on the worker from the 1Password field with `wrangler 
 
 **Still not escrowed:** every other worker secret. Each can be re-obtained from its source (see the categories above), which is slow mid-incident but loses nothing. Copying them into the same vault would shorten a recovery; that is a separate choice.
 
-On each quarterly restore drill, confirm the item still exists and that `SECRET_ENCRYPTION_KEY` has not been rotated since without the 1Password copy being updated (the rotation steps in CLAUDE.md save it there first).
+On each quarterly restore drill, confirm the item still exists and that `SECRET_ENCRYPTION_KEY` has not been rotated since without the 1Password copy being updated (the rotation steps under Rotating `SECRET_ENCRYPTION_KEY` save it there first).
+
+### Rotating `SECRET_ENCRYPTION_KEY`
+
+The engine decrypts every secret environment variable with this key on every execution (`lib/env-loader.ts`), so it is never swapped in one step: a secret that no longer decrypts is skipped, and a node reading it through `{{env.X}}` gets nothing. Rotate it in four steps with no window where anything fails to decrypt (#384):
+
+1. Generate the new key and save it in the recovery 1Password item FIRST, then set it as `SECRET_ENCRYPTION_KEY_NEXT` (pipe the value in, never type it on a command line). While NEXT is set, new writes lock with it and reads accept either key (`secretKeys(env)` in `lib/secret-crypto.ts`).
+2. `POST /api/admin/reencrypt-secrets` with `{"dryRun": false}` re-locks every stored value (the secret environment variables, `app_settings.value_encrypted`, and the encrypted columns of `outcome_writeback_deadletters`, the failed Salesforce writes held for replay, #1993, and the sealed Slack bot token in `service_connections.credential_enc` where `sealed_for` is `bidding_ring`, #2331). It previews by default. Re-run until it reports `ok: true` and nothing left to re-lock.
+3. Wait at least 24 hours after step 1, then set `SECRET_ENCRYPTION_KEY` to the same value, from the 1Password copy, and delete `SECRET_ENCRYPTION_KEY_NEXT`. The wait is for the at-risk Salesforce write records in KV (`at-risk-write:`, #2022): the route does not re-lock them, so one written under the old key must expire (24 hours) before the old key stops opening it.
+4. Run the route once more as a preview: every row should count as already current under the primary alone.
+
+Every call site passes `secretKeys(env)`, never the raw key; `__guards__/worker/secret-key-ring-guard.test.ts` fails on one that does.
 
 ### Rotating the ops private key (#2333)
 

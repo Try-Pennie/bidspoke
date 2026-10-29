@@ -25,6 +25,28 @@ import { REPO_ROOT } from './_scan-utils'
 const CLAUDE_MD = path.join(REPO_ROOT, 'CLAUDE.md')
 const PROJECT_SHARE_BUDGET = 60_000
 
+/**
+ * The same total counted in tokens, the unit a session actually pays in (#2192).
+ * Rules text measured at about 2.78 characters per token in the session audit
+ * behind #2192 (1 to 15 October 2026), not the 3.7 often assumed, so a
+ * character budget alone undercounts by about a quarter. Every request in a
+ * session re-reads this total, so each line here is paid for once per message.
+ *
+ * Set a little above the size after the #2192 cut (about 14,600 tokens, down
+ * from 17,757), which moved the task only runbooks (migration mechanics, the
+ * Worker secrets table, the encryption key rotation, the push to main history,
+ * the Cloudflare log access history) into docs and left a one or two line rule
+ * pointing at each. When this fails, move
+ * a runbook, history or measurement into docs/ and leave the rule that points
+ * to it, rather than raising the ceiling.
+ */
+const CHARS_PER_TOKEN = 2.78
+const PROJECT_TOKEN_BUDGET = 15_000
+
+function tokensOf(chars: number): number {
+  return Math.ceil(chars / CHARS_PER_TOKEN)
+}
+
 // An `@path` anywhere in the text imports that file, in a sentence as well as
 // alone on a line, except inside code, which is how the platform reads it. A
 // word after @ that names no file (a package like an npm scope) loads nothing.
@@ -88,5 +110,27 @@ describe('CLAUDE.md imports (#2606)', () => {
     expect(total, `CLAUDE.md and what it loads come to ${total} characters: ${JSON.stringify(sizes)}`).toBeLessThan(
       PROJECT_SHARE_BUDGET,
     )
+  })
+
+  it('keeps CLAUDE.md and everything it loads under the token budget (#2192)', () => {
+    const sizes = loaded.map((file) => ({
+      file: path.relative(REPO_ROOT, file),
+      tokens: tokensOf(fs.readFileSync(file, 'utf8').length),
+    }))
+    const total = sizes.reduce((sum, s) => sum + s.tokens, 0)
+    expect(
+      total,
+      `CLAUDE.md and what it loads come to about ${total} tokens at ${CHARS_PER_TOKEN} characters a token, ` +
+        `over the ${PROJECT_TOKEN_BUDGET} budget: ${JSON.stringify(sizes)}. Move a runbook or history into docs/ ` +
+        'and leave the one line rule that points to it.',
+    ).toBeLessThanOrEqual(PROJECT_TOKEN_BUDGET)
+  })
+})
+
+describe('tokensOf', () => {
+  it('counts 2.78 characters a token, rounding a part token up', () => {
+    expect(tokensOf(278)).toBe(100)
+    expect(tokensOf(279)).toBe(101)
+    expect(tokensOf(0)).toBe(0)
   })
 })
