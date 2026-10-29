@@ -161,7 +161,8 @@ $fn$;
 
 -- ── expire_overdue_run_requests ───────────────────────────────────────────────
 -- As #1948's (20261016200000), and only a run that has never started expires.
--- Waiting runs past their expiry end expired, even when no claim reaches them.
+-- Waiting runs that never started end expired past their expiry, even when no
+-- claim reaches them.
 -- Takes the queue row first (the lock order the claim keeps).
 CREATE OR REPLACE FUNCTION public.expire_overdue_run_requests(p_limit integer)
 RETURNS TABLE (expired integer, more boolean)
