@@ -17,8 +17,23 @@
  * replayCheckpoint therefore restores the outputs and follows the recorded
  * edges, and never evaluates one.
  *
+ * A SECRET IS NEVER WRITTEN (#3024). A checkpoint is written to R2, so format
+ * 2 writes every step output through maskSecretsForRefill (mask-secrets.ts):
+ * each string holding a secret the run was given is stored as a mask naming
+ * the variable and the form it was in, never its value, and a real string that
+ * could be read as a mask is escaped, so none ever is. decodeCheckpoint refills
+ * each mask from the secrets served to the slice that reads it (the run's
+ * dispatch, never kept), and refuses as checkpoint_secret_unserved, naming the
+ * variable, one it was not served or was served empty: a mask never stands in
+ * for a value. A checkpoint whose masked form would still show a value (one
+ * equal to its own variable's name, say) is not written (CheckpointHoldsSecret).
+ * Format 1, written before #3024 with outputs as they were, is still read as
+ * written and never refilled; this build writes only format 2 (L1010).
+ *
  * WHERE. In the OPS_CHECKPOINTS R2 bucket, under
- * checkpoints/v1/<organization>/<run>/<state version>-<steps>.json. The state
+ * checkpoints/v1/<organization>/<run>/<state version>-<steps>.json, whatever
+ * the body's format: the v1 is the key's own layout, which record_run_checkpoint
+ * builds and compares in the ops database (CHECKPOINT_KEY_LAYOUT). The state
  * version is the one the writing holder's start answered (#1698 D2), so two
  * holders of one run never share a key, and the steps make each of one
  * holder's checkpoints its own. A key is written only where nothing is: a
@@ -41,10 +56,23 @@
  */
 import { findEntryNode, findNode } from '../engine/graph'
 import type { EdgeDefinition, NodeDefinition, StepOutput } from '../types'
+import { namedVariables } from '../lib/definition-env-references'
+import { holdsSecret, maskSecretsForRefill, refillSecrets } from './mask-secrets'
 import { CONTINUATION_MODES, type ContinuationMode } from './run-vocabulary'
 
-/** The checkpoint format this build writes and reads. */
-export const CHECKPOINT_FORMAT = 1
+/** The checkpoint format this build writes (#3024): every step output masked of the run's secrets. */
+export const CHECKPOINT_FORMAT = 2
+
+/**
+ * Every format this build reads. 1: written before #3024, each output as the
+ * walk had it. 2: each output masked (maskSecretsForRefill) and refilled on
+ * read. A stored format never changes (L1010): a new one is added here.
+ */
+export const CHECKPOINT_FORMATS_READ = [1, 2] as const
+export type CheckpointFormat = (typeof CHECKPOINT_FORMATS_READ)[number]
+
+/** The key layout, the v of checkpoints/v1/: record_run_checkpoint builds the same key, so it is not the body's format. */
+export const CHECKPOINT_KEY_LAYOUT = 1
 
 /** One completed step, and the edge the walk left it by. */
 export interface CheckpointStep {
@@ -57,8 +85,13 @@ export interface CheckpointStep {
   edgeId: string
 }
 
+/**
+ * A checkpoint as the walk holds it: every output as the step answered it,
+ * secrets included. Only its encoded body is written, masked.
+ */
 export interface Checkpoint {
-  v: typeof CHECKPOINT_FORMAT
+  /** The format it was read in, or is written in. */
+  v: CheckpointFormat
   runRequestId: string
   organizationId: string
   workflowId: string
@@ -75,6 +108,9 @@ export interface Checkpoint {
   /** Across the whole run so far, for its caps (#1698 1.5). */
   totals: { steps: number; computeMs: number; slices: number }
 }
+
+/** A checkpoint this build writes: always the current format. */
+export type WrittenCheckpoint = Omit<Checkpoint, 'v'> & { v: typeof CHECKPOINT_FORMAT }
 
 /** What the run's row says of the checkpoint it acknowledged. */
 export interface CheckpointPointer {
@@ -94,6 +130,7 @@ export const CHECKPOINT_REFUSALS = [
   'checkpoint_route_mismatch',
   'checkpoint_missing',
   'checkpoint_key_taken',
+  'checkpoint_secret_unserved',
 ] as const
 export type CheckpointRefusal = (typeof CHECKPOINT_REFUSALS)[number]
 
@@ -104,6 +141,17 @@ export class CheckpointRefused extends Error {
   }
 }
 
+/**
+ * Thrown by encodeCheckpoint when the masked checkpoint would still show a
+ * secret's value: the checkpoint is never written. Names nothing secret.
+ */
+export class CheckpointHoldsSecret extends Error {
+  constructor() {
+    super('the checkpoint would still hold a secret value once masked, so it is never written')
+    this.name = 'CheckpointHoldsSecret'
+  }
+}
+
 const SAFE_PART = /^[0-9a-f-]{36}$/
 
 export function checkpointKey(organizationId: string, runRequestId: string, stateVersion: number, steps: number): string {
@@ -111,7 +159,7 @@ export function checkpointKey(organizationId: string, runRequestId: string, stat
   if (!SAFE_PART.test(runRequestId)) throw new Error(`a checkpoint key's run must be a uuid, not ${JSON.stringify(runRequestId)}`)
   if (!Number.isSafeInteger(stateVersion) || stateVersion < 1) throw new Error(`a checkpoint key's state version must be a whole number from 1, not ${stateVersion}`)
   if (!Number.isSafeInteger(steps) || steps < 1) throw new Error(`a checkpoint key's steps must be a whole number from 1, not ${steps}`)
-  return `checkpoints/v${CHECKPOINT_FORMAT}/${organizationId}/${runRequestId}/${stateVersion}-${steps}.json`
+  return `checkpoints/v${CHECKPOINT_KEY_LAYOUT}/${organizationId}/${runRequestId}/${stateVersion}-${steps}.json`
 }
 
 async function sha256Hex(text: string): Promise<string> {
@@ -119,8 +167,17 @@ async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-export async function encodeCheckpoint(cp: Checkpoint): Promise<{ key: string; body: string; bytes: number; sha256: string }> {
-  const body = JSON.stringify(cp)
+/**
+ * The body a checkpoint is written as, in format 2: every step output masked
+ * of secrets, the secret values the run was given (variable name to value).
+ * Throws CheckpointHoldsSecret when the masked body would still show one.
+ */
+export async function encodeCheckpoint(
+  cp: WrittenCheckpoint, secrets: Readonly<Record<string, string>>,
+): Promise<{ key: string; body: string; bytes: number; sha256: string }> {
+  const path = cp.path.map((step) => ({ ...step, output: maskSecretsForRefill(step.output, secrets) }))
+  if (holdsSecret(path, secrets)) throw new CheckpointHoldsSecret()
+  const body = JSON.stringify({ ...cp, v: CHECKPOINT_FORMAT, path })
   return {
     key: checkpointKey(cp.organizationId, cp.runRequestId, cp.stateVersion, cp.path.length),
     body,
@@ -147,9 +204,13 @@ export interface CheckpointIdentity {
 
 /**
  * The checkpoint in body, trusted only if it is exactly the one pointer
- * acknowledges, of this run. Throws CheckpointRefused naming why not.
+ * acknowledges, of this run, with every masked secret refilled from secrets,
+ * the values served to the slice reading it (format 2). Throws
+ * CheckpointRefused naming why not.
  */
-export async function decodeCheckpoint(body: string, pointer: CheckpointPointer, run: CheckpointIdentity): Promise<Checkpoint> {
+export async function decodeCheckpoint(
+  body: string, pointer: CheckpointPointer, run: CheckpointIdentity, secrets: Readonly<Record<string, string>>,
+): Promise<Checkpoint> {
   if ((await sha256Hex(body)) !== pointer.sha256) {
     throw new CheckpointRefused('checkpoint_corrupt', `the object at ${pointer.key} is not the one acknowledged (its digest differs)`)
   }
@@ -160,7 +221,9 @@ export async function decodeCheckpoint(body: string, pointer: CheckpointPointer,
     throw new CheckpointRefused('checkpoint_corrupt', `the object at ${pointer.key} is not JSON`)
   }
   if (!isRecord(parsed)) throw new CheckpointRefused('checkpoint_corrupt', `the object at ${pointer.key} is not a checkpoint`)
-  if (parsed.v !== CHECKPOINT_FORMAT) throw new CheckpointRefused('checkpoint_format_unknown', `format ${JSON.stringify(parsed.v)}, and this build reads ${CHECKPOINT_FORMAT}`)
+  if (!(CHECKPOINT_FORMATS_READ as readonly unknown[]).includes(parsed.v)) {
+    throw new CheckpointRefused('checkpoint_format_unknown', `format ${JSON.stringify(parsed.v)}, and this build reads ${CHECKPOINT_FORMATS_READ.join(' and ')}`)
+  }
   const totals = parsed.totals
   if (!Array.isArray(parsed.path) || !parsed.path.every(isStep) || typeof parsed.nextNodeId !== 'string' || !isWhole(parsed.stateVersion)
     || typeof parsed.executionId !== 'string' || !isWhole(parsed.attempt) || typeof parsed.writtenAt !== 'string'
@@ -175,7 +238,19 @@ export async function decodeCheckpoint(body: string, pointer: CheckpointPointer,
   if (cp.stateVersion !== pointer.stateVersion || cp.path.length !== pointer.steps) {
     throw new CheckpointRefused('checkpoint_stale', `the object at ${pointer.key} was written at state version ${cp.stateVersion} with ${cp.path.length} steps, and the run acknowledged ${pointer.stateVersion} with ${pointer.steps}`)
   }
-  return cp
+  // Format 1 was written before any output was masked: read exactly as written, never refilled.
+  if (cp.v === 1) return cp
+  const path: CheckpointStep[] = []
+  for (const step of cp.path) {
+    const refilled = refillSecrets(step.output, secrets)
+    if (refilled.kind === 'malformed') throw new CheckpointRefused('checkpoint_corrupt', `the object at ${pointer.key} holds a mask that cannot be read at step ${step.nodeId}: ${refilled.detail}`)
+    if (refilled.kind === 'unserved') {
+      const one = refilled.names.length === 1
+      throw new CheckpointRefused('checkpoint_secret_unserved', `the checkpoint at ${pointer.key} masked the secret ${one ? 'variable' : 'variables'} ${namedVariables(refilled.names)}, which ${one ? 'was' : 'were'} not served to this slice or ${one ? 'is' : 'are'} empty now, so the run cannot resume with ${one ? 'its value' : 'their values'}`)
+    }
+    path.push({ ...step, output: refilled.value })
+  }
+  return { ...cp, path }
 }
 
 /** Where a replayed checkpoint leaves the walk. */

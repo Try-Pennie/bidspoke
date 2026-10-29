@@ -8,7 +8,7 @@
  */
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { CHECKPOINT_FORMAT, CONTINUATION_BUDGET, CheckpointRefused, checkpointStoreFrom, decodeCheckpoint, encodeCheckpoint, type Checkpoint } from '../checkpoint'
+import { CHECKPOINT_FORMAT, CONTINUATION_BUDGET, CheckpointRefused, checkpointStoreFrom, decodeCheckpoint, encodeCheckpoint, type WrittenCheckpoint } from '../checkpoint'
 import type { OpsEnv } from '../index'
 import { organizationIdFrom } from '../ops-db'
 import type { NamedCheckpoint } from '../ops-writes'
@@ -21,7 +21,7 @@ const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
 const RUN_ID = '0192f4a0-0000-7000-8000-000000000001'
 const IDENTITY = { runRequestId: RUN_ID, organizationId: ORG, workflowId: '00000000-0000-4000-8000-0000000019a1', workflowVersion: 3, executionChainId: '0192f4a0-0000-7000-9000-000000000001' }
 
-function checkpoint(over: Partial<Checkpoint> = {}): Checkpoint {
+function checkpoint(over: Partial<WrittenCheckpoint> = {}): WrittenCheckpoint {
   return {
     v: CHECKPOINT_FORMAT, ...IDENTITY, stateVersion: 4, executionId: '0192f4a0-0000-7000-8000-0000000000ee', attempt: 1, writtenAt: '2026-10-27T14:00:00.000Z',
     path: [{ seq: 0, nodeId: 'shape', namespace: 'shape', output: { amount: 3 }, edgeId: 'shape-pick' }],
@@ -38,18 +38,18 @@ describe('the checkpoint store on R2 (workerd)', () => {
   it('writes a checkpoint, reads it back whole, and a repeat of the same write is already_written', async () => {
     const store = checkpointStoreFrom(opsEnv)
     const cp = checkpoint()
-    const enc = await encodeCheckpoint(cp)
+    const enc = await encodeCheckpoint(cp, {})
     expect(await store.put(enc.key, enc.body, enc.sha256)).toBe('written')
     expect(await store.put(enc.key, enc.body, enc.sha256)).toBe('already_written')
     const body = await store.get(enc.key)
     expect(body).toBe(enc.body)
-    expect(await decodeCheckpoint(body!, { key: enc.key, stateVersion: 4, steps: 1, sha256: enc.sha256, bytes: enc.bytes }, IDENTITY)).toEqual(cp)
+    expect(await decodeCheckpoint(body!, { key: enc.key, stateVersion: 4, steps: 1, sha256: enc.sha256, bytes: enc.bytes }, IDENTITY, {})).toEqual(cp)
   })
 
   it('never overwrites another body at a taken key', async () => {
     const store = checkpointStoreFrom(opsEnv)
-    const first = await encodeCheckpoint(checkpoint({ stateVersion: 5 }))
-    const other = await encodeCheckpoint(checkpoint({ stateVersion: 5, writtenAt: '2026-10-27T14:00:09.000Z' }))
+    const first = await encodeCheckpoint(checkpoint({ stateVersion: 5 }), {})
+    const other = await encodeCheckpoint(checkpoint({ stateVersion: 5, writtenAt: '2026-10-27T14:00:09.000Z' }), {})
     expect(first.key).toBe(other.key)
     await store.put(first.key, first.body, first.sha256)
     let reason = ''
@@ -65,7 +65,7 @@ describe('the checkpoint store on R2 (workerd)', () => {
 
   it('refuses a write whose digest is not the body\'s, storing nothing', async () => {
     const store = checkpointStoreFrom(opsEnv)
-    const enc = await encodeCheckpoint(checkpoint({ stateVersion: 6 }))
+    const enc = await encodeCheckpoint(checkpoint({ stateVersion: 6 }), {})
     await expect(store.put(enc.key, enc.body, 'f'.repeat(64))).rejects.toThrow()
     expect(await store.get(enc.key)).toBeNull()
   })

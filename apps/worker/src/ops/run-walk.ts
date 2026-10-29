@@ -27,10 +27,14 @@
  * A SECRET IS NEVER KEPT (#2998). Every secret value the run was given is
  * masked (mask-secrets.ts, replaced by its variable's name) in each step's
  * record, output and error, and in the error the run ends with, so neither
- * ops_step_records nor the run's last_error holds one. A slice boundary whose
- * checkpoint would hold one (a step output carrying it) is skipped, logged once
- * as checkpoint_skipped, and the slice carries on: a checkpoint is written to
- * R2, and masking it would change what the next slice's steps read.
+ * ops_step_records nor the run's last_error holds one. A slice boundary's
+ * checkpoint, written to R2, holds each one masked so it can be refilled
+ * (#3024, checkpoint.ts format 2): the next slice puts back the values served
+ * to it, so its steps read what they would have, and a run reading a secret
+ * can still be sliced. A masked secret that slice was not served, or was
+ * served empty, fails the run by name (checkpoint_secret_unserved) before any
+ * step runs. A checkpoint that would still show a value once masked is not
+ * written, logged once as checkpoint_skipped, and the slice carries on.
  *
  * HOW IT ENDS. Done when a step has no next edge, an exit or a filter's exit
  * route is reached. Failed, naming the step, when a step reports an error or
@@ -92,7 +96,7 @@ import type { CheckpointStep } from './checkpoint'
 import {
   checkpointBoundary, NOTHING_CARRIED, overBudget, resumeFromCheckpoint, type CarriedTotals, type OpsWalkContinuation, type SliceSpend,
 } from './continuation'
-import { holdsSecret, maskSecrets } from './mask-secrets'
+import { maskSecrets } from './mask-secrets'
 import { RunStopped, StepUnrecorded, type RunBodyEnd, type RunContext } from './run-invocation'
 import { runVariablesFor } from './run-variables'
 import type { OpsStepRecordStatus } from './run-vocabulary'
@@ -195,7 +199,7 @@ async function walk(
   let carried: CarriedTotals = NOTHING_CARRIED
   // A continued run resumes from its checkpoint, in every mode (#1951): never from its first step.
   if (run.continuations > 0) {
-    const resumed = await resumeFromCheckpoint({ continuation: options.continuation, run, nodes, edges })
+    const resumed = await resumeFromCheckpoint({ continuation: options.continuation, run, nodes, edges, secrets })
     if (resumed.kind === 'end') return resumed.end
     Object.assign(ctx.steps, resumed.at.steps)
     ctx.lastCompletedNamespace = resumed.at.lastCompletedNamespace
@@ -277,21 +281,10 @@ async function walk(
       path.push({ seq: place, nodeId: step.id, namespace: step.namespace, output: result.output, edgeId: next.id })
       spend.steps++
       if (overBudget(continuation.budget, spend, run.now())) {
-        // A checkpoint is written to R2, so one that would hold a secret is never written (#2998): the slice carries on.
-        if (holdsSecret(path, secrets)) {
-          if (!said.holdsSecret) {
-            try {
-              continuation.log({ event: 'ops_continuation', step: 'checkpoint_skipped', reason: 'holds_secret', run_request_id: run.run.runRequestId, workflow_id: run.run.workflowId, steps: path.length })
-            } catch {
-              // A log line never changes how the run goes.
-            }
-          }
-          said.holdsSecret = true
-        } else {
-          const verdict = await checkpointBoundary({ continuation, run, nodes, edges, path, next: current, ctx, spend, walkStartedAt, carried, said })
-          // Suspended only once its checkpoint is named and verified; otherwise the slice carries on.
-          if (verdict === 'verified' && continuation.mode === 'on') return { outcome: 'continue' }
-        }
+        // Written to R2 with every secret masked (#3024), and refilled by the slice that resumes it.
+        const verdict = await checkpointBoundary({ continuation, run, nodes, edges, path, next: current, ctx, spend, walkStartedAt, carried, secrets, said })
+        // Suspended only once its checkpoint is named and verified; otherwise the slice carries on.
+        if (verdict === 'verified' && continuation.mode === 'on') return { outcome: 'continue' }
         Object.assign(spend, { startedAt: run.now(), steps: 0, sends: 0 })
       }
     }
