@@ -7,8 +7,9 @@
  *
  * The rules:
  * - every row carries the same columns (INVENTORY_COLUMNS), so a bulk upsert
- *   never writes NULL into a column one row omitted (L705), and porting_stage is
- *   never among them: it belongs to Bidspoke, and a new row takes its default;
+ *   never writes NULL into a column one row omitted (L705), and none of
+ *   BIDSPOKE_OWNED_COLUMNS (porting_stage, a retirement) is among them: they
+ *   belong to Bidspoke, and a new row takes their defaults;
  * - first_seen_export_at is kept once set; last_seen_export_at is the export of
  *   the workflow's project that listed it;
  * - a stored workflow is absent when its project is in this export and no project
@@ -23,7 +24,7 @@ import type { ExportedProject, ExportedWorkflow } from './read-export.ts'
 
 export type PipedreamState = 'on' | 'off' | 'never_deployed'
 
-/** One inventory row as the loader writes it: every column except porting_stage and cut_over_at (#1952), which only Bidspoke writes, and updated_at. */
+/** One inventory row as the loader writes it: every column except BIDSPOKE_OWNED_COLUMNS, which only Bidspoke writes, and updated_at. */
 export interface InventoryRow {
   organization_id: string
   pipedream_hashid: string
@@ -46,6 +47,14 @@ export const INVENTORY_COLUMNS = [
   'organization_id', 'pipedream_hashid', 'project_hashid', 'name', 'pipedream_state', 'definition_sha256',
   'trigger_types', 'step_count', 'deployment_count', 'first_seen_export_at', 'last_seen_export_at', 'absent_since_export_at',
 ] as const satisfies ReadonlyArray<keyof InventoryRow>
+
+/**
+ * The inventory columns only Bidspoke writes, never the loader: how far the port
+ * has gone, the cutover time (#1952), and a person's retirement of the workflow
+ * with who, why and when (#2979). A load upserts INVENTORY_COLUMNS alone, so a
+ * reload of a newer export leaves every one of these as it was recorded.
+ */
+export const BIDSPOKE_OWNED_COLUMNS = ['porting_stage', 'cut_over_at', 'retired_by', 'retired_reason', 'retired_at'] as const
 
 export interface LoadPlan {
   /** Every row to upsert, sorted by hashid. Unchanged absent rows are not rewritten. */

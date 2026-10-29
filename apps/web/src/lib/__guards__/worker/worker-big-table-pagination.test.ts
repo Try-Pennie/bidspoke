@@ -163,6 +163,7 @@ const SMALL_TABLES: Record<string, string> = {
   'porting.pipedream_inventory': '386 rows on 2026-10-18. One per Pipedream workflow in a loaded export; bounded by the Pipedream account.',
   'porting.pipedream_workflow_map': '0 rows on 2026-10-18. At most one per inventory row.',
   'porting.workflow_replacements': '0 rows on 2026-10-27 (new). One per workflow minted to replace another (a converter rerun, a split), so a few per ported workflow at most; no pruning.',
+  'porting.dropped_steps': '0 rows on 2026-10-28 (new). One per step a person leaves out of a port (#2979), a few per Pipedream workflow at most; bounded by the Pipedream account.',
 }
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
