@@ -208,6 +208,80 @@ describe('uncapturable writeback: its own wording', () => {
   })
 })
 
+// #2949: on 2026-10-28 at 11:52 AM ET and again on 2026-10-29 at 2:25 AM ET, Main
+// Flow's credit collections post (collections_apex) timed out about a second
+// before the answer, landed in Salesforce, and was paged as "Salesforce update
+// cannot be replayed ... a Salesforce step after the answer failed ... enter the
+// outcome in Salesforce by hand". It was not after the answer, not an update, and
+// a timeout's result is unknown, not lost. A collections alert now says what the
+// post was, which side of the answer it ran on, and what is and is not known.
+describe('a failed credit collections post: its own wording, on the side of the answer it ran', () => {
+  const at = '2026-10-29T06:25:14Z'
+  const runOf = (failed_step: { step: string; after_answer: boolean; collections_post: boolean; outcome_unknown: boolean }) => ({
+    workflow_id: 'wf-c', workflow_name: 'Main Flow', execution_id: 'ex-c', at, failed_step,
+  })
+
+  it('a refused post before the answer: a collections post that failed before the answer, with what Salesforce said', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'sf_writeback',
+        window_loss_count: 1,
+        window_minutes: 30,
+        error_message: 'Salesforce API error (500): [{"message":"Submission not found with id: a04Ui00000OSMkXIAX"}]',
+        run: runOf({ step: 'collections_apex', after_answer: false, collections_post: true, outcome_unknown: false }),
+      },
+      'https://app.test',
+    )
+    const text = await lastText()
+    expect(text).toContain('Salesforce collections post failed')
+    expect(text).toContain('Main Flow answered a lead at 2:25 AM ET.')
+    expect(text).toContain('Before the answer, its credit collections post to Salesforce failed')
+    expect(text).toContain('Salesforce said: Submission not found with id: a04Ui00000OSMkXIAX.')
+    expect(text).toContain('https://app.test/workflows/wf-c?execution=ex-c')
+    expect(text).not.toMatch(/after the answer|Salesforce update|enter the outcome|outcome by hand|cannot be replayed/i)
+    expectHouseStyle(text)
+  })
+
+  it('a timed out post after the answer: not known whether it landed, never lost, never "enter the outcome by hand"', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: WRITEBACK_UNCAPTURABLE_LABEL,
+        window_loss_count: 1,
+        window_minutes: 30,
+        error_message: 'collections_apex: the failed step carried no resolved request',
+        run: runOf({ step: 'collections_apex', after_answer: true, collections_post: true, outcome_unknown: true }),
+      },
+      'https://app.test',
+    )
+    const text = await lastText()
+    expect(text).toContain('Salesforce collections post not confirmed')
+    expect(text).toContain('After the answer, its credit collections post to Salesforce got no answer in time, so it is not known whether')
+    expect(text).toContain('Collections file')
+    // The capture's own reason is about its replay store, not something a reader can act on.
+    expect(text).not.toMatch(/resolved request|could not be kept|cannot be replayed|lost|Salesforce update|enter the outcome/i)
+    expectHouseStyle(text)
+  })
+
+  it('control: a Salesforce update after the answer keeps the update wording', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: WRITEBACK_UNCAPTURABLE_LABEL,
+        window_loss_count: 1,
+        window_minutes: 30,
+        error_message: 'sf_patch_lead: a create operation cannot be replayed, only an update',
+        run: runOf({ step: 'sf_patch_lead', after_answer: true, collections_post: false, outcome_unknown: false }),
+      },
+      'https://app.test',
+    )
+    const text = await lastText()
+    expect(text).toContain('Salesforce update cannot be replayed')
+    expect(text).toContain('a Salesforce step after the answer failed')
+  })
+})
+
 // #2084: a held write the replay store could not save (encryption or the client
 // threw before the retry ladder) went to the generic branch, which said "failed
 // after all retries" and "feed billing". It is the same fact as an uncapturable
