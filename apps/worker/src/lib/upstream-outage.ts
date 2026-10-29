@@ -25,6 +25,14 @@
  *      cause marked `perWorkflow`, where the upstream belongs to one workflow
  *      and a shared cooldown would let one partner silence another (#1361).
  *
+ * The timeout bucket is read from the failing step's deadline marker (#3069),
+ * which the aggregation reads from execution_steps. The engine's gate has only
+ * the message, so it reads the timeout bucket's unmarked text fallback. A step
+ * the engine marks fails its run with text that fallback matches (over the 7
+ * days to 2026-10-29, no failed run outside the text held a step a deadline
+ * stopped), so the two halves still agree, and both must move together when
+ * #3067 removes the fallback.
+ *
  * Mirrors the failure-rate.ts / volume-cliff.ts pattern (cron + windowed
  * workflow_executions query + KV cooldown + pure detector). The difference from
  * #248's failure-rate is that those signals are per-workflow opt-in config; a
@@ -39,6 +47,8 @@ import { sendUpstreamOutageAlert, sendFailureSaturationAlert } from './slack'
 import { fetchAllPaged } from './paginate'
 import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
 import { readExecutionCountsPerMinute, type MinuteCount } from './execution-counts'
+import { chunk } from './chunk'
+import { deadlineKindOf, type TimeoutKind } from '../engine/step-timeout'
 
 export interface OutageCause {
   /** Stable id used in the cooldown key and alert payload. */
@@ -62,6 +72,16 @@ export interface OutageCause {
    * pages a genuinely shared outage produces.
    */
   perWorkflow?: boolean
+  /**
+   * The cause a run belongs to when its failing step was stopped by one of our
+   * deadlines, read from the step's `timeout_kind` marker (#3069).
+   */
+  stepDeadline?: boolean
+  /**
+   * Case-insensitive substrings read only for a run whose failing step carries
+   * no marker (#3069). A stop gap until #3067: never add to it.
+   */
+  unmarkedFallback?: string[]
 }
 
 /**
@@ -125,9 +145,29 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
     perWorkflow: true,
   },
   {
+    // A run one of OUR deadlines stopped (#3069, L35): its failing step carries
+    // the marker the engine writes where the deadline passes (#3047,
+    // engine/step-timeout.ts), its own deadline or its parallel block's. Read
+    // from the marker, so no message is matched for a marked run.
+    //
+    // A gateway timeout (an upstream answering 504) is the upstream's answer, not
+    // our deadline: it carries no marker and nothing below names it, so it is
+    // never this bucket. The step row records no HTTP status as a field (the
+    // status is only inside its message), so a 504 keeps the bucket it had, which
+    // is Salesforce for "Salesforce API error (504)" and none for any other.
     key: 'timeout',
     label: 'Upstream timeout',
-    matchers: [
+    matchers: [],
+    stepDeadline: true,
+    // THE TEXT FALLBACK, for a run whose failing step carries no marker: rows
+    // written before #3047 deployed, and a run the marker read could not reach.
+    // #3067 removes it after 2026-11-07, once the unmarked rows have aged out.
+    // Two of our deadlines still fail a run with no marker (measured over the
+    // 7 days to 2026-10-29): a node's own request timer ('the operation was
+    // aborted', 41 Salesforce runs) and a parallel block that fails on its own
+    // deadline ('did not complete in time', 20 runs, whose children get no row).
+    // Removing the fallback before those are marked moves them out of this bucket.
+    unmarkedFallback: [
       'the operation was aborted',
       'canceled via abort signal',
       'did not complete in time',
@@ -148,16 +188,28 @@ export const NODE_TYPE_TO_CAUSE = new Map<string, string>([
   ['salesforce', 'salesforce'],
 ])
 
-/** The first cause whose any matcher appears (case-insensitively) in the error,
- *  or null when the error is not a recognized shared-upstream outage. */
+/**
+ * The cause a failed run belongs to, or null when it is not a recognized
+ * shared-upstream outage. Causes are tried in order: a cause whose matcher
+ * appears (case-insensitively) in the error; the step deadline cause when
+ * `deadline` (the run's failing step marker, failingStepDeadline) is set; and,
+ * only with no marker, that cause's unmarked text fallback (#3069).
+ *
+ * The engine's per run alert gate calls this with the message alone, so it
+ * still reads the fallback text for every run until it passes the marker too.
+ */
 export function classifyOutageCause(
   errorMessage: string | null | undefined,
   causes: OutageCause[] = UPSTREAM_OUTAGE_CAUSES,
+  deadline: TimeoutKind | null = null,
 ): OutageCause | null {
-  if (!errorMessage) return null
-  const lower = errorMessage.toLowerCase()
+  const lower = errorMessage ? errorMessage.toLowerCase() : ''
+  const says = (m: string) => lower !== '' && lower.includes(m)
   for (const cause of causes) {
-    if (cause.matchers.some((m) => lower.includes(m))) return cause
+    if (cause.matchers.some(says)) return cause
+    if (!cause.stepDeadline) continue
+    if (deadline !== null) return cause
+    if ((cause.unmarkedFallback ?? []).some(says)) return cause
   }
   return null
 }
@@ -172,8 +224,9 @@ export function attributeOutageCause(
   errorMessage: string | null | undefined,
   failedStepType: string | null | undefined,
   causes: OutageCause[] = UPSTREAM_OUTAGE_CAUSES,
+  deadline: TimeoutKind | null = null,
 ): OutageCause | null {
-  const cause = classifyOutageCause(errorMessage, causes)
+  const cause = classifyOutageCause(errorMessage, causes, deadline)
   if (!cause || cause.key !== 'timeout' || !failedStepType) return cause
   const mappedKey = NODE_TYPE_TO_CAUSE.get(failedStepType)
   if (!mappedKey) return cause
@@ -441,6 +494,94 @@ interface FailedRow {
    * Tripoint answer, which is Tripoint's by construction.
    */
   cause_key?: string
+  /**
+   * The deadline marker on the step this run failed on (#3069), set by the
+   * check from its marker read (failingStepDeadline). Null or absent means no
+   * marker was found or the read failed, and the run is read by its message.
+   */
+  failing_step_deadline?: TimeoutKind | null
+}
+
+// ---------------------------------------------------------------------------
+// The failing step's deadline marker (#3069)
+// ---------------------------------------------------------------------------
+
+/** A failed step row carrying a deadline marker, as the check reads it. */
+export interface MarkedFailedStep {
+  execution_id: string
+  step_type: string | null
+  parallel_group_id: string | null
+  timeout_kind: unknown
+}
+
+/**
+ * The deadline that stopped the step a run failed on, or null.
+ *
+ * The run row records the failing step's node TYPE (`failed_step_type`, #332),
+ * not which row it was, so the marked failed rows of the run are bound to it by
+ * that type: a marked failed row of the same type, or, for a run whose parallel
+ * block failed ('parallel'), a marked failed row inside a block, since a block
+ * fails on the child it was waiting for.
+ *
+ * Only `failed` rows are read: a step the walk recovered from is `skipped` or
+ * `failed_with_fallback`, never `failed`. A marked row of another type outside
+ * a block is a failure the run did not stop on (a partner bid a bid group
+ * absorbed, a slot marked to continue), so it is not the run's failure.
+ *
+ * KNOWN LIMIT: a run with two parallel blocks whose earlier block let a marked
+ * slot continue, and whose later block then failed for another reason, is
+ * read as a timeout. Over the 7 days to 2026-10-29 no failed run outside the
+ * timeout text bucket held a step a deadline stopped at all.
+ */
+export function failingStepDeadline(
+  run: { id?: string; failed_step_type?: string | null },
+  marked: readonly MarkedFailedStep[],
+): TimeoutKind | null {
+  if (!run.id || !run.failed_step_type) return null
+  for (const step of marked) {
+    if (step.execution_id !== run.id) continue
+    const kind = deadlineKindOf(step)
+    if (kind === null) continue
+    const isFailingStep = step.parallel_group_id === null
+      ? step.step_type === run.failed_step_type
+      : run.failed_step_type === 'parallel'
+    if (isFailingStep) return kind
+  }
+  return null
+}
+
+/** How many runs one marker read names, so the request address stays short. */
+export const MARKER_READ_IDS = 100
+
+/**
+ * The failed, marked step rows of the given runs (#3069). Bounded on
+ * started_at so the partitions prune: a step starts no earlier than its run,
+ * and every run read started on or after `startedFrom`. Read MARKER_READ_IDS
+ * runs at a time and paged, so a large outage neither builds an address too
+ * long to send nor stops at the 1,000 row cap.
+ */
+export async function readMarkedFailedSteps(
+  supabase: SupabaseClient,
+  executionIds: readonly string[],
+  startedFrom: string,
+): Promise<MarkedFailedStep[]> {
+  const out: MarkedFailedStep[] = []
+  for (const ids of chunk([...executionIds], MARKER_READ_IDS)) {
+    out.push(...await fetchAllPaged<MarkedFailedStep>(
+      (from, to) => supabase
+        .from('execution_steps')
+        .select('id, execution_id, step_type, parallel_group_id, timeout_kind')
+        .in('execution_id', ids)
+        .gte('started_at', startedFrom)
+        .eq('status', 'failed')
+        .not('timeout_kind', 'is', null)
+        .order('started_at', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, to),
+      'upstream-outage failing step markers query',
+    ))
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +639,7 @@ function unknownAnswerMessage(reason: string | null): string {
 export function tripointUnknownRows(steps: TripointUnknownStep[], failed: FailedRow[]): FailedRow[] {
   const countedAsTripoint = new Set(
     failed
-      .filter((r) => r.id && attributeOutageCause(r.error_message, r.failed_step_type)?.key === 'tripoint')
+      .filter((r) => r.id && attributeOutageCause(r.error_message, r.failed_step_type, UPSTREAM_OUTAGE_CAUSES, r.failing_step_deadline ?? null)?.key === 'tripoint')
       .map((r) => r.id as string),
   )
   const seen = new Set<string>()
@@ -564,7 +705,7 @@ export function groupOutages(
     if (!r.completed_at || new Date(r.completed_at).getTime() < windowStartMs) continue
     const cause = r.cause_key
       ? causes.find((c) => c.key === r.cause_key) ?? null
-      : attributeOutageCause(r.error_message, r.failed_step_type, causes)
+      : attributeOutageCause(r.error_message, r.failed_step_type, causes, r.failing_step_deadline ?? null)
     if (!cause) continue
     // A per-workflow cause gets one group per workflow, so its count, its shapes
     // and its cooldown are all about the one partner the page names (#1361).
@@ -765,7 +906,7 @@ export async function runUpstreamOutageCheck(
   const lookbackStart = new Date(now - LOOKBACK_MINUTES * 60 * 1000).toISOString()
   const windowStart = new Date(fetchFromMs).toISOString()
 
-  const failed = await fetchAllPaged<FailedRow>(
+  const failedRuns = await fetchAllPaged<FailedRow>(
     (from, to) => supabase
       .from('workflow_executions')
       .select('id, workflow_id, error_message, completed_at, started_at, failed_step_type')
@@ -780,6 +921,35 @@ export async function runUpstreamOutageCheck(
       .range(from, to),
     'upstream-outage failed query',
   )
+
+  // The failing steps' deadline markers (#3069), read only for the runs the
+  // cause rule counts this minute: saturation is cause-agnostic, so the runs
+  // only it judges need none. A read failure is logged and the runs are read
+  // by their message, as before the marker, so it cannot silence the check.
+  const causeWindowIds = failedRuns
+    .filter((r) => r.id && r.completed_at && new Date(r.completed_at).getTime() >= windowStartMs)
+    .map((r) => r.id as string)
+  let markedSteps: MarkedFailedStep[] = []
+  if (causeWindowIds.length > 0) {
+    try {
+      markedSteps = await readMarkedFailedSteps(supabase, causeWindowIds, lookbackStart)
+    } catch (err) {
+      console.error(
+        `[upstream-outage] the failing steps' deadline markers could not be read, so this minute's failed runs ` +
+          `are classified by their message alone: ` + (err instanceof Error ? err.message : 'non Error thrown'),
+      )
+    }
+  }
+  const markedByRun = new Map<string, MarkedFailedStep[]>()
+  for (const step of markedSteps) {
+    const list = markedByRun.get(step.execution_id) ?? []
+    list.push(step)
+    markedByRun.set(step.execution_id, list)
+  }
+  const failed: FailedRow[] = failedRuns.map((r) => ({
+    ...r,
+    failing_step_deadline: failingStepDeadline(r, (r.id && markedByRun.get(r.id)) || []),
+  }))
 
   // Unknown Tripoint answers (#1540): runs that no longer fail, read from their
   // tripoint_ping step. Only the cause rule's own one minute window is read,

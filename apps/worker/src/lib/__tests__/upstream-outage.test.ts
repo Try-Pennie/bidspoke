@@ -481,12 +481,14 @@ describe('runUpstreamOutageCheck fires saturation (#1100)', () => {
   })
 })
 
-it('every built-in cause has a key, label, and at least one matcher', () => {
+it('every built-in cause has a key, label, and something to match: a matcher, or the step deadline marker (#3069)', () => {
   for (const c of UPSTREAM_OUTAGE_CAUSES) {
     expect(c.key).toBeTruthy()
     expect(c.label).toBeTruthy()
-    expect(c.matchers.length).toBeGreaterThan(0)
+    expect(c.matchers.length > 0 || c.stepDeadline === true).toBe(true)
   }
+  // Exactly one cause is read from the marker, so a marked run has one home.
+  expect(UPSTREAM_OUTAGE_CAUSES.filter((c) => c.stepDeadline).map((c) => c.key)).toEqual(['timeout'])
 })
 
 /**
