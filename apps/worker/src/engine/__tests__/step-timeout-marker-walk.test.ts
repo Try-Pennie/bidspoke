@@ -6,8 +6,8 @@
  * own deadline passes. The step row records that as `timeout_kind: 'step'` and
  * the deadline in `timed_out_after_ms`, so a reader no longer matches the error
  * text. A parallel block that stops waiting for a child writes that child's row
- * itself, marked `parallel_block` with the block's deadline (#3064 is about what
- * that row records as input, and is not built here).
+ * itself, marked `parallel_block` with the block's deadline (what that row
+ * records as input is tested in parallel-timeout-input.test.ts, #3064).
  *
  * What must NOT change: the message, the error type (`transient`) and the
  * retries a timed out step uses. A step that failed any other way carries no

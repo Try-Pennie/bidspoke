@@ -1829,6 +1829,11 @@ export async function walkGraph(
       // block (#2832), and the step each failed child failed on.
       const runningChildSteps = new Set<string>()
       const childFailures = new Map<number, StepFailureError>()
+      // The request each child noted last, and the step that noted it (#3064),
+      // for the row the block writes when it stops waiting for that child. That
+      // row is written at once when the block settles, so a note the child makes
+      // after that (a late retry) reaches only this map, never the row.
+      const childNotedInputs = new Map<number, { namespace: string; input: ResolvedStepInput }>()
       // Set once the block stops waiting: a slot still running after that (one the
       // block did not wait for, or one cut off at its timeout) must not rename what
       // the walk is on, which by then has moved on.
@@ -1841,6 +1846,7 @@ export async function walkGraph(
           ctx.runningNamespaces = runningChildSteps.size > 0 ? [...runningChildSteps] : [node.namespace]
         },
         onFailure: (failure) => { childFailures.set(childIndex, failure) },
+        onInput: (namespace, input) => { childNotedInputs.set(childIndex, { namespace, input }) },
       })
       const continuing = continuingSlots(execNode.config)
       const isContinuing = (childIndex: number) => continuing.has(slotHandleIds[childIndex] ?? '')
@@ -1875,9 +1881,15 @@ export async function walkGraph(
             const child = resolvedChildren[childIndex]
             const errMsg = `Parallel group timed out after ${timeoutMs}ms before this child completed`
             recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
+            // The request the child noted last (#3064), the same masked object its
+            // own row would have stored, and only when the step that noted it is
+            // the one this row names: a slot past its first step was cut off on a
+            // later step, whose request is not this step's.
+            const noted = childNotedInputs.get(childIndex)
+            const cutOffInput = noted && noted.namespace === child.namespace ? noted.input : null
             // Marked as the block's deadline, not the child's own (#3047), so a
             // reader of step timeouts tells the two apart without the text.
-            logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, childOrderBase + childIndex, node.id, undefined, timeoutMarker(PARALLEL_BLOCK_DEADLINE, timeoutMs))
+            logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', cutOffInput, null, errMsg, 'transient', 0, stepStartedAt, childOrderBase + childIndex, node.id, undefined, timeoutMarker(PARALLEL_BLOCK_DEADLINE, timeoutMs))
           }
         }
       } catch (err) {
@@ -2789,6 +2801,8 @@ export interface ParallelChildTracking {
   onStep(namespace: string, running: boolean): void
   /** A step of a child failed, as the walk would have thrown it. */
   onFailure(failure: StepFailureError): void
+  /** A step of a child noted the request it resolved (#3064), the object its own row would store. */
+  onInput?(namespace: string, input: ResolvedStepInput): void
 }
 
 // Execute a single child node within a parallel group — simplified version of
@@ -2881,6 +2895,7 @@ export async function runParallelChild(
           ctx.stepDeadline
         ),
         () => retryStats.retries,
+        (input) => tracking?.onInput?.(node.namespace, input),
       )
       output = result.output
       stepLogs = result.logs
