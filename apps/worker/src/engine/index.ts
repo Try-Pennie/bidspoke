@@ -48,7 +48,7 @@ import {
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, recordUnconfirmedOutcome, type OutcomeAlertDeps } from './durability'
 import { captureStallSnapshot, stallSnapshotRead, type StallSnapshotGate } from '../lib/db-stall-snapshot'
-import { captureFailedWriteback } from './writeback-deadletter'
+import { captureFailedWriteback, failedStepFacts } from './writeback-deadletter'
 import { CONTINUATION_UNFINISHED_LABEL } from './dead-letter-labels'
 import { putAnswerJournal, type AnswerJournal } from './unconfirmed-writes'
 import { redactPii, parsePiiFields } from './pii-redactor'
@@ -146,6 +146,11 @@ class StepFailureError extends Error {
     // failed it (#2832), so a failed Salesforce write inside the block is kept
     // for replay or left to the read-back as it would be in the walk itself.
     public readonly childFailure: StepFailureError | null = null,
+    // Whether the step failed after the lead was answered (`ctx.afterAnswer`,
+    // #2949), recorded where a failure can sit on either side: a parallel slot's
+    // and a step's own. A marked slot can fail before the answer and the run still
+    // answers, so the finalize must not take every failure for one after it.
+    public readonly afterAnswer: boolean | null = null,
   ) {
     super(message)
   }
@@ -976,6 +981,12 @@ export async function executeWorkflow(
             failedErrorType = failedErrorType ?? 'permanent'
           }
           finalErrorMessage = formatErr(continuationError)
+          // The failed step as both alerts describe it (#2949): a parallel block's
+          // failure as the step inside it that failed (#2832), its side of the
+          // answer as recorded on it, and whether it is the collections post.
+          const failedWrite = continuationError instanceof StepFailureError ? continuationError.childFailure ?? continuationError : null
+          const failedWriteNode = failedWrite ? definition.nodes.find((n) => n.namespace === failedWrite.stepNamespace) : undefined
+          const failedStepFactsOf = failedWrite ? failedStepFacts(failedWrite, failedWriteNode) : null
           // Tier-3 (external SF writeback) dead-letter: the node's own withRetry
           // already provided at-least-once, so this only surfaces exhaustion via
           // the rate-aggregated alert — no per-run page. Gated like the failure
@@ -1011,6 +1022,7 @@ export async function executeWorkflow(
                   ...(continuationError instanceof ContinuationUnfinishedError && continuationError.stillRunning.length > 0
                     ? { still_running: [...continuationError.stillRunning] }
                     : {}),
+                  ...(failedStepFactsOf ? { failed_step: failedStepFactsOf } : {}),
                 })
               }).catch((e) =>
                 console.error(`[durability] ${label} dead-letter failed:`, e),
@@ -1021,10 +1033,9 @@ export async function executeWorkflow(
           // every alert gate above: a classified Salesforce outage, which the alert
           // stays quiet for, is exactly when these writes fail. A test run stores
           // nothing; anything not a Salesforce write is left alone by the capture.
-          if (continuationError instanceof StepFailureError) {
+          if (failedWrite && failedStepFactsOf) {
             // A parallel block's failure is captured as the step inside it that failed (#2832).
-            const failedWrite = continuationError.childFailure ?? continuationError
-            const failedNodeType = definition.nodes.find((n) => n.namespace === failedWrite.stepNamespace)?.type
+            const failedNodeType = failedWriteNode?.type
             if (failedNodeType === 'salesforce') {
               // Started inside the promise, so nothing about the key ring can throw
               // into the finalize: every failure lands in the capture's own handling.
@@ -1036,6 +1047,7 @@ export async function executeWorkflow(
                     workflowName: workflow_name,
                     executionId,
                     stepNamespace: failedWrite.stepNamespace,
+                    failedStep: failedStepFactsOf,
                     nodeType: failedNodeType,
                     errorType: failedWrite.errorType,
                     error: failedWrite,
@@ -1902,6 +1914,8 @@ export async function walkGraph(
             `Parallel group timed out after ${(execNode.config.timeout_ms as number | undefined) ?? 15000}ms before slot ${childResult.namespace} completed`,
             childResult.namespace,
             'transient',
+            false, null, null, null, null,
+            ctx.afterAnswer === true,
           )
           ;(ctx.continuedFailures ??= []).push(failure)
         })
@@ -1930,7 +1944,7 @@ export async function walkGraph(
       if (stepStatus === 'failed') {
         // The first failed slot that does fail the block, by slot order.
         const failedChild = [...childFailures.entries()].sort((a, b) => a[0] - b[0]).find(([i]) => !isContinuing(i))?.[1] ?? null
-        throw new StepFailureError(errorMessage!, node.namespace, errorType, parallelSuppressAlert, null, null, null, failedChild)
+        throw new StepFailureError(errorMessage!, node.namespace, errorType, parallelSuppressAlert, null, null, null, failedChild, ctx.afterAnswer === true)
       }
 
       if (endNode) {
@@ -2582,7 +2596,7 @@ export async function walkGraph(
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, { nodeType: node.type, chainStep: true })
         logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
-        throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(err), salesforceAnswerOf(err))
+        throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(err), salesforceAnswerOf(err), null, ctx.afterAnswer === true)
       }
     }
 
@@ -2923,7 +2937,7 @@ export async function runParallelChild(
     logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retryStats.retries, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs)
 
     if (stepStatus === 'failed') {
-      tracking?.onFailure(new StepFailureError(errorMessage ?? 'the step failed', node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(caught), salesforceAnswerOf(caught)))
+      tracking?.onFailure(new StepFailureError(errorMessage ?? 'the step failed', node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(caught), salesforceAnswerOf(caught), null, ctx.afterAnswer === true))
       // The slot's result is the FIRST node's namespace — but downstream chain
       // failures still surface as a slot rejection so executeParallelNode's
       // on_child_error policy applies.

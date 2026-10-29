@@ -18,6 +18,16 @@ type Variables = AuthVariables
 const env = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 /**
+ * Why a secret cannot be saved with this value, or null when it can. A secret
+ * with no value is refused by name, on create and on update alike (#3029):
+ * stored, it was decrypted and served as a blank, so a run reading it got
+ * nothing instead of failing by name as missing.
+ */
+function emptySecretRefusal(value: string | null | undefined): string | null {
+  return value ? null : 'value is required for secrets'
+}
+
+/**
  * Whether a secret is mirrored to the Cloudflare Worker secret of the same name.
  *
  * Only an org secret is. The Worker holds ONE value per name, read by every
@@ -78,7 +88,8 @@ env.post('/', async (c) => {
   }>()
 
   if (!body.key) return c.json({ error: 'key is required' }, 400)
-  if (body.is_secret && !body.value) return c.json({ error: 'value is required for secrets' }, 400)
+  const secretRefusal = body.is_secret ? emptySecretRefusal(body.value) : null
+  if (secretRefusal) return c.json({ error: secretRefusal }, 400)
 
   // Which workflow a variable is saved against decides which runs read it
   // (#1681), and this client is service_role, which RLS does not stop, so the
@@ -188,6 +199,11 @@ env.put('/:id', async (c) => {
   const blocked = dbErrorUnlessNotFound(c, fetchError)
   if (blocked) return blocked
   if (!existing) return c.json({ error: 'Variable not found' }, 404)
+
+  // A value sent over a secret must not be empty (#3029); a save sending no
+  // value (a rename or a folder move) keeps the stored one and is not refused.
+  const secretRefusal = existing.is_secret && body.value != null ? emptySecretRefusal(body.value) : null
+  if (secretRefusal) return c.json({ error: secretRefusal }, 400)
 
   const newKey = body.key ?? existing.key
   const keyChanged = newKey !== existing.key
