@@ -199,7 +199,7 @@ describe('our own timers mark the error they caused, and only that one', () => {
 })
 
 describe('which deadline stopped a step, from the marker alone (#3069)', () => {
-  it('names either deadline the engine marks', () => {
+  it('names the step\'s own deadline and its parallel block\'s', () => {
     expect(deadlineKindOf({ timeout_kind: STEP_DEADLINE })).toBe(STEP_DEADLINE)
     expect(deadlineKindOf({ timeout_kind: PARALLEL_BLOCK_DEADLINE })).toBe(PARALLEL_BLOCK_DEADLINE)
   })

@@ -3,8 +3,9 @@
  * the run's message (#3069, L35).
  *
  * Since #3047 the engine marks a step one of our deadlines stopped on its row
- * (`execution_steps.timeout_kind`: 'step' for the step's own deadline,
- * 'parallel_block' for its block's). The aggregated outage check now reads that
+ * (`execution_steps.timeout_kind`, any kind in TIMEOUT_KINDS: 'step' for the
+ * step's own deadline, 'parallel_block' for its block's, and since #3068 a code
+ * chain's, a node's own request timer and the bidding budgets). The aggregated outage check now reads that
  * marker for each failed run's failing step. The old substrings stay only as the
  * fallback for a run whose failing step carries no marker (#3067 removes it).
  *

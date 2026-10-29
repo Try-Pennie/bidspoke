@@ -386,9 +386,11 @@ async function runTiered(
   // Wrap runAttempt so each tier-attempt gets a unique global index even though
   // each tier passes its own 0..N internally. The engine maps attemptIndex to a
   // step_order slot, so collisions would trash the ordering in the test panel.
-  const globalRun: RunAttemptFn = async ({ partner_id }) => {
+  // The tier's race deadline passes through, so a highest bid tier marks a late
+  // attempt as the same race outside a tiered group does (#3068).
+  const globalRun: RunAttemptFn = async ({ partner_id, groupDeadline }) => {
     const idx = attemptIndex++
-    return runAttempt({ partner_id, attemptIndex: idx })
+    return runAttempt({ partner_id, attemptIndex: idx, ...(groupDeadline ? { groupDeadline } : {}) })
   }
 
   for (const tier of tiers) {

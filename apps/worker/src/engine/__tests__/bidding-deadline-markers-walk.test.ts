@@ -150,6 +150,18 @@ describe('a highest bid race that stops waiting for a partner (#3068)', () => {
     expect(failed).not.toHaveProperty('timeout_kind')
   })
 
+  it('a highest bid tier of a tiered group marks its late attempt the same', async () => {
+    const queue: StepLogEntry[] = []
+    await walk(race({ mode: 'tiered', partner_ids: [], tiers: [{ id: 'tier-1', mode: 'highest_bid', partner_ids: [FAST, SLOW] }] }), queue)
+    expect(groupRow(queue)).toMatchObject({ status: 'completed' })
+    expect(groupRow(queue)).not.toHaveProperty('timeout_kind')
+    releaseSlow({ answer: bid('slow', 99) })
+    await vi.advanceTimersByTimeAsync(0)
+    const marked = attemptRows(queue).filter((r) => r.timeout_kind !== undefined)
+    expect(marked).toHaveLength(1)
+    expect(marked[0]).toMatchObject({ status: 'completed', timeout_kind: 'bid_group', timed_out_after_ms: RACE_MS })
+  })
+
   it('a race with no deadline marks nothing, however late a partner is', async () => {
     const queue: StepLogEntry[] = []
     const run = walk(race({ timeout_ms: undefined }), queue)
