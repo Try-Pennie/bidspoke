@@ -1830,6 +1830,24 @@ describe('the variables of the runs a live tick claims (#2998, phase 2 of #2982)
     expect(report.counts).toMatchObject({ runs_variables_unavailable: 1, runs_done: 1 })
   })
 
+  it('a throw anywhere in asking stops no run\'s end: each is returned unstarted, and the tick still reports (L73)', async () => {
+    // A port that throws before it returns a promise, inside one request's boundary.
+    const sync = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)] })
+    sync.ports.gateway.fetchRunVariables = () => { throw new Error('the binding threw at once') }
+    const r1 = await runOpsTick(sync.ports)
+    expect(sync.db.completed).toEqual([{ runRequestId: claimedRun(WF_A, 1).runRequestId, end: expect.objectContaining({ outcome: 'retry', error: expect.stringMatching(/the binding threw at once/) }) }])
+    expect(r1.counts).toMatchObject({ runs_variables_unavailable: 1 })
+    // A throw while grouping the runs, outside every request: the whole ask is unavailable, never a lost tick.
+    const odd = claimedRun(WF_A, 2)
+    Object.defineProperty(odd, 'organizationId', { get: () => { throw new Error('no organization could be read') } })
+    const grouping = fake({ mode: 'live', claimed: [odd] })
+    const r2 = await runOpsTick(grouping.ports)
+    expect(grouping.ranRuns).toEqual([])
+    expect(grouping.db.completed).toEqual([{ runRequestId: odd.runRequestId, end: expect.objectContaining({ outcome: 'retry', error: expect.stringMatching(/no organization could be read/) }) }])
+    expect(r2.counts).toMatchObject({ runs_variables_unavailable: 1 })
+    expect(grouping.reports).toHaveLength(1)
+  })
+
   it('in observe mode asks for nothing', async () => {
     const f = fake({ claimed: [claimedRun(WF_A, 1)] })
     await runOpsTick(f.ports)

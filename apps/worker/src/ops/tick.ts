@@ -190,7 +190,9 @@ export type TickSweep = OpsSweep
  * older than 7 days whether or not the purge has run; and the step records of
  * run attempts started more than 7 days ago (#2703, Dan, 2026-10-24;
  * purge_ops_step_records holds that window, and run_step_context serves none
- * older). A run's own purge takes its step records with it.
+ * older). A run's own purge takes its step records with it. And the variables
+ * a run recorded at its first start, cleared 7 days after it ends (#2998,
+ * purge_run_variables; a run a person kept keeps them).
  */
 export const OBSERVATION_PURGE_EVERY_SECONDS = 20 * 3600
 export const OBSERVATION_PURGE_EASTERN_HOUR = 3
@@ -651,26 +653,25 @@ async function askRunVariables(ports: OpsTickPorts, runs: readonly ClaimedRun[])
     for (let i = 0; i < versions.length; i += MAX_RUN_VARIABLES_PER_REQUEST) {
       requests.push({ organization_id: organizationId, runs: versions.slice(i, i + MAX_RUN_VARIABLES_PER_REQUEST) })
     }
+    // Each request its own boundary, reading its answer included (L73): a throw anywhere in it leaves its runs unavailable, never another's.
     return requests.map(async (request) => {
       const asked = orgRuns.filter((r) => request.runs.some((v) => v.workflow_id === r.workflowId && v.version_number === r.workflowVersion))
-      let read: ReturnType<typeof parseServedOpsRunVariables>
       try {
-        read = parseServedOpsRunVariables(await ports.gateway.fetchRunVariables(request), request)
+        const read = parseServedOpsRunVariables(await ports.gateway.fetchRunVariables(request), request)
+        const byVersion = new Map(read.runs.map((r) => [key(r.workflowId, r.versionNumber), r]))
+        for (const run of asked) {
+          const r = byVersion.get(key(run.workflowId, run.workflowVersion))
+          if (r === undefined) {
+            const said = read.unreadable.find((u) => u.includes(`workflow ${run.workflowId} version ${run.workflowVersion}`))
+            answers.set(run.runRequestId, { kind: 'unavailable', why: said ?? 'its part of the answer could not be read' })
+          } else if (r.kind === 'served') {
+            answers.set(run.runRequestId, { kind: 'served', variables: dispatchedFrom(r) })
+          } else {
+            answers.set(run.runRequestId, { kind: 'refused', reason: r.reason, keys: r.keys })
+          }
+        }
       } catch (err) {
         for (const run of asked) answers.set(run.runRequestId, { kind: 'unavailable', why: formatErr(err) })
-        return
-      }
-      const byVersion = new Map(read.runs.map((r) => [key(r.workflowId, r.versionNumber), r]))
-      for (const run of asked) {
-        const r = byVersion.get(key(run.workflowId, run.workflowVersion))
-        if (r === undefined) {
-          const said = read.unreadable.find((u) => u.includes(`workflow ${run.workflowId} version ${run.workflowVersion}`))
-          answers.set(run.runRequestId, { kind: 'unavailable', why: said ?? 'its part of the answer could not be read' })
-        } else if (r.kind === 'served') {
-          answers.set(run.runRequestId, { kind: 'served', variables: dispatchedFrom(r) })
-        } else {
-          answers.set(run.runRequestId, { kind: 'refused', reason: r.reason, keys: r.keys })
-        }
       }
     })
   }))
@@ -1175,8 +1176,17 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   // neither, one probe so the path is proven every minute.
   const retryAt = new Date((dbNow === null ? ports.now() : Date.parse(dbNow)) + RUN_VARIABLES_RETRY_MS)
   const runsDone = (async () => {
-    const variables = await askRunVariables(ports, claimed.filter((run) => mayStartRun(copies, run)))
-    return Promise.all(claimed.map((run) => dispatchOneRun(ports, db, copies, run, variables.get(run.runRequestId), retryAt, counts)))
+    // Never a throw past here (L73): if asking fails outright, every run's variables are unavailable and each is returned unstarted.
+    let variables = new Map<string, RunVariablesAnswer>()
+    let askFailed: string | null = null
+    try {
+      variables = await askRunVariables(ports, claimed.filter((run) => mayStartRun(copies, run)))
+    } catch (err) {
+      askFailed = formatErr(err)
+    }
+    const answerOf = (run: ClaimedRun): RunVariablesAnswer | undefined =>
+      variables.get(run.runRequestId) ?? (askFailed === null ? undefined : { kind: 'unavailable', why: askFailed })
+    return Promise.all(claimed.map((run) => dispatchOneRun(ports, db, copies, run, answerOf(run), retryAt, counts)))
   })()
   const toSend: DispatchItem[] = items.length > 0 ? items : claimed.length > 0 ? [] : [{ kind: 'probe' }]
   const sent = await Promise.allSettled(toSend.map((item) => ports.dispatch(item)))

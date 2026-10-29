@@ -1884,7 +1884,6 @@ export async function readRunCheckpoint(
   }
 }
 
-/** The nightly purge of the step records of run attempts started more than 7 days ago, by the database clock. */
 /** The records of runs terminal more than 7 days ago, cleared a page at a time (purge_run_variables, #2998). */
 export async function purgeRunVariables(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
   const name = 'purge_run_variables'
@@ -1892,6 +1891,7 @@ export async function purgeRunVariables(client: OpsSupabaseClient, limit: number
   return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
 }
 
+/** The nightly purge of the step records of run attempts started more than 7 days ago, by the database clock. */
 export async function purgeOpsStepRecords(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
   const name = 'purge_ops_step_records'
   const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))

@@ -2,8 +2,9 @@
  * Secret variable values masked out of what ops keeps (#2982, Dan's decision
  * of 2026-10-29: ops reads secrets, and "Secret values are masked in the step
  * results ops keeps"). The one masking implementation for ops: the step test
- * uses it (step-test.ts, #3002), and a run's step records (#2998) are to use
- * it too rather than a second copy.
+ * uses it (step-test.ts, #3002), and a run uses it for its step records, its
+ * error and, through holdsSecret, the checkpoints it may write (run-walk.ts,
+ * #2998), rather than a second copy.
  *
  * Given a value and the secrets a step was given (variable name to value), it
  * answers a copy with every occurrence of each value, inside any string at any
