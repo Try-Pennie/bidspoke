@@ -35,9 +35,9 @@
  * THE MODE. OPS_CONTINUATION in wrangler.ops.toml: off (unset) writes nothing;
  * observe writes, acknowledges and reads back a checkpoint at each slice
  * boundary and carries on in the same invocation, so the whole write and read
- * path runs on real runs without changing how any run ends. Suspending a run
- * and resuming it in a later invocation (on) is the next slice of #1951 and is
- * not in this build, so it is refused here and reported, never half run.
+ * path runs on real runs without changing how any run ends; on does the same
+ * and then suspends the run to continue, the next invocation resuming from
+ * the checkpoint (continuation.ts). Any other value is off, and reported.
  */
 import { findEntryNode, findNode } from '../engine/graph'
 import type { EdgeDefinition, NodeDefinition, StepOutput } from '../types'

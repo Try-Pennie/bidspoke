@@ -272,8 +272,8 @@ export function chargedAttempts(run: Pick<ClaimedRun, 'attempts' | 'unchargedAtt
 /**
  * Whether a retry after this claim's start ends the run dead at max_attempts,
  * the judgement complete_run_request makes (#2336). The start adds one attempt,
- * charged unless the run resumes from a wait (UNCHARGED_RESUME_REASONS: a
- * resource wait, or a rate limit wait since #2859), so it is the run's last
+ * charged unless the run resumes from a wait or continues (UNCHARGED_RESUME_REASONS:
+ * a resource wait, a rate limit wait since #2859, a continuation since #1951), so it is the run's last
  * charged attempt when attempts + 1 - unchargedAttempts - (1 if resumed from a
  * wait) reaches maxAttempts. supabase-ops/supabase/tests/
  * claim_uncharged_attempts.test.sql checks the same rule against the database.
@@ -333,6 +333,12 @@ export interface StartedRun {
   /** The version every send intent of this attempt is fenced with. */
   stateVersion: number
   attempt: number
+  /**
+   * How many times the run has been suspended to continue (#1951, ops
+   * migration 20261028220000). Above 0, the attempt resumes from the
+   * checkpoint the run names, never from its first step.
+   */
+  continuations: number
 }
 
 /** Throws OpsClaimLostError when the claim is no longer this caller's. */
@@ -345,7 +351,17 @@ export async function startRunExecution(
   }, options))
   const outcome = field(name, row, 'outcome', oneOf(['started', 'already_started', 'claim_lost'] as const), 'a start outcome')
   if (outcome === 'claim_lost') throw new OpsClaimLostError(`${name}: run ${runRequestId} is not held by this claim`)
-  return { outcome, stateVersion: field(name, row, 'state_version', isInt, 'a whole number'), attempt: field(name, row, 'attempt', isInt, 'a whole number') }
+  // Required once ops migration 20261028220000 is applied (#1951). Its absence is
+  // refused by name, never read as 0: a continued run read as never continued
+  // would be walked again from its first step, repeating its earlier slices' sends.
+  if (!('continuations' in row)) throw new OpsWriteError(`${name} returned no continuations`)
+  const isCount = (v: unknown): v is number => isInt(v) && v >= 0
+  return {
+    outcome,
+    stateVersion: field(name, row, 'state_version', isInt, 'a whole number'),
+    attempt: field(name, row, 'attempt', isInt, 'a whole number'),
+    continuations: field(name, row, 'continuations', isCount, 'a whole number from 0'),
+  }
 }
 
 /** False means the claim was lost: stop before the next send (#1698 D3). */

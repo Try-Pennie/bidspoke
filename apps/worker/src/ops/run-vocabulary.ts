@@ -82,10 +82,12 @@ export type ResumeReason = (typeof RESUME_REASONS)[number]
 
 /**
  * The resume reasons whose start is not charged against max_attempts: a
- * deferral spends no retry attempt (#1693 7.4). start_run_execution and the
- * lease sweep name the same list, which the vocabulary test holds them to.
+ * deferral spends no retry attempt (#1693 7.4), and a continuation (#1951) is
+ * the next slice of a run, not a failure of it; the whole run step cap bounds
+ * how many a run may take (run-walk.ts OPS_WALK_MAX_STEPS). start_run_execution
+ * and the lease sweep name the same list, which the vocabulary test holds them to.
  */
-export const UNCHARGED_RESUME_REASONS = ['resource_wait', 'rate_limit_wait'] as const satisfies readonly ResumeReason[]
+export const UNCHARGED_RESUME_REASONS = ['continue', 'resource_wait', 'rate_limit_wait'] as const satisfies readonly ResumeReason[]
 
 /**
  * The requeue cap (#2859). A rate limit wait spends no retry attempt, so
@@ -279,10 +281,13 @@ export type OpsStepRecordOutcome = (typeof OPS_STEP_RECORD_OUTCOMES)[number]
 /**
  * What OPS_CONTINUATION may name in this build (checkpoint.ts): off writes
  * nothing; observe writes, acknowledges and reads back a checkpoint at each
- * slice boundary and carries on, changing how no run ends. Suspending and
- * resuming a run (on) is the next slice of #1951 and is not here yet.
+ * slice boundary and carries on, changing how no run ends; on does the same
+ * and then suspends the run to continue (complete_run_request, reason
+ * continue), the next holder resuming from that checkpoint (supabase-ops
+ * migration 20261028220000). A run that has continued is resumed in every
+ * mode: the mode decides only whether a slice suspends.
  */
-export const CONTINUATION_MODES = ['off', 'observe'] as const
+export const CONTINUATION_MODES = ['off', 'observe', 'on'] as const
 export type ContinuationMode = (typeof CONTINUATION_MODES)[number]
 
 /**

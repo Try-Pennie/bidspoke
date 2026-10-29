@@ -191,6 +191,11 @@ BEGIN
     PERFORM pg_temp.rw_wait(v_id, v_tok);
     v_tok := pg_temp.rw_claim_start(v_id);
     IF v_outcome = 'continue' THEN
+      -- A continuation suspends only from a checkpoint its attempt named (#1951, migration 20261028220000).
+      PERFORM public.record_run_checkpoint(v_org, v_id, v_tok, e.id, r.state_version, 1,
+          format('checkpoints/v1/%s/%s/%s-1.json', v_org, v_id, r.state_version), repeat('d', 64), 10)
+        FROM public.run_requests r JOIN public.workflow_executions e ON e.run_request_id = r.id AND e.attempt = r.attempts
+        WHERE r.id = v_id;
       PERFORM public.complete_run_request(v_org, v_id, v_tok, 'suspend', p_reason => 'continue', p_not_before => now());
     ELSE
       PERFORM public.complete_run_request(v_org, v_id, v_tok, v_outcome);

@@ -60,9 +60,12 @@ bucket_name = "bidspoke-ops-checkpoints"
 #
 # OPS_CONTINUATION (#1951): observe writes, names and reads back a checkpoint at
 # each slice boundary of a run and carries on in the same invocation, changing
-# how no run ends; off writes nothing. Suspending a run and resuming it later is
-# the next slice of #1951 and not in this build. No run is dispatched while
-# OPS_TICK_MODE is unset (observe), so this does nothing until the tick is live.
+# how no run ends; on does the same and then suspends the run to continue, the
+# next invocation resuming from that checkpoint (needs ops migration
+# 20261028220000 applied first); off writes nothing. A run that has continued is
+# resumed whatever the mode, so turning on back to observe or off strands none.
+# No run is dispatched while OPS_TICK_MODE is unset (observe), so this does
+# nothing until the tick is live.
 [vars]
 LANE = "ops"
 OPS_CONTINUATION = "observe"
