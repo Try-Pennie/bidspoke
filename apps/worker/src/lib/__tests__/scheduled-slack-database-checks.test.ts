@@ -120,11 +120,11 @@ describe('timeout-audit through an outage and back', () => {
     const { client, asked } = tableClient({
       service_connections: { data: [{ organization_id: ORG }] },
       workflows: { data: [workflow] },
-      'rpc:step_duration_percentiles_by_workflow': { error: { message: 'canceling statement due to statement timeout' } },
+      'rpc:step_timeout_audit_by_workflow': { error: { message: 'canceling statement due to statement timeout' } },
     })
     registerScheduledSlack(client, { kv: await kvWithCopy({ [ORG]: CONN }), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
     await runTimeoutAuditCheck(client, kv as never, 'https://app.test')
-    expect(asked).toContain('rpc:step_duration_percentiles_by_workflow')
+    expect(asked).toContain('rpc:step_timeout_audit_by_workflow')
     expect(kv.puts).toEqual([])
     expect(fetchSpy).not.toHaveBeenCalled()
   })
