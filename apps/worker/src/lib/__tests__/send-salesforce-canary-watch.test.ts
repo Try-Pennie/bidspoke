@@ -101,7 +101,18 @@ function landed(i: number): Record<string, unknown> {
 
 const ok = (body: unknown): SalesforceRead => ({ kind: 'answer', status: 200, text: JSON.stringify(body) })
 
-function deps(over: Partial<CanaryWatchDeps> & { steps?: WatchedStep[]; records?: (id: string) => SalesforceRead | undefined; clockStepMs?: number } = {}) {
+/** A complete SOQL answer holding `records`. */
+const queryAnswer = (records: unknown[]): SalesforceRead => ok({ totalSize: records.length, done: true, records })
+
+function deps(
+  over: Partial<CanaryWatchDeps> & {
+    steps?: WatchedStep[]
+    records?: (id: string) => SalesforceRead | undefined
+    /** The answer to a SOQL query, given its decoded text; absent, a complete answer with no rows. */
+    query?: (soql: string) => SalesforceRead
+    clockStepMs?: number
+  } = {},
+) {
   const asked: string[] = []
   const posted: ReturnType<typeof canaryWatchMessage>[] = []
   const postedKinds: string[] = []
@@ -121,6 +132,10 @@ function deps(over: Partial<CanaryWatchDeps> & { steps?: WatchedStep[]; records?
     salesforce: async () => async (p: string) => {
       asked.push(p)
       clock += over.clockStepMs ?? 0
+      if (p.startsWith('/query?q=')) {
+        const soql = decodeURIComponent(p.slice('/query?q='.length))
+        return over.query ? over.query(soql) : queryAnswer([])
+      }
       const m = /^\/sobjects\/(Submission__c|Lead)\/([A-Za-z0-9]+)\?fields=/.exec(p)
       return (m && over.records?.(m[2])) ?? { kind: 'answer', status: 404, text: '[{"errorCode":"NOT_FOUND"}]' }
     },
@@ -473,6 +488,202 @@ describe("the inquiry relay's Pipedream link in PDFlow_4__c", () => {
     const { d } = deps({ steps: [directStep(1)], records })
     const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
     expect(report.native[0]).toMatchObject({ kind: 'not_landed', fields: ['PDFlow_4__c'] })
+  })
+})
+
+/**
+ * A field another Salesforce user changed after the write landed (#3005). The
+ * 2026-10-29 report said run 01a1837c-e25d-777a-ab77-bda0d3dd37ba "did not
+ * arrive complete" and told Dan to move Main Flow back to Pipedream. It had
+ * arrived: Submission a04Ui00000OQhMrIAL held the run's stamp and link, and its
+ * field history (Submission__History, read 2026-10-29) shows Bidspoke
+ * Integration setting ADV_SO__c 0 to 2 and XBC_SO__c "011" to "211" at
+ * 17:09:29 UTC, inside the step's own 17:09:27.115 to 17:09:29.959, then
+ * "integration halo", the website's API user, setting them back at 22:33:23.
+ * The history rows below are that answer's shape; the user ids are the org's.
+ */
+describe('a field another Salesforce user changed after the write landed (#3005)', () => {
+  const OURS = '005Ui00000EnivtIAB'
+  const WEBSITE = '005Ul00000AoEbkIAF'
+  const row = (field: string, value: unknown, by: string, name: string, at: string) => ({
+    attributes: { type: 'Submission__History' },
+    Field: field,
+    NewValue: value,
+    CreatedById: by,
+    CreatedBy: { attributes: { type: 'Name' }, Name: name },
+    CreatedDate: at,
+  })
+  const ourRows = [row('ADV_SO__c', 2, OURS, 'Bidspoke Integration', '2026-10-28T17:09:29.000+0000'), row('XBC_SO__c', '211', OURS, 'Bidspoke Integration', '2026-10-28T17:09:29.000+0000')]
+  const websiteRows = [row('ADV_SO__c', 0, WEBSITE, 'integration halo', '2026-10-28T22:33:23.000+0000'), row('XBC_SO__c', '011', WEBSITE, 'integration halo', '2026-10-28T22:33:23.000+0000')]
+
+  /** The incident's step: its own send and answer times, and the debt band it sent. */
+  const incidentStep = (i: number) =>
+    directStep(i, {
+      started_at: '2026-10-28T17:09:27.115Z',
+      completed_at: '2026-10-28T17:09:29.959Z',
+      input: { resolved: { operation: 'update', object: 'Submission__c', record_id: subId(i), body: { ...sentBody(runId(i)), XBC_SO__c: '211' } } },
+    })
+  /** What the Submission held when the check read it: this run's stamp and link, the website's ADV and XBC. */
+  const overwritten = (i: number) =>
+    ok({ ...landed(i), XBC_SO__c: '011', ADV_SO__c: 0, PD_Completed_Timestamp__c: '2026-10-27T15:04:05.000+0000', LastModifiedDate: '2026-10-28T22:33:23.000+0000' })
+  const records = (id: string) => (id === subId(1) ? overwritten(1) : landedRecords(id))
+
+  it('the run that was reported lost arrived complete, said as changed afterwards by the other user, with no alert and no move back to Pipedream', async () => {
+    const queries: string[] = []
+    const { d, posted, recorded } = deps({
+      steps: [directStep(0), incidentStep(1)],
+      records,
+      query: (soql) => {
+        queries.push(soql)
+        return queryAnswer([...ourRows, ...websiteRows])
+      },
+    })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native).toEqual([
+      { kind: 'landed', executionId: runId(0) },
+      {
+        kind: 'moved_on',
+        executionId: runId(1),
+        laterWrite: [],
+        newerSubmission: false,
+        changedAfterwards: [
+          { field: 'ADV_SO__c', byUserId: WEBSITE, byName: 'integration halo', at: '2026-10-28T22:33:23.000Z' },
+          { field: 'XBC_SO__c', byUserId: WEBSITE, byName: 'integration halo', at: '2026-10-28T22:33:23.000Z' },
+        ],
+      },
+    ])
+    // One history query, for the one write whose fields differ, asking only about those fields since the step began.
+    expect(queries).toHaveLength(1)
+    expect(queries[0]).toContain('FROM Submission__History')
+    expect(queries[0]).toContain(`ParentId = '${subId(1)}'`)
+    expect(queries[0]).toContain("Field IN ('ADV_SO__c','XBC_SO__c')")
+    expect(queries[0]).toContain('CreatedDate >= 2026-10-28T17:09:25Z')
+    const m = posted[0]
+    expect(m.alert).toBe(false)
+    expect(m.fixHint).toBeUndefined()
+    expect(m.title).toBe('Direct Send Salesforce writes: all 2 arrived complete')
+    expect(m.lines[1]).toContain(
+      "1 of those had fields changed afterwards in Salesforce by integration halo. Salesforce's field history shows Bidspoke's values arriving first, so the write was not lost.",
+    )
+    expect(m.lines.join('\n')).not.toContain('move Main Flow back to Pipedream')
+    expect(recorded[0]).toMatchObject({ outcome: 'all_landed', summary: { landed: 2, not_landed: 0, changed_afterwards: 1 } })
+  })
+
+  it('a history read that fails is never landed: the write did not arrive complete, and the message says the history could not be read', async () => {
+    for (const answer of [
+      { kind: 'answer', status: 500, text: '[{"errorCode":"UNKNOWN_EXCEPTION"}]' },
+      { kind: 'answer', status: 400, text: '[{"errorCode":"INVALID_FIELD"}]' },
+      { kind: 'answer', status: 200, text: 'not json' },
+      // A list cut short is not the whole history.
+      ok({ totalSize: 500, done: false, records: [...ourRows, ...websiteRows] }),
+    ] as SalesforceRead[]) {
+      const { d, posted } = deps({ steps: [incidentStep(1)], records, query: () => answer })
+      const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+      expect(report.native[0], JSON.stringify(answer)).toMatchObject({ kind: 'not_landed', fields: ['ADV_SO__c', 'XBC_SO__c'] })
+      const problems = (report.native[0] as { problems: string[] }).problems
+      expect(problems.some((p) => p.startsWith('its field history could not be read'))).toBe(true)
+      expect(posted[0].alert).toBe(true)
+    }
+  })
+
+  it('a history read with no answer stops the reads for the day, as any unanswered read does', async () => {
+    const { d } = deps({ steps: [incidentStep(1), directStep(2)], records, query: () => ({ kind: 'no_answer', error: 'timed out' }) })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native[0]).toMatchObject({ kind: 'not_landed', fields: ['ADV_SO__c', 'XBC_SO__c'] })
+    expect(report.native[1]).toMatchObject({ kind: 'unchecked', reason: 'Salesforce stopped answering earlier in this check.' })
+  })
+
+  it('no history row from the user that made the write, untracked fields included, still did not arrive complete', async () => {
+    for (const rows of [[], websiteRows]) {
+      const { d, posted } = deps({ steps: [incidentStep(1)], records, query: () => queryAnswer(rows) })
+      const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+      expect(report.native[0], String(rows.length)).toEqual({
+        kind: 'not_landed',
+        executionId: runId(1),
+        problems: ['2 of its fields hold different values from the ones this run sent'],
+        fields: ['ADV_SO__c', 'XBC_SO__c'],
+      })
+      expect(posted[0].alert).toBe(true)
+    }
+  })
+
+  it('our row with no later row by another user, or a later one setting some other value, still did not arrive complete', async () => {
+    const laterOther = [row('ADV_SO__c', 5, WEBSITE, 'integration halo', '2026-10-28T22:33:23.000+0000'), websiteRows[1]]
+    const laterOurs = [row('ADV_SO__c', 0, OURS, 'Bidspoke Integration', '2026-10-28T22:33:23.000+0000'), websiteRows[1]]
+    for (const rows of [ourRows, [...ourRows, ...laterOther], [...ourRows, ...laterOurs]]) {
+      const { d } = deps({ steps: [incidentStep(1)], records, query: () => queryAnswer(rows) })
+      const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+      expect(report.native[0]).toMatchObject({ kind: 'not_landed', fields: ['ADV_SO__c', 'XBC_SO__c'] })
+    }
+  })
+
+  it('a second user writing inside the write\'s own send span leaves whose write it was unknown, so it did not arrive complete', async () => {
+    // A third user setting both fields to the values sent, just before ours: either row could be the write's.
+    const insideSpan = [
+      row('ADV_SO__c', 2, '005Ui00000ZZZZZIAZ', 'someone else', '2026-10-28T17:09:28.000+0000'),
+      row('XBC_SO__c', '211', '005Ui00000ZZZZZIAZ', 'someone else', '2026-10-28T17:09:28.000+0000'),
+    ]
+    const { d } = deps({ steps: [incidentStep(1)], records, query: () => queryAnswer([...insideSpan, ...ourRows, ...websiteRows]) })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native[0]).toMatchObject({ kind: 'not_landed', fields: ['ADV_SO__c', 'XBC_SO__c'] })
+  })
+
+  it("a later change in the same whole second as the write cannot be placed after it, so it did not arrive complete", async () => {
+    const sameSecond = websiteRows.map((r) => ({ ...r, CreatedDate: '2026-10-28T17:09:29.000+0000' }))
+    const { d } = deps({ steps: [incidentStep(1)], records, query: () => queryAnswer([...ourRows, ...sameSecond]) })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native[0]).toMatchObject({ kind: 'not_landed', fields: ['ADV_SO__c', 'XBC_SO__c'] })
+  })
+
+  it('one field the history explains beside one it does not still did not arrive complete, and names both', async () => {
+    const { d } = deps({ steps: [incidentStep(1)], records, query: () => queryAnswer([...ourRows, websiteRows[0]]) })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.native[0]).toMatchObject({ kind: 'not_landed', fields: ['ADV_SO__c', 'XBC_SO__c'] })
+  })
+
+  it("a Submission without this run's stamp or link is never cleared by history, and no history is asked for", async () => {
+    for (const over of [{ Bidspoke_Write__c: `${runId(9)}:send_salesforce:0` }, { Bidspoke_Write__c: null }, { PDFlow_1__c: link(runId(9)) }]) {
+      const queries: string[] = []
+      const recs = (id: string) => (id === subId(1) ? ok({ ...JSON.parse((overwritten(1) as { text: string }).text), ...over }) : landedRecords(id))
+      const { d } = deps({
+        steps: [incidentStep(1)],
+        records: recs,
+        query: (soql) => {
+          queries.push(soql)
+          return queryAnswer([...ourRows, ...websiteRows])
+        },
+      })
+      const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+      expect(report.native[0].kind, JSON.stringify(over)).toBe('not_landed')
+      expect(queries, JSON.stringify(over)).toEqual([])
+    }
+  })
+
+  it('the invalid state subject shares the rule: it writes the same Submission the website writes', async () => {
+    const step = directStep(1, {
+      started_at: '2026-10-28T17:09:27.115Z',
+      completed_at: '2026-10-28T17:09:29.959Z',
+      input: {
+        resolved: {
+          operation: 'update',
+          object: 'Submission__c',
+          record_id: subId(1),
+          body: { ...sentBody(runId(1)), XBC_SO__c: '211', Bidspoke_Write__c: `${runId(1)}:invalid_state_sf_post:0` },
+        },
+      },
+    })
+    const recs = (id: string) => (id === subId(1) ? ok({ ...JSON.parse((overwritten(1) as { text: string }).text), Bidspoke_Write__c: `${runId(1)}:invalid_state_sf_post:0` }) : undefined)
+    const { d, posted } = deps({ steps: [step], records: recs, query: () => queryAnswer([...ourRows, ...websiteRows]) })
+    const report = await runCanaryWatch(INVALID_STATE_SUBJECT, d)
+    expect(report.native[0]).toMatchObject({ kind: 'moved_on', changedAfterwards: [{ field: 'ADV_SO__c' }, { field: 'XBC_SO__c' }] })
+    expect(posted[0].alert).toBe(false)
+  })
+
+  it('a write whose fields all match asks for no history', async () => {
+    const queries: string[] = []
+    const { d } = deps({ steps: [directStep(1)], records: landedRecords, query: (soql) => (queries.push(soql), queryAnswer([])) })
+    await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(queries).toEqual([])
   })
 })
 
