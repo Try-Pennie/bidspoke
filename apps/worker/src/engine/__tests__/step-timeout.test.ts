@@ -17,6 +17,7 @@ import {
   TIMEOUT_KINDS,
   stepTimeoutMessage,
   stepTimeoutMarkerOf,
+  timeoutMarker,
   stepTimedOut,
   stepTimedOutAfterMs,
 } from '../step-timeout'
@@ -32,6 +33,18 @@ describe('the step deadline error carries its own classification', () => {
 
   it('marks the step row of a step its own deadline stopped', () => {
     expect(stepTimeoutMarkerOf(new StepTimeoutError(5_250))).toEqual({ timeout_kind: STEP_DEADLINE, timed_out_after_ms: 5_250 })
+  })
+
+  // timed_out_after_ms is an INTEGER column, and a step's timeout_ms comes from
+  // its config unvalidated: a value the column refuses would fail the step's row,
+  // so it is rounded into range, or left out with the step still marked.
+  it('records a deadline the column can hold: rounded to whole ms, or none when it cannot be', () => {
+    expect(stepTimeoutMarkerOf(new StepTimeoutError(4_500.4))).toEqual({ timeout_kind: STEP_DEADLINE, timed_out_after_ms: 4_500 })
+    for (const ms of [Number.NaN, Number.POSITIVE_INFINITY, 0, -5, 3_000_000_000, '5000' as unknown as number]) {
+      expect(stepTimeoutMarkerOf(new StepTimeoutError(ms))).toEqual({ timeout_kind: STEP_DEADLINE, timed_out_after_ms: null })
+    }
+    expect(timeoutMarker(PARALLEL_BLOCK_DEADLINE, 20_000.6)).toEqual({ timeout_kind: PARALLEL_BLOCK_DEADLINE, timed_out_after_ms: 20_001 })
+    expect(timeoutMarker(PARALLEL_BLOCK_DEADLINE, 2 ** 31)).toEqual({ timeout_kind: PARALLEL_BLOCK_DEADLINE, timed_out_after_ms: null })
   })
 
   it('marks nothing for any other failure, even one whose text reads like a timeout', () => {

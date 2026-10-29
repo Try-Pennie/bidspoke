@@ -29,7 +29,7 @@ import { LeadValidationConfigFault } from './nodes/lead-validation'
 import { reportLeadValidationEvent, type LeadValidationAlertDeps } from '../lib/lead-validation-config-alert'
 import { constantsNamespacesOf, type TriggerType } from '@bidspoke/workflow-definition'
 import { withRetry } from './retry'
-import { stepTimeoutMarkerOf, PARALLEL_BLOCK_DEADLINE, type StepTimeoutMarker } from './step-timeout'
+import { stepTimeoutMarkerOf, timeoutMarker, PARALLEL_BLOCK_DEADLINE, type StepTimeoutMarker } from './step-timeout'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
 import { fieldPresenceColumns, fieldPresenceForCapture, shouldLogCapture } from './field-presence'
 import { detectDroppedEmail } from './dropped-fields'
@@ -1877,7 +1877,7 @@ export async function walkGraph(
             recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
             // Marked as the block's deadline, not the child's own (#3047), so a
             // reader of step timeouts tells the two apart without the text.
-            logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, childOrderBase + childIndex, node.id, undefined, { timeout_kind: PARALLEL_BLOCK_DEADLINE, timed_out_after_ms: timeoutMs })
+            logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, childOrderBase + childIndex, node.id, undefined, timeoutMarker(PARALLEL_BLOCK_DEADLINE, timeoutMs))
           }
         }
       } catch (err) {

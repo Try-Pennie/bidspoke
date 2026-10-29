@@ -43,7 +43,7 @@ export interface StepLogEntry {
   parallel_group_id?: string
   /** Set only on a step a deadline stopped, with timed_out_after_ms (#3047, engine/step-timeout.ts). */
   timeout_kind?: TimeoutKind
-  timed_out_after_ms?: number
+  timed_out_after_ms?: number | null
 }
 
 // --- Shared insert/update plumbing for the execution-log hot path ----------

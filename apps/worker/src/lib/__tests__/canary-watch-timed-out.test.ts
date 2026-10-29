@@ -41,7 +41,7 @@ const runId = (i: number) => `01a20000-0000-7000-8000-${String(i).padStart(12, '
 const subId = (i: number) => `a04Ui0${String(i).padStart(9, '0')}IAA`
 const runLine = (i: number) => `<${link(runId(i))}|Run ${runId(i)}>`
 
-/** What the engine's step deadline records on a step it stopped (engine/retry.ts). */
+/** The message the engine's step deadline records on a step it stopped (engine/step-timeout.ts), as a row written before the #3047 marker carries it alone. */
 const TIMED_OUT_5250 = 'Step timed out after 5250ms (in-flight upstream call canceled via abort signal)'
 
 function sentBody(run: string, step = 'send_salesforce'): Record<string, unknown> {

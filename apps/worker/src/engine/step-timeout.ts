@@ -28,7 +28,22 @@ export type TimeoutKind = (typeof TIMEOUT_KINDS)[number]
 /** What a step row records about a deadline it hit. Absent, never null, on any other row. */
 export interface StepTimeoutMarker {
   timeout_kind: TimeoutKind
-  timed_out_after_ms: number
+  /** Null only when the configured deadline is not a length the INTEGER column can hold. */
+  timed_out_after_ms: number | null
+}
+
+/** Postgres INTEGER's largest value. */
+const INT4_MAX = 2_147_483_647
+
+/**
+ * The marker for a row a deadline of `ms` stopped. `ms` comes from a node's
+ * config unvalidated, and a value the INTEGER column refuses would fail the
+ * step's row on insert, so it is rounded to whole ms, and one still outside
+ * 1 to INT4_MAX is left out: the row still says it timed out.
+ */
+export function timeoutMarker(kind: TimeoutKind, ms: unknown): StepTimeoutMarker {
+  const whole = typeof ms === 'number' && Number.isFinite(ms) ? Math.round(ms) : Number.NaN
+  return { timeout_kind: kind, timed_out_after_ms: whole >= 1 && whole <= INT4_MAX ? whole : null }
 }
 
 /**
@@ -51,7 +66,7 @@ export class StepTimeoutError extends Error {
 
 /** The marker for a step row whose step failed with `err`: set only when its own deadline stopped it, never from text. */
 export function stepTimeoutMarkerOf(err: unknown): StepTimeoutMarker | null {
-  return err instanceof StepTimeoutError ? { timeout_kind: STEP_DEADLINE, timed_out_after_ms: err.timeoutMs } : null
+  return err instanceof StepTimeoutError ? timeoutMarker(STEP_DEADLINE, err.timeoutMs) : null
 }
 
 /** The step row columns a reader passes in. */
