@@ -56,7 +56,7 @@ import {
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
   servedConnectionProblem,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
-  type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinition, type ServedOpsDefinitions,
+  type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
   MAX_RUN_VARIABLES_PER_REQUEST, type OpsRunVariablesRequest, type RefusedRunVariables, type RunVariablesRefusal, type ServedOpsRunVariableNames, type ServedOpsRunVariables,
 } from './ops-gateway-contract'
 import { envReferences } from './definition-env-references'
@@ -65,7 +65,6 @@ import {
 } from './current-variables'
 import type { SecretKeyInput } from './secret-crypto'
 import { formatErr } from './format-error'
-import { servedVersionVariables } from './version-variables'
 
 /** The tick's id in the heartbeat registry and the export alerter. Never rename it: it keys its KV state. */
 export const OPS_TICK_JOB = 'ops-tick'
@@ -259,7 +258,6 @@ interface VersionRow {
   workflow_id: string
   version_number: number
   definition: unknown
-  env_capture: unknown
   workflows: { organization_id: string; lane: string } | null
 }
 
@@ -278,18 +276,17 @@ interface VersionRow {
  * read per version, each over the (workflow_id, version_number) key. Throws on
  * a failed read, never serving it as unserved.
  *
- * Each version is served with the variables kept with it at its save that its
- * definition reads (#2702, version-variables.ts): a plain one by its value, a
- * secret one by its name alone. A version whose kept variables cannot be read
- * is refused on its own, named with why, so it never fails the others asked
- * for with it, and is never served without them.
+ * Served without variables (#3003): a run is given each variable's current
+ * value when it starts (readOpsRunVariables below), so what a version kept at
+ * its save (workflow_versions.env_capture) is not read here, and can never
+ * stop a version being served.
  */
 export async function readOpsWorkflowDefinitions(supabase: SupabaseClient, request: OpsDefinitionRequest): Promise<ServedOpsDefinitions> {
-  const served: ServedOpsDefinitions = { definitions: [], unserved: [], refused: [] }
+  const served: ServedOpsDefinitions = { definitions: [], unserved: [] }
   for (const want of request.versions) {
     const { data, error } = await supabase
       .from('workflow_versions')
-      .select('workflow_id, version_number, definition, env_capture, workflows!inner(organization_id, lane)')
+      .select('workflow_id, version_number, definition, workflows!inner(organization_id, lane)')
       .eq('workflow_id', want.workflow_id)
       .eq('version_number', want.version_number)
       .eq('workflows.lane', 'ops')
@@ -305,17 +302,8 @@ export async function readOpsWorkflowDefinitions(supabase: SupabaseClient, reque
       served.unserved.push({ workflow_id: want.workflow_id, version_number: want.version_number })
       continue
     }
-    const definition = row.definition as Record<string, unknown>
-    let variables: ServedOpsDefinition['variables']
-    try {
-      variables = servedVersionVariables(row.env_capture, row.workflow_id, definition, `workflow ${row.workflow_id} version ${row.version_number}`)
-    } catch (err) {
-      console.error(`[ops-gateway] not serving workflow ${row.workflow_id} version ${row.version_number}: ${formatErr(err)}`)
-      served.refused.push({ workflow_id: row.workflow_id, version_number: row.version_number, reason: formatErr(err) })
-      continue
-    }
     served.definitions.push({
-      workflow_id: row.workflow_id, organization_id: row.workflows.organization_id, version_number: row.version_number, definition, variables,
+      workflow_id: row.workflow_id, organization_id: row.workflows.organization_id, version_number: row.version_number, definition: row.definition as Record<string, unknown>,
     })
   }
   return served

@@ -18,6 +18,13 @@
  *    20261028220000). A boundary that did not verify never suspends: the slice
  *    says why and carries on, and tries again at its next boundary.
  *
+ * A SECRET IS NEVER WRITTEN (#3024). The checkpoint is encoded with every
+ * secret the run was given masked (checkpoint.ts, format 2), and read back
+ * with them refilled, so the boundary's check that the replay lands where the
+ * walk is also proves the masks come back off exactly. A checkpoint whose
+ * masked form would still show a value is not written: one checkpoint_skipped
+ * line (holds_secret) per slice, and the slice carries on, as before #3024.
+ *
  * HOW A BOUNDARY FAILS. Loudly and harmlessly: each failure is one
  * ops_continuation line, observe_failed in observe and suspend_failed in on,
  * naming its reason (store_missing, encode_failed, write_failed, not_named,
@@ -51,8 +58,8 @@
 import { formatErr } from '../lib/format-error'
 import type { EdgeDefinition, ExecutionContext, NodeDefinition } from '../types'
 import {
-  CHECKPOINT_FORMAT, CheckpointRefused, CheckpointStoreMissing, decodeCheckpoint, encodeCheckpoint, replayCheckpoint,
-  type Checkpoint, type CheckpointStep, type CheckpointStore, type ContinuationBudget, type ReplayedPosition,
+  CHECKPOINT_FORMAT, CheckpointHoldsSecret, CheckpointRefused, CheckpointStoreMissing, decodeCheckpoint, encodeCheckpoint, replayCheckpoint,
+  type Checkpoint, type CheckpointStep, type CheckpointStore, type ContinuationBudget, type ReplayedPosition, type WrittenCheckpoint,
 } from './checkpoint'
 import { CheckpointNotNamed, RunStopped, type RunBodyEnd, type RunContext } from './run-invocation'
 import type { ContinuationMode } from './run-vocabulary'
@@ -131,8 +138,10 @@ export interface BoundaryInput {
   walkStartedAt: number
   /** What the run's earlier slices carried in. */
   carried: CarriedTotals
-  /** Set once the binding is found missing, so a run says it once. */
-  said: { storeMissing: boolean }
+  /** The secret values the run was given, masked out of the checkpoint and refilled on its read back (#3024). */
+  secrets: Readonly<Record<string, string>>
+  /** Set once the binding is found missing, or a checkpoint would hold a secret, so a slice says each once. */
+  said: { storeMissing: boolean; holdsSecret: boolean }
 }
 
 /**
@@ -161,7 +170,7 @@ export async function checkpointBoundary(input: BoundaryInput): Promise<'verifie
 
   const now = run.now()
   const computeMs = input.carried.computeMs + Math.max(0, now - input.walkStartedAt)
-  const cp: Checkpoint = {
+  const cp: WrittenCheckpoint = {
     v: CHECKPOINT_FORMAT,
     runRequestId: run.run.runRequestId,
     organizationId: run.run.organizationId,
@@ -178,9 +187,12 @@ export async function checkpointBoundary(input: BoundaryInput): Promise<'verifie
   }
   let enc: Awaited<ReturnType<typeof encodeCheckpoint>>
   try {
-    enc = await encodeCheckpoint(cp)
+    enc = await encodeCheckpoint(cp, input.secrets)
   } catch (err) {
-    return failed('encode_failed', formatErr(err))
+    if (!(err instanceof CheckpointHoldsSecret)) return failed('encode_failed', formatErr(err))
+    if (!input.said.holdsSecret) line('checkpoint_skipped', { reason: 'holds_secret', steps: path.length })
+    input.said.holdsSecret = true
+    return 'failed'
   }
   if (computeMs > c.budget.runComputeMs) line('cap_crossed', { cap: 'max_compute_exceeded', value: computeMs, limit: c.budget.runComputeMs })
   if (enc.bytes > c.budget.runStateBytes) line('cap_crossed', { cap: 'max_state_exceeded', value: enc.bytes, limit: c.budget.runStateBytes })
@@ -207,7 +219,7 @@ export async function checkpointBoundary(input: BoundaryInput): Promise<'verifie
     }
     const body = await store.get(pointer.key)
     if (body === null) return failed('checkpoint_missing', `${pointer.key} is named on the run and absent from R2`)
-    const back = await decodeCheckpoint(body, pointer, run.run)
+    const back = await decodeCheckpoint(body, pointer, run.run, input.secrets)
     const at = replayCheckpoint(input.nodes, input.edges, back)
     if (at.next.id !== next.id || at.lastCompletedNamespace !== ctx.lastCompletedNamespace) {
       return failed('replay_differs', `the replay resumes at ${at.next.id} after ${at.lastCompletedNamespace ?? 'nothing'}, and the walk is at ${next.id} after ${ctx.lastCompletedNamespace ?? 'nothing'}`)
@@ -235,14 +247,18 @@ export type ResumeAnswer =
 /**
  * The place a continued run resumes from (run.continuations above 0): the
  * checkpoint the run names, read through its row, trusted only as
- * decodeCheckpoint allows, its route replayed. Throws RunStopped when the run
- * is no longer this holder's. Never answers the run's first step.
+ * decodeCheckpoint allows, its masked secrets refilled from the ones served to
+ * this slice (a masked secret not served fails the run by name, #3024), its
+ * route replayed. Throws RunStopped when the run is no longer this holder's.
+ * Never answers the run's first step.
  */
 export async function resumeFromCheckpoint(input: {
   continuation: OpsWalkContinuation | undefined
   run: RunContext
   nodes: NodeDefinition[]
   edges: EdgeDefinition[]
+  /** The secret values served to this slice, refilled where its checkpoint masked them. */
+  secrets: Readonly<Record<string, string>>
 }): Promise<ResumeAnswer> {
   const { run, continuation: c } = input
   const n = run.continuations
@@ -288,7 +304,7 @@ export async function resumeFromCheckpoint(input: {
   let checkpoint: Checkpoint
   let at: ReplayedPosition
   try {
-    checkpoint = await decodeCheckpoint(body, pointer, run.run)
+    checkpoint = await decodeCheckpoint(body, pointer, run.run, input.secrets)
     at = replayCheckpoint(input.nodes, input.edges, checkpoint)
   } catch (err) {
     if (err instanceof CheckpointRefused) return fail(err.reason, err.message)
