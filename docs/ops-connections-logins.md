@@ -404,8 +404,19 @@ in `record_connection_refresh` (supabase-ops migration 20261018170000). A
 Reconnect starts a new streak. Nothing is recorded for a credential that is only
 being verified.
 
-A service's own 429 is a `RequeueAt` too, at its Retry-After or the default,
-unless the service's rules say that 429 is no rate limit (`notRateLimited` in
+A service's own 429 is a `RequeueAt` too, at its Retry-After, else its
+`x-ratelimit-reset` style header (`x-ratelimit-reset`, `x-rate-limit-reset`,
+`ratelimit-reset`, in that order, #1693 7.4), else the default. A reset header's
+number is read by its size, each range a named rule: from 1e12 epoch
+milliseconds, from 1e9 epoch seconds, below that seconds from now
+(`rateLimitResetAt` in `connection-fetch.ts`). Either is held between 1 second
+and 1 hour, as a Retry-After always was. Retry-After wins when both are present.
+A header present that cannot be read (a date, a unit, a sign) is never read as
+now: it is reported as `rate_limit_header_unparseable`, cause the header's name,
+and the next header, or the default, decides. A 503 is a wait only with a
+Retry-After; a reset header alone leaves it the caller's to judge.
+
+None of that applies when the service's rules say a 429 is no rate limit (`notRateLimited` in
 `service-rules.ts`, #2673). OpenAI's says so of `insufficient_quota`, its 429
 for an account out of credit or at its spend limit, which no wait clears: the
 step's action gets the answer and fails as `openai_insufficient_quota`, and
