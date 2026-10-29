@@ -12,7 +12,7 @@ import {
   SALESFORCE_SOQL_SEARCH_V1, SALESFORCE_UPDATE_RECORD_V1, SALESFORCE_UPDATE_RECORDS_V1, SALESFORCE_UPSERT_RECORD_V1,
 } from '../schema/services/salesforce'
 import { SLACK_SEND_MESSAGE_V1 } from '../schema/services/slack'
-import { SNOWFLAKE_EXECUTE_SQL_QUERY_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1 } from '../schema/services/snowflake'
+import { SNOWFLAKE_EXECUTE_SQL_QUERY_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V2 } from '../schema/services/snowflake'
 import { SUPABASE_INSERT_ROW_V1, SUPABASE_SELECT_ROW_V1, SUPABASE_UPDATE_ROW_V1 } from '../schema/services/supabase'
 import { run as anthropicChatV1 } from './actions/anthropic.chat.v1'
 import { run as googleCalendarCreateEventV1 } from './actions/google.calendar-create-event.v1'
@@ -54,6 +54,7 @@ import { run as salesforceUpsertRecordV1 } from './actions/salesforce.upsert-rec
 import { run as slackSendMessageV1 } from './actions/slack.send-message.v1'
 import { run as snowflakeExecuteSqlQueryV1 } from './actions/snowflake.execute-sql-query.v1'
 import { run as snowflakeInsertMultipleRowsV1 } from './actions/snowflake.insert-multiple-rows.v1'
+import { run as snowflakeInsertMultipleRowsV2 } from './actions/snowflake.insert-multiple-rows.v2'
 import { run as supabaseInsertRowV1 } from './actions/supabase.insert-row.v1'
 import { run as supabaseSelectRowV1 } from './actions/supabase.select-row.v1'
 import { run as supabaseUpdateRowV1 } from './actions/supabase.update-row.v1'
@@ -73,6 +74,7 @@ import { implement, type RuntimeAction, type ServiceRuntime } from './types'
 export const RUNTIME_ACTIONS: readonly RuntimeAction[] = [
   implement(SNOWFLAKE_EXECUTE_SQL_QUERY_V1, snowflakeExecuteSqlQueryV1),
   implement(SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1, snowflakeInsertMultipleRowsV1),
+  implement(SNOWFLAKE_INSERT_MULTIPLE_ROWS_V2, snowflakeInsertMultipleRowsV2),
   implement(SLACK_SEND_MESSAGE_V1, slackSendMessageV1),
   implement(OPENAI_CHAT_V1, openaiChatV1),
   implement(OPENAI_CREATE_RESPONSE_V1, openaiCreateResponseV1),
