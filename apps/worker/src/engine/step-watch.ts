@@ -6,13 +6,14 @@
  * stamped with its write marker (#2022, #2023), and a credit inquiry post is
  * recorded before it is sent (#2172). The Salesforce node reaches those through
  * three hooks it reads from the context it is called with: `noteSalesforceRequest`,
- * `recordSalesforceRequest` and `writeMarker`.
+ * `recordSalesforceRequest` and `writeMarker`. A fourth, `noteStepInput` (#3057),
+ * is for any node: the webhook node notes the request it built through it.
  *
  * Those hooks used to be fields of the run's one shared context, set by the walk
  * for the step it was on. That held only while one watched step ran at a time,
  * so the children of a parallel block ran unwatched: an inquiry post placed in
  * one went out with no record, and nothing said so. Now every step is called
- * with its own view of the context. The view holds that step's three hooks and
+ * with its own view of the context. The view holds that step's four hooks and
  * passes every other read and write through to the run's context, so what a
  * node writes there (a block sighting, say) still reaches the walk, and two
  * children writing at once each keep their own hooks.
