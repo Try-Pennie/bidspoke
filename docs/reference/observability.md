@@ -153,7 +153,7 @@ The ops Worker (`bidspoke-worker-ops`) runs one tick a minute and sends its repo
 
 | Page | Means |
 |---|---|
-| The ops minute cron reported a problem | A tick reported a problem that is due to page: one that pages at once, or one that three ticks in a row reported, or for a kind judged by its sweep's runs, three runs of that sweep. A context line `Reported by 3 or more ticks in a row.` (or `runs of its sweep`, or `ticks, or runs of its sweep`) says every problem on the page is the second kind. |
+| The ops minute cron reported a problem | A tick reported a problem that is due to page: one that pages at once, or one that three ticks in a row reported, or for a kind judged by its sweep's runs, three runs of that sweep (two for the nightly purge's `purge_failed` and `purge_behind`, #3018). A context line `Reported by 3 or more ticks in a row.` (or `runs of its sweep`, or `ticks, or runs of its sweep`, and 2 when a nightly purge kind is on the page) says every problem on the page is the second kind. |
 | The ops minute cron is not configured | A secret the tick needs is unset or unusable. It names the secret and its remedy, and pages at once. |
 | An ops connection needs to be reconnected | Sent to the connection's own organization (its Slack alert channel, under the configuration alerts toggle), naming the connection and its service. Its login is in `needs_reauth`: the service refused it, refused its requests after a new login, or its sign in service failed for more than 15 minutes. A person reconnects it on the Connections page. Pages at once. |
 | An ops connection cannot sign in | Sent the same way. Its login is in `refresh_failing` and has met Dan's decision 2 bound: 5 failed sign ins in a row, the first at least 15 minutes ago, each because the service's sign in did not answer. Its next failure turns it into `needs_reauth`. Check the service's status; if its sign in works, reconnect the connection. |
@@ -183,7 +183,7 @@ A kind the bidding Worker has no rule for pages at once. A page lists only the p
 
 **How to read it.** In the bidding Worker's logs (`bidspoke-worker`):
 
-- `ops_tick_problem_held`: a problem held, with its `key`, `in_a_row`, `pages_at` (3) and `counted_by` (`tick`, or the sweep whose runs judge it). One line per held problem per tick that reports it.
+- `ops_tick_problem_held`: a problem held, with its `key`, `in_a_row`, `pages_at` (3, or 2 for `purge_failed` and `purge_behind`) and `counted_by` (`tick`, or the sweep whose runs judge it). One line per held problem per tick that reports it.
 - `ops_tick_count_unknown`: the count in KV could not be read (`why: read`) or written (`why: write`). That tick's problems page rather than being held, since a count that cannot be carried could hold a problem for ever.
 - `[ops-tick] held tick`: the minute check found only held problems.
 
