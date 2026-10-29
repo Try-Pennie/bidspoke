@@ -137,6 +137,15 @@ export interface ExecutionContext {
    */
   recordSalesforceRequest?: (req: import('./engine/at-risk-writes').SalesforceRequestNote) => Promise<void>
   /**
+   * Set around every step on that step's own view of the context
+   * (engine/step-watch.ts, #3057): a node reports the request it resolved, as
+   * its step record will show it, before sending it. A step deadline fails the
+   * step with withTimeout's own error, which wins the race against the node's and
+   * carries no request, so the walk puts the noted one on it and the failed step
+   * still records what it sent. Only the webhook node notes today.
+   */
+  noteStepInput?: (input: ResolvedStepInput) => void
+  /**
    * This write's marker (#2023), set around a post-answer Salesforce update on
    * that step's own view of the context (#2832), and stamped by the node on the
    * objects that have the field (engine/write-marker.ts). Absent before the answer.

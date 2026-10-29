@@ -28,6 +28,7 @@ import { shadowOf } from '../run-reality'
 import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { containsHtmlDocument } from '../../lib/html-error-summary'
 import { noteBlockSighting, sightingFromResponse } from '../block-sightings'
+import { carryStepInput } from '../step-input'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -187,6 +188,11 @@ export async function executeIntegrationNode(
     },
   }
 
+  // Noted to the step before it is sent (#3057): a step deadline fails the step
+  // with withTimeout's own error, which wins the race against this one, so the
+  // walk puts this request on it and the failed step records what it sent.
+  ctx.noteStepInput?.(resolvedInput)
+
   // Fetch with timeout
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -200,6 +206,10 @@ export async function executeIntegrationNode(
       ...(bodyStr !== undefined ? { body: bodyStr } : {}),
       signal: controller.signal,
     })
+  } catch (err) {
+    // A dropped connection or this node's own timer: the same error, carrying the
+    // same masked request a completed step returns (#3057).
+    throw carryStepInput(err, resolvedInput)
   } finally {
     clearTimeout(timer)
   }
