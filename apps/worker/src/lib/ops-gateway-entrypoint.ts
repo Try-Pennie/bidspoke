@@ -14,17 +14,20 @@
  * rotated login's compare and set (one rpc, #2335), a resealed login's
  * compare and set during a rotation of the ops key (one rpc, #2333), or the
  * definitions of up to MAX_DEFINITIONS_PER_REQUEST ops workflow versions (one
- * read each, #1950).
+ * read each, #1950), or the current variables of up to
+ * MAX_RUN_VARIABLES_PER_REQUEST claimed runs (a workflow read, a read per
+ * version, and one paged variables read, #2997).
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import type { Env } from '../env'
 import { createSupabaseClient } from './supabase'
 import { readMoneyIdentities } from './money-identity'
-import { parseOpsDefinitionRequest } from './ops-gateway-contract'
+import { parseOpsDefinitionRequest, parseOpsRunVariablesRequest } from './ops-gateway-contract'
 import {
-  readOpsConnections, readOpsWorkflowDefinitions, readOpsWorkflows, recordOpsJobCompleted, recordOpsJobStarted, recordOpsTickCompleted, recordOpsTickStarted, replaceConnectionEnvelope,
-  storeRotatedEnvelope,
+  readOpsConnections, readOpsRunVariables, readOpsWorkflowDefinitions, readOpsWorkflows, recordOpsJobCompleted, recordOpsJobStarted, recordOpsTickCompleted, recordOpsTickStarted,
+  replaceConnectionEnvelope, storeRotatedEnvelope,
 } from './ops-gateway'
+import { secretKeys } from './secret-crypto'
 
 export class OpsGateway extends WorkerEntrypoint<Env> {
   opsWorkflows() {
@@ -61,6 +64,19 @@ export class OpsGateway extends WorkerEntrypoint<Env> {
   opsWorkflowDefinitions(request: unknown) {
     const parsed = parseOpsDefinitionRequest(request)
     return readOpsWorkflowDefinitions(createSupabaseClient(this.env, { retry: false }), parsed)
+  }
+
+  /**
+   * The current variables of the runs the tick claimed (#2997): the request
+   * read by name first (parseOpsRunVariablesRequest: one organization, at most
+   * MAX_RUN_VARIABLES_PER_REQUEST runs, never a variable name), then the reads,
+   * retries off, and each secret decrypted through the key ring. Served ahead
+   * of any ops caller (OPS_GATEWAY_SERVED_AHEAD). Who may call it and whose
+   * data: readOpsRunVariables in ops-gateway.ts.
+   */
+  opsRunVariables(request: unknown) {
+    const parsed = parseOpsRunVariablesRequest(request)
+    return readOpsRunVariables(createSupabaseClient(this.env, { retry: false }), secretKeys(this.env), parsed, Date.now())
   }
 
   async opsTickStarted() {
