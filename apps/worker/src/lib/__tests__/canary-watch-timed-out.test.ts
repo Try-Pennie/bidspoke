@@ -25,6 +25,7 @@ import {
   SEND_SALESFORCE_SUBJECT,
   ORDER_UNKNOWN_REASONS,
   STEP_COLUMNS,
+  SEND_STEP_COLUMNS,
   type CanaryWatchDeps,
   type CanaryWatchMessage,
   type WatchedStep,
@@ -289,5 +290,61 @@ describe('every timed out direct write is read back, beside the sample (#2938)',
 
   it('the step read carries the error a timed out step records', () => {
     expect(STEP_COLUMNS.split(',').map((c) => c.trim())).toContain('error_message')
+  })
+})
+
+/**
+ * Since #3047 the engine marks a step its own deadline stopped (`timeout_kind`
+ * 'step', `timed_out_after_ms`), and the report reads that marker. A row with
+ * no marker, written before it existed, is still read by its text, which every
+ * test above exercises.
+ */
+describe('a timed out write is found by the marker on its step row (#3047)', () => {
+  /** A step the engine marked, whose message is not the one the text fallback reads. */
+  const markedTimedOut = (i: number, over: Partial<WatchedStep> = {}) =>
+    timedOutStep(i, { error_message: 'Step timed out, worded some new way', timeout_kind: 'step', timed_out_after_ms: 4_500, ...over })
+
+  it('a marked step is read back as timed out, whatever its message says, and its deadline is the marker\'s', async () => {
+    const steps = Array.from({ length: 1_200 }, (_, i) => (i === 7 ? markedTimedOut(7) : directStep(i)))
+    const { d, asked, posted } = deps({ steps })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.timedOut).toEqual({ verdicts: [{ kind: 'landed', executionId: runId(7) }], limitsMs: [4_500] })
+    expect(asked[0].startsWith(`/sobjects/Submission__c/${subId(7)}?`)).toBe(true)
+    expect(posted[0].lines[2]).toBe('1 of the 1,200 timed out after 4.5 s without an answer from Salesforce. It arrived complete.')
+  })
+
+  it('a child its parallel block stopped waiting for did not time out at its own deadline', async () => {
+    const cutOff = timedOutStep(7, { error_message: 'Parallel group timed out after 20000ms before this child completed', timeout_kind: 'parallel_block', timed_out_after_ms: 20_000 })
+    const steps = Array.from({ length: 1_200 }, (_, i) => (i === 7 ? cutOff : directStep(i)))
+    const { d } = deps({ steps })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.timedOut).toEqual({ verdicts: [], limitsMs: [] })
+  })
+
+  it('a marked row is judged by its marker, never by its text', async () => {
+    const steps = [directStep(0), timedOutStep(1, { timeout_kind: 'parallel_block', timed_out_after_ms: 20_000 })]
+    const { d } = deps({ steps })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    expect(report.timedOut).toEqual({ verdicts: [], limitsMs: [] })
+  })
+
+  it("a marked timed out write is never ordered by when Bidspoke stopped waiting either", async () => {
+    const later = directStep(2, {
+      started_at: '2026-10-27T15:04:24.000Z',
+      completed_at: '2026-10-27T15:04:24.400Z',
+      input: { resolved: { operation: 'update', object: 'Submission__c', record_id: subId(1), body: sentBody(runId(2)) } },
+    })
+    const records = (id: string) => (id === subId(1) ? ok(landed(2)) : landedRecords(id))
+    const { d } = deps({ steps: [markedTimedOut(1), later], records })
+    const report = await runCanaryWatch(SEND_SALESFORCE_SUBJECT, d)
+    const expected = { kind: 'order_unknown', executionId: runId(1), otherExecutionId: runId(2), reason: ORDER_UNKNOWN_REASONS.ownTimedOut }
+    expect(report.native[0]).toEqual(expected)
+    expect(report.timedOut?.verdicts).toEqual([expected])
+  })
+
+  it('every step read carries the marker', () => {
+    for (const columns of [STEP_COLUMNS, SEND_STEP_COLUMNS]) {
+      expect(columns.split(',').map((c) => c.trim())).toEqual(expect.arrayContaining(['error_message', 'timeout_kind', 'timed_out_after_ms']))
+    }
   })
 })

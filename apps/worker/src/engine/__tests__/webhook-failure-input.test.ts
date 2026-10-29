@@ -29,7 +29,7 @@ vi.mock('../step-logger', () => ({
 
 import { walkGraph } from '../index'
 import { buildContext } from '../context'
-import { stepTimeoutMs } from '../retry'
+import { stepTimeoutMessage, stepTimedOutAfterMs } from '../step-timeout'
 
 const env = { PII_REDACTION_FIELDS: '' } as unknown as Env
 const supabase = {} as SupabaseClient
@@ -157,7 +157,9 @@ describe('a timed out webhook step records what it sent (#3057)', () => {
     const c = ctx()
     deadlineOnceSent(c, fetchMock)
     const row = rowOf(await walk(c, sequential(relayPost('tripoint_sf_post'))), 'tripoint_sf_post')
-    expect(stepTimeoutMs(row.error_message)).toBe(3750)
+    expect(row.error_message).toBe(stepTimeoutMessage(3750))
+    expect(stepTimedOutAfterMs(row)).toBe(3750)
+    expect(row).toMatchObject({ timeout_kind: 'step', timed_out_after_ms: 3750 })
     expectTheRequestSent(row)
   })
 
@@ -165,7 +167,9 @@ describe('a timed out webhook step records what it sent (#3057)', () => {
     const c = ctx()
     deadlineOnceSent(c, fetchMock)
     const row = rowOf(await walk(c, inParallel(relayPost('tripoint_sf_post'))), 'tripoint_sf_post')
-    expect(stepTimeoutMs(row.error_message)).toBe(3750)
+    expect(row.error_message).toBe(stepTimeoutMessage(3750))
+    expect(stepTimedOutAfterMs(row)).toBe(3750)
+    expect(row).toMatchObject({ timeout_kind: 'step', timed_out_after_ms: 3750 })
     expectTheRequestSent(row)
   })
 

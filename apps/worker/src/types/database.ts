@@ -1414,6 +1414,8 @@ export type Database = {
           step_order: number | null
           step_subtype: string | null
           step_type: string
+          timed_out_after_ms: number | null
+          timeout_kind: string | null
           workflow_id: string | null
         }
         Insert: {
@@ -1437,6 +1439,8 @@ export type Database = {
           step_order?: number | null
           step_subtype?: string | null
           step_type: string
+          timed_out_after_ms?: number | null
+          timeout_kind?: string | null
           workflow_id?: string | null
         }
         Update: {
@@ -1460,6 +1464,8 @@ export type Database = {
           step_order?: number | null
           step_subtype?: string | null
           step_type?: string
+          timed_out_after_ms?: number | null
+          timeout_kind?: string | null
           workflow_id?: string | null
         }
         Relationships: []

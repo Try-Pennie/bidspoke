@@ -131,8 +131,9 @@
  * 1,208 leads were written directly. 9 of them timed out at the step's 5.25 s
  * deadline with no retry, and the report did not say so: its sample of 200 reads
  * a timed out write only by chance (all 9 had landed, read by hand). So every
- * direct write whose step timed out (stepTimeoutMs, the error the engine's step
- * deadline records, engine/retry.ts) is read back too, sampled or not, FIRST and
+ * direct write whose step timed out (stepTimedOut: the marker the engine's step
+ * deadline puts on its row since #3047, or the error text of a row written
+ * before it, engine/step-timeout.ts) is read back too, sampled or not, FIRST and
  * within the same read budget, and the message says how many timed out and what
  * reading each found: arrived complete, arrived only once the read-back sent it
  * again (its stamp's attempt), did not arrive complete, or could not be checked,
@@ -229,7 +230,7 @@ import type { Env } from '../env'
 import { bidspokeRunLink } from '../engine/context'
 import type { SalesforceRead } from '../engine/inquiry-post'
 import { ENGINE_ATTEMPT, parseWriteMarker, WRITE_MARKER_FIELD } from '../engine/write-marker'
-import { stepTimeoutMs } from '../engine/retry'
+import { stepTimedOut, stepTimedOutAfterMs } from '../engine/step-timeout'
 import { MAIN_FLOW_WORKFLOW_ID, OUTCOME_POSTS, RELAY_OMITTED_KEYS, RELAY_RENAMES, portStatus, type Definition, type OutcomePost } from './main-flow-port/transform'
 import { isSalesforceApiName, isSalesforceRecordId, salesforcePortFor } from './writeback-replay'
 import { FIELD_HISTORY_ROW_LIMIT, LAST_MODIFIED_MARGIN_MS, queryRecords, salesforceTimeMs, sameSalesforceValue, soqlTime } from './salesforce-field-conflict'
@@ -434,14 +435,18 @@ export interface WatchedStep {
   started_at: string
   /** When the step ended, so when its write had been answered (#2806). Absent or null: SEND_BOUND_MS after the send. */
   completed_at?: string | null
-  /** The step's error. A step that timed out at its own deadline says so here (stepTimeoutMs, #2938). */
+  /** The step's error. A row written before #3047 says only here that its step timed out (#2938). */
   error_message?: string | null
+  /** 'step' when the step's own deadline stopped it, 'parallel_block' when its block stopped waiting for it, else absent (#3047). */
+  timeout_kind?: string | null
+  /** The deadline that passed, beside timeout_kind (#3047). */
+  timed_out_after_ms?: number | null
   input: unknown
   output: unknown
 }
 
 /** The step columns both reads select, so neither can drop the times a write is judged and ordered by, or whether it timed out. */
-export const STEP_COLUMNS = 'execution_id, step_type, status, started_at, completed_at, error_message, input, output'
+export const STEP_COLUMNS = 'execution_id, step_type, status, started_at, completed_at, error_message, timeout_kind, timed_out_after_ms, input, output'
 
 /** One outcome post step of a run, as the send order reads it (#2806). */
 export interface SendStep {
@@ -449,9 +454,14 @@ export interface SendStep {
   step_namespace: string
   started_at: string | null
   completed_at?: string | null
-  /** A step that timed out recorded when Bidspoke stopped waiting, not an answer (#2938). */
+  /** A step that timed out recorded when Bidspoke stopped waiting, not an answer (#2938): these three say whether it did (#3047). */
   error_message?: string | null
+  timeout_kind?: string | null
+  timed_out_after_ms?: number | null
 }
+
+/** The columns a send time is read with (readSendSteps). */
+export const SEND_STEP_COLUMNS = 'execution_id, step_namespace, started_at, completed_at, error_message, timeout_kind, timed_out_after_ms'
 
 /** One relay post of the eight other outcome steps, as its step recorded it. */
 export interface RelayStep extends WatchedStep {
@@ -717,7 +727,7 @@ interface SentWithin {
 }
 
 /** A step as a send time is read from: its start, its end, and its error. */
-type SpanStep = { started_at: unknown; completed_at?: unknown; error_message?: unknown }
+type SpanStep = { started_at: unknown; completed_at?: unknown; error_message?: unknown; timeout_kind?: unknown; timed_out_after_ms?: unknown }
 
 /**
  * A step's span: from its start, the send, to its end, the answer, or
@@ -729,7 +739,7 @@ type SpanStep = { started_at: unknown; completed_at?: unknown; error_message?: u
 function stepSpan(step: SpanStep): { from: number; to: number } | null {
   const from = typeof step.started_at === 'string' && step.started_at !== '' ? Date.parse(step.started_at) : Number.NaN
   if (!Number.isFinite(from)) return null
-  const answered = stepTimeoutMs(step.error_message) === null ? step.completed_at : null
+  const answered = stepTimedOut(step) ? null : step.completed_at
   const to = typeof answered === 'string' && answered !== '' ? Date.parse(answered) : Number.NaN
   return { from, to: Number.isFinite(to) && to >= from ? to : from + SEND_BOUND_MS }
 }
@@ -737,7 +747,7 @@ function stepSpan(step: SpanStep): { from: number; to: number } | null {
 /** A run's writes, from the steps recorded, or else from its own start: none before it, none more than SEND_BOUND_MS after. */
 function sentWithin(executionId: string, steps: readonly SpanStep[]): SentWithin {
   const spans = steps.map(stepSpan).filter((s): s is { from: number; to: number } => s !== null)
-  const timedOut = steps.some((s) => stepTimeoutMs(s.error_message) !== null)
+  const timedOut = steps.some(stepTimedOut)
   if (spans.length > 0) return { spans, recorded: true, timedOut }
   const minted = mintedMsFromUuidV7(executionId)
   return { spans: minted === null ? [] : [{ from: minted, to: minted + SEND_BOUND_MS }], recorded: false, timedOut }
@@ -1283,7 +1293,7 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
   // Every write whose step timed out, in the sample or not (#2938): the one most
   // likely to be lost, which a sample reads only by chance. They are already in
   // the day's steps, so no further database read is needed.
-  const timedOutSteps = toRead.filter((s) => stepTimeoutMs(s.error_message) !== null)
+  const timedOutSteps = toRead.filter(stepTimedOut)
 
   const relay = await relayPromise
   const relayWrites: Array<SubmissionWrite | { executionId: string; unchecked: string } | { executionId: string; failed: FailedPost }> = []
@@ -1315,7 +1325,7 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
         // No Submission: the relay's filter stops such a post, so nothing was written.
         if (recordId === null || recordId === undefined || recordId === '') noSubmission++
         else if (typeof recordId !== 'string' || !isSalesforceRecordId(recordId)) relayWrites.push({ executionId, unchecked: "The run's Submission id is not one Salesforce would accept." })
-        else relayWrites.push({ executionId, failed: { executionId, recordId, timedOut: stepTimeoutMs(s.error_message) !== null, sentWithin: sentWithin(executionId, [s]) } })
+        else relayWrites.push({ executionId, failed: { executionId, recordId, timedOut: stepTimedOut(s), sentWithin: sentWithin(executionId, [s]) } })
       }
     }
   }
@@ -1351,9 +1361,10 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
   // its write (#2806).
   const known = new Map<string, SendStep[]>()
   const know = (s: SendStep) => known.set(s.execution_id, [...(known.get(s.execution_id) ?? []), s])
-  for (const s of steps) know({ execution_id: s.execution_id, step_namespace: subject.step, started_at: s.started_at, completed_at: s.completed_at, error_message: s.error_message })
+  const timeoutOf = (s: WatchedStep) => ({ error_message: s.error_message, timeout_kind: s.timeout_kind, timed_out_after_ms: s.timed_out_after_ms })
+  for (const s of steps) know({ execution_id: s.execution_id, step_namespace: subject.step, started_at: s.started_at, completed_at: s.completed_at, ...timeoutOf(s) })
   if (!('error' in relay)) {
-    for (const s of relay.sample) know({ execution_id: s.execution_id, step_namespace: s.step_namespace, started_at: s.started_at, completed_at: s.completed_at, error_message: s.error_message })
+    for (const s of relay.sample) know({ execution_id: s.execution_id, step_namespace: s.step_namespace, started_at: s.started_at, completed_at: s.completed_at, ...timeoutOf(s) })
   }
   const fetched = new Map<string, Promise<SendStep[]>>()
   const orderOf: SendOrderLookup = async (other, stepNamespace, w) => {
@@ -1400,7 +1411,7 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
   }
   const timedOut: RunVerdict[] = []
   for (const s of timedOutSteps) timedOut.push(await readDirect(s))
-  const limitsMs = [...new Set(timedOutSteps.flatMap((s) => stepTimeoutMs(s.error_message) ?? []))].sort((a, b) => a - b)
+  const limitsMs = [...new Set(timedOutSteps.flatMap((s) => stepTimedOutAfterMs(s) ?? []))].sort((a, b) => a - b)
   report.timedOut = { verdicts: timedOut, limitsMs }
   for (const s of sampled) report.native.push(await readDirect(s))
 
@@ -2110,7 +2121,7 @@ export async function readSendSteps(supabase: SupabaseClient, executionId: strin
   if (minted === null) return []
   const { data, error } = await supabase
     .from('execution_steps')
-    .select('execution_id, step_namespace, started_at, completed_at, error_message')
+    .select(SEND_STEP_COLUMNS)
     .eq('workflow_id', MAIN_FLOW_WORKFLOW_ID)
     .eq('execution_id', executionId)
     .in('step_namespace', [...OUTCOME_POSTS])

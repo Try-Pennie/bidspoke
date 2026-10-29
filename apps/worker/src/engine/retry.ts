@@ -1,5 +1,6 @@
 import type { ErrorType } from '../types'
 import { isSaturationError } from './error-classifier'
+import { StepTimeoutError } from './step-timeout'
 
 export interface RetryConfig {
   retries: number
@@ -90,24 +91,6 @@ export async function withRetry<T>(
   throw lastError
 }
 
-/**
- * The error a step fails with when its own deadline passes (withTimeout), which
- * its step row records as `error_message`. One spelling, so the daily direct
- * write report can find a timed out step by it (stepTimeoutMs, #2938).
- */
-export function stepTimeoutMessage(ms: number): string {
-  return `Step timed out after ${ms}ms (in-flight upstream call canceled via abort signal)`
-}
-
-const STEP_TIMEOUT = /^Step timed out after (\d+)ms \(in-flight upstream call canceled via abort signal\)$/
-
-/** The deadline in ms a recorded step error says the step timed out at, or null when it is any other error, or none. */
-export function stepTimeoutMs(errorMessage: unknown): number | null {
-  if (typeof errorMessage !== 'string') return null
-  const m = STEP_TIMEOUT.exec(errorMessage)
-  return m ? Number(m[1]) : null
-}
-
 function withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>, ms: number, deadline: Deadline): Promise<T> {
   // Own the deadline: on timeout we both reject (so withRetry can react) AND
   // abort the signal handed to fn, so the in-flight outbound call is actually
@@ -120,7 +103,9 @@ function withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>, ms: number, dea
     void deadline(ms, answered.signal).then(() => {
       if (answered.signal.aborted) return
       controller.abort()
-      reject(new Error(stepTimeoutMessage(ms)))
+      // Classified here, once (#3047): the step row is marked from this error's
+      // type, never from its text (engine/step-timeout.ts).
+      reject(new StepTimeoutError(ms))
     })
   })
   return Promise.race([fn(controller.signal), timeout]).finally(() => answered.abort())

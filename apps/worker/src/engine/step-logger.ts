@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { TriggerType } from '@bidspoke/workflow-definition'
 import type { FieldPresenceMap } from './field-presence'
 import type { StepStatus, ErrorType, StepLogEntry as StepLogLine } from '../types'
+import type { TimeoutKind } from './step-timeout'
 import { redactPii, parsePiiFields, redactPiiInLogMessage } from './pii-redactor'
 import {
   isPermanentDbError,
@@ -40,6 +41,9 @@ export interface StepLogEntry {
   duration_ms: number
   step_order: number
   parallel_group_id?: string
+  /** Set only on a step a deadline stopped, with timed_out_after_ms (#3047, engine/step-timeout.ts). */
+  timeout_kind?: TimeoutKind
+  timed_out_after_ms?: number
 }
 
 // --- Shared insert/update plumbing for the execution-log hot path ----------
