@@ -64,6 +64,7 @@ import {
   CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, parseOpsVersionVariables, servedVariablesOf, type OpsVersionVariables,
 } from '../lib/ops-gateway-contract'
 import { DELEGATION_LIST_LIMIT } from '../lib/ops-connections-contract'
+import { parseRunVariablesRecord, recordRow, type RunVariablesRecord } from './run-variables'
 
 /** Past the ops project's 8 s statement timeout, so the database gives up first: the one deadline every ops request has (ops-db.ts). */
 export const OPS_RPC_DEADLINE_MS = OPS_STATEMENT_DEADLINE_MS
@@ -349,15 +350,28 @@ export interface StartedRun {
    * checkpoint the run names, never from its first step.
    */
   continuations: number
+  /**
+   * The variables the run recorded at its first start (#2998, ops migration
+   * 20261029180000): this start's when it is the first, otherwise the first
+   * start's, which every retry and continued slice runs with. Null when no
+   * start sent any. Never a secret's value.
+   */
+  runVariables: RunVariablesRecord | null
 }
 
-/** Throws OpsClaimLostError when the claim is no longer this caller's. */
+/**
+ * Starts the claimed run. variables is what it records at its first start
+ * (#2998), kept only then: start_run_execution answers the record the run
+ * holds. Throws OpsClaimLostError when the claim is no longer this caller's.
+ */
 export async function startRunExecution(
-  client: OpsSupabaseClient, organizationId: OrganizationId, runRequestId: string, claimToken: string, executionId: string, options?: OpsRpcOptions,
+  client: OpsSupabaseClient, organizationId: OrganizationId, runRequestId: string, claimToken: string, executionId: string,
+  variables: RunVariablesRecord | null, options?: OpsRpcOptions,
 ): Promise<StartedRun> {
   const name = 'start_run_execution'
   const row = oneRow(name, await callOpsRpc(client, name, {
     p_organization_id: organizationId, p_run_request_id: runRequestId, p_claim_token: claimToken, p_execution_id: executionId,
+    p_variables: variables === null ? null : recordRow(variables),
   }, options))
   const outcome = field(name, row, 'outcome', oneOf(['started', 'already_started', 'claim_lost'] as const), 'a start outcome')
   if (outcome === 'claim_lost') throw new OpsClaimLostError(`${name}: run ${runRequestId} is not held by this claim`)
@@ -366,11 +380,21 @@ export async function startRunExecution(
   // would be walked again from its first step, repeating its earlier slices' sends.
   if (!('continuations' in row)) throw new OpsWriteError(`${name} returned no continuations`)
   const isCount = (v: unknown): v is number => isInt(v) && v >= 0
+  // Required once ops migration 20261029180000 is applied (#2998). Its absence is
+  // refused by name, never read as no record: a run would then refuse every variable.
+  if (!('run_variables' in row)) throw new OpsWriteError(`${name} returned no run_variables`)
+  let runVariables: RunVariablesRecord | null
+  try {
+    runVariables = parseRunVariablesRecord(row.run_variables)
+  } catch (err) {
+    throw new OpsWriteError(`${name}: ${err instanceof Error ? err.message : 'run_variables could not be read'}`)
+  }
   return {
     outcome,
     stateVersion: field(name, row, 'state_version', isInt, 'a whole number'),
     attempt: field(name, row, 'attempt', isInt, 'a whole number'),
     continuations: field(name, row, 'continuations', isCount, 'a whole number from 0'),
+    runVariables,
   }
 }
 
@@ -1858,6 +1882,13 @@ export async function readRunCheckpoint(
       bytes: field(name, row, 'checkpoint_bytes', isInt, 'a whole number'),
     },
   }
+}
+
+/** The records of runs terminal more than 7 days ago, cleared a page at a time (purge_run_variables, #2998). */
+export async function purgeRunVariables(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_run_variables'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
 }
 
 /** The nightly purge of the step records of run attempts started more than 7 days ago, by the database clock. */

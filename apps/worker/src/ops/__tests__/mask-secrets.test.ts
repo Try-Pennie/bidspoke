@@ -6,7 +6,7 @@
  * secret was there without holding it.
  */
 import { describe, expect, it } from 'vitest'
-import { maskSecrets } from '../mask-secrets'
+import { holdsSecret, maskSecrets } from '../mask-secrets'
 
 const SECRETS = { API_TOKEN: 'fake-api-token-value', SIGNING_KEY: 'fake-signing-key-for-masking-tests' }
 
@@ -56,5 +56,17 @@ describe('maskSecrets', () => {
     const value = { a: 'fake-api-token-value' }
     maskSecrets(value, SECRETS)
     expect(value).toEqual({ a: 'fake-api-token-value' })
+  })
+})
+
+// #2998: a run's checkpoint is never written holding a secret, so the walk asks first.
+describe('holdsSecret', () => {
+  it('says whether a secret, raw or in an escaped form, is anywhere in a value, keys included', () => {
+    expect(holdsSecret([{ output: { t: 'x fake-api-token-value' } }], SECRETS)).toBe(true)
+    expect(holdsSecret({ 'fake-signing-key-for-masking-tests': 1 }, SECRETS)).toBe(true)
+    expect(holdsSecret({ url: `https://x.test/?k=${encodeURIComponent('a b&c')}` }, { K: 'a b&c' })).toBe(true)
+    expect(holdsSecret([{ output: { t: 'nothing here' } }], SECRETS)).toBe(false)
+    expect(holdsSecret({ t: 'fake-api-token-value' }, {})).toBe(false)
+    expect(holdsSecret('plain', { EMPTY: '' })).toBe(false)
   })
 })

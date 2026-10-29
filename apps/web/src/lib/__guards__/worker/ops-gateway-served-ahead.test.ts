@@ -29,7 +29,8 @@ const named = (source: string, methods: readonly string[]) => methods.filter((m)
 
 describe('OpsGateway methods served ahead of the ops Worker', () => {
   it('reads the list, and finds a call when one is planted', () => {
-    expect(servedAhead()).toEqual(['opsRunVariables'])
+    // Empty since #2998 moved opsRunVariables onto the binding; the planted calls below still prove the scan.
+    expect(servedAhead()).toEqual([])
     expect(named('const answer = await env.OPS_GATEWAY.opsRunVariables(request)', ['opsRunVariables'])).toEqual(['opsRunVariables'])
     expect(named('await (gateway as any)["opsRunVariables"](request)', ['opsRunVariables'])).toEqual(['opsRunVariables'])
     expect(named('await env.OPS_GATEWAY.opsWorkflowDefinitions(request)', ['opsRunVariables'])).toEqual([])

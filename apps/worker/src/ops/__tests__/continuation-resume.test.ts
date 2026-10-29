@@ -71,7 +71,7 @@ class RunRowDb implements RunDb {
     this.attempts++
     if ((UNCHARGED_RESUME_REASONS as readonly (string | null)[]).includes(this.resumeReason)) this.unchargedAttempts++
     this.stateVersion++
-    return { outcome: 'started' as const, stateVersion: this.stateVersion, attempt: this.attempts, continuations: this.continuations }
+    return { outcome: 'started' as const, stateVersion: this.stateVersion, attempt: this.attempts, continuations: this.continuations, runVariables: null }
   }
 
   async extend(run: ClaimedRun) {

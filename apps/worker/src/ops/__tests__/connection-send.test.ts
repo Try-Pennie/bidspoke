@@ -114,7 +114,7 @@ describe('connectionAnswer: what the run judges a send by', () => {
 class LedgerDb implements RunDb {
   readonly results: Array<{ status: string; responseStatus?: number }> = []
   readonly completes: CompleteOutcome[] = []
-  async start() { return { outcome: 'started' as const, stateVersion: 4, attempt: 1, continuations: 0 } }
+  async start() { return { outcome: 'started' as const, stateVersion: 4, attempt: 1, continuations: 0, runVariables: null } }
   async extend() { return true }
   async recordIntent(): Promise<SendIntentResult> { return { outcome: 'recorded', ledgerId: 'ledger-1', ledgerStatus: 'intent' } }
   async recordResult(_run: ClaimedRun, _id: string, result: { status: 'forwarded' | 'failed'; responseStatus?: number }) {

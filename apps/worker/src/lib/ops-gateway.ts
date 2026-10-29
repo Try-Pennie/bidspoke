@@ -340,8 +340,8 @@ interface RunVersionRow {
  * WHO CALLS IT. The ops Worker, through OpsGateway.opsRunVariables over its
  * OPS_GATEWAY binding, with a request parseOpsRunVariablesRequest has read:
  * one organization and at most MAX_RUN_VARIABLES_PER_REQUEST runs, each by
- * workflow and version. No public route reaches it. Served ahead of any ops
- * caller (OPS_GATEWAY_SERVED_AHEAD).
+ * workflow and version. No public route reaches it. The ops minute tick calls
+ * it once per organization for the runs it claimed (#2998, ops/tick.ts).
  *
  * WHOSE DATA. The one organization named, checked against each workflow's own
  * row before its version is read: a run of another organization's workflow,

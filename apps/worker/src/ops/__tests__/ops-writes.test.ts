@@ -65,6 +65,7 @@ import {
   recordOpsStep,
   readRunStepContext,
   purgeOpsStepRecords,
+  purgeRunVariables,
   recordRunCheckpoint,
   readRunCheckpoint,
   observeOpsReseal,
@@ -274,12 +275,38 @@ describe('the typed wrappers', () => {
   })
 
   it('start: answers the run\'s continuations (#1951), and refuses a start answered without them, never reading it as none', async () => {
-    const started = await startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 1 }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1')
-    expect(started).toEqual({ outcome: 'started', stateVersion: 5, attempt: 2, continuations: 1 })
-    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2 }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1'))
+    const started = await startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 1, run_variables: null }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null)
+    expect(started).toEqual({ outcome: 'started', stateVersion: 5, attempt: 2, continuations: 1, runVariables: null })
+    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, run_variables: null }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null))
       .rejects.toThrow(/continuations/)
-    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: -1 }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1'))
+    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: -1, run_variables: null }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null))
       .rejects.toThrow(/continuations/)
+  })
+
+  // #2998: the variables a run started with, recorded by its first start.
+  it('start: sends the run\'s variables record, names only for secrets, and answers the record the run holds', async () => {
+    const sent = { source: 'bidding' as const, servedAt: '2026-10-29T14:00:00.000Z', values: { API_BASE: 'https://api.example.test' }, secretKeys: ['API_TOKEN'] }
+    const first = { source: 'bidding', served_at: '2026-10-29T13:55:00.000Z', values: { API_BASE: 'first' }, secret_keys: ['API_TOKEN'] }
+    const { client, calls } = rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 0, run_variables: first }])
+    const started = await startRunExecution(client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', sent)
+    expect(calls[0]).toEqual({
+      path: '/rest/v1/rpc/start_run_execution',
+      body: {
+        p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_execution_id: '0199f0a0-0000-7000-8000-0000000000e1',
+        p_variables: { source: 'bidding', served_at: '2026-10-29T14:00:00.000Z', values: { API_BASE: 'https://api.example.test' }, secret_keys: ['API_TOKEN'] },
+      },
+    })
+    // A retry's start: the run answers the record its first start kept.
+    expect(started.runVariables).toEqual({ source: 'bidding', servedAt: '2026-10-29T13:55:00.000Z', values: { API_BASE: 'first' }, secretKeys: ['API_TOKEN'] })
+  })
+
+  it('start: refuses a start answered without run_variables, or with one of another shape, by name (#2998)', async () => {
+    const exec = '0199f0a0-0000-7000-8000-0000000000e1'
+    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 0 }]).client, ORG, RUN, TOKEN, exec, null))
+      .rejects.toThrow(/start_run_execution returned no run_variables/)
+    const bad = { source: 'bidding', served_at: '2026-10-29T13:55:00.000Z', values: {}, secret_keys: [], secret_values: { A: 'x' } }
+    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 0, run_variables: bad }]).client, ORG, RUN, TOKEN, exec, null))
+      .rejects.toThrow(/run_variables/)
   })
 
   it('a continuation\'s start is not charged either (#1951)', () => {
@@ -290,7 +317,7 @@ describe('the typed wrappers', () => {
 
   it('start: a lost claim is an error, never a start', async () => {
     const { client } = rpcFetch([{ outcome: 'claim_lost', state_version: null, attempt: null }])
-    await expect(startRunExecution(client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1')).rejects.toBeInstanceOf(OpsClaimLostError)
+    await expect(startRunExecution(client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null)).rejects.toBeInstanceOf(OpsClaimLostError)
   })
 
   it('extend: false is a lost claim, and anything but a boolean is refused', async () => {
@@ -1058,6 +1085,12 @@ describe('the step record wrappers (#2703)', () => {
     await expect(readRunStepContext(rpcFetch([{ ...row, steps: [{ namespace: 'shape' }] }]).client, ORG, WF, EXEC, 'n3')).rejects.toThrow(/steps/)
     await expect(readRunStepContext(rpcFetch([{ ...row, reached: 'yes' }]).client, ORG, WF, EXEC, 'n3')).rejects.toThrow(/reached/)
     await expect(readRunStepContext(rpcFetch([row, row]).client, ORG, WF, EXEC, 'n3')).rejects.toThrow(/2 rows/)
+  })
+
+  it('purge_run_variables reads its page (#2998)', async () => {
+    const { client, calls } = rpcFetch([{ purged: 2, more: false }])
+    expect(await purgeRunVariables(client, 1000)).toEqual({ purged: 2, more: false })
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/purge_run_variables', body: { p_limit: 1000 } })
   })
 
   it('purge_ops_step_records reads its page', async () => {

@@ -76,6 +76,18 @@
  * the copies last confirmed more than COPIES_STALE_AFTER_MS ago nothing fires
  * or is claimed, and copies_stale pages. The runs' outcomes are counted per
  * workflow against a rate (judgeRunOutcomes, L77).
+ *     Before a claimed run is handed on (#2998, phase 2 of #2982), its current
+ *     variables are asked of the bidding Worker (OpsGateway.opsRunVariables),
+ *     once per organization for every run the tick will start, within the
+ *     gateway deadline, and each run's answer goes in its own signed dispatch
+ *     (run-variables.ts): secret values for that run only, never kept. A run the
+ *     bidding Worker refused is ended unrun by its own reason (refusedRunEnd); a
+ *     run whose variables could not be had (the call failed, timed out, or its
+ *     answer, or the run's part of it, could not be read) goes back to the
+ *     queue unstarted, RUN_VARIABLES_RETRY_MS on, spending no attempt, as a run
+ *     whose definition cannot be had does (run-live.ts), and is counted
+ *     (runs_variables_unavailable). There is no kept copy to fall back on until
+ *     phase 3 (#2999).
  *  7. Dispatch, each item inside its own boundary: every newly recorded fire is
  *     handed to OpsInternal.observe through the SELF binding, signed (dispatch-
  *     auth.ts), and awaited, because a dispatched call dies with the tick that
@@ -97,8 +109,9 @@
 import { easternParts } from '@bidspoke/buyer-profile'
 import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type MissedReason, type PlannedFire, type ScheduleConfig } from '@bidspoke/workflow-definition'
 import {
-  CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsWorkflows, tickProblem,
-  type ConnectionLoginsReport, type OpsDefinitionRequest, type OpsGatewayJob, type OpsJobReport, type OpsVersionVariables,
+  CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, MAX_RUN_VARIABLES_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsRunVariables,
+  parseServedOpsWorkflows, tickProblem,
+  type ConnectionLoginsReport, type OpsDefinitionRequest, type OpsRunVariablesRequest, type RunVariablesRefusal, type OpsGatewayJob, type OpsJobReport, type OpsVersionVariables,
   type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem, type WriteBacksReport,
 } from '../lib/ops-gateway-contract'
 import { runWriteBackCheck, type WriteBackCheckDeps } from './write-back-check'
@@ -116,6 +129,7 @@ import {
   type OpsResealMode, type OpsResealState, type SweepResult, type WorkflowCopy, type WorkflowCopyInput,
 } from './ops-writes'
 import { resealSwitchFrom, watchReseal } from './reseal-watch'
+import { dispatchedFrom, refusedRunEnd, type DispatchedRunVariables } from './run-variables'
 import { OBSERVATION_REASONS, type OpsSweep, type OverlapRule } from './run-vocabulary'
 
 
@@ -123,6 +137,13 @@ import { OBSERVATION_REASONS, type OpsSweep, type OverlapRule } from './run-voca
 export const TICK_CLAIM_PER_WORKFLOW = 5
 /** The most runs one tick would claim: 40 concurrent dispatches from one tick were measured to work (spike P4). */
 export const TICK_CLAIM_LIMIT = 40
+
+/**
+ * How long a claimed run whose variables could not be had waits before it is
+ * claimed again (#2998): the same minute as a run whose definition could not
+ * be had (run-live.ts RUN_DEFINITION_RETRY_MS). Judged on the database clock.
+ */
+export const RUN_VARIABLES_RETRY_MS = 60_000
 
 /** The versions not held yet that one tick lists (L24: within PostgREST's 1,000 rows), and how many of them it asks the bidding Worker for. */
 export const DEFINITIONS_READ_LIMIT = 1000
@@ -169,7 +190,9 @@ export type TickSweep = OpsSweep
  * older than 7 days whether or not the purge has run; and the step records of
  * run attempts started more than 7 days ago (#2703, Dan, 2026-10-24;
  * purge_ops_step_records holds that window, and run_step_context serves none
- * older). A run's own purge takes its step records with it.
+ * older). A run's own purge takes its step records with it. And the variables
+ * a run recorded at its first start, cleared 7 days after it ends (#2998,
+ * purge_run_variables; a run a person kept keeps them).
  */
 export const OBSERVATION_PURGE_EVERY_SECONDS = 20 * 3600
 export const OBSERVATION_PURGE_EASTERN_HOUR = 3
@@ -253,6 +276,8 @@ export interface OpsTickDb extends ConnectionServeDb {
   purgeStepTests(limit: number): Promise<{ purged: number; more: boolean }>
   /** Also the observation_purge sweep: the step records of run attempts past 7 days (purge_ops_step_records, #2703). */
   purgeStepRecords(limit: number): Promise<{ purged: number; more: boolean }>
+  /** Also the observation_purge sweep: the recorded variables of runs ended more than 7 days ago (purge_run_variables, #2998). */
+  purgeRunVariables(limit: number): Promise<{ purged: number; more: boolean }>
   /** The saved copies whose current version has no frozen definition yet (missing_workflow_definitions, #1950). */
   missingDefinitions(limit: number): Promise<{ missing: Array<{ workflowId: string; organizationId: OrganizationId; versionNumber: number }>; reachedLimit: boolean }>
   /** A slot fired for real in live mode: its fire row and its run in one transaction (record_schedule_fire, #1950). */
@@ -298,18 +323,23 @@ export interface UnconfiguredSecret {
 export type DispatchItem =
   | { kind: 'would_fire'; workflowId: string; organizationId: string; scheduledFor: string; dispatchAt: string }
   | { kind: 'probe' }
-  /** A claimed run for OpsInternal.run (#1950). Its claim token is its nonce: start_run_execution takes a claim once. */
-  | { kind: 'run'; run: ClaimedRun }
+  /**
+   * A claimed run for OpsInternal.run (#1950). Its claim token is its nonce:
+   * start_run_execution takes a claim once. It carries the variables the tick
+   * was served for it (#2998), secret values included, for this run only.
+   */
+  | { kind: 'run'; run: ClaimedRun; variables: DispatchedRunVariables }
 
 export interface OpsTickPorts {
   /** observe (the deployed default) or live (#1950), from OPS_TICK_MODE. */
   mode: OpsTickMode
   /**
    * One claimed run handed to OpsInternal.run through the SELF binding, signed,
-   * and awaited (a dispatched call dies with the tick that made it, spike P4).
-   * Throws when the call is refused or fails.
+   * and awaited (a dispatched call dies with the tick that made it, spike P4),
+   * with the variables the tick was served for it (#2998). Throws when the call
+   * is refused or fails.
    */
-  dispatchRun(run: ClaimedRun): Promise<RunInvocationReport>
+  dispatchRun(run: ClaimedRun, variables: DispatchedRunVariables): Promise<RunInvocationReport>
   tickId: string
   /** OPS_RESEAL as this Worker has it (#2486): the reseal watch judges it every tick (reseal-watch.ts). */
   resealSwitch: string | undefined
@@ -330,6 +360,8 @@ export interface OpsTickPorts {
     fetchConnections(): Promise<unknown>
     /** The definitions of the versions named, served by the bidding Worker (#1950). */
     fetchDefinitions(request: OpsDefinitionRequest): Promise<unknown>
+    /** The current variables of one organization's claimed runs, served by the bidding Worker (#2998). */
+    fetchRunVariables(request: OpsRunVariablesRequest): Promise<unknown>
     started(): Promise<void>
     completed(report: OpsTickReport): Promise<void>
     /** An ops job's heartbeat stamps (OpsGateway.opsJobStarted and opsJobCompleted, #2340). */
@@ -591,22 +623,99 @@ function tallyOf(report: RunInvocationReport): RunTally {
   }
 }
 
+/** Whether a claimed run's workflow may start by its copy: one deleted, withdrawn, switched off or named by no copy is ended unrun. */
+function mayStartRun(copies: readonly WorkflowCopy[], run: ClaimedRun): boolean {
+  const copy = copies.find((c) => c.workflowId === run.workflowId)
+  return copy !== undefined && copy.deletedAt === null && copy.withdrawnAt === null && copy.mayStart
+}
+
+/** What the bidding Worker answered for one run's variables (#2998), or why it could not be had. */
+type RunVariablesAnswer =
+  | { kind: 'served'; variables: DispatchedRunVariables }
+  | { kind: 'refused'; reason: RunVariablesRefusal; keys: string[] }
+  | { kind: 'unavailable'; why: string }
+
+/**
+ * The current variables of the runs the tick will start (#2998): one request
+ * per organization (the tick claims at most TICK_CLAIM_LIMIT runs, which is
+ * MAX_RUN_VARIABLES_PER_REQUEST, so one request holds an organization's runs;
+ * more would be split), each workflow and version once, each request its own
+ * boundary. Answered by run request id; never a value in a reason.
+ */
+async function askRunVariables(ports: OpsTickPorts, runs: readonly ClaimedRun[]): Promise<Map<string, RunVariablesAnswer>> {
+  const answers = new Map<string, RunVariablesAnswer>()
+  const byOrganization = new Map<string, ClaimedRun[]>()
+  for (const run of runs) byOrganization.set(run.organizationId, [...(byOrganization.get(run.organizationId) ?? []), run])
+  const key = (workflowId: string, version: number) => `${workflowId}:${version}`
+  await Promise.all([...byOrganization.entries()].flatMap(([organizationId, orgRuns]) => {
+    const versions = [...new Map(orgRuns.map((r) => [key(r.workflowId, r.workflowVersion), { workflow_id: r.workflowId, version_number: r.workflowVersion }])).values()]
+    const requests: OpsRunVariablesRequest[] = []
+    for (let i = 0; i < versions.length; i += MAX_RUN_VARIABLES_PER_REQUEST) {
+      requests.push({ organization_id: organizationId, runs: versions.slice(i, i + MAX_RUN_VARIABLES_PER_REQUEST) })
+    }
+    // Each request its own boundary, reading its answer included (L73): a throw anywhere in it leaves its runs unavailable, never another's.
+    return requests.map(async (request) => {
+      const asked = orgRuns.filter((r) => request.runs.some((v) => v.workflow_id === r.workflowId && v.version_number === r.workflowVersion))
+      try {
+        const read = parseServedOpsRunVariables(await ports.gateway.fetchRunVariables(request), request)
+        const byVersion = new Map(read.runs.map((r) => [key(r.workflowId, r.versionNumber), r]))
+        for (const run of asked) {
+          const r = byVersion.get(key(run.workflowId, run.workflowVersion))
+          if (r === undefined) {
+            const said = read.unreadable.find((u) => u.includes(`workflow ${run.workflowId} version ${run.workflowVersion}`))
+            answers.set(run.runRequestId, { kind: 'unavailable', why: said ?? 'its part of the answer could not be read' })
+          } else if (r.kind === 'served') {
+            answers.set(run.runRequestId, { kind: 'served', variables: dispatchedFrom(r) })
+          } else {
+            answers.set(run.runRequestId, { kind: 'refused', reason: r.reason, keys: r.keys })
+          }
+        }
+      } catch (err) {
+        for (const run of asked) answers.set(run.runRequestId, { kind: 'unavailable', why: formatErr(err) })
+      }
+    })
+  }))
+  return answers
+}
+
 /**
  * One claimed run, in its own boundary (L73: a throw here never stops a
  * sibling). A run of a workflow its copy says is deleted or switched off, or
  * that no copy names, is ended dead without running (the claim re-checks the
- * workflow, #1698 1.3); any other is handed to OpsInternal.run and awaited.
+ * workflow, #1698 1.3). Any other is decided by its variables (#2998): a run
+ * the bidding Worker refused is ended unrun by its own reason, one whose
+ * variables could not be had goes back to the queue unstarted at retryAt, and
+ * one served is handed to OpsInternal.run with them and awaited.
  */
-async function dispatchOneRun(ports: OpsTickPorts, db: OpsTickDb | null, copies: readonly WorkflowCopy[], run: ClaimedRun): Promise<{ workflowId: string; tally: RunTally; error?: string }> {
+async function dispatchOneRun(
+  ports: OpsTickPorts, db: OpsTickDb | null, copies: readonly WorkflowCopy[], run: ClaimedRun, answer: RunVariablesAnswer | undefined, retryAt: Date,
+  counts: Record<string, number>,
+): Promise<{ workflowId: string; tally: RunTally; error?: string }> {
   const copy = copies.find((c) => c.workflowId === run.workflowId)
   try {
-    if (copy === undefined || copy.deletedAt !== null || copy.withdrawnAt !== null || !copy.mayStart) {
+    if (!mayStartRun(copies, run)) {
       const reason = copy === undefined || copy.deletedAt !== null || copy.withdrawnAt !== null ? 'workflow_deleted' : 'workflow_inactive'
       if (db === null) throw new Error('no ops database to end the run in')
       await db.completeRun(run, { outcome: 'dead', reason })
       return { workflowId: run.workflowId, tally: 'ended' }
     }
-    const report = await ports.dispatchRun(run)
+    const given = answer ?? { kind: 'unavailable' as const, why: 'the tick did not ask for them' }
+    if (given.kind === 'refused') {
+      if (db === null) throw new Error('no ops database to end the run in')
+      const end = refusedRunEnd(given, run.workflowVersion)
+      await db.completeRun(run, end)
+      bump(counts, 'runs_variables_refused')
+      return end.outcome === 'dead' ? { workflowId: run.workflowId, tally: 'ended' } : { workflowId: run.workflowId, tally: 'failed', error: 'error' in end ? end.error : undefined }
+    }
+    if (given.kind === 'unavailable') {
+      if (db === null) throw new Error('no ops database to return the run to the queue in')
+      // Not started, so this spends no attempt; the claim ends and the run waits a minute.
+      const error = `the run's variables could not be had from the bidding Worker (${given.why}), so it was returned to the queue unstarted`
+      await db.completeRun(run, { outcome: 'retry', error, notBefore: retryAt })
+      bump(counts, 'runs_variables_unavailable')
+      return { workflowId: run.workflowId, tally: 'requeued', error }
+    }
+    const report = await ports.dispatchRun(run, given.variables)
     const tally = tallyOf(report)
     // A run stopped at the requeue cap names its step, host and status, so the page says which host kept refusing.
     if (tally === 'requeue_capped' && report.outcome === 'completed' && 'error' in report.end && report.end.error !== undefined) {
@@ -774,17 +883,19 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
               return r.more
             }
             case 'observation_purge': {
-              // Three purges in one sweep, each run whatever the others did, so a
+              // Four purges in one sweep, each run whatever the others did, so a
               // failing one never keeps another's rows past their time: the
               // observations (30 days), the step test results (7 days, #2339,
-              // Dan's decision of 2026-10-23) and the step records of runs (7
-              // days, #2703, Dan's decision of 2026-10-24). A failure of any is the sweep's.
+              // Dan's decision of 2026-10-23), the step records of runs (7
+              // days, #2703, Dan's decision of 2026-10-24) and the variables
+              // runs recorded (7 days after they end, #2998). A failure of any is the sweep's.
               let more = false
               let failure: { error: unknown } | null = null
               const purges: Array<[() => Promise<{ purged: number; more: boolean }>, string]> = [
                 [() => db.purgeObservations(s.pageLimit), 'observations_purged'],
                 [() => db.purgeStepTests(s.pageLimit), 'step_tests_purged'],
                 [() => db.purgeStepRecords(s.pageLimit), 'step_records_purged'],
+                [() => db.purgeRunVariables(s.pageLimit), 'run_variables_purged'],
               ]
               for (const [purge, count] of purges) {
                 try {
@@ -1060,9 +1171,23 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     }
   }
 
-  // 7. Dispatch, each its own boundary, all awaited: the runs (live), the observed
-  // fires, and with neither, one probe so the path is proven every minute.
-  const runsDone = Promise.all(claimed.map((run) => dispatchOneRun(ports, db, copies, run)))
+  // 7. Dispatch, each its own boundary, all awaited: the runs (live), each with
+  // the variables asked for it first (#2998), the observed fires, and with
+  // neither, one probe so the path is proven every minute.
+  const retryAt = new Date((dbNow === null ? ports.now() : Date.parse(dbNow)) + RUN_VARIABLES_RETRY_MS)
+  const runsDone = (async () => {
+    // Never a throw past here (L73): if asking fails outright, every run's variables are unavailable and each is returned unstarted.
+    let variables = new Map<string, RunVariablesAnswer>()
+    let askFailed: string | null = null
+    try {
+      variables = await askRunVariables(ports, claimed.filter((run) => mayStartRun(copies, run)))
+    } catch (err) {
+      askFailed = formatErr(err)
+    }
+    const answerOf = (run: ClaimedRun): RunVariablesAnswer | undefined =>
+      variables.get(run.runRequestId) ?? (askFailed === null ? undefined : { kind: 'unavailable', why: askFailed })
+    return Promise.all(claimed.map((run) => dispatchOneRun(ports, db, copies, run, answerOf(run), retryAt, counts)))
+  })()
   const toSend: DispatchItem[] = items.length > 0 ? items : claimed.length > 0 ? [] : [{ kind: 'probe' }]
   const sent = await Promise.allSettled(toSend.map((item) => ports.dispatch(item)))
   judgeRunOutcomes(await runsDone, problem, counts)
