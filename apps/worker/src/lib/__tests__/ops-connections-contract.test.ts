@@ -60,10 +60,10 @@ describe('the OpsConnections contract', () => {
     const ok = { organization_id: ORG, workflow_id: WF, tested_by: DAN, node, trigger_payload: { a: 1 }, steps: { earlier: { output: { b: 2 }, status: 'completed' } }, confirm_send: false }
 
     it('reads the organization, workflow, tester, step, its context and the confirmation', () => {
-      expect(parseTestStepRequest({ ...ok, organization_id: ORG.toUpperCase(), extra: 'ignored' })).toEqual({ ...ok, execution_id: null, version: null })
+      expect(parseTestStepRequest({ ...ok, organization_id: ORG.toUpperCase(), extra: 'ignored' })).toEqual({ ...ok, execution_id: null, version: null, variables: null })
       // No context is an empty one, and no confirmation is none.
       const { trigger_payload: _t, steps: _s, confirm_send: _c, ...bare } = ok
-      expect(parseTestStepRequest(bare)).toEqual({ ...bare, execution_id: null, trigger_payload: {}, steps: {}, confirm_send: false, version: null })
+      expect(parseTestStepRequest(bare)).toEqual({ ...bare, execution_id: null, trigger_payload: {}, steps: {}, confirm_send: false, version: null, variables: null })
     })
 
     it('reads the variables the workflow\'s newest saved version kept (#2702), none from a bidding Worker that sends none', () => {
@@ -76,12 +76,31 @@ describe('the OpsConnections contract', () => {
       }
     })
 
+    // #3002: bidding sends the current values of the variables the step reads,
+    // secrets decrypted. A bidding Worker from before it sends none (null), and
+    // ops reads its version instead; one malformed is refused, never quoting a value.
+    it('reads the current variables the step is given, secrets included (#3002), none from a bidding Worker that sends none', () => {
+      const variables = { values: { API_BASE: 'https://api.example.test' }, secret_values: { TOKEN: 'tok-live-value' } }
+      expect(parseTestStepRequest({ ...ok, variables }).variables).toEqual({ values: { API_BASE: 'https://api.example.test' }, secretValues: { TOKEN: 'tok-live-value' } })
+      expect(parseTestStepRequest({ ...ok, variables: null }).variables).toBeNull()
+      expect(parseTestStepRequest(ok).variables).toBeNull()
+      const secret = 'tok-never-echoed'
+      for (const bad of [
+        { values: {} }, { values: {}, secret_values: {}, extra: 1 }, { values: { K: 1 }, secret_values: {} }, { values: {}, secret_values: { 'not a name': secret } },
+        { values: { TOKEN: secret }, secret_values: { TOKEN: secret } }, 'v', [],
+      ]) {
+        const said = refused(() => parseTestStepRequest({ ...ok, variables: bad }))
+        expect(said).toMatch(/variables/)
+        expect(said).not.toContain(secret)
+      }
+    })
+
     it('reads a past run to build the context from (#2703): its payload is the run\'s own unless one is given', () => {
       const EXEC = '0199f0a0-0000-7000-8000-0000000000e1'
       const { trigger_payload: _t, steps: _s, ...bare } = ok
-      expect(parseTestStepRequest({ ...bare, execution_id: EXEC.toUpperCase() })).toEqual({ ...bare, execution_id: EXEC, trigger_payload: undefined, steps: {}, version: null })
+      expect(parseTestStepRequest({ ...bare, execution_id: EXEC.toUpperCase() })).toEqual({ ...bare, execution_id: EXEC, trigger_payload: undefined, steps: {}, version: null, variables: null })
       // A payload or steps given beside the run replace the run's, as a test from a money run's data does.
-      expect(parseTestStepRequest({ ...ok, execution_id: EXEC })).toEqual({ ...ok, execution_id: EXEC, version: null })
+      expect(parseTestStepRequest({ ...ok, execution_id: EXEC })).toEqual({ ...ok, execution_id: EXEC, version: null, variables: null })
       expect(parseTestStepRequest({ ...bare, execution_id: null })).toMatchObject({ execution_id: null, trigger_payload: {} })
       expect(refused(() => parseTestStepRequest({ ...ok, execution_id: 'exec-1' }))).toMatch(/execution_id/)
       expect(refused(() => parseTestStepRequest({ ...ok, execution_id: 7 }))).toMatch(/execution_id/)

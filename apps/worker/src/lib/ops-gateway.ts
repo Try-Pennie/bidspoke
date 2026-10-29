@@ -60,8 +60,8 @@ import {
   MAX_RUN_VARIABLES_PER_REQUEST, type OpsRunVariablesRequest, type RefusedRunVariables, type RunVariablesRefusal, type ServedOpsRunVariables,
 } from './ops-gateway-contract'
 import { envReferences } from './definition-env-references'
-import { resolveVariables } from './resolve-variables'
-import { decryptSecret, type SecretKeyInput } from './secret-crypto'
+import { readCurrentVariableRows, resolveCurrentVariables, secretOpener } from './current-variables'
+import type { SecretKeyInput } from './secret-crypto'
 import { formatErr } from './format-error'
 import { servedVersionVariables } from './version-variables'
 
@@ -332,16 +332,6 @@ interface RunVersionRow {
   definition: unknown
 }
 
-interface RunVariableRow {
-  id: string
-  organization_id: string
-  key: string
-  value: string | null
-  is_secret: boolean
-  scope: string
-  workflow_id: string | null
-}
-
 /**
  * The current environment variables of the ops runs the tick claimed (#2997,
  * phase 1 of #2982; Dan's decisions of 2026-10-28, "It should always read the
@@ -361,8 +351,9 @@ interface RunVariableRow {
  *
  * WHAT IS SERVED. Only the variables each version's definition reads, derived
  * here (envReferences), never named by the caller, each resolved over the
- * organization's current rows by the one resolver (resolve-variables.ts): a
- * plain one under values, a secret one decrypted through the key ring under
+ * organization's current rows by the one resolver (resolve-variables.ts),
+ * read and decrypted by the code the ops step test shares (current-variables.ts):
+ * a plain one under values, a secret one decrypted through the key ring under
  * secret_values. A variable with no saved value is left out, so ops names it
  * missing. A secret that will not decrypt refuses its run by name
  * (secret_unreadable), never served blank or as ciphertext. One refused run
@@ -431,33 +422,9 @@ export async function readOpsRunVariables(
   }
 
   const names = [...new Set([...readsOf.values()].flat())]
-  const rows = names.length === 0 ? [] : (await fetchAllPaged<RunVariableRow>(
-    (from, to) => supabase
-      .from('environment_variables')
-      .select('id, organization_id, key, value, is_secret, scope, workflow_id')
-      .eq('organization_id', organizationId)
-      .in('key', names)
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
-      .range(from, to),
-    `the environment variables of the ops runs of organization ${organizationId}`,
-    { maxPages: MAX_PAGES },
-  )).filter((row) => {
-    if (row.organization_id === organizationId) return true
-    console.error(`[ops-gateway] the run variables read for organization ${organizationId} returned ${row.key} of another organization; dropped, because the query's scoping did not hold`)
-    return false
-  })
-
+  const rows = await readCurrentVariableRows(supabase, organizationId, names, `the environment variables of the ops runs of organization ${organizationId}`)
   // Each secret row decrypted at most once, however many runs read it.
-  const decrypted = new Map<string, Promise<string | null>>()
-  const decrypt = (row: RunVariableRow) => {
-    let held = decrypted.get(row.id)
-    if (held === undefined) {
-      held = decryptSecret(row.value as string, keys).catch(() => null)
-      decrypted.set(row.id, held)
-    }
-    return held
-  }
+  const open = secretOpener(keys)
 
   const answers: ServedOpsRunVariables['runs'] = []
   for (const r of request.runs) {
@@ -466,18 +433,7 @@ export async function readOpsRunVariables(
       answers.push(refused)
       continue
     }
-    const values: Record<string, string> = {}
-    const secretValues: Record<string, string> = {}
-    const unreadable: string[] = []
-    for (const [name, row] of resolveVariables(rows, r.workflow_id, readsOf.get(runKey(r)) ?? [])) {
-      if (!row.is_secret) {
-        values[name] = row.value as string
-        continue
-      }
-      const plain = await decrypt(row)
-      if (plain === null) unreadable.push(name)
-      else secretValues[name] = plain
-    }
+    const { values, secretValues, unreadable } = await resolveCurrentVariables(rows, r.workflow_id, readsOf.get(runKey(r)) ?? [], open)
     if (unreadable.length > 0) {
       console.error(`[ops-gateway] not serving the variables of workflow ${r.workflow_id} version ${r.version_number}: the secret ${unreadable.join(', ')} of organization ${organizationId} could not be decrypted`)
       answers.push({ workflow_id: r.workflow_id, version_number: r.version_number, refused: 'secret_unreadable', keys: unreadable })
