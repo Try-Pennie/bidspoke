@@ -4,7 +4,14 @@
  * client_credentials and Google's jwt-bearer grant both come through here.
  *
  *   2xx with a JSON object            the token response
- *   429                               rate_limited, at its Retry-After
+ *   429                               rate_limited, at the time the shared
+ *                                     rate limit reader gives (Retry-After,
+ *                                     else an x-ratelimit-reset style header,
+ *                                     held between 1 s and 1 hour,
+ *                                     ../rate-limit-headers.ts, #1693 7.4), or
+ *                                     with no time when none can be read; a
+ *                                     header it cannot read is handed to
+ *                                     unreadableRateLimitHeader by name
  *   5xx, or an HTML page at any status unavailable: the request died at an edge
  *                                     before the provider judged it, the same
  *                                     rule the money path's token fetch uses
@@ -22,7 +29,7 @@
  * assertion cannot be carried to a host nobody declared.
  */
 import { containsHtmlDocument } from '../../../lib/html-error-summary'
-import { retryAfterAt } from '../connection-fetch'
+import { rateLimitRetryAt, type RateLimitHeader } from '../rate-limit-headers'
 import { LoginMintError, type MintFailureReason } from '../refusals'
 
 /** Under connectionFetch's 60 s deadline, as the money path's token fetch is (SALESFORCE_TOKEN_TIMEOUT_MS). */
@@ -42,6 +49,13 @@ export interface TokenEndpointDeps extends MinterClockDeps {
    * connection's declared hosts. A LoginMintError it throws passes through.
    */
   fetch(input: string, init?: RequestInit): Promise<Response>
+  /**
+   * Told the NAME of each rate limit header a 429 carried that could not be
+   * read, never its value, so the caller counts it (#1693 7.4). For a minter,
+   * AuthorizeInput.noteUnreadableRateLimitHeader; for the ConnectionTokenObject,
+   * a list it hands back on its answer.
+   */
+  unreadableRateLimitHeader(header: RateLimitHeader): void
 }
 
 /** The OAuth error codes named as themselves; any other refusal is login_refused. */
@@ -73,7 +87,7 @@ export async function requestToken(deps: TokenEndpointDeps, url: string, body: U
   const timer = setTimeout(() => controller.abort(), deps.tokenTimeoutMs ?? TOKEN_ENDPOINT_TIMEOUT_MS)
   let status: number
   let text: string
-  let retryAfter: string | null
+  let headers: Headers
   try {
     const res = await deps.fetch(url, {
       method: 'POST',
@@ -83,7 +97,7 @@ export async function requestToken(deps: TokenEndpointDeps, url: string, body: U
       signal: controller.signal,
     })
     status = res.status
-    retryAfter = res.headers.get('retry-after')
+    headers = res.headers
     // The timeout covers the body too: a body that never finishes holds the call as long.
     text = await res.text()
   } catch (err) {
@@ -95,8 +109,15 @@ export async function requestToken(deps: TokenEndpointDeps, url: string, body: U
   }
 
   if (status === 429) {
-    const at = retryAfter === null ? null : retryAfterAt(retryAfter, deps.now())
-    throw new LoginMintError('rate_limited', 'token_endpoint_rate_limited', at === null ? null : new Date(at))
+    // The one reader connectionFetch uses: the same time, and the same unreadable header counted (#1693 7.4).
+    const at = rateLimitRetryAt(headers, deps.now(), (header) => {
+      try {
+        deps.unreadableRateLimitHeader(header)
+      } catch {
+        // Counting is never allowed to change the answer.
+      }
+    })
+    throw new LoginMintError('rate_limited', 'token_endpoint_rate_limited', at)
   }
   if (containsHtmlDocument(text)) throw new LoginMintError('unavailable', 'token_endpoint_edge_page')
   if (status >= 500) throw new LoginMintError('unavailable', 'token_endpoint_5xx')

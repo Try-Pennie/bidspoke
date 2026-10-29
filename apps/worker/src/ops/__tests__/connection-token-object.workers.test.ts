@@ -238,6 +238,26 @@ describe('a failure clears the in flight marker', () => {
     expect(await stored(stub)).toBeUndefined()
   })
 
+  it('a 429 waits until its reset header, and hands back the name of a header it could not read, never the value (#1693 7.4)', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    const endpoint = tokenEndpoint(
+      () => new Response('slow down', { status: 429, headers: { 'retry-after': 'later-canary', 'x-ratelimit-reset': '90' } }),
+      () => new Response('slow down', { status: 429, headers: { 'x-ratelimit-reset': '45' } }),
+      tokens('access-after'),
+    )
+    await wire(stub, { endpoint })
+    const envelope = await sealFor(conn, 1, { ...APP, refresh_token: R1 })
+    const first = await stub.accessToken(request(conn, 1, envelope))
+    expect(first).toEqual({ ok: false, kind: 'rate_limited', reason: 'token_endpoint_rate_limited', retryAtMs: T + 90_000, unreadableHeaders: ['retry-after'] })
+    expect(JSON.stringify(first)).not.toContain('later-canary')
+    // Every header read: the answer carries no list at all, so it is the shape it always was.
+    const second = await stub.accessToken(request(conn, 1, envelope))
+    expect(second).toStrictEqual({ ok: false, kind: 'rate_limited', reason: 'token_endpoint_rate_limited', retryAtMs: T + 45_000 })
+    await runInDurableObject(stub, (o: ConnectionTokenObject) => { expect(o.inFlightSince()).toBeNull() })
+    expect(ok(await stub.accessToken(request(conn, 1, envelope))).token).toBe('access-after')
+  })
+
   it('a token endpoint that never answers is a timeout, and the marker is clear after it', async () => {
     const conn = connection()
     const stub = stubFor(conn)

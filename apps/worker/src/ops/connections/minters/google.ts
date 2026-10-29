@@ -143,7 +143,8 @@ export function googleDelegationAuth(deps: GoogleDelegationDeps): MinterRules {
           iss: clientEmail, sub: mailbox, scope, aud: GOOGLE_TOKEN_URI, iat, exp: iat + GOOGLE_ASSERTION_LIFETIME_SECONDS,
         })
         // connectionFetch's fetch (AuthorizeInput.fetch, #2337): the minter holds none of its own.
-        const json = await requestToken({ ...deps, fetch: input.fetch }, GOOGLE_TOKEN_URI, new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }))
+        // An unreadable rate limit header is counted by connectionFetch (#1693 7.4).
+        const json = await requestToken({ ...deps, fetch: input.fetch, unreadableRateLimitHeader: input.noteUnreadableRateLimitHeader },GOOGLE_TOKEN_URI, new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }))
         const token = readAccessToken(json)
         const expiresIn = typeof json.expires_in === 'number' && Number.isFinite(json.expires_in) && json.expires_in > 0 ? json.expires_in : GOOGLE_ASSERTION_LIFETIME_SECONDS
         return { value: { headers: { authorization: `Bearer ${token}` }, secrets: [token] }, expiresAtMs: nowMs + expiresIn * 1000 }
