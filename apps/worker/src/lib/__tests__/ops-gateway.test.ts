@@ -903,6 +903,39 @@ describe('three ticks in a row (#2506)', () => {
       }
     })
   })
+
+  // #3018. The purges run once a night, in the observation_purge sweep. Judged
+  // by ticks, a failed night's problem was on one report and the clean tick
+  // after it ended its run of one, so a purge failing every night never paged.
+  // Judged by the sweep's runs, the third failed night in a row pages, and the
+  // ticks between nights carry it. Nights are every fourth tick here, the
+  // count depending only on which reports ran the sweep.
+  describe('a failed nightly purge (#3018)', () => {
+    const FAILED = 'The nightly purge of ops runs that ended more than 90 days ago failed: canceling statement due to statement timeout.'
+    const failed: [string, string] = ['purge_failed:finished_runs', FAILED]
+    const ran = (n: number) => ((n - 1) % 4 === 0 ? ['lease_expiry', 'run_expiry', 'observation_purge'] : ['lease_expiry', 'run_expiry'])
+    const at = (n: number, nightProblems: Array<[string, string]>) =>
+      ran(n).includes('observation_purge') && nightProblems.length > 0
+        ? bad(n, nightProblems, { sweeps_run: ran(n) })
+        : report(n, { sweeps_run: ran(n) })
+
+    it('pages on the third failed night in a row, held through the clean ticks between', async () => {
+      const store = kv()
+      const d = deps()
+      const verdicts: string[] = []
+      for (let n = 1; n <= 9; n++) verdicts.push(await tick(store, d, n, at(n, [failed])))
+      expect(verdicts).toEqual(['held', 'held', 'held', 'held', 'held', 'held', 'held', 'held', 'alerted'])
+      expect(d.sent.at(-1)?.errors).toEqual([FAILED])
+    })
+
+    it('sends the all clear once a night\'s purge no longer fails', async () => {
+      const store = kv()
+      const d = deps()
+      for (let n = 1; n <= 12; n++) await tick(store, d, n, at(n, [failed]))
+      expect(await tick(store, d, 13, at(13, []))).toBe('healthy')
+      expect(d.recovered).toEqual([OPS_TICK_JOB])
+    })
+  })
 })
 
 type KvShape = { get: (k: string) => Promise<string | null>; put: (k: string, v: string, o?: { expirationTtl?: number }) => Promise<void>; delete: (k: string) => Promise<void> }

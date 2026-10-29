@@ -31,6 +31,9 @@ const THREE_IN_A_ROW = [
   'claim_failed', 'runs_failing',
   // The reseal watch (#2486): its state is read again next tick.
   'reseal_state_failed',
+  // The nightly purges (#3018): three runs of the observation_purge sweep in a
+  // row, so three nights, not three ticks, which a nightly sweep can never reach.
+  'purge_failed', 'purge_behind',
 ]
 const AT_ONCE = [
   // The frozen definition copies (#1950): a person must decide, and no later tick changes it.
@@ -82,11 +85,21 @@ describe('the rule each kind of tick problem pages by', () => {
 // judged by the sweep's runs. A tick that did not run it neither counts the
 // problem nor ends it, so the problem stands, and is not stood down, between runs.
 describe('the kinds counted by the runs of their sweep (#2340)', () => {
-  it('counts every kind of the sf_limits sweep by that sweep\'s runs, and no other kind', () => {
+  it('counts every kind of the sf_limits sweep and of the nightly purge by that sweep\'s runs, and no other kind', () => {
     expect(OPS_TICK_PROBLEM_SWEEPS).toEqual({
       sf_limits_failed: 'sf_limits', sf_limits_orgs_limit: 'sf_limits', sf_limits_refused: 'sf_limits',
       sf_limits_unreadable: 'sf_limits', sf_limits_read_failed: 'sf_limits', sf_limits_read_failing: 'sf_limits',
+      purge_failed: 'observation_purge', purge_behind: 'observation_purge',
     })
+  })
+
+  // #3018: the purge runs once a night. Judged by ticks, the clean tick after
+  // a failed night ended the failure's run of one, so it never reached three
+  // and never paged.
+  it('judges a failed or behind nightly purge by the purge\'s own runs', () => {
+    expect(sweepOfProblemKey('purge_failed:finished_runs')).toBe('observation_purge')
+    expect(sweepOfProblemKey('purge_behind:finished_runs')).toBe('observation_purge')
+    expect(problemRuleOf('purge_failed:finished_runs')).toBe('three_in_a_row')
   })
 
   it('names only kinds the rules table has and sweeps the tick claims', () => {
