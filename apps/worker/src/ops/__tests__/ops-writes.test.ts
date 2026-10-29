@@ -66,6 +66,9 @@ import {
   readRunStepContext,
   purgeOpsStepRecords,
   purgeRunVariables,
+  purgeVariableCopies,
+  readVariableCopies,
+  saveVariableCopies,
   recordRunCheckpoint,
   readRunCheckpoint,
   observeOpsReseal,
@@ -1093,6 +1096,12 @@ describe('the step record wrappers (#2703)', () => {
     expect(calls[0]).toEqual({ path: '/rest/v1/rpc/purge_run_variables', body: { p_limit: 1000 } })
   })
 
+  it('purge_variable_copies reads its page (#2999)', async () => {
+    const { client, calls } = rpcFetch([{ purged: 3, more: true }])
+    expect(await purgeVariableCopies(client, 1000)).toEqual({ purged: 3, more: true })
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/purge_variable_copies', body: { p_limit: 1000 } })
+  })
+
   it('purge_ops_step_records reads its page', async () => {
     const { client, calls } = rpcFetch([{ purged: 4, more: true }])
     expect(await purgeOpsStepRecords(client, 1000)).toEqual({ purged: 4, more: true })
@@ -1186,5 +1195,45 @@ describe('the checkpoint wrappers (#1951)', () => {
     const half = { state_version: 6, checkpoint_key: KEY, checkpoint_state_version: null, checkpoint_steps: 2, checkpoint_sha256: SHA, checkpoint_bytes: 900, checkpoint_execution_id: EXEC, checkpoint_at: 'x' }
     await expect(readRunCheckpoint(rpcFetch([half]).client, ORG, RUN, TOKEN)).rejects.toThrow(/run_checkpoint returned/)
     await expect(readRunCheckpoint(rpcFetch([{ state_version: 6 }, { state_version: 6 }]).client, ORG, RUN, TOKEN)).rejects.toThrow(/run_checkpoint returned 2 rows/)
+  })
+})
+
+// The last good copy of each ops version's plain variables (#2999, ops migration 20261029220000).
+describe('the variable copy wrappers (#2999)', () => {
+  const copyIn = {
+    organizationId: ORG, workflowId: WF, versionNumber: 3, servedAt: '2026-10-29T10:00:00.000Z',
+    values: { API_BASE: 'https://a.example.test' }, secretKeys: ['API_TOKEN'], absentKeys: ['GONE'],
+  }
+
+  it('save_variable_copies sends each version whole, names and plain values only, and reads its counts', async () => {
+    const { client, calls } = rpcFetch([{ versions_written: 1, versions_unchanged: 2, keys_written: 3, keys_deleted: 0, refused_no_copy: 1, refused_older: 0 }])
+    expect(await saveVariableCopies(client, [copyIn], 600)).toEqual({ versionsWritten: 1, versionsUnchanged: 2, keysWritten: 3, keysDeleted: 0, refusedNoCopy: 1, refusedOlder: 0 })
+    expect(calls[0]).toEqual({
+      path: '/rest/v1/rpc/save_variable_copies',
+      body: {
+        p_confirm_every_seconds: 600,
+        p_copies: [{
+          organization_id: ORG, workflow_id: WF, version_number: 3, served_at: '2026-10-29T10:00:00.000Z',
+          values: { API_BASE: 'https://a.example.test' }, secret_keys: ['API_TOKEN'], absent_keys: ['GONE'],
+        }],
+      },
+    })
+    await expect(saveVariableCopies(rpcFetch([{ versions_written: 1 }]).client, [copyIn], 600)).rejects.toThrow(/save_variable_copies returned/)
+  })
+
+  it('variable_copies asks for one organization\'s versions and reads each copy back, refusing a malformed one by name', async () => {
+    const row = {
+      workflow_id: WF, version_number: 3, served_at: '2026-10-29T10:00:00+00:00', confirmed_at: '2026-10-29T10:01:00+00:00',
+      plain_values: { API_BASE: 'https://a.example.test' }, secret_keys: ['API_TOKEN'], absent_keys: ['GONE'], db_now: '2026-10-29T10:02:00+00:00',
+    }
+    const { client, calls } = rpcFetch([row])
+    expect(await readVariableCopies(client, ORG, [{ workflowId: WF, versionNumber: 3 }])).toEqual([{
+      workflowId: WF, versionNumber: 3, servedAt: '2026-10-29T10:00:00+00:00', confirmedAt: '2026-10-29T10:01:00+00:00',
+      values: { API_BASE: 'https://a.example.test' }, secretKeys: ['API_TOKEN'], absentKeys: ['GONE'], dbNow: '2026-10-29T10:02:00+00:00',
+    }])
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/variable_copies', body: { p_organization_id: ORG, p_versions: [{ workflow_id: WF, version_number: 3 }] } })
+    for (const bad of [{ ...row, plain_values: { API_BASE: 7 } }, { ...row, secret_keys: 'API_TOKEN' }, { ...row, confirmed_at: 'soon' }, { ...row, version_number: '3' }]) {
+      await expect(readVariableCopies(rpcFetch([bad]).client, ORG, [{ workflowId: WF, versionNumber: 3 }]), JSON.stringify(bad)).rejects.toThrow(/variable_copies returned/)
+    }
   })
 })

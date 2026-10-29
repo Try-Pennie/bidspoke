@@ -11,7 +11,9 @@
  * the plain values, and the secret NAMES only (RunVariablesRecord). The first
  * start's record wins, so every retry and every continued slice (#1951) uses
  * the plain values the run started with; only the secrets are asked again,
- * since they are never kept (runVariablesFor).
+ * since they are never kept (runVariablesFor). While the bidding Worker cannot
+ * be reached, a run may instead carry the last good copy's plain values
+ * (source copy, #2999, variable-copies.ts), never a secret.
  *
  * A REFUSAL. The bidding Worker refuses a run by name (RUN_VARIABLES_REFUSALS).
  * The tick ends it unrun, by an outcome that already exists (refusedRunEnd):
@@ -23,9 +25,14 @@ import type { ReadRunVariables, RunVariablesRefusal } from '../lib/ops-gateway-c
 import type { CompleteOutcome } from './ops-writes'
 import { RUN_VARIABLE_SOURCES, type RunVariableSource } from './run-vocabulary'
 
-/** What a run's dispatch carries (#2998): this start's variables, secret values included, for this run only. */
+/**
+ * What a run's dispatch carries (#2998): this start's variables, secret values
+ * included, for this run only. From the bidding Worker, or (#2999) from the
+ * last good copy ops keeps, used only while bidding cannot be reached, which
+ * holds no secret, so a copy's secretValues is always empty.
+ */
 export interface DispatchedRunVariables {
-  source: 'bidding'
+  source: RunVariableSource
   servedAt: string
   values: Record<string, string>
   secretValues: Record<string, string>
@@ -59,7 +66,9 @@ export function dispatchedFrom(read: Extract<ReadRunVariables, { kind: 'served' 
 /** Exactly a DispatchedRunVariables: the dispatch's check (dispatch-auth.ts). */
 export function isDispatchedRunVariables(v: unknown): v is DispatchedRunVariables {
   if (!isRecord(v) || !sameKeys(v, ['source', 'servedAt', 'values', 'secretValues'])) return false
-  if (v.source !== 'bidding' || !isTime(v.servedAt) || !isNamedText(v.values) || !isNamedText(v.secretValues)) return false
+  if (!(RUN_VARIABLE_SOURCES as readonly unknown[]).includes(v.source) || !isTime(v.servedAt) || !isNamedText(v.values) || !isNamedText(v.secretValues)) return false
+  // The copy keeps no secret's value, so a copy carrying one is not the copy's.
+  if (v.source === 'copy' && Object.keys(v.secretValues).length > 0) return false
   const values = v.values
   return !Object.keys(v.secretValues).some((k) => Object.hasOwn(values, k))
 }

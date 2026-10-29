@@ -69,6 +69,11 @@ function opsDb() {
     purgeStepTests: async () => { throw new Error('not claimed') },
     purgeStepRecords: async () => { throw new Error('not claimed') },
     purgeRunVariables: async () => { throw new Error('not claimed') },
+    purgeVariableCopies: async () => { throw new Error('not claimed') },
+    // Observe mode, as deployed: the variable copy is written only in live mode (#2999).
+    readVariableCopies: async () => { throw new Error('observe mode keeps no variable copy') },
+    saveVariableCopies: async () => { throw new Error('observe mode keeps no variable copy') },
+    readDefinition: async () => { throw new Error('observe mode keeps no variable copy') },
     // Every version held: this test is about the connection copies.
     missingDefinitions: async () => ({ missing: [], reachedLimit: false }),
     saveDefinition: async () => { throw new Error('nothing is missing') },

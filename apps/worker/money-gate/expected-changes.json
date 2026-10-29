@@ -1,4 +1,31 @@
 {
   "about": "Differences a pull request MEANS to make to what the bidding engine sends or decides. Each entry: workflow, check, optional node pattern, field pattern (* matches anything), and a reason in words. An entry excuses differences only in the change that adds it; once on main it is carried over and excuses nothing, and once the live worker runs the commit that added it, every pull request fails until it is deleted. A new entry that matches no difference fails the gate. See README.md, Reading a red.",
-  "entries": []
+  "entries": [
+    {
+      "workflow": "Main Flow",
+      "check": "kv_state",
+      "fixture": "salesforce_collections_post_fails",
+      "field": "kv_state.IDEMPOTENCY.outcome-deadletter-window:*:outcome_writeback_deadletters.uncapturable",
+      "reason": "Intended by #2949: a credit collections post that fails before the answer is no longer sent to the post-answer write capture, so it no longer counts an uncapturable dead letter. Its failure is still reported by the failure alert, on its own side of the answer."
+    },
+    {
+      "workflow": "Main Flow",
+      "check": "do_state",
+      "fixture": "salesforce_collections_post_fails",
+      "field": "do_state.ALERT_CLAIM.b0f437e6d442aa37ea3d9733e4d97f6066b79879a2ebd7405c9f0892f176423a",
+      "reason": "Intended by #2949: this is the alert claim that uncapturable dead letter took for its Slack post. No dead letter, so no claim."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (GigFi)",
+      "check": "do_state",
+      "field": "do_state.ALERT_CLAIM.b0f437e6d442aa37ea3d9733e4d97f6066b79879a2ebd7405c9f0892f176423a",
+      "reason": "Not a change in this workflow. The alert claim object the Main Flow salesforce_collections_post_fails fixture creates at the base, when the capture dead-letters the pre-answer collections post as uncapturable, is still listed, empty and with no alarm, by every fixture the replay runs after it (its id outlives the reset between fixtures). Those are all the RML fixtures, which run last. Measured locally: at the base the object first appears in fixture 95 of 127 (that Main Flow fixture) and in every one of fixtures 96 to 126, and in no fixture before 95; at the head it appears in none. #2949 stops that dead letter, so the leftover goes too."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (LendSwift)",
+      "check": "do_state",
+      "field": "do_state.ALERT_CLAIM.b0f437e6d442aa37ea3d9733e4d97f6066b79879a2ebd7405c9f0892f176423a",
+      "reason": "Not a change in this workflow. The alert claim object the Main Flow salesforce_collections_post_fails fixture creates at the base, when the capture dead-letters the pre-answer collections post as uncapturable, is still listed, empty and with no alarm, by every fixture the replay runs after it (its id outlives the reset between fixtures). Those are all the RML fixtures, which run last. Measured locally: at the base the object first appears in fixture 95 of 127 (that Main Flow fixture) and in every one of fixtures 96 to 126, and in no fixture before 95; at the head it appears in none. #2949 stops that dead letter, so the leftover goes too."
+    }
+  ]
 }

@@ -22,6 +22,7 @@ import { organizationIdFrom, type OrganizationId } from '../ops-db'
 import {
   OpsWriteTimeoutError, type ConnectionCopyInput, type SaveConnectionCopiesResult, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
   type OpsResealState, type UnservedIdentityRemoved, type WorkflowCopy, type WorkflowCopyInput,
+  type SaveVariableCopiesResult, type VariableCopy, type VariableCopyInput,
 } from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
 import { ConnectionRefusal, RequeueAt } from '../connections/refusals'
@@ -109,6 +110,8 @@ interface Fake {
     fires: Array<{ organizationId: string; fire: ScheduleFire }>
     claims: ClaimRunRequests[]
     completed: Array<{ runRequestId: string; end: CompleteOutcome }>
+    /** Each save_variable_copies call's versions (#2999). */
+    savedVariableCopies: VariableCopyInput[][]
   }
   /** The runs handed to OpsInternal.run (#1950). */
   ranRuns: string[]
@@ -214,6 +217,12 @@ function fake(opts: {
   serveRunVariables?: (request: { organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> }) => Promise<unknown>
   /** What each page of the run variables purge answers (#2998). */
   runVariablesPurge?: { purged: number; more: boolean }
+  /** The frozen definitions ops holds, by `workflowId:version` (#2999); none by default. */
+  heldDefinitions?: Record<string, Record<string, unknown>>
+  /** The variable copies ops holds (#2999); none by default. */
+  variableCopies?: readonly VariableCopy[]
+  /** What each page of the variable copy purge answers (#2999). */
+  variableCopiesPurge?: { purged: number; more: boolean }
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
@@ -277,6 +286,20 @@ function fake(opts: {
     async purgeStepTests(limit: number) { fail('purgeStepTests'); calls.push(`purgeStepTests:${limit}`); return opts.stepTestsPurge ?? { purged: 0, more: false } },
     async purgeStepRecords(limit: number) { fail('purgeStepRecords'); calls.push(`purgeStepRecords:${limit}`); return opts.stepRecordsPurge ?? { purged: 0, more: false } },
     async purgeRunVariables(limit: number) { fail('purgeRunVariables'); calls.push(`purgeRunVariables:${limit}`); return opts.runVariablesPurge ?? { purged: 0, more: false } },
+    savedVariableCopies: [] as VariableCopyInput[][],
+    async purgeVariableCopies(limit: number) { fail('purgeVariableCopies'); calls.push(`purgeVariableCopies:${limit}`); return opts.variableCopiesPurge ?? { purged: 0, more: false } },
+    async readVariableCopies(organizationId: OrganizationId, versions: ReadonlyArray<{ workflowId: string; versionNumber: number }>): Promise<VariableCopy[]> {
+      fail('readVariableCopies'); calls.push(`readVariableCopies:${organizationId}:${versions.map((v) => `${v.workflowId}:${v.versionNumber}`).join(',')}`)
+      return (opts.variableCopies ?? []).filter((c) => versions.some((v) => v.workflowId === c.workflowId && v.versionNumber === c.versionNumber))
+    },
+    async saveVariableCopies(copies: readonly VariableCopyInput[]): Promise<SaveVariableCopiesResult> {
+      fail('saveVariableCopies'); db.savedVariableCopies.push([...copies])
+      return { versionsWritten: copies.length, versionsUnchanged: 0, keysWritten: 0, keysDeleted: 0, refusedNoCopy: 0, refusedOlder: 0 }
+    },
+    async readDefinition(_org: OrganizationId, workflowId: string, versionNumber: number) {
+      fail('readDefinition'); calls.push(`readDefinition:${workflowId}:${versionNumber}`)
+      return opts.heldDefinitions?.[`${workflowId}:${versionNumber}`] ?? null
+    },
     async sfLimitsTargets(limit: number) {
       fail('sfLimitsTargets'); calls.push(`sfLimitsTargets:${limit}`)
       return { targets: opts.sfTargets ?? [], reachedLimit: false }
@@ -1852,5 +1875,201 @@ describe('the variables of the runs a live tick claims (#2998, phase 2 of #2982)
     const f = fake({ claimed: [claimedRun(WF_A, 1)] })
     await runOpsTick(f.ports)
     expect(f.variableRequests).toEqual([])
+  })
+})
+
+describe('the last good copy of each version\'s plain variables (#2999, phase 3 of #2982)', () => {
+  const ORG_2 = organizationIdFrom('7a2d3c9f-1e4b-4d2f-8b66-2c3d4e5f6071')
+  const WF_C = '00000000-0000-4000-8000-0000000019a3'
+  const WF_D = '00000000-0000-4000-8000-0000000019a4'
+  const PLANTED = 'fake-copy-tick-secret'
+  /** A definition reading these variables, as ops holds it frozen. */
+  const reading = (...names: string[]) => ({ nodes: [{ id: 'n', type: 'transform', config: { mappings: names.map((n) => ({ source: `env.${n}`, target: n })) } }], edges: [] })
+  const down = async () => { throw new Error('the bidding Worker\'s run variables did not answer within 15 s') }
+  /** A copy ops holds of WF_A version 3, confirmed a minute before the database clock. */
+  const held = (over: Partial<VariableCopy> = {}): VariableCopy => ({
+    workflowId: WF_A, versionNumber: 3, servedAt: '2026-10-17T10:01:00.000Z', confirmedAt: '2026-10-17T10:01:30.000Z',
+    values: { API_BASE: 'https://kept.example.test' }, secretKeys: [], absentKeys: ['GONE'], dbNow: DB_NOW, ...over,
+  })
+
+  it('writes the copy after a good answer: each plain value, each secret by name only, each name bidding did not serve as absent, in one save', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1)],
+      heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE', 'API_TOKEN', 'GONE') },
+      serveRunVariables: async (request) => servedVariables(request, () => ({ values: { API_BASE: 'https://a.example.test' }, secret_values: { API_TOKEN: PLANTED } })),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.ranRuns).toEqual([claimedRun(WF_A, 1).runRequestId])
+    expect(f.db.savedVariableCopies).toEqual([[{
+      organizationId: ORG, workflowId: WF_A, versionNumber: 3, servedAt: '2026-10-17T10:02:29.000Z',
+      values: { API_BASE: 'https://a.example.test' }, secretKeys: ['API_TOKEN'], absentKeys: ['GONE'],
+    }]])
+    // The copy never holds a secret's value, nor does the report.
+    expect(JSON.stringify(f.db.savedVariableCopies)).not.toContain(PLANTED)
+    expect(JSON.stringify(report)).not.toContain(PLANTED)
+    // Asked once: the claimed run's answer is the copy's too, not asked again by the refresh.
+    expect(f.variableRequests).toHaveLength(1)
+    expect(report.counts).toMatchObject({ variable_copies_versions_written: 1, runs_variables_live: 1 })
+  })
+
+  it('refreshes every switched on workflow that may start, once a tick, never one off, deleted or withdrawn', async () => {
+    const WF_E = '00000000-0000-4000-8000-0000000019a5'
+    const f = fake({
+      mode: 'live',
+      copies: [
+        copy(), copy({ workflowId: WF_B, versionNumber: 5, organizationId: ORG_2 }),
+        copy({ workflowId: WF_C, isActive: false, mayStart: false }), copy({ workflowId: WF_D, deletedAt: '2026-10-17T09:00:00.000Z', mayStart: false }),
+        copy({ workflowId: WF_E, withdrawnAt: '2026-10-17T09:00:00.000Z', mayStart: false }),
+      ],
+      heldDefinitions: Object.fromEntries([`${WF_A}:3`, `${WF_B}:5`, `${WF_C}:3`, `${WF_D}:3`, `${WF_E}:3`].map((k) => [k, reading('API_BASE', 'API_TOKEN')])),
+      serveRunVariables: async (request) => servedVariables(request, () => ({ values: { API_BASE: 'b' }, secret_values: { API_TOKEN: PLANTED } })),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.variableRequests.flatMap((r) => r.runs.map((x) => `${x.workflow_id}:${x.version_number}`)).sort()).toEqual([`${WF_A}:3`, `${WF_B}:5`].sort())
+    expect(f.variableRequests.map((r) => r.organization_id).sort()).toEqual([ORG, ORG_2].sort())
+    expect(f.db.savedVariableCopies).toHaveLength(1)
+    expect(f.db.savedVariableCopies[0].map((c) => `${c.organizationId}:${c.workflowId}:${c.versionNumber}`).sort()).toEqual([`${ORG}:${WF_A}:3`, `${ORG_2}:${WF_B}:5`].sort())
+    expect(JSON.stringify(f.db.savedVariableCopies)).not.toContain(PLANTED)
+    expect(report.counts).toMatchObject({ variable_copies_versions_written: 2 })
+  })
+
+  it('takes a held version\'s names from its copy, reading its definition only for a version the copy does not hold yet', async () => {
+    const f = fake({
+      mode: 'live', copies: [copy(), copy({ workflowId: WF_B })],
+      variableCopies: [held()],
+      heldDefinitions: { [`${WF_B}:3`]: reading('REGION') },
+      serveRunVariables: async (request) => servedVariables(request, (r) => r.workflow_id === WF_A ? { values: { API_BASE: 'new' } } : { values: { REGION: 'us' } }),
+    })
+    await runOpsTick(f.ports)
+    expect(f.db.calls.filter((c) => c.startsWith('readDefinition:'))).toEqual([`readDefinition:${WF_B}:3`])
+    const saved = Object.fromEntries(f.db.savedVariableCopies[0].map((c) => [c.workflowId, c]))
+    expect(saved[WF_A]).toMatchObject({ values: { API_BASE: 'new' }, absentKeys: ['GONE'] })
+    expect(saved[WF_B]).toMatchObject({ values: { REGION: 'us' }, absentKeys: [] })
+  })
+
+  it('asks nothing for a version whose names it cannot tell (no copy and no frozen definition), and writes it nothing', async () => {
+    const f = fake({ mode: 'live', copies: [copy()] })
+    const report = await runOpsTick(f.ports)
+    expect(f.variableRequests).toEqual([])
+    expect(f.db.savedVariableCopies).toEqual([])
+    expect(report.counts).toMatchObject({ variable_copies_names_unknown: 1 })
+  })
+
+  it('skips the refresh when the tick\'s own workflow fetch failed, and in observe mode', async () => {
+    const defs = { heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE') } }
+    const fetchFailed = fake({ mode: 'live', fetch: async () => { throw new Error('the bidding Worker is down') }, ...defs })
+    await runOpsTick(fetchFailed.ports)
+    expect(fetchFailed.variableRequests).toEqual([])
+    expect(fetchFailed.db.savedVariableCopies).toEqual([])
+    const observe = fake(defs)
+    await runOpsTick(observe.ports)
+    expect(observe.variableRequests).toEqual([])
+    expect(observe.db.savedVariableCopies).toEqual([])
+  })
+
+  it('stops refreshing after the first failed request, and counts it', async () => {
+    const f = fake({
+      mode: 'live', copies: [copy(), copy({ workflowId: WF_B, organizationId: ORG_2 })],
+      heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE'), [`${WF_B}:3`]: reading('API_BASE') },
+      serveRunVariables: down,
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.variableRequests).toHaveLength(1)
+    expect(f.db.savedVariableCopies).toEqual([])
+    expect(report.counts).toMatchObject({ variable_copies_refresh_failed: 1 })
+  })
+
+  it('a save that fails is counted, and no run is lost over it', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1)], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE') },
+      failing: { saveVariableCopies: new Error('statement timeout') },
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.ranRuns).toEqual([claimedRun(WF_A, 1).runRequestId])
+    expect(report.counts).toMatchObject({ variable_copies_save_failed: 1, runs_done: 1 })
+  })
+
+  it('with the bidding Worker down, runs a claimed run on a fresh, complete copy that reads no secret, from the copy', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1)], serveRunVariables: down,
+      variableCopies: [held()], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE', 'GONE') },
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.ranRuns).toEqual([claimedRun(WF_A, 1).runRequestId])
+    expect(f.ranVariables[claimedRun(WF_A, 1).runRequestId]).toEqual({
+      source: 'copy', servedAt: '2026-10-17T10:01:00.000Z', values: { API_BASE: 'https://kept.example.test' }, secretValues: {},
+    })
+    expect(f.db.completed).toEqual([])
+    expect(report.counts).toMatchObject({ runs_variables_copy: 1, runs_done: 1 })
+    expect(report.counts.runs_variables_unavailable).toBeUndefined()
+    // Nothing is written from a tick that could not reach bidding.
+    expect(f.db.savedVariableCopies).toEqual([])
+  })
+
+  it('also falls back when the whole answer is unreadable', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1)], serveRunVariables: async () => ({ runs: 'nope' }),
+      variableCopies: [held()], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE') },
+    })
+    await runOpsTick(f.ports)
+    expect(f.ranVariables[claimedRun(WF_A, 1).runRequestId]).toMatchObject({ source: 'copy' })
+  })
+
+  for (const [why, over, matches] of [
+    ['the copy is past its age limit', { variableCopies: [held({ confirmedAt: '2026-10-17T04:02:30.000Z' })], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE') } }, /more than 6 hours/],
+    ['the run reads a secret', { variableCopies: [held({ secretKeys: ['API_TOKEN'] })], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE', 'API_TOKEN') } }, /secret variable env\.API_TOKEN/],
+    ['the run reads a name the copy never asked about', { variableCopies: [held()], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE', 'NEVER_ASKED') } }, /env\.NEVER_ASKED/],
+    ['no copy of the version is kept', { heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE') } }, /no copy/],
+    ['the copy cannot be read', { variableCopies: [held()], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE') }, failing: { readVariableCopies: new Error('statement timeout') } }, /statement timeout/],
+  ] as const) {
+    it(`with the bidding Worker down, returns the run to the queue unstarted when ${why}`, async () => {
+      const f = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)], serveRunVariables: down, ...over })
+      const report = await runOpsTick(f.ports)
+      expect(f.ranRuns).toEqual([])
+      expect(f.db.completed).toHaveLength(1)
+      expect(f.db.completed[0].end).toMatchObject({ outcome: 'retry', notBefore: new Date(Date.parse(DB_NOW) + RUN_VARIABLES_RETRY_MS) })
+      expect((f.db.completed[0].end as { error: string }).error).toMatch(matches)
+      expect(report.counts).toMatchObject({ runs_variables_unavailable: 1, runs_variables_none: 1 })
+    })
+  }
+
+  it('a refusal by the bidding Worker never falls back to the copy, however fresh', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1)], variableCopies: [held()], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE') },
+      serveRunVariables: async (request) => servedVariables(request, () => ({ refused: 'not_ops_lane' })),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.ranRuns).toEqual([])
+    expect(f.db.completed[0].end).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/^variables_refused \(not_ops_lane\)/) })
+    expect(report.counts).toMatchObject({ runs_variables_refused: 1, runs_variables_none: 1 })
+    expect(report.counts.runs_variables_copy).toBeUndefined()
+  })
+
+  it('a run whose own part of a good answer could not be read is not run on the copy', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1)], variableCopies: [held()], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE') },
+      serveRunVariables: async (request) => {
+        const answer = servedVariables(request)
+        return { ...answer, runs: answer.runs.map((r) => ({ ...r, values: { B: 7 } })) }
+      },
+    })
+    await runOpsTick(f.ports)
+    expect(f.ranRuns).toEqual([])
+    expect(f.db.completed[0].end).toMatchObject({ outcome: 'retry' })
+  })
+
+  it('purges stale copies and those of workflows gone from the lane in the nightly sweep, paging while there is more, and counts them', async () => {
+    const f = fake({ dbNow: '2026-10-17T07:15:00.000Z', variableCopiesPurge: { purged: 1000, more: true } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls.filter((c) => c === 'purgeVariableCopies')).toHaveLength(10)
+    expect(f.db.calls).toContain('purgeVariableCopies:1000')
+    expect(report.counts.variable_copies_purged).toBe(10_000)
+    const quiet = fake({})
+    await runOpsTick(quiet.ports)
+    expect(quiet.db.calls).not.toContain('purgeVariableCopies')
+    const failing = fake({ dbNow: '2026-10-17T07:15:00.000Z', failing: { purgeVariableCopies: new Error('lock timeout') } })
+    const failed = await runOpsTick(failing.ports)
+    expect(failed.problem_keys).toContain('sweep_failed:observation_purge')
+    expect(failing.db.calls).toContain('purgeRunVariables')
   })
 })

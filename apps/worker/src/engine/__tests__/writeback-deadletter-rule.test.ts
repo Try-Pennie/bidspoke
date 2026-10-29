@@ -47,6 +47,7 @@ async function capture(status: number, text: string) {
       workflowName: 'Engine Bidding Workflow',
       executionId: '01920000-0000-7000-8000-000000002054',
       stepNamespace: 'patch_prospect_reject',
+      failedStep: { step: 'patch_prospect_reject', after_answer: true, collections_post: false, outcome_unknown: false },
       nodeType: 'salesforce',
       errorType: 'permanent',
       error: new Error(`Salesforce API error (${status}): ${text}`),

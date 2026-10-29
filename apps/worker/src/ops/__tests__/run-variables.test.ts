@@ -34,6 +34,14 @@ describe('the variables a run dispatch carries', () => {
     ]
     for (const bad of bads) expect(isDispatchedRunVariables(bad), JSON.stringify(bad)).toBe(false)
   })
+
+  it('carries the kept copy\'s plain values (#2999), and never a secret from it: the copy holds none', () => {
+    const fromCopy = { source: 'copy', servedAt: SERVED_AT, values: { API_BASE: 'https://api.example.test' }, secretValues: {} }
+    expect(isDispatchedRunVariables(fromCopy)).toBe(true)
+    expect(recordOf(fromCopy as DispatchedRunVariables)).toEqual({ source: 'copy', servedAt: SERVED_AT, values: fromCopy.values, secretKeys: [] })
+    expect(isDispatchedRunVariables({ ...fromCopy, secretValues: { API_TOKEN: 'fake-planted-secret-value' } })).toBe(false)
+    expect(isDispatchedRunVariables({ ...fromCopy, source: 'kv' })).toBe(false)
+  })
 })
 
 describe('the record a run keeps of its variables', () => {
