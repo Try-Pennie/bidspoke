@@ -713,9 +713,11 @@ export const OPS_TICK_PROBLEM_RULES = {
    */
   purge_failed: 'two_in_a_row',
   /**
-   * The nightly purge of finished runs stopped at its page cap or time budget
-   * with runs past their 90 days still left (#3018). Judged by the sweep's
-   * runs, and paged on the second night in a row behind, as purge_failed is.
+   * One of the nightly purges stopped at its page cap or at the purges' shared
+   * time budget with rows past their window still left (#3018 for finished
+   * runs, #3053 for every purge), keyed by what it purges (NIGHTLY_PURGE in
+   * ops/tick.ts). Judged by the sweep's runs, and paged on the second night in
+   * a row behind, as purge_failed is.
    */
   purge_behind: 'two_in_a_row',
   workflows_fetch_failed: 'three_in_a_row',

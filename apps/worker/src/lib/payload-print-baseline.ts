@@ -57,19 +57,6 @@ export const ACCEPTED_PRINT_SITES: readonly AcceptedPrintSite[] = [
   { workflow: 'Main Flow (v2)', namespace: 'fallback_invalid_state', identifier: 'sanitizedBody' },
   { workflow: 'Main Flow (v2)', namespace: 'pennie_or_eligibility', identifier: 'parsedBody' },
   { workflow: 'Main Flow (v2)', namespace: 'pennie_or_eligibility', identifier: 'result' },
-  // Added 2026-09-10, on different grounds from every site above. This prints ONE
-  // named scalar field, `financialInformation.employmentStatus`, not a record,
-  // and only on the branch that runs when that field is absent or not a string.
-  // Verified against the live definition on 2026-09-10: version 20 of the
-  // workflow, saved 2026-09-09 19:18 UTC, is the first to carry the line.
-  // It is here because the detector cannot tell a scalar from a record at scan
-  // time (both are just an identifier in the source), so the distinction has to
-  // be made by a person once, here. See #1255.
-  // Since version 26 (2026-10-22, #2593) the step is a lead validation node and
-  // prints nothing. The entry stays while version 25, which still carries the
-  // line, is the rollback target of that swap's watch, so a rollback does not
-  // page as a new print; it goes when #2593 closes.
-  { workflow: 'RML - Bidding Workflow (LendSwift)', namespace: 'validate_bidding_and_state', identifier: 'employmentStatus' },
 ]
 
 /** Keyed on all three, so the same node printing a DIFFERENT value is new. */
