@@ -113,6 +113,7 @@ export const SLACK_ALERT_KINDS = [
   'outcome-deadletter-writeback-uncapturable',
   'outcome-deadletter-writeback-held',
   'outcome-deadletter-writeback-held-unrecorded',
+  'outcome-deadletter-collections-post',
   'outcome-deadletter-continuation-unfinished',
   'deadletter-volume',
   'unconfirmed-writes',

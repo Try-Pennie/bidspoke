@@ -43,6 +43,13 @@
  * it is judged by the Lead's Inquiries file and resent at most once, so it is
  * logged here and neither stored nor announced. One nothing holds (a refusal)
  * is still dead-lettered as uncapturable: the replay resends updates only.
+ *
+ * A failure from BEFORE the answer is not a post-answer write (#2949). A marked
+ * parallel slot (Main Flow's credit collections post, #2832) can fail before the
+ * answer without failing the run, and the run then reaches this capture degraded
+ * like one whose write after the answer failed. It is logged and left alone: the
+ * failure alert still reports it, on its own side of the answer, and nothing
+ * here may call it an outcome to enter by hand.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ErrorType, ResolvedStepInput } from '../types'
@@ -54,7 +61,9 @@ import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LAB
 import type { SalesforceAnswer } from './nodes/salesforce'
 import { salesforceRejectedTheWrite } from '../lib/salesforce-api'
 import { readBackOwns, WRITE_MARKER_FIELD } from './write-marker'
-import { CREDIT_INQUIRY_APEX_PATH } from './inquiry-post'
+import { CREDIT_INQUIRY_APEX_PATH, isCreditCollectionsPost } from './inquiry-post'
+import { classifyOutageCause } from '../lib/upstream-outage'
+import type { FailedStepFacts } from '../lib/slack'
 
 /** The durable path's label for the store's insert, declared in the leaf label module (#2084). */
 export { WRITEBACK_STORE_LABEL }
@@ -101,12 +110,42 @@ export function writebackFromFailure(nodeType: string, resolvedInput: ResolvedSt
   return { ok: true, sf_object: object, sf_record_id: recordId, sf_operation: operation, body: body as Record<string, unknown> }
 }
 
+/**
+ * What the alerts are told about a failed step (#2949): the side of the answer it
+ * failed on, whether it is the credit collections post (by its endpoint, never
+ * its namespace), and whether it was cut off before Salesforce answered, which is
+ * the one case whose result is unknown rather than failed.
+ *
+ * `afterAnswer` is recorded on the failure where it can be either: a parallel
+ * slot's failure, which a marked slot lets the run outlive (#2832), and a step's
+ * own failure in the walk. A failure without it ended the walk, and a degraded
+ * run's walk only ends in a failure after it has answered, so it is after.
+ *
+ * Unknown is the engine's own cut off (the step timeout aborting the call, which
+ * the outage classifier names `timeout`) with no answer from Salesforce. A
+ * failure that never reached Salesforce (a bulkhead shed, a refused login) and
+ * one Salesforce answered are both known not to have landed as sent.
+ */
+export function failedStepFacts(
+  failure: { stepNamespace: string; afterAnswer: boolean | null; salesforceAnswer: SalesforceAnswer | null; message: string },
+  node: { type: string; config: Record<string, unknown> } | undefined,
+): FailedStepFacts {
+  return {
+    step: failure.stepNamespace,
+    after_answer: failure.afterAnswer ?? true,
+    collections_post: node?.type === 'salesforce' && isCreditCollectionsPost(node.config),
+    outcome_unknown: failure.salesforceAnswer == null && classifyOutageCause(failure.message)?.key === 'timeout',
+  }
+}
+
 export interface FailedWriteback {
   orgId: string
   workflowId: string
   workflowName: string
   executionId: string
   stepNamespace: string
+  /** The failed step as the alerts describe it, its side of the answer included (#2949). */
+  failedStep: FailedStepFacts
   nodeType: string
   errorType: ErrorType | null
   error: unknown
@@ -208,6 +247,10 @@ function isHeldInquiryPost(resolvedInput: ResolvedStepInput | null | undefined):
 /** Stores a failed post-answer Salesforce write, or says why it did not. Never throws. */
 export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDeps): Promise<CaptureResult> {
   if (f.isTest) return { kind: 'skipped', reason: 'test run' }
+  if (!f.failedStep.after_answer) {
+    console.log(`[writeback-deadletter] not a post-answer write: execution ${f.executionId}, step ${f.stepNamespace} failed before the answer, so the capture leaves it to the failure alert`)
+    return { kind: 'skipped', reason: 'before the answer' }
+  }
   if (f.heldUntil && f.nodeType === 'salesforce' && isHeldInquiryPost(f.resolvedInput)) {
     console.warn(`[writeback-deadletter] credit inquiry post held for the Salesforce read-back: execution ${f.executionId}, step ${f.stepNamespace}, until ${f.heldUntil}`)
     return { kind: 'held', until: f.heldUntil }
@@ -225,6 +268,7 @@ export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDe
       workflow_name: f.workflowName,
       execution_id: f.executionId,
       at: new Date().toISOString(),
+      failed_step: f.failedStep,
     }).catch((e) =>
       console.error(
         `[writeback-deadletter] ${WRITEBACK_UNCAPTURABLE_LABEL} dead letter failed for execution ${f.executionId}, step ${f.stepNamespace}:`,

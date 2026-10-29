@@ -980,6 +980,14 @@ describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answ
     expect(text).toContain('<https://app.test/workflows/wf-7?execution=ex-9|View the run')
   })
 
+  // #2949: a failed Salesforce step said "after the answer" wherever it ran.
+  it('says before the answer when the failed step ran before it', async () => {
+    await send({ run: { ...run, failed_step: { step: 'patch_submission', after_answer: false, collections_post: false, outcome_unknown: false } } })
+    const text = (await textOf())
+    expect(text).toContain('a Salesforce step before the answer failed')
+    expect(text).not.toContain('after the answer')
+  })
+
   it('drops the internal label, the raw JSON and the claim of retries', async () => {
     await send()
     const text = (await textOf())
