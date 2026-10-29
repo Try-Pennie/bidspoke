@@ -10,43 +10,28 @@
  *
  * What it writes (packages/porting-evidence/src/inventory/plan-load.ts):
  * pipedream_state and the export fields, upserted on the hashid. It never writes
- * porting_stage. A workflow a newer export of its project no longer lists is
- * stamped absent and reported, never deleted. An export older than what is stored
- * is refused.
+ * porting_stage or a person's decision (a retirement or a dropped step, #2979,
+ * recorded by record-decision.ts), so a reload keeps them. A workflow a newer
+ * export of its project no longer lists is stamped absent and reported, never
+ * deleted. An export older than what is stored is refused.
  *
  * Credentials: SUPABASE_URL and SUPABASE_SECRET_KEY from the environment, else
- * from apps/worker/.dev.vars. Nothing here prints a value.
+ * from apps/worker/.dev.vars (credentials.ts). Nothing here prints a value.
  *
  * Runs on Node's own TypeScript type stripping (Node 23.6 or later).
  */
-import path from 'node:path'
 import {
   differencesAfterWrite,
-  inventoryCredentials,
   planLoad,
   readExport,
   readStoredRows,
   writeRows,
 } from '../../packages/porting-evidence/src/inventory/index.ts'
-
-const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..')
-
-function fail(message: string): never {
-  process.stderr.write(`${message}\n`)
-  process.exit(1)
-}
+import { credentials, fail } from './credentials.ts'
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name)
   return i === -1 ? undefined : process.argv[i + 1]
-}
-
-function credentials(): { url: string; key: string } {
-  try {
-    return inventoryCredentials(process.env, path.join(REPO_ROOT, 'apps', 'worker', '.dev.vars'))
-  } catch (e) {
-    fail(e instanceof Error ? e.message : 'reading the credentials failed')
-  }
 }
 
 const dir = process.argv[2]
