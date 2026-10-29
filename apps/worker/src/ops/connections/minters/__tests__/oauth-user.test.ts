@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { SealedEnvelope } from '@bidspoke/connection-seal'
 import { connectionFetch, type CandidateConnection, type ConnectionCall } from '../../connection-fetch'
-import { ConnectionRefusal, LoginMintError } from '../../refusals'
+import { ConnectionRefusal, LoginMintError, RequeueAt } from '../../refusals'
 import type { Authorization, AuthorizeInput, ServiceRules } from '../../service-rules'
 import type { AccessTokenRequest, ExchangeRequest } from '../../token-object-contract'
 import { CONN, ORG, T0, makeDoubles, makeKeys, sealLogin, usableCopy, type TestKeys } from '../../__tests__/harness'
@@ -80,6 +80,7 @@ function input(over: Partial<AuthorizeInput> = {}): AuthorizeInput & { mints: nu
     candidate: false,
     renew: null,
     noteMint: () => { counted.mints += 1 },
+    noteUnreadableRateLimitHeader: () => undefined,
     // A person bound login asks its token object, never a token endpoint, so this fetch is never called.
     fetch: async (): Promise<Response> => { throw new Error('a person bound auth asked a token endpoint itself') },
     ...over,
@@ -195,6 +196,26 @@ describe('through connectionFetch, Dan\'s decision 2 holds for a person bound lo
     expect(d.rec.refreshes.map((r) => r.result)).toEqual([{ ok: false, cause: 'token_endpoint_timeout' }, { ok: false, cause: 'token_endpoint_timeout' }])
   })
 
+  it('a rate limit header the object could not read is counted by connectionFetch by its name, and the wait is the object\'s time (#1693 7.4)', async () => {
+    const limited = { ...failed('rate_limited', 'token_endpoint_rate_limited', T0 + 90_000), unreadableHeaders: ['retry-after'] }
+    const d = makeDoubles(keys, usableCopy(envelope), () => [personBoundRules(tokenObjects(limited))])
+    const res = await connectionFetch(d.deps, call(), 'https://api.example.test/x')
+    expect(res).toBeInstanceOf(RequeueAt)
+    expect((res as RequeueAt).notBefore.getTime()).toBe(T0 + 90_000)
+    expect(d.rec.reports).toEqual([{ event: 'rate_limit_header_unparseable', connection_id: CONN, purpose: 'lookup', cause: 'retry-after' }])
+  })
+
+  it.each([
+    ['a name outside the rate limit headers', ['x-secret-header']],
+    ['a value rather than a list', 'retry-after'],
+  ])('an object that answers %s as an unreadable header is token_object_unavailable, never counted', async (_what, unreadableHeaders) => {
+    const limited = { ...failed('rate_limited', 'token_endpoint_rate_limited', T0 + 90_000), unreadableHeaders }
+    const auth = oauthUserAuth({ tokens: tokenObjects(limited), now: () => T0 }, SERVICE)
+    const noted: string[] = []
+    await expect(auth.authorize(input({ noteUnreadableRateLimitHeader: (header) => { noted.push(header) } }))).rejects.toMatchObject({ kind: 'token_object_unavailable', reason: 'token_object_unavailable' })
+    expect(noted).toEqual([])
+  })
+
   it('a token the object minted ends the streak; one it held does not claim to', async () => {
     const d = makeDoubles(keys, usableCopy(envelope), () => [personBoundRules(tokenObjects(token('access-one', { minted: false })))])
     await connectionFetch(d.deps, call(), 'https://api.example.test/x')
@@ -218,7 +239,7 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
   it('hands the object the row\'s sealed app login and the code, and answers the new generation, never a token', async () => {
     const objects = tokenObjects({ ok: true, generation: 2 })
     const d = makeDoubles(keys, usableCopy(envelope), () => [])
-    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: null })
+    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy, report: d.deps.report }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: null })
     expect(objects.exchangeCalls).toEqual([{
       organizationId: ORG, connectionId: CONN, service: 'example', generation: 1, envelope, tokenUrl: TOKEN_URL, code: CODE, verifier: VERIFIER, redirectUri: REDIRECT,
       expectedAccount: 'dan@trypennie.com',
@@ -228,32 +249,44 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
   it('answers whom the person signed in as, when the object read it from the provider (#2338)', async () => {
     const objects = tokenObjects({ ok: true, generation: 2, account: 'dan@trypennie.com' })
     const d = makeDoubles(keys, usableCopy(envelope), () => [])
-    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: 'dan@trypennie.com' })
+    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy, report: d.deps.report }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: 'dan@trypennie.com' })
   })
 
   it('refuses a candidate whose target the service does not sign in as a person, before the object is asked (#2338)', async () => {
     const objects = tokenObjects({ ok: true, generation: 2 })
     const d = makeDoubles(keys, usableCopy(envelope), () => [])
     const covering: OAuthUserService = { ...SERVICE, covers: (target) => (target as { person?: unknown } | null)?.person === true }
-    const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, covering, exchangeCall(appCandidate())).catch((e: unknown) => e)
+    const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy, report: d.deps.report }, covering, exchangeCall(appCandidate())).catch((e: unknown) => e)
     expect((err as ConnectionRefusal).code).toBe('connection_target_invalid')
     expect(objects.exchangeCalls).toEqual([])
-    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, covering, exchangeCall({ ...appCandidate(), target: { person: true } }))).resolves.toEqual({ generation: 2, account: null })
+    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy, report: d.deps.report }, covering, exchangeCall({ ...appCandidate(), target: { person: true } }))).resolves.toEqual({ generation: 2, account: null })
   })
 
   it('a consent as another account than the one asked for is refused by name, the reason kept for the caller (Dan, 2026-10-23)', async () => {
     const objects = tokenObjects({ ok: false, kind: 'not_allowed', reason: 'account_mismatch', retryAtMs: null })
     const d = makeDoubles(keys, usableCopy(envelope), () => [])
-    const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate())).catch((e: unknown) => e)
+    const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy, report: d.deps.report }, SERVICE, exchangeCall(appCandidate())).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ConnectionRefusal)
     expect(err).toMatchObject({ code: 'connection_not_allowed', mintReason: 'account_mismatch' })
     expect(d.rec.needsReauth).toEqual([])
   })
 
+  it('a rate limited exchange counts each header the object could not read, as verify, and is still refused by name (#1693 7.4)', async () => {
+    const limited = { ...failed('rate_limited', 'token_endpoint_rate_limited', T0 + 60_000), unreadableHeaders: ['retry-after', 'x-ratelimit-reset'] }
+    const d = makeDoubles(keys, usableCopy(envelope), () => [])
+    const err = await exchangeOAuthCode({ tokens: tokenObjects(limited), readCopy: d.deps.readCopy, report: d.deps.report }, SERVICE, exchangeCall(appCandidate())).catch((e: unknown) => e)
+    expect((err as ConnectionRefusal).code).toBe('connection_auth_unavailable')
+    expect((err as ConnectionRefusal).retryAt?.getTime()).toBe(T0 + 60_000)
+    expect(d.rec.reports).toEqual([
+      { event: 'rate_limit_header_unparseable', connection_id: CONN, purpose: 'verify', cause: 'retry-after' },
+      { event: 'rate_limit_header_unparseable', connection_id: CONN, purpose: 'verify', cause: 'x-ratelimit-reset' },
+    ])
+  })
+
   it('a new connection with no copy on ops yet may exchange', async () => {
     const objects = tokenObjects({ ok: true, generation: 2 })
     const d = makeDoubles(keys, { state: 'not_found', connectionId: CONN, service: null, generation: null, envelope: null, publicConfig: null, target: null, servedAt: null, serveUntil: null, dbNow: new Date(T0).toISOString(), ownerUserId: null }, () => [])
-    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: null })
+    await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy, report: d.deps.report }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: null })
   })
 
   it.each([
@@ -263,7 +296,7 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
   ] as const)('refuses %s before the object is asked', async (_what, copy, candidate, code) => {
     const objects = tokenObjects({ ok: true, generation: 2 })
     const d = makeDoubles(keys, copy, () => [])
-    const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(candidate)).catch((e: unknown) => e)
+    const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy, report: d.deps.report }, SERVICE, exchangeCall(candidate)).catch((e: unknown) => e)
     expect((err as ConnectionRefusal).code).toBe(code)
     expect(objects.exchangeCalls).toEqual([])
   })
@@ -272,7 +305,7 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
     const objects = tokenObjects({ ok: true, generation: 2 })
     const d = makeDoubles(keys, usableCopy(envelope), () => [])
     for (const over of [{ organizationId: 'org' }, { connectionId: 'conn' }, { code: '' }, { verifier: 'short' }, { redirectUri: 'http://bidspoke.trypennie.dev/cb' }, { expectedAccount: 'not an address' }]) {
-      const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate(), over)).catch((e: unknown) => e)
+      const err = await exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy, report: d.deps.report }, SERVICE, exchangeCall(appCandidate(), over)).catch((e: unknown) => e)
       expect((err as ConnectionRefusal).code).toBe('connection_call_invalid')
     }
     expect(objects.exchangeCalls).toEqual([])
@@ -288,7 +321,7 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
     [{ ok: true, generation: 'two' }, 'connection_token_object_unavailable'],
   ])('a failed exchange is refused by name, records nothing about the connection, and carries neither the code nor the verifier (F120)', async (answer, code) => {
     const d = makeDoubles(keys, usableCopy(envelope), () => [])
-    const err = await exchangeOAuthCode({ tokens: tokenObjects(answer), readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate())).catch((e: unknown) => e)
+    const err = await exchangeOAuthCode({ tokens: tokenObjects(answer), readCopy: d.deps.readCopy, report: d.deps.report }, SERVICE, exchangeCall(appCandidate())).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ConnectionRefusal)
     expect((err as ConnectionRefusal).code).toBe(code)
     const text = `${(err as Error).message} ${(err as Error).stack ?? ''} ${JSON.stringify(err)}`

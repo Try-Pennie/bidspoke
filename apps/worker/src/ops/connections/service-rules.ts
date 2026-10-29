@@ -7,6 +7,7 @@
  * (connection_service_unknown).
  */
 import type { OrganizationId } from '../ops-db'
+import type { RateLimitHeader } from './rate-limit-headers'
 
 /** A login once opened. Held only for the one request, and never recorded or thrown. */
 export interface OpenedLogin {
@@ -54,6 +55,14 @@ export interface AuthorizeInput {
    * shared memo helper calls it, so no minter has to remember to.
    */
   readonly noteMint: () => void
+  /**
+   * Called with the NAME of each rate limit header a token endpoint's 429 carried
+   * that could not be read (#1693 7.4), so connectionFetch counts it as
+   * rate_limit_header_unparseable, as it counts one on its own requests. The
+   * token endpoint (requestToken) requires it, and a person bound login hands
+   * on the names its token object answered, so no minter can drop the count.
+   */
+  readonly noteUnreadableRateLimitHeader: (header: RateLimitHeader) => void
   /**
    * The one fetch a minter may ask its token endpoint with (#2337): connectionFetch's
    * own, which sends only to an https URL on one of the connection's declared

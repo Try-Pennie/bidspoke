@@ -91,6 +91,7 @@ import { ConnectionRefusal, LoginMintError, RequeueAt, type ConnectionRefusalCod
 import { credentialSecretsOfLogin, isCredentialHeader, sanitiseRequest, scrubResponse, scrubSecrets, secretsOfLogin, type RecordedRequest } from './sanitise'
 import { parseSforceLimitInfo, SF_BUDGET_READING_DEADLINE_MS } from './sf-budget-reading'
 import type { Authorization, AuthorizeInput, OpenedLogin, ServiceRules } from './service-rules'
+import { clampedRetry, rateLimitRetryAt, RETRY_AFTER_HEADER, type RateLimitHeader } from './rate-limit-headers'
 
 /** The whole call, the mint and both attempts included. */
 export const CONNECTION_FETCH_DEADLINE_MS = 60_000
@@ -103,26 +104,16 @@ export const SF_INTERACTIVE_POLL_MS = 250
 export const STEP_LEASE_REQUEUE_MS = 60_000
 /** A 429 with no Retry-After or reset header that can be read. */
 export const RATE_LIMIT_DEFAULT_MS = 60_000
-/** A Retry-After, or a reset header, is held between these, so a wrong or hostile one cannot park a run for days. */
-export const RETRY_AFTER_MIN_MS = 1_000
-export const RETRY_AFTER_MAX_MS = 60 * 60_000
 /**
- * The x-ratelimit-reset style headers (#1693 7.4, from Trigger.dev's
- * calculateResetAt in packages/core/src/v3/retry.ts), read in this order when a
- * rate limit carries no Retry-After that can be read. Retry-After wins over all
- * of them: it is the standard header, and the one this module honoured first.
+ * How a rate limit's headers are read (Retry-After, then the x-ratelimit-reset
+ * style headers, held between RETRY_AFTER_MIN_MS and RETRY_AFTER_MAX_MS) lives
+ * in ./rate-limit-headers, shared with the minters' token endpoint (#1693 7.4).
+ * Its names are re-exported here for the callers that read them from this module.
  */
-export const RATE_LIMIT_RESET_HEADERS = ['x-ratelimit-reset', 'x-rate-limit-reset', 'ratelimit-reset'] as const
-/**
- * A reset header's number is read by its size, each range a named rule:
- * epoch_ms from 1e12 (September 2001 in milliseconds), epoch_seconds from 1e9
- * (September 2001 in seconds; 1e12 seconds is 30,000 years away), and
- * seconds_from_now below that (1e9 seconds is 31 years, so no real wait is read
- * as an epoch).
- */
-export const RESET_EPOCH_MS_FROM = 1e12
-export const RESET_EPOCH_SECONDS_FROM = 1e9
-export type RateLimitResetRule = 'epoch_ms' | 'epoch_seconds' | 'seconds_from_now'
+export {
+  RATE_LIMIT_RESET_HEADERS, RESET_EPOCH_MS_FROM, RESET_EPOCH_SECONDS_FROM, RETRY_AFTER_MAX_MS, RETRY_AFTER_MIN_MS, rateLimitResetAt, retryAfterAt,
+  type RateLimitHeader, type RateLimitResetRule,
+} from './rate-limit-headers'
 
 /**
  * The causes recorded with needs_reauth (connection_health.needs_reauth_cause).
@@ -486,71 +477,26 @@ function deadlineRefusal(deadline: Deadline, what: string, secrets: readonly str
   return null
 }
 
-function clampedRetry(now: number, at: number): Date {
-  return new Date(Math.min(Math.max(at, now + RETRY_AFTER_MIN_MS), now + RETRY_AFTER_MAX_MS))
-}
-
-/**
- * A Retry-After header as epoch ms: delta seconds or an HTTP date. Null when it
- * is neither. Shared with the minters' token endpoint (minters/token-endpoint.ts),
- * whose time connectionFetch clamps the same way.
- */
-export function retryAfterAt(header: string, now: number): number | null {
-  const trimmed = header.trim()
-  const at = /^\d+$/.test(trimmed) ? now + Number(trimmed) * 1000 : Date.parse(trimmed)
-  return Number.isFinite(at) ? at : null
-}
-
-/**
- * An x-ratelimit-reset style header as epoch ms, with the rule that read it
- * (RESET_EPOCH_MS_FROM, RESET_EPOCH_SECONDS_FROM). Only a plain non negative
- * decimal number is one; anything else (a date, a sign, an exponent, a unit,
- * a number too large to hold) is null, never a time and never now.
- */
-export function rateLimitResetAt(header: string, now: number): { at: number; rule: RateLimitResetRule } | null {
-  const trimmed = header.trim()
-  if (!/^\d+(\.\d+)?$/.test(trimmed)) return null
-  const n = Number(trimmed)
-  if (!Number.isFinite(n)) return null
-  if (n >= RESET_EPOCH_MS_FROM) return { at: n, rule: 'epoch_ms' }
-  if (n >= RESET_EPOCH_SECONDS_FROM) return { at: n * 1000, rule: 'epoch_seconds' }
-  return { at: now + n * 1000, rule: 'seconds_from_now' }
-}
-
-/** The header connectionFetch could not read, by name: Retry-After or one of RATE_LIMIT_RESET_HEADERS. */
-export type RateLimitHeader = 'retry-after' | (typeof RATE_LIMIT_RESET_HEADERS)[number]
-
-/**
- * When a rate limit asked to come back, as epoch ms: its Retry-After, else the
- * first reset header that can be read, else null. Each header present that
- * cannot be read is handed to unreadable, so it is counted (#1693 7.4).
- */
-function rateLimitWaitAt(headers: Headers, now: number, unreadable: (header: RateLimitHeader) => void): number | null {
-  const retryAfter = headers.get('retry-after')
-  if (retryAfter !== null) {
-    const at = retryAfterAt(retryAfter, now)
-    if (at !== null) return at
-    unreadable('retry-after')
-  }
-  for (const name of RATE_LIMIT_RESET_HEADERS) {
-    const value = headers.get(name)
-    if (value === null) continue
-    const reset = rateLimitResetAt(value, now)
-    if (reset !== null) return reset.at
-    unreadable(name)
-  }
-  return null
-}
-
 /**
  * A 429, or a 503 that says when to come back, as a RequeueAt; anything else
  * null. Only a Retry-After makes a 503 a wait (#1950): a reset header alone
- * leaves it the caller's to judge.
+ * leaves it the caller's to judge. The time is the shared reader's
+ * (rateLimitRetryAt, #1693 7.4), else RATE_LIMIT_DEFAULT_MS.
  */
 function rateLimited(response: Response, now: number, unreadable: (header: RateLimitHeader) => void): RequeueAt | null {
-  if (response.status !== 429 && !(response.status === 503 && response.headers.has('retry-after'))) return null
-  const at = rateLimitWaitAt(response.headers, now, unreadable)
-  return new RequeueAt(at === null ? new Date(now + RATE_LIMIT_DEFAULT_MS) : clampedRetry(now, at), 'rate_limited', response.status)
+  if (response.status !== 429 && !(response.status === 503 && response.headers.has(RETRY_AFTER_HEADER))) return null
+  const at = rateLimitRetryAt(response.headers, now, unreadable)
+  return new RequeueAt(at ?? new Date(now + RATE_LIMIT_DEFAULT_MS), 'rate_limited', response.status)
+}
+
+/**
+ * A rate limit header that could not be read, counted by its name, never its
+ * value (#1693 7.4): connectionFetch's own requests, a minter's token request
+ * (AuthorizeInput.noteUnreadableRateLimitHeader) and a person bound login's
+ * code exchange (exchangeOAuthCode) all count one this way. Never throws.
+ */
+export function reportUnreadableRateLimitHeader(deps: Pick<ConnectionFetchDeps, 'report'>, connectionId: string, purpose: SfLeasePurpose, header: RateLimitHeader): void {
+  safeReport(deps, { event: 'rate_limit_header_unparseable', connection_id: connectionId, purpose, cause: header })
 }
 
 /**
@@ -664,7 +610,7 @@ async function recordBudget(deps: ConnectionFetchDeps, call: ConnectionCall, res
   if (outcome !== 'written') safeReport(deps, { event: 'sf_budget_reading_unrecorded', connection_id: call.connectionId, purpose: call.purpose, cause: outcome })
 }
 
-function safeReport(deps: ConnectionFetchDeps, event: ConnectionEvent): void {
+function safeReport(deps: Pick<ConnectionFetchDeps, 'report'>, event: ConnectionEvent): void {
   try {
     deps.report(event)
   } catch {
@@ -775,6 +721,7 @@ async function sendWithRenewal(
         candidate: resolved.candidate,
         renew: rejected === null ? null : { rejected },
         noteMint: () => { minted = true },
+        noteUnreadableRateLimitHeader: (header) => reportUnreadableRateLimitHeader(deps, call.connectionId, call.purpose, header),
         fetch: tokenFetchFor(deps, rules, resolved, secrets),
       }), deadline)
     } catch (err) {
@@ -800,7 +747,7 @@ async function sendWithRenewal(
     // and some 429s to be no rate limit at all (OpenAI's insufficient_quota, #2673).
     const requeue = rules.answersRateLimit?.({ method, url: new URL(url) }) || await notRateLimited(deps, call, rules, response, deadline)
       ? null
-      : rateLimited(response, deps.now(), (header) => safeReport(deps, { event: 'rate_limit_header_unparseable', connection_id: call.connectionId, purpose: call.purpose, cause: header }))
+      : rateLimited(response, deps.now(), (header) => reportUnreadableRateLimitHeader(deps, call.connectionId, call.purpose, header))
     if (requeue) {
       discard(response)
       return requeue

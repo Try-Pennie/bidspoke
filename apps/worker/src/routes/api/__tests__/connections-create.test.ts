@@ -325,7 +325,7 @@ describe('the sealed login opens through the real ops minters (round trip)', () 
     return entry.rules.authorize({
       organizationId: request.organization_id as never, connectionId: request.connection_id, service: candidate.service, generation: candidate.generation,
       target: candidate.target, publicConfig: candidate.public_config, envelope: candidate.envelope, login: { plaintext }, candidate: true, renew: null,
-      noteMint: () => undefined, fetch,
+      noteMint: () => undefined, noteUnreadableRateLimitHeader: () => undefined, fetch,
     })
   }
 
