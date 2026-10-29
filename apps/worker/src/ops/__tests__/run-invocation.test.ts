@@ -31,6 +31,7 @@ import {
   type ForwardAnswer,
   type RunBody,
   type RunDb,
+  type RunInvocationOptions,
   type RunInvocationReport,
 } from '../run-invocation'
 
@@ -209,7 +210,7 @@ function harness() {
   const events: Array<Record<string, unknown>> = []
   const forwards: Array<{ nodeId: string; requestId: string; signal: AbortSignal }> = []
   const deps = { db, clock, newExecutionId: () => '0192f4a0-0000-7000-8000-0000000000ee', log: (e: Record<string, unknown>) => { events.push(e) } }
-  const run = (body: RunBody, over: Partial<ClaimedRun> = {}): Promise<RunInvocationReport> => invokeRun(deps, claimed(over), body)
+  const run = (body: RunBody, over: Partial<ClaimedRun> = {}, options?: RunInvocationOptions): Promise<RunInvocationReport> => invokeRun(deps, claimed(over), body, options)
   /** A forward that records it was called and answers with what the test gives. */
   const forwardWith = <T>(nodeId: string, answer: (signal: AbortSignal) => Promise<ForwardAnswer<T>>) => (call: { signal: AbortSignal; requestId: string }) => {
     forwards.push({ nodeId, requestId: call.requestId, signal: call.signal })
@@ -870,5 +871,116 @@ describe('invokeRun: naming and reading a checkpoint (#1951)', () => {
     expect(tried[0]).toBeInstanceOf(RunStopped)
     expect(tried[1]).toBeInstanceOf(RunStopped)
     expect(h.db.calls.some((c) => c.startsWith('checkpoint') || c === 'read_checkpoint')).toBe(false)
+  })
+})
+
+// The wait before a retry after a real failure (#1693 item 7.4, Dan's decision of
+// 2026-10-28): 15 s by default, doubling, never more than 8 minutes, counted by
+// charged attempts only; or, set to none, the first real failure ends the run.
+describe('invokeRun: the retry setting (#1693)', () => {
+  const boom: RunBody = async () => { throw new Error('partner 500') }
+  /** The wait the retry was given, in seconds from the run's clock. */
+  const waitOf = (report: RunInvocationReport, now: number): number | null => {
+    if (report.outcome !== 'completed' && report.outcome !== 'complete_failed') return null
+    if (report.end.outcome !== 'retry' || report.end.notBefore === undefined) return null
+    return (report.end.notBefore.getTime() - now) / 1000
+  }
+
+  it('waits 15, 30, 60, 120, 240, 480 then 480 s by default, one charged attempt after another', async () => {
+    const waits: Array<number | null> = []
+    for (let charged = 0; charged < 7; charged++) {
+      const h = harness()
+      const report = await h.run(boom, { attempts: charged, resumeReason: charged === 0 ? null : 'retry', maxAttempts: 10 })
+      waits.push(waitOf(report, h.clock.now()))
+    }
+    expect(waits).toEqual([15, 30, 60, 120, 240, 480, 480])
+  })
+
+  it('counts only charged attempts: rate limit, resource and continuation starts never grow the wait', async () => {
+    // One charged failure, then two rate limit waits: the run resumed from the last wait fails.
+    const h = harness()
+    expect(waitOf(await h.run(boom, { attempts: 3, unchargedAttempts: 2, resumeReason: 'rate_limit_wait' }), h.clock.now())).toBe(15)
+    // The same history resumed by a retry is its second charged attempt.
+    const again = harness()
+    expect(waitOf(await again.run(boom, { attempts: 3, unchargedAttempts: 2, resumeReason: 'retry' }), again.clock.now())).toBe(30)
+    for (const resumeReason of ['resource_wait', 'continue']) {
+      const w = harness()
+      expect(waitOf(await w.run(boom, { attempts: 4, unchargedAttempts: 3, resumeReason }), w.clock.now())).toBe(15)
+    }
+  })
+
+  it('follows a configured base and cap', async () => {
+    const retry = { mode: 'backoff' as const, baseSeconds: 5, capSeconds: 20 }
+    const waits: Array<number | null> = []
+    for (let charged = 0; charged < 4; charged++) {
+      const h = harness()
+      waits.push(waitOf(await h.run(boom, { attempts: charged, resumeReason: charged === 0 ? null : 'retry', maxAttempts: 10 }, { retry }), h.clock.now()))
+    }
+    expect(waits).toEqual([5, 10, 20, 20])
+  })
+
+  it('keeps a later time the body asked for, and never retries sooner than the wait', async () => {
+    const late = harness()
+    const lateAt = new Date(late.clock.now() + 3_600_000)
+    expect(await late.run(async () => ({ outcome: 'retry', notBefore: lateAt }))).toMatchObject({ end: { outcome: 'retry', notBefore: lateAt } })
+    const soon = harness()
+    expect(waitOf(await soon.run(async () => ({ outcome: 'retry', notBefore: new Date(soon.clock.now() + 1_000) })), soon.clock.now())).toBe(15)
+  })
+
+  it('a send whose intent was not confirmed waits the same way before its retry', async () => {
+    const h = harness()
+    h.db.intentAnswer = async () => { throw new OpsWriteError('record_send_intent could not be called') }
+    const report = await h.run(async (ctx) => {
+      await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: h.forwardWith('post', async () => answered(200, 1)) })
+      return { outcome: 'done' }
+    })
+    expect(waitOf(report, h.clock.now())).toBe(15)
+  })
+
+  it('set to none, the first real failure ends the run failed, whatever max_attempts allows', async () => {
+    const h = harness()
+    const report = await h.run(boom, { maxAttempts: 5 }, { retry: { mode: 'none' } })
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'failed' } })
+    if (report.outcome !== 'completed' || report.end.outcome !== 'failed') throw new Error('expected failed')
+    expect(report.end.error).toMatch(/partner 500/)
+    expect(report.end.error).toMatch(/set not to retry/)
+    expect(h.db.completes).toEqual([report.end])
+  })
+
+  it('set to none, a body asking for a retry and a send whose intent was not confirmed end failed too', async () => {
+    const asked = harness()
+    expect(await asked.run(async () => ({ outcome: 'retry', error: 'try later' }), {}, { retry: { mode: 'none' } })).toMatchObject({ end: { outcome: 'failed', error: expect.stringMatching(/try later/) } })
+    const unconfirmed = harness()
+    unconfirmed.db.intentAnswer = async () => { throw new OpsWriteError('record_send_intent could not be called') }
+    const report = await unconfirmed.run(async (ctx) => {
+      await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: unconfirmed.forwardWith('post', async () => answered(200, 1)) })
+      return { outcome: 'done' }
+    }, {}, { retry: { mode: 'none' } })
+    expect(report).toMatchObject({ end: { outcome: 'failed' } })
+    expect(unconfirmed.forwards).toHaveLength(0)
+  })
+
+  it('set to none, a rate limit wait is unchanged: it waits as asked and spends no attempt', async () => {
+    const h = harness()
+    const at = new Date('2026-10-22T13:00:00Z')
+    const report = await h.run(async (ctx) => {
+      await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: h.forwardWith('post', async () => ({ kind: 'requeue', notBefore: at, status: 429, cause: 'rate_limited' })) })
+      return { outcome: 'done' }
+    }, {}, { retry: { mode: 'none' } })
+    expect(report).toMatchObject({ end: { outcome: 'suspend', reason: 'rate_limit_wait', notBefore: at } })
+  })
+
+  it('a retry whose complete fails every try reports the wait it was given, sent the same on each try', async () => {
+    const h = harness()
+    h.db.completeAnswers = [1, 2, 3].map(() => async () => { throw new OpsWriteError('complete_run_request could not be called') })
+    const sent: CompleteOutcome[] = []
+    const complete = h.db.complete.bind(h.db)
+    h.db.complete = (run, end) => { sent.push(end); return complete(run, end) }
+    const report = await h.run(boom, { attempts: 1, resumeReason: 'retry' })
+    expect(report).toMatchObject({ outcome: 'complete_failed', end: { outcome: 'retry' }, error: expect.stringMatching(/could not be called/) })
+    expect(waitOf(report, h.clock.now())).toBe(30)
+    expect(sent).toHaveLength(3)
+    expect(new Set(sent.map((e) => (e.outcome === 'retry' ? e.notBefore?.toISOString() : null))).size).toBe(1)
+    expect(h.events).toContainEqual(expect.objectContaining({ step: 'complete_failed', outcome: 'retry' }))
   })
 })

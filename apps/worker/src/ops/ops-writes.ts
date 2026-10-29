@@ -279,8 +279,18 @@ export function chargedAttempts(run: Pick<ClaimedRun, 'attempts' | 'unchargedAtt
  * claim_uncharged_attempts.test.sql checks the same rule against the database.
  */
 export function lastChargedAttempt(run: Pick<ClaimedRun, 'attempts' | 'unchargedAttempts' | 'maxAttempts' | 'resumeReason'>): boolean {
+  return chargedAttemptsWithThisStart(run) >= run.maxAttempts
+}
+
+/**
+ * The run's charged attempts once this claim's start is counted: the charged
+ * count so far, plus this start unless it resumes from a wait or continues
+ * (UNCHARGED_RESUME_REASONS). The count lastChargedAttempt judges and the wait
+ * before a retry (#1693, run-invocation.ts) grows by.
+ */
+export function chargedAttemptsWithThisStart(run: Pick<ClaimedRun, 'attempts' | 'unchargedAttempts' | 'resumeReason'>): number {
   const thisStart = (UNCHARGED_RESUME_REASONS as readonly (string | null)[]).includes(run.resumeReason) ? 0 : 1
-  return chargedAttempts(run) + thisStart >= run.maxAttempts
+  return chargedAttempts(run) + thisStart
 }
 
 export async function claimRunRequests(client: OpsSupabaseClient, claim: ClaimRunRequests, options?: OpsRpcOptions): Promise<ClaimedRun[]> {

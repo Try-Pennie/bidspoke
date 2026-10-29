@@ -26,6 +26,7 @@ import { appActionSaveProblems } from './app-action'
 import { findBranchLabelConflicts } from './branch-validation'
 import { findLeadValidationPlacementProblems, findLeadValidationProblems } from './lead-validation'
 import { validateDefinitionReferences } from './reference-validation'
+import { retrySaveProblems } from './retry'
 import { findSalesforceConfigProblems } from './salesforce-write-options'
 import { DEFINITION_SCHEMA_VERSION, readSchemaStamp } from './schema-version'
 import { validateTrigger } from './trigger'
@@ -55,6 +56,7 @@ export const DEFINITION_RULE_IDS = [
   'lead_validation_config',
   'app_action',
   'connection_lane',
+  'retry',
 ] as const
 export type DefinitionRuleId = (typeof DEFINITION_RULE_IDS)[number]
 
@@ -81,6 +83,8 @@ export interface DefinitionProblem extends RuleFinding {
 /** The definition as every rule reads it, once its shape has been checked. */
 export interface ShapedDefinition {
   trigger: unknown
+  /** The workflow's retry setting (#1693), read only by the ops run engine: retry.ts. */
+  retry?: unknown
   nodes: NodeDefLike[]
   edges: EdgeDefLike[]
 }
@@ -277,6 +281,16 @@ export const DEFINITION_RULES: readonly DefinitionRule[] = [
             : [],
         ),
   },
+  {
+    // An ops workflow's retry setting (#1693, Dan's decision of 2026-10-28):
+    // a bad one, or one on a money workflow, refused by name (retry.ts). Since
+    // version 1: no stored definition has ever held a retry field (0 of 57
+    // workflows and 0 of 614 saved versions, measured 2026-10-29).
+    id: 'retry',
+    since: 1,
+    enforce: 'every_save',
+    check: (d, { lane }) => retrySaveProblems(d.retry, lane).map((p) => ({ reason: p.reason, severity: 'error' as const, message: p.message })),
+  },
 ]
 
 const shapeProblem = (message: string): DefinitionProblem => ({ rule: 'definition_shape', enforce: 'every_save', reason: 'definition_shape', severity: 'error', message })
@@ -308,7 +322,7 @@ function shape(definition: unknown): { ok: true; value: ShapedDefinition } | { o
     })
   }
   if (problems.length > 0) return { ok: false, problems }
-  return { ok: true, value: { trigger: definition.trigger, nodes: nodes as NodeDefLike[], edges: edges as EdgeDefLike[] } }
+  return { ok: true, value: { trigger: definition.trigger, nodes: nodes as NodeDefLike[], edges: edges as EdgeDefLike[], ...(Object.hasOwn(definition, 'retry') ? { retry: definition.retry } : {}) } }
 }
 
 /**

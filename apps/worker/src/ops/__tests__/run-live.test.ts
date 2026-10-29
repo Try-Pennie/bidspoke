@@ -13,7 +13,7 @@ import { dispatchKey, signDispatch } from '../dispatch-auth'
 import type { OpsEnv } from '../index'
 import type { ClaimedRun } from '../ops-writes'
 import { organizationIdFrom } from '../ops-db'
-import { RUN_DEFINITION_RETRY_MS, runDispatched } from '../run-live'
+import { RUN_DEFINITION_RETRY_MS, realRunClock, runDispatched } from '../run-live'
 
 const NOW = Date.parse('2026-10-17T10:02:31.000Z')
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
@@ -169,6 +169,48 @@ describe('OpsInternal.run', () => {
     expect(down.names()).not.toContain('start_run_execution')
     // Not started, so the lapsed lease is swept back to the queue; the tick counts it by this answer.
     expect(report).toMatchObject({ outcome: 'complete_failed', end: { outcome: 'retry' }, error: expect.stringMatching(/definition/) })
+  })
+})
+
+// The workflow's retry setting (#1693) reaches the run from its definition. A
+// step whose record cannot be kept ends the run to be retried (run-walk.ts),
+// which is the real failure these runs meet: record_ops_step is not answered.
+describe('OpsInternal.run: the workflow\'s retry setting (#1693)', () => {
+  const step = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'trigger.payload.amount', target: 'amount' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
+  const clock = { now: () => NOW, timer: realRunClock.timer }
+  const ending = async (definition: Record<string, unknown>) => {
+    const db = opsDb({ ...LIFECYCLE, workflow_definition: [{ definition, saved_at: '2026-10-17T09:00:00Z' }] })
+    const lines: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((line: unknown) => { lines.push(String(line)) })
+    try {
+      await runDispatched(env(), await signed({ kind: 'run', run: RUN }), { ...deps(db.fetch), clock })
+    } finally {
+      spy.mockRestore()
+    }
+    return { complete: db.calls.find((c) => c.name === 'complete_run_request')?.body, lines }
+  }
+
+  it('with none set, waits the default 15 s before the retry', async () => {
+    const { complete } = await ending(step)
+    expect(complete).toMatchObject({ p_outcome: 'retry', p_not_before: new Date(NOW + 15_000).toISOString() })
+  })
+
+  it('waits the base the workflow names', async () => {
+    const { complete } = await ending({ ...step, retry: { mode: 'backoff', base_seconds: 40 } })
+    expect(complete).toMatchObject({ p_outcome: 'retry', p_not_before: new Date(NOW + 40_000).toISOString() })
+  })
+
+  it('set to none, ends the run failed at its first failure', async () => {
+    const { complete } = await ending({ ...step, retry: { mode: 'none' } })
+    expect(complete).toMatchObject({ p_outcome: 'failed' })
+    expect(complete).not.toHaveProperty('p_not_before')
+    expect(String(complete?.p_error)).toMatch(/set not to retry/)
+  })
+
+  it('a stored setting the save would refuse runs on the default and says so by name', async () => {
+    const { complete, lines } = await ending({ ...step, retry: { mode: 'sometimes' } })
+    expect(complete).toMatchObject({ p_outcome: 'retry', p_not_before: new Date(NOW + 15_000).toISOString() })
+    expect(lines.filter((l) => l.includes('"retry_setting_invalid"') && l.includes('retry_mode_unknown'))).toHaveLength(1)
   })
 })
 
