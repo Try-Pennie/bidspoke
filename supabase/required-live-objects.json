@@ -97,6 +97,18 @@
     "anon": "denied"
   },
   {
+    "name": "step_timeout_audit_by_workflow",
+    "args": {
+      "p_workflow_id": "00000000-0000-0000-0000-000000000000",
+      "p_since": "2026-01-01T00:00:00Z",
+      "p_until": "2026-01-02T00:00:00Z",
+      "p_namespaces": [],
+      "p_per_hour": 10
+    },
+    "anon": "denied",
+    "note": "The daily step timeout audit's five day reading (#2934): an even sample of finished runs and the runs that failed on the step timeout. service_role only."
+  },
+  {
     "name": "execution_counts_per_minute",
     "args": {
       "p_workflow_ids": [],
