@@ -883,7 +883,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
               return r.more
             }
             case 'observation_purge': {
-              // Three purges in one sweep, each run whatever the others did, so a
+              // Four purges in one sweep, each run whatever the others did, so a
               // failing one never keeps another's rows past their time: the
               // observations (30 days), the step test results (7 days, #2339,
               // Dan's decision of 2026-10-23), the step records of runs (7
