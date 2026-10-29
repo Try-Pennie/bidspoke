@@ -19,7 +19,10 @@
  *   fingerprint reads `updated_at`;
  * - `lib/money-host-reads.ts`: the money hosts an HTTP connection's save
  *   (#2337) and the daily HTTP connection host check (#2761) compare against,
- *   which take every host the money lane's workflows send to (`lane`).
+ *   which take every host the money lane's workflows send to (`lane`);
+ * - `lib/variable-in-use.ts`: the live workflows a variable's delete, emptying
+ *   or rename would leave without it, which the environment variables routes
+ *   refuse by name (#3001, `activeOnly`).
  *
  * The Worker connects as service_role, which bypasses row level security, so
  * this read is what scopes the answer to one organization: it filters

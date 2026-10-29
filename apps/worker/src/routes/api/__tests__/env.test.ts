@@ -796,3 +796,247 @@ describe('workflow scoped variables (#1681)', () => {
     expect(sb.eqCalls['environment_variables']).toContainEqual(['scope', 'global'])
   })
 })
+
+// #3001 (phase 5 of #2982), Dan's decision of 2026-10-29: deleting a variable,
+// emptying it or renaming it is refused while a live workflow reads it, naming
+// each. The judgement is lib/variable-in-use.ts; these drive the reads and the
+// answer around it. The mock answers every list read whatever the filters, so
+// what readOrgWorkflows drops (switched off, soft deleted, another
+// organization's) is dropped by its own check, as it would be in production
+// if the query's scoping ever failed.
+describe('a variable a live workflow reads (#3001)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const OTHER_ORG = 'org-other'
+
+  const reading = (key: string) => ({ nodes: [{ id: 'n1', type: 'http', config: { url: `{{env.${key}}}/leads` } }], edges: [] })
+  const workflow = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
+    id, name, is_active: true, definition: reading('API_URL'), updated_at: '2026-10-29T00:00:00Z',
+    organization_id: USER_ORG, deleted_at: null, lane: 'money', ...extra,
+  })
+  const ORG_ROW = { id: 'v1', organization_id: USER_ORG, key: 'API_URL', value: 'https://plain.example.test', is_secret: false, scope: 'global', workflow_id: null }
+
+  const deletes = (sb: ReturnType<typeof makeSupabase>) => (sb.calls['environment_variables'] ?? []).filter(([m]) => m === 'delete')
+  const updates = (sb: ReturnType<typeof makeSupabase>) => (sb.calls['environment_variables'] ?? []).filter(([m]) => m === 'update')
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(setCfSecret).mockResolvedValue(undefined)
+    vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('refuses a delete while a live workflow reads it, naming the workflow and never the value', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [workflow('w1', 'Main Flow'), workflow('w2', 'Engine')] },
+      environment_variables: [{ single: ORG_ROW }, { list: [ORG_ROW] }, { writeRows: [{ id: 'v1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'DELETE', '/env/v1')
+
+    expect(res.status).toBe(409)
+    const body = await res.json() as { error: string; message: string; workflows: Array<{ id: string; name: string }> }
+    expect(body.error).toBe('variable_in_use')
+    expect(body.workflows).toEqual([{ id: 'w2', name: 'Engine' }, { id: 'w1', name: 'Main Flow' }])
+    expect(body.message).toContain('Main Flow')
+    expect(body.message).toContain('Engine')
+    expect(JSON.stringify(body)).not.toContain('plain.example.test')
+    expect(deletes(sb)).toEqual([])
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('refuses a secret delete before its Cloudflare copy is touched', async () => {
+    const secret = { ...ORG_ROW, value: 'stand-in-ciphertext', is_secret: true }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [workflow('w1', 'Main Flow')] },
+      environment_variables: [{ single: secret }, { list: [secret] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'DELETE', '/env/v1')
+
+    expect(res.status).toBe(409)
+    expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
+    expect(deletes(sb)).toEqual([])
+  })
+
+  it('asks only for live workflows of the caller organization', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [] },
+      environment_variables: [{ single: ORG_ROW }, { writeRows: [{ id: 'v1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    await request(app, 'DELETE', '/env/v1')
+
+    expect(sb.eqCalls['workflows']).toEqual(expect.arrayContaining([['organization_id', USER_ORG], ['is_active', true]]))
+    expect(sb.calls['workflows']).toContainEqual(['is', ['deleted_at', null]])
+  })
+
+  it('allows a delete when only a switched off or deleted workflow reads it', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [workflow('w1', 'Switched Off', { is_active: false }), workflow('w2', 'Deleted', { deleted_at: '2026-10-01T00:00:00Z' })] },
+      // The row is there to be read, so only the workflow filter can let this delete through.
+      environment_variables: [{ single: ORG_ROW }, { list: [ORG_ROW], writeRows: [{ id: 'v1' }] }, { writeRows: [{ id: 'v1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const res = await request(app, 'DELETE', '/env/v1')
+
+    expect(res.status).toBe(200)
+    expect(deletes(sb)).toHaveLength(1)
+  })
+
+  it('never counts or names another organization\'s workflow', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [workflow('w9', 'Their Flow', { organization_id: OTHER_ORG })] },
+      environment_variables: [{ single: ORG_ROW }, { list: [ORG_ROW], writeRows: [{ id: 'v1' }] }, { writeRows: [{ id: 'v1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    const res = await request(app, 'DELETE', '/env/v1')
+
+    expect(res.status).toBe(200)
+    expect(JSON.stringify(await res.json())).not.toContain('Their Flow')
+  })
+
+  it('allows deleting the organization row when every reader has its own row for the key', async () => {
+    const own = { ...ORG_ROW, id: 'v-own', scope: 'workflow', workflow_id: 'w1', value: 'https://own.example.test' }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [workflow('w1', 'Main Flow')] },
+      environment_variables: [{ single: ORG_ROW }, { list: [ORG_ROW, own] }, { writeRows: [{ id: 'v1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'DELETE', '/env/v1')
+
+    expect(res.status).toBe(200)
+    expect(deletes(sb)).toHaveLength(1)
+  })
+
+  it('a workflow scoped row blocks only its own workflow', async () => {
+    const own = { ...ORG_ROW, id: 'v-own', scope: 'workflow', workflow_id: 'w1', value: 'https://own.example.test' }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [workflow('w1', 'Main Flow'), workflow('w2', 'Engine')] },
+      environment_variables: [{ single: own }, { list: [own] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'DELETE', '/env/v-own')
+
+    expect(res.status).toBe(409)
+    expect((await res.json() as { workflows: unknown[] }).workflows).toEqual([{ id: 'w1', name: 'Main Flow' }])
+  })
+
+  it('allows deleting a workflow scoped row of a workflow that is not live', async () => {
+    const own = { ...ORG_ROW, id: 'v-own', scope: 'workflow', workflow_id: 'w-off', value: 'https://own.example.test' }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [workflow('w1', 'Main Flow')] },
+      environment_variables: [{ single: own }, { list: [own] }, { writeRows: [{ id: 'v-own' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'DELETE', '/env/v-own')
+
+    expect(res.status).toBe(200)
+  })
+
+  it('answers an error, never allows the delete, when the live workflows cannot be read', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { listError: { message: 'canceling statement due to statement timeout' } },
+      environment_variables: [{ single: ORG_ROW }, { writeRows: [{ id: 'v1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'DELETE', '/env/v1')
+
+    expect(res.status).toBe(503)
+    expect((await res.json() as { error: string }).error).toContain('API_URL')
+    expect(deletes(sb)).toEqual([])
+  })
+
+  it('answers an error, never allows the delete, when the variable rows cannot be read', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [workflow('w1', 'Main Flow')] },
+      environment_variables: [{ single: ORG_ROW }, { listError: { message: 'canceling statement due to statement timeout' } }, { writeRows: [{ id: 'v1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'DELETE', '/env/v1')
+
+    expect(res.status).toBe(503)
+    expect(deletes(sb)).toEqual([])
+  })
+
+  it('refuses emptying the value while a live workflow reads it', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [workflow('w1', 'Main Flow')] },
+      environment_variables: [{ single: ORG_ROW }, { list: [ORG_ROW] }, { updateResult: { ...ORG_ROW, value: '' } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'PUT', '/env/v1', { body: { value: '' } })
+
+    expect(res.status).toBe(409)
+    const body = await res.json() as { error: string; message: string; workflows: unknown[] }
+    expect(body.error).toBe('variable_in_use')
+    expect(body.message).toContain('emptied')
+    expect(body.workflows).toEqual([{ id: 'w1', name: 'Main Flow' }])
+    expect(updates(sb)).toEqual([])
+  })
+
+  it('refuses a rename while a live workflow reads the old name', async () => {
+    const secret = { ...ORG_ROW, value: 'stand-in-ciphertext', is_secret: true }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { list: [workflow('w1', 'Main Flow')] },
+      // the row, the name collision check (none), the rows under the old name
+      environment_variables: [{ single: secret }, { single: null }, { list: [secret] }, { updateResult: { ...secret, key: 'API_BASE_URL' } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+    const res = await request(app, 'PUT', '/env/v1', { body: { key: 'API_BASE_URL' } })
+
+    expect(res.status).toBe(409)
+    expect((await res.json() as { message: string }).message).toContain('renamed')
+    expect(updates(sb)).toEqual([])
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+    expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
+  })
+
+  it('allows a new value, a rotated secret, and a body asking for a secret, however many live workflows read it', async () => {
+    const secret = { ...ORG_ROW, value: 'stand-in-ciphertext', is_secret: true }
+    for (const [row, body] of [[ORG_ROW, { value: 'https://new.example.test' }], [secret, { value: 'rotated-fake-value' }], [ORG_ROW, { is_secret: true }]] as const) {
+      const sb = makeSupabase({
+        users: { single: testUser },
+        workflows: { list: [workflow('w1', 'Main Flow')] },
+        environment_variables: [{ single: row }, { updateResult: row }],
+      })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+
+      const res = await request(app, 'PUT', '/env/v1', { body })
+
+      expect(res.status).toBe(200)
+      expect(updates(sb)).toHaveLength(1)
+      // Nothing was asked of the workflows: only a delete, an emptying or a rename can break one.
+      expect(sb.calls['workflows']).toBeUndefined()
+    }
+  })
+})
