@@ -99,7 +99,7 @@ export const NOT_VERIFY_REFUSALS = [
   'step_test_run_output_not_kept',
   'step_test_run_payload_not_held',
   'step_test_run_unavailable',
-  // A step test reading a variable it cannot be given (#2702): the test node route words it from the detail.
+  // A step test reading a variable with no saved value (#3002): the test node route words it from the detail.
   'step_test_variable_unavailable',
 ] as const satisfies readonly OpsConnectionsOwnRefusal[]
 
