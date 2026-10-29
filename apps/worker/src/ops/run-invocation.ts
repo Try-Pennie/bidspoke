@@ -89,7 +89,8 @@
  * more than 8 minutes. The count is the run's CHARGED attempts with this start,
  * so a rate limit, resource or continuation start never grows it. A later time
  * the body asked for is kept. Set to none, the first real failure ends the run
- * failed instead, saying so, whatever max_attempts allows. A wait is unchanged
+ * failed instead, with the reason retry_disabled (#3013) and saying so in its
+ * error, whatever max_attempts allows. A wait is unchanged
  * either way. The time is fixed once, so every try of complete sends the same.
  *
  * DEADLINES. Every wait here is bounded on the injected clock (L524): each
@@ -424,11 +425,13 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
   const mayRepeat = () => !unrepeatable && unrepeatableInFlight === 0
   /**
    * A retry after the workflow's wait (#1693), unless a send already made
-   * cannot be repeated, or the workflow is set not to retry: then failed.
+   * cannot be repeated, or the workflow is set not to retry: then failed. Only
+   * the second is named retry_disabled (#3013), since the setting alone is why
+   * that run was not retried; the first is not retried under any setting.
    */
   const retryOr = (why: string, notBefore?: Date): CompleteOutcome => {
     if (!mayRepeat()) return { outcome: 'failed', error: why }
-    if (retry.mode === 'none') return { outcome: 'failed', error: `${why}; the workflow is set not to retry, so the run ended at its first failure` }
+    if (retry.mode === 'none') return { outcome: 'failed', reason: 'retry_disabled', error: `${why}; the workflow is set not to retry, so the run ended at its first failure` }
     const waited = clock.now() + retryDelaySeconds(retry, chargedFailureNumber(run)) * 1000
     return { outcome: 'retry', error: why, notBefore: notBefore !== undefined && notBefore.getTime() > waited ? notBefore : new Date(waited) }
   }
