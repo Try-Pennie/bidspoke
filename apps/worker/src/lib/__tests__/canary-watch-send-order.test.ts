@@ -64,6 +64,7 @@ function deps(over: Partial<CanaryWatchDeps> & { steps?: WatchedStep[]; records?
       sendAsked.push(run)
       return over.sendSteps?.[run] ?? []
     },
+    readRunSubmissions: async () => new Map(),
     salesforce: async () => async (p: string) => {
       const id = /^\/sobjects\/(?:Submission__c|Lead)\/([A-Za-z0-9]+)\?fields=/.exec(p)?.[1]
       const r = id ? over.records?.[id] : undefined

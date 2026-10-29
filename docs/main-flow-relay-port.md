@@ -414,7 +414,12 @@ post has no write stamp, so a Submission holding the link of a Main Flow run
 whose write was sent later (#2806, below) was overwritten since and is left out,
 one whose order against this post cannot be told is left out as order unknown,
 and a post with no Submission, which the
-relay's filter stops, is said apart. The relay reads share the direct reads'
+relay's filter stops, is said apart. A sampled post whose step failed (every failed
+webhook step records no input) is read by its run link alone, on the Submission
+its run's trigger payload names (#2939): this run's link means it arrived; no
+sign of it counts as did not against Pipedream, said as never sent when the step
+failed outright and as not found when it timed out, since Pipedream may have
+taken it after Bidspoke stopped waiting. The relay reads share the direct reads'
 circuit and stop after five minutes. A day with a run that did not
 land or could not be checked is titled as an alert, and so is a day Main Flow
 spent off the direct write: an invalid state post that went through the relay
@@ -517,7 +522,7 @@ the daily check, with the run named in the phase 6 issue.
 (#2175) removes them, since once the other seven posts move there is no relay to
 compare against. Delete `apps/worker/src/lib/invalid-state-canary-watch.ts` and
 its tests in `apps/worker/src/lib/__tests__/` (`invalid-state-canary-watch*.test.ts`,
-`send-salesforce-canary-watch.test.ts` and `canary-watch-send-order.test.ts`,
+`send-salesforce-canary-watch.test.ts` and every `canary-watch-*.test.ts`,
 with the fixture `fixtures/invalid-state-repeat-visit-2026-10-18.ts`), the `invalid-state-canary-watch` and
 `send-salesforce-canary-watch` entries in `CRON_JOBS`
 (`apps/worker/src/lib/cron-heartbeat.ts`), the two blocks that run them in the

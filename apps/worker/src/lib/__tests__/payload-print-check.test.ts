@@ -154,13 +154,12 @@ describe('the accepted baseline', () => {
     expect(rec.sent.flat().join(' ')).not.toContain('pennie_or_eligibility')
   })
 
-  // Added 2026-09-10 after the check's first live alert. This one is accepted on
-  // DIFFERENT grounds from the others: it prints one named scalar field off
-  // the partner payload (financialInformation.employmentStatus), not a record,
-  // and the branch it sits in runs only when that field is absent or not a
-  // string. Named here so the reason is testable rather than only asserted in a
-  // comment (L407).
-  it('does not alert on the accepted LendSwift employment status line', async () => {
+  // The LendSwift employment status line was accepted from 2026-09-10 (#1255)
+  // until #2593 closed on 2026-10-29. Since version 26 the step is a lead
+  // validation node that prints nothing, measured on the live definition the day
+  // the entry was removed, so the line coming back (a rollback to version 25 or
+  // a new code step) is now a new finding and must alert.
+  it('alerts on the LendSwift employment status line now that it is no longer accepted', async () => {
     const rec = recordingNotify()
     const r = await checkPayloadPrints({}, supabase, {
       readWorkflows: async () => [
@@ -182,8 +181,12 @@ describe('the accepted baseline', () => {
       notify: rec.notify,
     })
     expect(r.findings).toHaveLength(1)
-    expect(r.newFindings).toEqual([])
-    expect(rec.sent.flat()).toEqual([])
+    expect(r.newFindings).toHaveLength(1)
+    expect(r.alerted).toBe(true)
+    const text = rec.sent.flat().join(' ')
+    expect(text).toContain('RML - Bidding Workflow (LendSwift)')
+    expect(text).toContain('validate_bidding_and_state')
+    expect(text).toContain('employmentStatus')
   })
 
   // Added 2026-10-09. Version 169 of Main Flow (2026-10-07) gave these two
