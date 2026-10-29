@@ -239,7 +239,8 @@ describe('OpsInternal.run: the workflow\'s retry setting (#1693)', () => {
 
   it('set to none, ends the run failed at its first failure', async () => {
     const { complete } = await ending({ ...step, retry: { mode: 'none' } })
-    expect(complete).toMatchObject({ p_outcome: 'failed' })
+    // The reason the database records, so the run is not one more unnamed failure (#3013).
+    expect(complete).toMatchObject({ p_outcome: 'failed', p_reason: 'retry_disabled' })
     expect(complete).not.toHaveProperty('p_not_before')
     expect(String(complete?.p_error)).toMatch(/set not to retry/)
   })

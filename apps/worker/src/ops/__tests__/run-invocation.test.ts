@@ -940,24 +940,43 @@ describe('invokeRun: the retry setting (#1693)', () => {
   it('set to none, the first real failure ends the run failed, whatever max_attempts allows', async () => {
     const h = harness()
     const report = await h.run(boom, { maxAttempts: 5 }, { retry: { mode: 'none' } })
-    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'failed' } })
+    // Named, so the run can be told from any other unnamed failure without reading its error (#3013).
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'failed', reason: 'retry_disabled' } })
     if (report.outcome !== 'completed' || report.end.outcome !== 'failed') throw new Error('expected failed')
     expect(report.end.error).toMatch(/partner 500/)
     expect(report.end.error).toMatch(/set not to retry/)
     expect(h.db.completes).toEqual([report.end])
   })
 
-  it('set to none, a body asking for a retry and a send whose intent was not confirmed end failed too', async () => {
+  it('set to none, a body asking for a retry and a send whose intent was not confirmed end failed too, named retry_disabled', async () => {
     const asked = harness()
-    expect(await asked.run(async () => ({ outcome: 'retry', error: 'try later' }), {}, { retry: { mode: 'none' } })).toMatchObject({ end: { outcome: 'failed', error: expect.stringMatching(/try later/) } })
+    expect(await asked.run(async () => ({ outcome: 'retry', error: 'try later' }), {}, { retry: { mode: 'none' } })).toMatchObject({ end: { outcome: 'failed', reason: 'retry_disabled', error: expect.stringMatching(/try later/) } })
     const unconfirmed = harness()
     unconfirmed.db.intentAnswer = async () => { throw new OpsWriteError('record_send_intent could not be called') }
     const report = await unconfirmed.run(async (ctx) => {
       await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: unconfirmed.forwardWith('post', async () => answered(200, 1)) })
       return { outcome: 'done' }
     }, {}, { retry: { mode: 'none' } })
-    expect(report).toMatchObject({ end: { outcome: 'failed' } })
+    expect(report).toMatchObject({ end: { outcome: 'failed', reason: 'retry_disabled' } })
     expect(unconfirmed.forwards).toHaveLength(0)
+  })
+
+  it('set to none, a failure after a send that cannot be repeated is not named retry_disabled: it could not have been retried anyway (#3013)', async () => {
+    const h = harness()
+    const report = await h.run(async (ctx) => {
+      await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: h.forwardWith('post', async () => answered(200, 1)) })
+      throw new Error('partner 500 after the post')
+    }, {}, { retry: { mode: 'none' } })
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'failed', error: 'partner 500 after the post' } })
+    if (report.outcome !== 'completed' || report.end.outcome !== 'failed') throw new Error('expected failed')
+    expect(report.end.reason).toBeUndefined()
+  })
+
+  it('with the default backoff, a real failure is a retry and carries no failed reason', async () => {
+    const h = harness()
+    const report = await h.run(boom, { maxAttempts: 5 })
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'retry' } })
+    expect(h.db.completes[0]).not.toHaveProperty('reason')
   })
 
   it('set to none, a rate limit wait is unchanged: it waits as asked and spends no attempt', async () => {
