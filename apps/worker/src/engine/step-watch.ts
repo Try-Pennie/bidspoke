@@ -6,13 +6,14 @@
  * stamped with its write marker (#2022, #2023), and a credit inquiry post is
  * recorded before it is sent (#2172). The Salesforce node reaches those through
  * three hooks it reads from the context it is called with: `noteSalesforceRequest`,
- * `recordSalesforceRequest` and `writeMarker`.
+ * `recordSalesforceRequest` and `writeMarker`. A fourth, `noteStepInput` (#3057),
+ * is for any node: the webhook node notes the request it built through it.
  *
  * Those hooks used to be fields of the run's one shared context, set by the walk
  * for the step it was on. That held only while one watched step ran at a time,
  * so the children of a parallel block ran unwatched: an inquiry post placed in
  * one went out with no record, and nothing said so. Now every step is called
- * with its own view of the context. The view holds that step's three hooks and
+ * with its own view of the context. The view holds that step's four hooks and
  * passes every other read and write through to the run's context, so what a
  * node writes there (a block sighting, say) still reaches the walk, and two
  * children writing at once each keep their own hooks.
@@ -21,19 +22,21 @@
  * through `runWatchedStep`, so the two cannot disagree about which steps are
  * watched.
  */
-import type { ExecutionContext, NodeDefinition } from '../types'
+import type { ExecutionContext, NodeDefinition, ResolvedStepInput } from '../types'
 import { startWatchSafely, runWatched, type AtRiskWatch } from './at-risk-writes'
 import { isCreditInquiryPost } from './inquiry-post'
 import { writeMarker, withWriteMarker, ENGINE_ATTEMPT } from './write-marker'
+import { carryStepInput } from './step-input'
 
 /** The hooks a step carries with its call, never shared with another step. */
 export interface StepHooks {
   noteSalesforceRequest?: ExecutionContext['noteSalesforceRequest']
   recordSalesforceRequest?: ExecutionContext['recordSalesforceRequest']
   writeMarker?: ExecutionContext['writeMarker']
+  noteStepInput?: ExecutionContext['noteStepInput']
 }
 
-const HOOK_KEYS: ReadonlySet<string | symbol> = new Set<keyof StepHooks>(['noteSalesforceRequest', 'recordSalesforceRequest', 'writeMarker'])
+const HOOK_KEYS: ReadonlySet<string | symbol> = new Set<keyof StepHooks>(['noteSalesforceRequest', 'recordSalesforceRequest', 'writeMarker', 'noteStepInput'])
 
 /**
  * A view of the run's context for one step: the step's hooks are its own, and
@@ -70,6 +73,12 @@ export function stepContext(ctx: ExecutionContext, hooks: StepHooks): ExecutionC
  * `answerEarly` together with the answer. A credit inquiry post is watched before
  * or after the answer (#2172, D5): it is never resent blind, and its watch
  * records it before it is sent.
+ *
+ * Every step may also note the request it resolved (`noteStepInput`, #3057), and
+ * a failure carrying no request of its own is given the last one noted, so a
+ * step that timed out still records what it sent. It is put on outside the
+ * at-risk watch, which has already given a Salesforce failure its own request
+ * by then; the Salesforce node notes nothing here.
  */
 export async function runWatchedStep<T>(
   ctx: ExecutionContext,
@@ -83,16 +92,22 @@ export async function runWatchedStep<T>(
   const marker = postAnswerUpdate && ctx.execution?.execution_id
     ? writeMarker(ctx.execution.execution_id, node.namespace, ENGINE_ATTEMPT) ?? undefined
     : undefined
-  const hooks: StepHooks = {}
+  // The last request the step noted: on a retry, the attempt that failed last.
+  let notedInput: ResolvedStepInput | null = null
+  const hooks: StepHooks = { noteStepInput: (input) => { notedInput = input } }
   const stepCtx = stepContext(ctx, hooks)
-  return withWriteMarker(stepCtx, marker, () => runWatched(
-    atRisk,
-    (note) => {
-      hooks.noteSalesforceRequest = note
-      // The credit inquiry post records at once, through the same watch (#2172).
-      hooks.recordSalesforceRequest = note && atRisk ? (req) => atRisk.recordNow(req) : undefined
-    },
-    () => work(stepCtx),
-    retries,
-  ))
+  try {
+    return await withWriteMarker(stepCtx, marker, () => runWatched(
+      atRisk,
+      (note) => {
+        hooks.noteSalesforceRequest = note
+        // The credit inquiry post records at once, through the same watch (#2172).
+        hooks.recordSalesforceRequest = note && atRisk ? (req) => atRisk.recordNow(req) : undefined
+      },
+      () => work(stepCtx),
+      retries,
+    ))
+  } catch (err) {
+    throw carryStepInput(err, notedInput)
+  }
 }
