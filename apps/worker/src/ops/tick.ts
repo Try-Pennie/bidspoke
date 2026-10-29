@@ -92,7 +92,8 @@
  *     (variable-copies.ts). Each startable run's source is counted
  *     (runs_variables_live, runs_variables_copy, runs_variables_none). Beside
  *     the runs, the copy's one write: what this tick was served, and a refresh
- *     of every switched on workflow that may start, skipped when the bidding
+ *     of every switched on workflow that may start, asked by secret NAME only
+ *     (#3034) and concurrently under one deadline, skipped when the bidding
  *     Worker already failed this tick. Its counts ride the report; nothing about
  *     it pages yet (phase 4, #3000).
  *  7. Dispatch, each item inside its own boundary: every newly recorded fire is
@@ -138,7 +139,7 @@ import {
 import { resealSwitchFrom, watchReseal } from './reseal-watch'
 import { dispatchedFrom, refusedRunEnd, type DispatchedRunVariables } from './run-variables'
 import { OBSERVATION_REASONS, type OpsSweep, type OverlapRule } from './run-vocabulary'
-import { variablesFromCopies, writeVariableCopies, type CopyTarget, type VariableCopyDb } from './variable-copies'
+import { copySourceOf, variablesFromCopies, writeVariableCopies, type CopyTarget, type VariableCopyDb } from './variable-copies'
 
 
 /** k, the most runs of one workflow a claim takes (#1698 D1): the fair claim measured at k 5 (spike P9). */
@@ -377,8 +378,14 @@ export interface OpsTickPorts {
     fetchConnections(): Promise<unknown>
     /** The definitions of the versions named, served by the bidding Worker (#1950). */
     fetchDefinitions(request: OpsDefinitionRequest): Promise<unknown>
-    /** The current variables of one organization's claimed runs, served by the bidding Worker (#2998). */
+    /**
+     * The current variables of one organization's claimed runs, served by the
+     * bidding Worker (#2998), or, for the variables copy refresh, a names
+     * request's answer, nothing decrypted (#3034).
+     */
     fetchRunVariables(request: OpsRunVariablesRequest): Promise<unknown>
+    /** The clock the variables copy refresh's one deadline waits on (#3034). */
+    sleep(ms: number): Promise<void>
     started(): Promise<void>
     completed(report: OpsTickReport): Promise<void>
     /** An ops job's heartbeat stamps (OpsGateway.opsJobStarted and opsJobCompleted, #2340). */
@@ -1273,7 +1280,9 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
       copiesWritten = writeVariableCopies({
         db,
         fetchRunVariables: (request) => ports.gateway.fetchRunVariables(request),
-        served: asked.served,
+        sleep: (ms) => ports.gateway.sleep(ms),
+        // The claimed runs' secrets reach the copy by name only (#3034).
+        served: asked.served.map((s) => ({ organizationId: s.organizationId, read: copySourceOf(s.read) })),
         refresh: biddingFailed ? [] : refreshTargets(copies),
         log: (step, fields) => log(step, { tick_id: ports.tickId, ...fields }),
       }).catch((err: unknown) => {

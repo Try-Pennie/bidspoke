@@ -57,10 +57,12 @@ import {
   servedConnectionProblem,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
   type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinition, type ServedOpsDefinitions,
-  MAX_RUN_VARIABLES_PER_REQUEST, type OpsRunVariablesRequest, type RefusedRunVariables, type RunVariablesRefusal, type ServedOpsRunVariables,
+  MAX_RUN_VARIABLES_PER_REQUEST, type OpsRunVariablesRequest, type RefusedRunVariables, type RunVariablesRefusal, type ServedOpsRunVariableNames, type ServedOpsRunVariables,
 } from './ops-gateway-contract'
 import { envReferences } from './definition-env-references'
-import { readCurrentVariableRows, resolveCurrentVariables, secretOpener } from './current-variables'
+import {
+  readCurrentVariableRows, resolveCurrentVariableNames, resolveCurrentVariables, secretOpener, type CurrentVariableRow,
+} from './current-variables'
 import type { SecretKeyInput } from './secret-crypto'
 import { formatErr } from './format-error'
 import { servedVersionVariables } from './version-variables'
@@ -363,13 +365,78 @@ interface RunVersionRow {
  * that passed (one each, in parallel, by its key), and the organization's rows
  * of the names read (paged in saved order, the order the resolver needs).
  * Throws on any failed read, never answering an empty set.
+ *
+ * A names request (#3034) is readOpsRunVariableNames's, which decrypts
+ * nothing; handed one, this throws before any read.
  */
 export async function readOpsRunVariables(
   supabase: SupabaseClient, keys: SecretKeyInput, request: OpsRunVariablesRequest, nowMs: number,
 ): Promise<ServedOpsRunVariables> {
+  if (request.secrets !== undefined) throw new Error('a names request is served by readOpsRunVariableNames, which decrypts nothing')
   const organizationId = request.organization_id
   const servedAt = new Date(nowMs).toISOString()
-  if (request.runs.length === 0) return { organization_id: organizationId, runs: [] }
+  const { refusals, readsOf, rows } = await readRunVariableRows(supabase, request)
+  // Each secret row decrypted at most once, however many runs read it.
+  const open = secretOpener(keys)
+
+  const answers: ServedOpsRunVariables['runs'] = []
+  for (const r of request.runs) {
+    const refused = refusals.get(runKey(r))
+    if (refused !== undefined) {
+      answers.push(refused)
+      continue
+    }
+    const { values, secretValues, unreadable } = await resolveCurrentVariables(rows, r.workflow_id, readsOf.get(runKey(r)) ?? [], open)
+    if (unreadable.length > 0) {
+      console.error(`[ops-gateway] not serving the variables of workflow ${r.workflow_id} version ${r.version_number}: the secret ${unreadable.join(', ')} of organization ${organizationId} could not be decrypted`)
+      answers.push({ workflow_id: r.workflow_id, version_number: r.version_number, refused: 'secret_unreadable', keys: unreadable })
+      continue
+    }
+    answers.push({ workflow_id: r.workflow_id, version_number: r.version_number, values, secret_values: secretValues, served_at: servedAt })
+  }
+  return { organization_id: organizationId, runs: answers }
+}
+
+/**
+ * The names mode of readOpsRunVariables (#3034), for the ops copy refresh,
+ * which keeps secrets by name only: the same caller, the same request with
+ * secrets 'names', the same checks of whose data, and the same plain values,
+ * with each secret the definition reads by NAME under secret_keys. It takes no
+ * key, so it cannot decrypt: no secret value is read out of its row or sent.
+ * A secret that would not decrypt is therefore named like any other, never
+ * refused as secret_unreadable; the copy holds it by name alone, and a run
+ * reading a secret never runs on the copy, so nothing about it changes.
+ */
+export async function readOpsRunVariableNames(
+  supabase: SupabaseClient, request: OpsRunVariablesRequest, nowMs: number,
+): Promise<ServedOpsRunVariableNames> {
+  const servedAt = new Date(nowMs).toISOString()
+  const { refusals, readsOf, rows } = await readRunVariableRows(supabase, request)
+  return {
+    organization_id: request.organization_id,
+    runs: request.runs.map((r) => {
+      const refused = refusals.get(runKey(r))
+      if (refused !== undefined) return refused
+      const { values, secretKeys } = resolveCurrentVariableNames(rows, r.workflow_id, readsOf.get(runKey(r)) ?? [])
+      return { workflow_id: r.workflow_id, version_number: r.version_number, values, secret_keys: secretKeys, served_at: servedAt }
+    }),
+  }
+}
+
+const runKey = (r: { workflow_id: string; version_number: number }) => `${r.workflow_id}:${r.version_number}`
+
+/**
+ * What both modes share: each run checked against its workflow's own row and
+ * refused by name, each passing version's names (envReferences), and the
+ * organization's rows of those names. Nothing decrypted.
+ */
+async function readRunVariableRows(supabase: SupabaseClient, request: OpsRunVariablesRequest): Promise<{
+  refusals: Map<string, RefusedRunVariables>; readsOf: Map<string, string[]>; rows: CurrentVariableRow[]
+}> {
+  const organizationId = request.organization_id
+  const refusals = new Map<string, RefusedRunVariables>()
+  const readsOf = new Map<string, string[]>()
+  if (request.runs.length === 0) return { refusals, readsOf, rows: [] }
 
   const workflowIds = [...new Set(request.runs.map((r) => r.workflow_id))]
   const { data: workflowData, error: workflowError } = await supabase
@@ -380,8 +447,6 @@ export async function readOpsRunVariables(
   if (workflowError) throw new Error(`the workflows of the ops runs could not be read (${workflowError.code ?? 'no code'}): ${workflowError.message}`)
   const workflows = new Map(((workflowData ?? []) as RunWorkflowRow[]).map((w) => [w.id, w]))
 
-  const refusals = new Map<string, RefusedRunVariables>()
-  const runKey = (r: { workflow_id: string; version_number: number }) => `${r.workflow_id}:${r.version_number}`
   const refuse = (r: { workflow_id: string; version_number: number }, refused: RunVariablesRefusal, names: string[] = []) => {
     refusals.set(runKey(r), { workflow_id: r.workflow_id, version_number: r.version_number, refused, keys: names })
   }
@@ -409,7 +474,6 @@ export async function readOpsRunVariables(
     return { run: r, row: rows[0] }
   }))
 
-  const readsOf = new Map<string, string[]>()
   for (const { run, row } of versions) {
     if (row === undefined) {
       refuse(run, 'version_missing')
@@ -423,25 +487,7 @@ export async function readOpsRunVariables(
 
   const names = [...new Set([...readsOf.values()].flat())]
   const rows = await readCurrentVariableRows(supabase, organizationId, names, `the environment variables of the ops runs of organization ${organizationId}`)
-  // Each secret row decrypted at most once, however many runs read it.
-  const open = secretOpener(keys)
-
-  const answers: ServedOpsRunVariables['runs'] = []
-  for (const r of request.runs) {
-    const refused = refusals.get(runKey(r))
-    if (refused !== undefined) {
-      answers.push(refused)
-      continue
-    }
-    const { values, secretValues, unreadable } = await resolveCurrentVariables(rows, r.workflow_id, readsOf.get(runKey(r)) ?? [], open)
-    if (unreadable.length > 0) {
-      console.error(`[ops-gateway] not serving the variables of workflow ${r.workflow_id} version ${r.version_number}: the secret ${unreadable.join(', ')} of organization ${organizationId} could not be decrypted`)
-      answers.push({ workflow_id: r.workflow_id, version_number: r.version_number, refused: 'secret_unreadable', keys: unreadable })
-      continue
-    }
-    answers.push({ workflow_id: r.workflow_id, version_number: r.version_number, values, secret_values: secretValues, served_at: servedAt })
-  }
-  return { organization_id: organizationId, runs: answers }
+  return { refusals, readsOf, rows }
 }
 
 /**

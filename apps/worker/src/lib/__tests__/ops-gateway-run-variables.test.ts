@@ -13,13 +13,19 @@
  * before the bidding deploy carries it.
  */
 import { createClient } from '@supabase/supabase-js'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MAX_RUN_VARIABLES_PER_REQUEST, OPS_GATEWAY_METHODS, OPS_GATEWAY_SERVED_AHEAD, OpsGatewayContractError, RUN_VARIABLES_REFUSALS,
-  parseOpsRunVariablesRequest, parseServedOpsRunVariables,
+  parseOpsRunVariablesRequest, parseServedOpsRunVariableNames, parseServedOpsRunVariables,
 } from '../ops-gateway-contract'
-import { readOpsRunVariables } from '../ops-gateway'
-import { encryptSecret } from '../secret-crypto'
+import { readOpsRunVariableNames, readOpsRunVariables } from '../ops-gateway'
+import { decryptSecret, encryptSecret } from '../secret-crypto'
+
+// Every decrypt is watched (#3034): the names mode must never call it. The real one still runs, so the decrypting tests below are unchanged.
+vi.mock('../secret-crypto', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../secret-crypto')>()
+  return { ...real, decryptSecret: vi.fn(real.decryptSecret) }
+})
 import { TICK_CLAIM_LIMIT } from '../../ops/tick'
 
 const KEY = btoa('0'.repeat(32))
@@ -77,7 +83,7 @@ function db(opts: { workflows: WorkflowRow[]; versions: VersionRow[]; env: EnvRo
     }
     return Response.json([])
   }) as typeof globalThis.fetch
-  return { client: createClient('https://xvrmivmpfykwwtriqwpg.supabase.co', 'sb_secret_test', { global: { fetch: fakeFetch }, auth: { persistSession: false }, db: { retry: false } } as never), queries }
+  return { client: createClient('https://xvrmivmpfykwwtriqwpg.supabase.co', 'sb_secret_test', { global: { fetch: fakeFetch }, auth: { persistSession: false }, db: { retry: false } } as never), queries, fetch: fakeFetch }
 }
 
 const run = (workflow_id: string, version_number = 3) => ({ workflow_id, version_number })
@@ -333,5 +339,128 @@ describe('the gate: ops calls opsRunVariables once the bidding deploy carries it
     const { OpsGateway } = await import('../ops-gateway-entrypoint')
     const gw = new OpsGateway({} as ExecutionContext, { SECRET_ENCRYPTION_KEY: KEY } as never)
     await expect((async () => gw.opsRunVariables({ organization_id: ORG, runs: [], names: ['TOKEN'] }))()).rejects.toThrow(OpsGatewayContractError)
+  })
+})
+
+describe('the names mode, for the ops copy refresh (#3034)', () => {
+  const names = (...runs: Array<{ workflow_id: string; version_number: number }>) => ({ organization_id: ORG, runs, secrets: 'names' as const })
+  // Braced: a function returned from beforeEach is run as its teardown, and mockClear returns the mock itself.
+  beforeEach(() => {
+    vi.mocked(decryptSecret).mockClear()
+  })
+
+  it('the request may ask for names, and for nothing else beside the runs', () => {
+    expect(parseOpsRunVariablesRequest(names(run(WF)))).toEqual(names(run(WF)))
+    for (const bad of [
+      { ...ask(run(WF)), secrets: 'values' }, { ...ask(run(WF)), secrets: true }, { ...ask(run(WF)), secrets: null }, { ...ask(run(WF)), secrets: ['TOKEN'] },
+      { ...names(run(WF)), names: ['TOKEN'] },
+    ]) {
+      expect(() => parseOpsRunVariablesRequest(bad), JSON.stringify(bad)).toThrow(OpsGatewayContractError)
+    }
+  })
+
+  it('serves each plain value and each secret by NAME only, and never calls the decrypt', async () => {
+    const ciphertext = await encryptSecret('fake names mode plaintext', KEY)
+    const unreadable = await encryptSecret('fake locked with another key', WRONG_KEY)
+    const { client } = db({
+      workflows: [wf(WF)],
+      versions: [{ workflow_id: WF, version_number: 3, definition: reads('TOKEN', 'LOCKED', 'API_BASE', 'NOT_SAVED') }],
+      env: [env('TOKEN', ciphertext, { is_secret: true }), env('LOCKED', unreadable, { is_secret: true }), env('API_BASE', 'base')],
+    })
+    // The control (L1): the decrypting mode is seen calling it, so a zero below is a measurement.
+    await readOpsRunVariables(client, KEY, ask(run(WF)), NOW)
+    expect(vi.mocked(decryptSecret)).toHaveBeenCalled()
+    vi.mocked(decryptSecret).mockClear()
+
+    const answer = await readOpsRunVariableNames(client, names(run(WF)), NOW)
+    expect(vi.mocked(decryptSecret)).not.toHaveBeenCalled()
+    // A secret that would not decrypt cannot be told here, so it is served by name like any other.
+    expect(answer).toEqual({
+      organization_id: ORG,
+      runs: [{ workflow_id: WF, version_number: 3, values: { API_BASE: 'base' }, secret_keys: ['TOKEN', 'LOCKED'], served_at: new Date(NOW).toISOString() }],
+    })
+    const serialized = JSON.stringify(answer)
+    for (const never of [ciphertext, unreadable, 'fake names mode plaintext', 'secret_values']) expect(serialized).not.toContain(never)
+  })
+
+  it('refuses each run by the same reasons, and never a secret as unreadable', async () => {
+    const { client } = db({
+      workflows: [wf(WF), wf(MONEY_WF, { lane: 'money' }), wf(THEIR_WF, { organization_id: OTHER_ORG })],
+      versions: [{ workflow_id: WF, version_number: 3, definition: reads('API_BASE') }, { workflow_id: MONEY_WF, version_number: 3, definition: reads('API_BASE') }],
+      env: [env('API_BASE', 'base')],
+    })
+    const answer = await readOpsRunVariableNames(client, names(run(MONEY_WF), run(THEIR_WF), run(GONE_WF), run(WF)), NOW)
+    expect(answer.runs).toEqual([
+      { workflow_id: MONEY_WF, version_number: 3, refused: 'not_ops_lane', keys: [] },
+      { workflow_id: THEIR_WF, version_number: 3, refused: 'other_organization', keys: [] },
+      { workflow_id: GONE_WF, version_number: 3, refused: 'version_missing', keys: [] },
+      { workflow_id: WF, version_number: 3, values: { API_BASE: 'base' }, secret_keys: [], served_at: new Date(NOW).toISOString() },
+    ])
+  })
+
+  it('the entrypoint sends a names request to the names reader, and nothing on that path decrypts', async () => {
+    const ciphertext = await encryptSecret('fake entrypoint plaintext', KEY)
+    const { fetch } = db({ workflows: [wf(WF)], versions: [{ workflow_id: WF, version_number: 3, definition: reads('TOKEN') }], env: [env('TOKEN', ciphertext, { is_secret: true })] })
+    const { OpsGateway } = await import('../ops-gateway-entrypoint')
+    const gw = new OpsGateway({} as ExecutionContext, { SUPABASE_URL: 'https://xvrmivmpfykwwtriqwpg.supabase.co', SUPABASE_SECRET_KEY: 'sb_secret_test', SECRET_ENCRYPTION_KEY: KEY } as never)
+    vi.stubGlobal('fetch', fetch)
+    try {
+      const answer = await gw.opsRunVariables(names(run(WF)))
+      expect(answer.runs).toEqual([{ workflow_id: WF, version_number: 3, values: {}, secret_keys: ['TOKEN'], served_at: expect.any(String) }])
+      expect(vi.mocked(decryptSecret)).not.toHaveBeenCalled()
+      expect(JSON.stringify(answer)).not.toContain('fake entrypoint plaintext')
+      // The control: the same entrypoint without names decrypts.
+      const decrypted = await gw.opsRunVariables(ask(run(WF)))
+      expect(decrypted.runs[0]).toMatchObject({ secret_values: { TOKEN: 'fake entrypoint plaintext' } })
+      expect(vi.mocked(decryptSecret)).toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('the decrypting reader refuses a names request, so a mis-routed one is loud rather than decrypted', async () => {
+    const { client, queries } = db({ workflows: [wf(WF)], versions: [], env: [] })
+    await expect(readOpsRunVariables(client, KEY, names(run(WF)), NOW)).rejects.toThrow(/names/)
+    expect(queries).toEqual([])
+    expect(vi.mocked(decryptSecret)).not.toHaveBeenCalled()
+  })
+
+  describe('the answer, as the ops copy refresh reads it', () => {
+    const asked = names(run(WF), run(WF2, 1))
+    const served = { workflow_id: WF, version_number: 3, values: { API_BASE: 'base' }, secret_keys: ['TOKEN'], served_at: '2026-10-29T13:00:00.000Z' }
+    const refused = { workflow_id: WF2, version_number: 1, refused: 'not_ops_lane', keys: [] }
+
+    it('reads each run served by name, or refused', () => {
+      expect(parseServedOpsRunVariableNames({ organization_id: ORG, runs: [served, refused] }, asked)).toEqual({
+        runs: [
+          { kind: 'served', workflowId: WF, versionNumber: 3, values: { API_BASE: 'base' }, secretKeys: ['TOKEN'], servedAt: '2026-10-29T13:00:00.000Z' },
+          { kind: 'refused', workflowId: WF2, versionNumber: 1, reason: 'not_ops_lane', keys: [] },
+        ],
+        unreadable: [],
+      })
+    })
+
+    it('never accepts a secret value: a run served with secret_values (a bidding Worker that ignored names) is unreadable, and its values are not quoted', () => {
+      const decrypted = { workflow_id: WF, version_number: 3, values: { API_BASE: 'base' }, secret_values: { TOKEN: 'fake do not echo me' }, served_at: '2026-10-29T13:00:00.000Z' }
+      const read = parseServedOpsRunVariableNames({ organization_id: ORG, runs: [decrypted, refused] }, asked)
+      expect(read.runs).toEqual([{ kind: 'refused', workflowId: WF2, versionNumber: 1, reason: 'not_ops_lane', keys: [] }])
+      expect(read.unreadable.join('\n')).toContain(WF)
+      expect(JSON.stringify(read)).not.toContain('fake do not echo me')
+    })
+
+    it('names, without failing the rest, a run whose names it cannot read', () => {
+      for (const bad of [
+        { ...served, secret_keys: 'TOKEN' }, { ...served, secret_keys: ['bad key'] }, { ...served, secret_keys: ['API_BASE'] }, { ...served, secret_keys: ['TOKEN', 'TOKEN'] }, { ...served, extra: true },
+      ]) {
+        const read = parseServedOpsRunVariableNames({ organization_id: ORG, runs: [bad, refused] }, asked)
+        expect(read.runs, JSON.stringify(bad)).toHaveLength(1)
+        expect(read.unreadable.join('\n'), JSON.stringify(bad)).toContain(WF)
+      }
+    })
+
+    it('each reader refuses the other mode\'s request, so names and values can never be read as each other', () => {
+      expect(() => parseServedOpsRunVariableNames({ organization_id: ORG, runs: [] }, ask(run(WF)))).toThrow(OpsGatewayContractError)
+      expect(() => parseServedOpsRunVariables({ organization_id: ORG, runs: [] }, asked)).toThrow(OpsGatewayContractError)
+    })
   })
 })

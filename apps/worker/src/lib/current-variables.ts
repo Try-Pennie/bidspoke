@@ -109,3 +109,20 @@ export async function resolveCurrentVariables(
   }
   return { values, secretValues, unreadable }
 }
+
+/**
+ * The same resolution as resolveCurrentVariables, with each secret by NAME
+ * only (#3034, the ops copy refresh): no secret row is opened, so whether one
+ * would decrypt is not known here, and its value never leaves the database row.
+ */
+export function resolveCurrentVariableNames(
+  rows: readonly CurrentVariableRow[], workflowId: string, names: readonly string[],
+): { values: Record<string, string>; secretKeys: string[] } {
+  const values: Record<string, string> = {}
+  const secretKeys: string[] = []
+  for (const [name, row] of resolveVariables(rows, workflowId, names)) {
+    if (row.is_secret) secretKeys.push(name)
+    else values[name] = row.value as string
+  }
+  return { values, secretKeys }
+}
