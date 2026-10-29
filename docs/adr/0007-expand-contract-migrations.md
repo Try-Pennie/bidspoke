@@ -36,7 +36,7 @@ Because each migration is additive and each release reads defensively, the apply
 ## Deployment runbook (a change that includes a migration)
 
 1. Write the migration to the rules above (additive / expand/contract). If the change is a rename/drop, split it across two releases.
-2. Prove it against a real Postgres: `bash scripts/sql-suite/run.sh` (#1409) replays every migration from empty into a throwaway `supabase/postgres` container on 127.0.0.1:54329 and runs `supabase/tests/*.test.sql`. Write the test for a new function, policy or grant in that directory first and watch it fail. The pre push hook runs the suite when anything under `supabase/` changed.
+2. Prove it against a real Postgres: `bash scripts/sql-suite/run.sh` (#1409) replays every migration from empty into a throwaway `supabase/postgres` container on 127.0.0.1:54329 and runs `supabase/tests/*.test.sql`. Write the test for a new function, policy or grant in that directory first and watch it fail. The pre push hook runs the suite when the branch itself changed `supabase/` (see The SQL suite harness below).
 3. If the migration changes table/column/type DDL or adds a function, regenerate types from the throwaway rather than from production: `SUPABASE_DB_URL=postgres://postgres:postgres@127.0.0.1:54329/postgres pnpm --filter worker db:types`, and commit `apps/worker/src/types/database.ts` in the SAME commit (CI's `DB types regenerated with schema migrations` step enforces this, #364). The generator splices the `__InternalSupabase` block from the committed file, since only the hosted generator emits it. A column that exists in production but in no migration shows up here as a deletion in the diff; add the migration for it rather than accepting the deletion (`20260921221010_workflows_updated_by_name.sql` is the precedent).
 4. Pick the next unused migration version: `ls supabase/migrations/` and use the next `YYYYMMDDNNNNNN` prefix (two files sharing a version collide on `db push`).
 5. Commit the migration + code together and push to main.
@@ -45,6 +45,33 @@ Because each migration is additive and each release reads defensively, the apply
 8. The path-gated `Deploy Worker / Pages / Worker Tail` jobs ship the code.
 
 For a **rename/drop** (expand/contract), repeat the cycle twice: release 1 = expand + dual-write + backfill; release 2 (after release 1 is fully live) = contract (drop the old).
+
+## The SQL suite harness
+
+`bash scripts/sql-suite/run.sh` starts a throwaway `supabase/postgres` Docker container on port 54329. It is never production: the harness reaches it only through `docker exec`, so it has no connection string that could point anywhere else. It bootstraps the handful of objects the hosted platform provides outside migrations (`scripts/sql-suite/bootstrap.sql`), replays every file in `supabase/migrations/` from empty, then runs `supabase/tests/*.test.sql`.
+
+- **The ops project** (`supabase-ops/`, #1709) has its own suite: `SQL_SUITE_PROJECT=ops bash scripts/sql-suite/run.sh` uses its own container on port 54330, bootstrapped to the live ops project's measured grants (`scripts/sql-suite/bootstrap-ops.sql`), and runs `supabase-ops/supabase/tests`.
+- **When the pre push hook runs it.** Whenever the branch itself changed `supabase/`, the rpc allowlist (`apps/worker/src/lib/read-only-rpcs.json`) or the harness, measured from its merge base with origin/main by `scripts/pre-push-sql-suites.sh`; the ops suite when the branch changed `supabase-ops/`. It runs both suites when the merge base cannot be computed (#2412). `SKIP_SQL_SUITE=1` skips it for a one time reason, explained to Dan first.
+- **One run per container** (#3012). Only one run uses a project's container at a time: a run that finds another worktree's or session's run in it waits up to 10 minutes (`SQL_SUITE_LOCK_WAIT`), then refuses naming that run's pid, start time and worktree. A lock left by a killed run is taken over (`scripts/sql-suite/lock.sh`).
+- **A function a route calls through `rpc`** also needs an entry in `supabase/required-live-objects.json` and in `apps/worker/src/lib/read-only-rpcs.json` (the local dev write guard's allowlist, described in CLAUDE.md).
+
+## The Data API's exposed schemas (#1710)
+
+The list lives in a migration, not the dashboard. `20261006180000_porting_inventory_1710.sql` sets `ALTER ROLE authenticator SET pgrst.db_schemas = 'public, graphql_public, porting'`, and once that role setting exists the dashboard's "Exposed schemas" field no longer governs the list.
+
+- To expose or drop a schema, change that setting in a new migration, listing every schema, and `NOTIFY pgrst, 'reload config'`.
+- Drop a schema from the list before dropping the schema itself, or PostgREST cannot build its cache (PGRST002).
+- `supabase/tests/porting_inventory.test.sql` asserts the current list.
+- The types generator names each schema the typed client reads (`public` and `porting`) in `apps/worker/scripts/gen-db-types.sh`.
+
+## The `porting` schema (#1710)
+
+It holds the Pipedream move's inventory (`pipedream_inventory`, `pipedream_workflow_map`): service role only, RLS on with no policy, anon and authenticated revoked.
+
+- `node scripts/porting/load-inventory.ts <export dir> --org <uuid> [--apply]` loads an export. It prints its plan and writes nothing without `--apply`.
+- `node scripts/porting/unlock-table.ts <export dir>` prints the unlock table and the derived build order.
+- Both read the export through `packages/porting-evidence/src/inventory/`.
+- A workflow that will not be ported, or a step left out of a port, is recorded only by `node scripts/porting/record-decision.ts` (#2979), never by hand. `--retire` sets `porting_stage` to retired with who decided, why and when, and `--drop-step` adds a row to `porting.dropped_steps`. It prints its plan and writes nothing without `--apply`. The loader never writes either, so a reload keeps every decision, and the unlock table leaves both out. The decisions themselves are Dan's.
 
 ## Consequences
 

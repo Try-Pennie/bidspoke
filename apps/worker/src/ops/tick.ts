@@ -204,10 +204,56 @@ export type TickSweep = OpsSweep
  * purge_run_variables; a run a person kept keeps them). And the variable
  * copies (#2999, purge_variable_copies): those confirmed more than
  * COPIES_STALE_AFTER_MS ago, which a fallback refuses anyway, and those of a
- * workflow switched off, deleted or gone from the lane.
+ * workflow switched off, deleted or gone from the lane. And the finished runs
+ * themselves, 90 days after they end (#3018, FINISHED_RUN_KEPT_DAYS), beside
+ * the rest of the tick (FINISHED_RUN_PURGE says why).
+ *
+ * Each purge's failure is its own problem, purge_failed keyed by what it
+ * purges, judged by this sweep's runs (OPS_TICK_PROBLEM_SWEEPS, #3018): as
+ * sweep_failed, judged by ticks, the clean tick after a failed night ended its
+ * run of one, and a purge failing every night never paged.
  */
 export const OBSERVATION_PURGE_EVERY_SECONDS = 20 * 3600
 export const OBSERVATION_PURGE_EASTERN_HOUR = 3
+
+/** What each purge the observation_purge sweep pages through removes: its purge_failed subject, and the words its problem uses. */
+const PURGE_SUBJECTS = {
+  schedule_observations: 'schedule observations older than 30 days',
+  step_test_results: 'step test results older than 7 days',
+  step_records: 'step records of run attempts older than 7 days',
+  run_variables: 'recorded variables of runs that ended more than 7 days ago',
+  variable_copies: 'variable copies past their age limit or of workflows gone from the lane',
+} as const
+type PurgeSubject = keyof typeof PURGE_SUBJECTS
+
+/**
+ * How long a finished ops run is kept: 90 days after it ends (its terminal_at),
+ * trigger payload included, then the nightly purge deletes it (Dan, 2026-10-29,
+ * recorded on #3018). The cutoff is taken from the DATABASE clock, as every
+ * other purge's window is. purge_terminal_run_requests never deletes a run a
+ * person kept (kept_by) or one whose chain still has a run going, and deleting
+ * a run deletes its executions and their step records (ON DELETE CASCADE),
+ * unlinks the schedule slot that started it (ON DELETE SET NULL, through the
+ * index of ops migration 20261030120000), and leaves its send ledger rows, which
+ * have no foreign key on purpose (finished_run_purge.test.sql). Its checkpoint
+ * object in R2 is not touched: the bucket's own rule expires it after 30 days.
+ */
+export const FINISHED_RUN_KEPT_DAYS = 90
+const DAY_MS = 24 * 3600 * 1000
+
+/**
+ * The purge of finished runs, each night: pages of 1,000 (the function's
+ * ceiling) until a page says there is no more, at most maxPages a night, and no
+ * page started once budgetMs has passed on the Worker clock. 100 pages is
+ * 100,000 runs a night, twice the 50,000 arrivals a day the run engine is
+ * modelled for (docs/ops-ceilings-spike.md P9), so a backlog left by failed
+ * nights drains. It runs BESIDE the rest of the tick, awaited before the
+ * report, as sf_limits does: each deleted run also deletes its executions and
+ * unlinks its slot, so a night of pages takes long enough that holding the
+ * tick's claims and dispatches behind it would delay that minute's runs. A
+ * night that ends with more left is purge_behind, a failed page purge_failed.
+ */
+export const FINISHED_RUN_PURGE = { pageLimit: 1000, maxPages: 100, budgetMs: 40_000 } as const
 
 /**
  * The sweeps, each with the interval its owner claims. A minute sweep claims 50 s,
@@ -296,6 +342,8 @@ export interface OpsTickDb extends ConnectionServeDb, VariableCopyDb {
   purgeStepRecords(limit: number): Promise<{ purged: number; more: boolean }>
   /** Also the observation_purge sweep: the recorded variables of runs ended more than 7 days ago (purge_run_variables, #2998). */
   purgeRunVariables(limit: number): Promise<{ purged: number; more: boolean }>
+  /** Also the observation_purge sweep: finished runs that ended before terminalBefore, with their executions (purge_terminal_run_requests, #3018). */
+  purgeFinishedRuns(terminalBefore: Date, limit: number): Promise<{ purged: number; tombstoned: number; more: boolean }>
   /** The saved copies whose current version has no frozen definition yet (missing_workflow_definitions, #1950). */
   missingDefinitions(limit: number): Promise<{ missing: Array<{ workflowId: string; organizationId: OrganizationId; versionNumber: number }>; reachedLimit: boolean }>
   /** A slot fired for real in live mode: its fire row and its run in one transaction (record_schedule_fire, #1950). */
@@ -466,6 +514,56 @@ function startConnectionCheck(ports: OpsTickPorts, db: OpsTickDb): Promise<Conne
   })().catch((err: unknown) => ({
     problems: [tickProblem('connection_check_failed', `The connection check failed: ${formatErr(err)}.`)],
     counts: {},
+  }))
+}
+
+/** What one night's purge of finished runs left for the report. */
+interface FinishedRunPurgeResult {
+  problems: TickProblem[]
+  counts: Record<string, number>
+}
+
+/**
+ * The purge of finished runs (#3018), run beside the rest of the tick on the
+ * night the tick owns observation_purge (FINISHED_RUN_PURGE). The cutoff is
+ * FINISHED_RUN_KEPT_DAYS before the database clock the sweep was claimed on.
+ * Never rejects: a failed page is purge_failed, reported with its error and
+ * with the runs already removed counted, so the tick's report still goes.
+ */
+function startFinishedRunPurge(ports: OpsTickPorts, db: OpsTickDb, dbNowMs: number): Promise<FinishedRunPurgeResult> {
+  return (async () => {
+    const counts: Record<string, number> = { finished_runs_purged: 0, finished_run_dedup_tombstones: 0 }
+    const before = new Date(dbNowMs - FINISHED_RUN_KEPT_DAYS * DAY_MS)
+    const { pageLimit, maxPages, budgetMs } = FINISHED_RUN_PURGE
+    const startedAt = ports.now()
+    let pages = 0
+    let more = true
+    let stoppedBy: 'page cap' | 'time budget' | null = null
+    try {
+      while (more) {
+        if (pages >= maxPages) { stoppedBy = 'page cap'; break }
+        if (ports.now() - startedAt >= budgetMs) { stoppedBy = 'time budget'; break }
+        const r = await db.purgeFinishedRuns(before, pageLimit)
+        pages++
+        bump(counts, 'finished_runs_purged', r.purged)
+        bump(counts, 'finished_run_dedup_tombstones', r.tombstoned)
+        more = r.more
+      }
+    } catch (err) {
+      return {
+        counts,
+        problems: [tickProblem('purge_failed', `The nightly purge of ops runs that ended more than ${FINISHED_RUN_KEPT_DAYS} days ago failed after removing ${counts.finished_runs_purged.toLocaleString('en-US')}: ${formatErr(err)}. The rest are kept until a later night's purge succeeds.`, 'finished_runs')],
+      }
+    }
+    const problems = stoppedBy === null ? [] : [tickProblem(
+      'purge_behind',
+      `The nightly purge removed ${counts.finished_runs_purged.toLocaleString('en-US')} ops runs that ended more than ${FINISHED_RUN_KEPT_DAYS} days ago and stopped at its ${stoppedBy}, and more are left. They are removed on the nights that follow; two nights in a row behind means runs are arriving faster than the purge removes them.`,
+      'finished_runs',
+    )]
+    return { counts, problems }
+  })().catch((err: unknown) => ({
+    counts: {},
+    problems: [tickProblem('purge_failed', `The nightly purge of ops runs that ended more than ${FINISHED_RUN_KEPT_DAYS} days ago failed: ${formatErr(err)}.`, 'finished_runs')],
   }))
 }
 
@@ -844,6 +942,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   /** Each sweep whose claim this tick owned, for the report (#2340: the bidding Worker judges a sweep's problems by its runs). */
   const sweepsRun: TickSweep[] = []
   let connectionCheckRun: Promise<ConnectionCheckSweepResult> | null = null
+  let finishedRunPurgeRun: Promise<FinishedRunPurgeResult> | null = null
   let connectionLogins: ConnectionLoginsReport | null = null
   let writeBacksRun: Promise<WriteBacksRun> | null = null
 
@@ -924,7 +1023,11 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
           }
           continue
         }
+        // The purge of finished runs, beside the rest of the tick (FINISHED_RUN_PURGE says why).
+        if (s.sweep === 'observation_purge' && dbNow !== null) finishedRunPurgeRun = startFinishedRunPurge(ports, db, Date.parse(dbNow))
         const sweep = s.sweep
+        // The nightly purges that failed this night, by what each purges, each its own problem.
+        const failedPurges = new Map<PurgeSubject, unknown>()
         await drain(s.maxPages, async () => {
           switch (sweep) {
             case 'lease_expiry': {
@@ -954,30 +1057,33 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
               // days, #2703, Dan's decision of 2026-10-24), the variables
               // runs recorded (7 days after they end, #2998) and the variable
               // copies past their age limit or of a workflow gone from the
-              // lane (#2999). A failure of any is the sweep's.
+              // lane (#2999). A failure of any is its own purge_failed, and
+              // stops the night's paging (#3018). The finished runs purge
+              // runs beside, on its own pages (startFinishedRunPurge).
               let more = false
-              let failure: { error: unknown } | null = null
-              const purges: Array<[() => Promise<{ purged: number; more: boolean }>, string]> = [
-                [() => db.purgeObservations(s.pageLimit), 'observations_purged'],
-                [() => db.purgeStepTests(s.pageLimit), 'step_tests_purged'],
-                [() => db.purgeStepRecords(s.pageLimit), 'step_records_purged'],
-                [() => db.purgeRunVariables(s.pageLimit), 'run_variables_purged'],
-                [() => db.purgeVariableCopies(s.pageLimit), 'variable_copies_purged'],
+              const purges: Array<[() => Promise<{ purged: number; more: boolean }>, string, PurgeSubject]> = [
+                [() => db.purgeObservations(s.pageLimit), 'observations_purged', 'schedule_observations'],
+                [() => db.purgeStepTests(s.pageLimit), 'step_tests_purged', 'step_test_results'],
+                [() => db.purgeStepRecords(s.pageLimit), 'step_records_purged', 'step_records'],
+                [() => db.purgeRunVariables(s.pageLimit), 'run_variables_purged', 'run_variables'],
+                [() => db.purgeVariableCopies(s.pageLimit), 'variable_copies_purged', 'variable_copies'],
               ]
-              for (const [purge, count] of purges) {
+              for (const [purge, count, what] of purges) {
                 try {
                   const r = await purge()
                   bump(counts, count, r.purged)
                   more ||= r.more
                 } catch (error) {
-                  failure ??= { error }
+                  if (!failedPurges.has(what)) failedPurges.set(what, error)
                 }
               }
-              if (failure) throw failure.error
-              return more
+              return failedPurges.size === 0 && more
             }
           }
         })
+        for (const [what, error] of failedPurges) {
+          problem('purge_failed', `The nightly purge of ${PURGE_SUBJECTS[what]} failed: ${formatErr(error)}. They are kept until a later night's purge succeeds.`, what)
+        }
       } catch (err) {
         if (s.sweep === 'queue_agreement') problem('agreement_check_failed', `The ${s.sweep} sweep failed: ${formatErr(err)}.`)
         else problem('sweep_failed', `The ${s.sweep} sweep failed: ${formatErr(err)}.`, s.sweep)
@@ -1319,6 +1425,12 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     const cc = await connectionCheckRun
     problems.push(...cc.problems)
     for (const [key, n] of Object.entries(cc.counts)) bump(counts, key, n)
+  }
+  // 7c2. The nightly purge of finished runs (#3018), the same way.
+  if (finishedRunPurgeRun !== null) {
+    const fr = await finishedRunPurgeRun
+    problems.push(...fr.problems)
+    for (const [key, n] of Object.entries(fr.counts)) bump(counts, key, n)
   }
 
   // 7d. The write back check, if this tick owns the connection check, the same way.

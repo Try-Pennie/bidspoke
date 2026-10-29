@@ -27,7 +27,7 @@ import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
   claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeOpsStepRecords, purgeScheduleObservations, purgeStepTestResults, readConnectionCheckTargets,
-  purgeRunVariables, readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
+  purgeRunVariables, purgeTerminalRunRequests, readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
   removeUnservedMeasuredIdentities, saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions, observeOpsReseal,
   purgeVariableCopies, readVariableCopies, readWorkflowDefinition, saveVariableCopies,
@@ -106,6 +106,8 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     purgeStepTests: (limit) => purgeStepTestResults(client, limit, rpc),
     purgeStepRecords: (limit) => purgeOpsStepRecords(client, limit, rpc),
     purgeRunVariables: (limit) => purgeRunVariables(client, limit, rpc),
+    // Finished runs past FINISHED_RUN_KEPT_DAYS, with their executions (#3018).
+    purgeFinishedRuns: (terminalBefore, limit) => purgeTerminalRunRequests(client, terminalBefore, limit, rpc),
     // The last good copy of each version's plain variables (#2999): its reads, its one write, its purge.
     purgeVariableCopies: (limit) => purgeVariableCopies(client, limit, rpc),
     readVariableCopies: (org, versions) => readVariableCopies(client, org, versions, rpc),
