@@ -7,13 +7,15 @@
  * any step runs, and how each kind of step failure ends the run.
  */
 import { describe, expect, it } from 'vitest'
+import { NODE_TRAITS, NODE_TYPES } from '@bidspoke/node-types'
 import { organizationIdFrom } from '../ops-db'
-import type { ClaimedRun, OpsStepRecord } from '../ops-writes'
-import { CheckpointStoreMissing, CONTINUATION_BUDGET, type CheckpointStore, type ContinuationBudget } from '../checkpoint'
+import type { ClaimedRun, NamedCheckpoint, OpsStepRecord } from '../ops-writes'
+import { CheckpointStoreMissing, CONTINUATION_BUDGET, type Checkpoint, type CheckpointStore, type ContinuationBudget } from '../checkpoint'
 import { CheckpointNotNamed, RunStopped, StepUnrecorded, type RunCheckpoints, type RunContext, type StepSend } from '../run-invocation'
 import { OPS_WALK_MAX_STEPS, StepEndsRun, walkOpsDefinition, type OpsStepHandler } from '../run-walk'
 import { STEP_OUTPUT_MAX_BYTES } from '../step-output'
 import type { OpsVersionVariables } from '../../lib/ops-gateway-contract'
+import type { ContinuationMode } from '../run-vocabulary'
 
 const RUN: ClaimedRun = {
   runRequestId: '0192f4a0-0000-7000-8000-000000000001', organizationId: organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'),
@@ -29,7 +31,9 @@ const T0 = Date.parse('2026-10-24T14:00:00.000Z')
  * each time it is read (or by tick, when the test sets it). Its checkpoint
  * port keeps what is named, and over.checkpoints replaces it.
  */
-function runCtx(over: { recordStep?: (record: OpsStepRecord) => Promise<void>; checkpoints?: Partial<RunCheckpoints>; tick?: number } = {}) {
+function runCtx(over: {
+  recordStep?: (record: OpsStepRecord) => Promise<void>; checkpoints?: Partial<RunCheckpoints>; tick?: number; continuations?: number; stateVersion?: number
+} = {}) {
   const sent: Array<StepSend<unknown>> = []
   const records: OpsStepRecord[] = []
   const named: Array<{ steps: number; key: string; sha256: string; bytes: number }> = []
@@ -44,7 +48,8 @@ function runCtx(over: { recordStep?: (record: OpsStepRecord) => Promise<void>; c
     },
     now: () => (t += over.tick ?? 5),
     recordStep: over.recordStep ?? (async (record) => { records.push(record) }),
-    stateVersion: 4,
+    stateVersion: over.stateVersion ?? 4,
+    continuations: over.continuations ?? 0,
     checkpoints: {
       name: async (ack) => {
         named.push(ack)
@@ -52,7 +57,7 @@ function runCtx(over: { recordStep?: (record: OpsStepRecord) => Promise<void>; c
       },
       read: async () => {
         const last = named[named.length - 1]
-        return last === undefined ? null : { key: last.key, stateVersion: 4, steps: last.steps, sha256: last.sha256, bytes: last.bytes }
+        return last === undefined ? null : { key: last.key, stateVersion: over.stateVersion ?? 4, steps: last.steps, sha256: last.sha256, bytes: last.bytes }
       },
       ...over.checkpoints,
     },
@@ -446,6 +451,233 @@ describe('walkOpsDefinition: a slice boundary in observe mode (#1951)', () => {
     const o = observing(() => m.store, { ...stepsBudget(2), runStateBytes: 10, runComputeMs: 1 })
     expect(await walkOpsDefinition(chain(3), runCtx().ctx, { action_a: recorder().handler }, o)).toEqual({ outcome: 'done' })
     expect(o.logs.filter((l) => l.step === 'cap_crossed').map((l) => l.cap).sort()).toEqual(['max_compute_exceeded', 'max_state_exceeded'])
+  })
+})
+
+// ── suspend and resume (#1951, OPS_CONTINUATION=on) ───────────────────────
+
+/**
+ * One run's row across its slices, as the ops database keeps it: the
+ * checkpoint it names and how many times it was suspended to continue. Each
+ * slice is a new holder at a later state version; the test counts a
+ * continuation where complete_run_request would.
+ */
+function runRow() {
+  const row = { continuations: 0, stateVersion: 4, pointer: null as NamedCheckpoint | null, reads: 0 }
+  const slice = (over: { checkpoints?: Partial<RunCheckpoints>; tick?: number } = {}) => {
+    row.stateVersion += 2
+    const sv = row.stateVersion
+    return runCtx({
+      tick: over.tick, continuations: row.continuations, stateVersion: sv,
+      checkpoints: {
+        name: async (ack) => {
+          row.pointer = { key: ack.key, stateVersion: sv, steps: ack.steps, sha256: ack.sha256, bytes: ack.bytes }
+          return 'recorded'
+        },
+        read: async () => {
+          row.reads++
+          return row.pointer
+        },
+        ...over.checkpoints,
+      },
+    })
+  }
+  return { row, slice }
+}
+
+function slicing(mode: ContinuationMode, store: () => CheckpointStore, budget: ContinuationBudget = stepsBudget(2)) {
+  const logs: Array<Record<string, unknown>> = []
+  return { continuation: { mode, budget, store, log: (e: Record<string, unknown>) => { logs.push(e) } }, logs }
+}
+
+const stepsOf = (logs: Array<Record<string, unknown>>, step: string) => logs.filter((l) => l.step === step)
+
+describe('walkOpsDefinition: suspend and resume (#1951, on)', () => {
+  it('on: at a slice boundary writes, names and verifies the checkpoint, then ends the slice to continue, running no later step', async () => {
+    const m = memoryStore()
+    const o = slicing('on', () => m.store)
+    const run = runCtx()
+    const r = recorder()
+    expect(await walkOpsDefinition(chain(5), run.ctx, { action_a: r.handler }, o)).toEqual({ outcome: 'continue' })
+    expect(r.seen.map((x) => x.node)).toEqual(['s0', 's1'])
+    expect(run.named.map((n) => n.steps)).toEqual([2])
+    expect(stepsOf(o.logs, 'suspend')).toEqual([expect.objectContaining({ steps: 2, next_node_id: 's2', key: `checkpoints/v1/${RUN.organizationId}/${RUN.runRequestId}/4-2.json` })])
+    expect(stepsOf(o.logs, 'suspend_failed')).toEqual([])
+  })
+
+  it('resumes a continued run where its checkpoint left it: no completed step runs again, every output is restored, and its step records start again from 0', async () => {
+    const m = memoryStore()
+    const { row, slice } = runRow()
+    const r = recorder((seen) => ({ saw: Object.keys(seen).sort().join(',') }))
+    const first = slice()
+    expect(await walkOpsDefinition(chain(5), first.ctx, { action_a: r.handler }, slicing('on', () => m.store))).toEqual({ outcome: 'continue' })
+    row.continuations++
+    const second = slice()
+    expect(await walkOpsDefinition(chain(5), second.ctx, { action_a: r.handler }, slicing('on', () => m.store))).toEqual({ outcome: 'continue' })
+    row.continuations++
+    const third = slice()
+    const o3 = slicing('on', () => m.store)
+    expect(await walkOpsDefinition(chain(5), third.ctx, { action_a: r.handler }, o3)).toEqual({ outcome: 'done' })
+
+    // Each step ran once, in order, across the three slices.
+    expect(r.seen.map((x) => x.node)).toEqual(['s0', 's1', 's2', 's3', 's4'])
+    // The first step of the second slice reads what the first slice's steps answered.
+    expect(r.seen[2].steps).toEqual({ s0: { saw: '' }, s1: { saw: 's0' } })
+    expect(r.seen[4].steps).toMatchObject({ s3: { saw: 's0,s1,s2' } })
+    // A slice's records are its own attempt's, from place 0.
+    expect(second.records.map((x) => [x.seq, x.nodeId])).toEqual([[0, 's2'], [1, 's3']])
+    expect(third.records.map((x) => [x.seq, x.nodeId])).toEqual([[0, 's4']])
+    expect(stepsOf(o3.logs, 'resumed')).toEqual([expect.objectContaining({ steps: 4, next_node_id: 's4', continuations: 2 })])
+  })
+
+  it('carries the whole run\'s totals across slices: the checkpoint holds every step walked, the compute adds up and the slices count', async () => {
+    const m = memoryStore()
+    const { row, slice } = runRow()
+    const r = recorder()
+    await walkOpsDefinition(chain(5), slice().ctx, { action_a: r.handler }, slicing('on', () => m.store))
+    row.continuations++
+    await walkOpsDefinition(chain(5), slice().ctx, { action_a: r.handler }, slicing('on', () => m.store))
+    const read = (key: string) => JSON.parse(m.objects.get(key)!) as Checkpoint
+    const keys = [...m.objects.keys()]
+    expect(keys).toHaveLength(2)
+    const [one, two] = keys.map(read)
+    expect(one.totals).toMatchObject({ steps: 2, slices: 1 })
+    expect(two.totals).toMatchObject({ steps: 4, slices: 2 })
+    expect(two.path.map((p) => [p.seq, p.nodeId])).toEqual([[0, 's0'], [1, 's1'], [2, 's2'], [3, 's3']])
+    expect(two.totals.computeMs).toBeGreaterThan(one.totals.computeMs)
+    expect(two.stateVersion).toBe(row.stateVersion)
+  })
+
+  it('the step cap counts every slice: a run that loops for ever ends failed with max_steps_exceeded, and no further continuation', async () => {
+    const m = memoryStore()
+    const { row, slice } = runRow()
+    const loop = { nodes: [node('spin', 'action_a')], edges: [edge('trigger', 'spin'), edge('spin', 'spin')] }
+    const r = recorder()
+    const ends: unknown[] = []
+    for (let i = 0; i < 10; i++) {
+      const end = await walkOpsDefinition(loop, slice().ctx, { action_a: r.handler }, slicing('on', () => m.store, stepsBudget(50)))
+      ends.push(end)
+      if ((end as { outcome: string }).outcome !== 'continue') break
+      row.continuations++
+    }
+    expect(ends.slice(0, 4)).toEqual(Array(4).fill({ outcome: 'continue' }))
+    expect(ends[4]).toEqual({ outcome: 'failed', reason: 'max_steps_exceeded', error: `the run walked ${OPS_WALK_MAX_STEPS} steps, the most one run may` })
+    expect(ends).toHaveLength(5)
+    expect(r.seen).toHaveLength(OPS_WALK_MAX_STEPS)
+  })
+
+  it('a whole run cap crossing is judged on the run\'s totals, not the slice\'s (observe first: nothing is ended)', async () => {
+    const m = memoryStore()
+    const { row, slice } = runRow()
+    const budget = { ...stepsBudget(2), runComputeMs: 25 }
+    const first = slicing('on', () => m.store, budget)
+    await walkOpsDefinition(chain(5), slice().ctx, { action_a: recorder().handler }, first)
+    row.continuations++
+    const second = slicing('on', () => m.store, budget)
+    expect(await walkOpsDefinition(chain(5), slice().ctx, { action_a: recorder().handler }, second)).toEqual({ outcome: 'continue' })
+    const firstValue = stepsOf(first.logs, 'suspend')[0].compute_ms as number
+    const crossed = stepsOf(second.logs, 'cap_crossed').find((l) => l.cap === 'max_compute_exceeded')
+    expect(crossed).toBeDefined()
+    expect(crossed!.value as number).toBeGreaterThan(firstValue)
+  })
+
+  it('resumes a continued run in every mode, off and observe too, since starting it again from its first step would repeat what its earlier slices sent', async () => {
+    for (const mode of ['off', 'observe'] as const) {
+      const m = memoryStore()
+      const { row, slice } = runRow()
+      const r = recorder()
+      await walkOpsDefinition(chain(4), slice().ctx, { action_a: r.handler }, slicing('on', () => m.store))
+      row.continuations++
+      expect(await walkOpsDefinition(chain(4), slice().ctx, { action_a: r.handler }, slicing(mode, () => m.store))).toEqual({ outcome: 'done' })
+      expect(r.seen.map((x) => x.node), mode).toEqual(['s0', 's1', 's2', 's3'])
+    }
+  })
+
+  it('a run that has never continued is walked from its first step and reads no checkpoint, whatever its row names (an observe checkpoint, a retry)', async () => {
+    const m = memoryStore()
+    const { row, slice } = runRow()
+    await walkOpsDefinition(chain(3), slice().ctx, { action_a: recorder().handler }, slicing('observe', () => m.store))
+    expect(row.pointer).not.toBeNull()
+    row.reads = 0
+    const r = recorder()
+    expect(await walkOpsDefinition(chain(3), slice().ctx, { action_a: r.handler }, slicing('on', () => m.store, stepsBudget(50)))).toEqual({ outcome: 'done' })
+    expect(r.seen.map((x) => x.node)).toEqual(['s0', 's1', 's2'])
+    expect(row.reads).toBe(0)
+  })
+
+  it('money only node types never reach a resume: each is refused before any checkpoint is read', async () => {
+    const money = NODE_TYPES.filter((t) => NODE_TRAITS[t].lane === 'money')
+    expect(money.length).toBeGreaterThan(0)
+    for (const t of money) {
+      const m = memoryStore()
+      const { row, slice } = runRow()
+      row.continuations = 1
+      row.pointer = { key: 'checkpoints/v1/x', stateVersion: 4, steps: 1, sha256: 'a'.repeat(64), bytes: 10 }
+      const gets: string[] = []
+      const def = { nodes: [node('s0', 'action_a'), node('money', t)], edges: [edge('trigger', 's0'), edge('s0', 'money')] }
+      const end = await walkOpsDefinition(def, slice().ctx, { action_a: recorder().handler }, slicing('on', () => ({ ...m.store, get: async (k) => { gets.push(k); return null } })))
+      expect(end, t).toEqual({ outcome: 'failed', error: `an ops run cannot take a step of type ${t} yet, so nothing was run` })
+      expect(row.reads, t).toBe(0)
+      expect(gets, t).toEqual([])
+    }
+  })
+
+  it('a continued run whose checkpoint cannot be had or trusted is never walked from its first step: a lasting refusal fails it by name, a passing fault retries it', async () => {
+    const def = chain(4)
+    type Arranged = { store?: () => CheckpointStore; checkpoints?: Partial<RunCheckpoints>; def?: unknown }
+    /** A continued run's next slice, its first slice having suspended at s2 into m. */
+    const continued = async (m: ReturnType<typeof memoryStore>) => {
+      const rr = runRow()
+      await walkOpsDefinition(def, rr.slice().ctx, { action_a: recorder().handler }, slicing('on', () => m.store))
+      rr.row.continuations++
+      return rr
+    }
+    const cases: Array<{ name: string; arrange: (m: ReturnType<typeof memoryStore>, rr: ReturnType<typeof runRow>) => Arranged; end: unknown }> = [
+      { name: 'names none', arrange: (_m, rr) => { rr.row.pointer = null; return {} }, end: { outcome: 'failed', error: expect.stringMatching(/has continued 1 time and names no checkpoint/) } },
+      { name: 'object gone', arrange: (m) => { m.objects.clear(); return {} }, end: { outcome: 'failed', error: expect.stringMatching(/^checkpoint_missing: /) } },
+      { name: 'object altered', arrange: (m) => { for (const k of m.objects.keys()) m.objects.set(k, '{"v":1}'); return {} }, end: { outcome: 'failed', error: expect.stringMatching(/^checkpoint_corrupt: /) } },
+      {
+        name: 'route not in the definition',
+        arrange: () => ({ def: { nodes: def.nodes, edges: def.edges.filter((e) => e.id !== 's0-s1').concat([{ id: 's0-s1b', source: 's0', target: 's1' }]) } }),
+        end: { outcome: 'failed', error: expect.stringMatching(/^checkpoint_route_mismatch: /) },
+      },
+      { name: 'read failed', arrange: () => ({ checkpoints: { read: async () => { throw new CheckpointNotNamed('run_checkpoint: deadline') } } }), end: { outcome: 'retry', error: expect.stringMatching(/run_checkpoint: deadline/) } },
+      { name: 'bucket missing', arrange: () => ({ store: () => { throw new CheckpointStoreMissing() } }), end: { outcome: 'retry', error: expect.stringMatching(/OPS_CHECKPOINTS/) } },
+      { name: 'R2 failed', arrange: (m) => ({ store: () => ({ ...m.store, get: async () => { throw new Error('R2 answered 500') } }) }), end: { outcome: 'retry', error: expect.stringMatching(/R2 answered 500/) } },
+    ]
+    for (const c of cases) {
+      const m = memoryStore()
+      const rr = await continued(m)
+      const a = c.arrange(m, rr)
+      const r = recorder()
+      const o = slicing('on', a.store ?? (() => m.store))
+      const end = await walkOpsDefinition(a.def ?? def, rr.slice({ checkpoints: a.checkpoints }).ctx, { action_a: r.handler }, o)
+      expect(end, c.name).toEqual(c.end)
+      expect(r.seen, c.name).toEqual([])
+      expect(stepsOf(o.logs, 'resume_refused'), c.name).toHaveLength(1)
+    }
+  })
+
+  it('a continued run whose read finds the run no longer this holder\'s stops: its claim is lost', async () => {
+    const m = memoryStore()
+    const rr = runRow()
+    await walkOpsDefinition(chain(4), rr.slice().ctx, { action_a: recorder().handler }, slicing('on', () => m.store))
+    rr.row.continuations++
+    const r = recorder()
+    await expect(walkOpsDefinition(chain(4), rr.slice({ checkpoints: { read: async () => { throw new RunStopped() } } }).ctx, { action_a: r.handler }, slicing('on', () => m.store)))
+      .rejects.toBeInstanceOf(RunStopped)
+    expect(r.seen).toEqual([])
+  })
+
+  it('on: a boundary that cannot verify its checkpoint never suspends: it says why and the slice carries on', async () => {
+    const m = memoryStore({ put: async () => { throw new Error('R2 answered 500') } })
+    const o = slicing('on', () => m.store)
+    const run = runCtx()
+    const r = recorder()
+    expect(await walkOpsDefinition(chain(3), run.ctx, { action_a: r.handler }, o)).toEqual({ outcome: 'done' })
+    expect(r.seen.map((x) => x.node)).toEqual(['s0', 's1', 's2'])
+    expect(stepsOf(o.logs, 'suspend_failed')).toEqual([expect.objectContaining({ reason: 'write_failed' })])
+    expect(stepsOf(o.logs, 'suspend')).toEqual([])
   })
 })
 

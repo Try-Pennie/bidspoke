@@ -38,6 +38,7 @@ import { liveOpsConnectionsDeps } from './ops-connections-live'
 import { SF_LIMITS_READ_DEADLINE_MS } from './sf-limits'
 import { CONNECTION_CHECK_PROBE_DEADLINE_MS } from './connection-check'
 import { continuationModeFrom } from './checkpoint'
+import { CONTINUATION_MODES } from './run-vocabulary'
 import { dispatchKey, signDispatch } from './dispatch-auth'
 import type { OpsEnv } from './index'
 import type { DispatchItem, OpsTickDb, OpsTickPorts } from './tick'
@@ -65,13 +66,15 @@ export function tickModeFrom(value: string | undefined): { mode: OpsTickMode; un
 /**
  * Time sliced continuation's configuration (#1951), reported every tick so
  * neither fault is silent: an OPS_CONTINUATION this build does not run (runs
- * then write no checkpoint), and observe without the OPS_CHECKPOINTS bucket
- * (each run then says store_missing once and writes none).
+ * then write no checkpoint and never suspend), and observe or on without the
+ * OPS_CHECKPOINTS bucket (each run then says store_missing once, writes none
+ * and never suspends; a run that already continued is retried until the
+ * bucket is back, never walked again from its first step).
  */
 export function continuationProblems(env: OpsEnv): Array<{ secret: string; problem: string }> {
   const c = continuationModeFrom(env.OPS_CONTINUATION)
   if (c.unknown !== null) {
-    return [{ secret: 'OPS_CONTINUATION', problem: `OPS_CONTINUATION is ${JSON.stringify(c.unknown)}, which this build does not run (it runs off or observe), so runs write no checkpoint.` }]
+    return [{ secret: 'OPS_CONTINUATION', problem: `OPS_CONTINUATION is ${JSON.stringify(c.unknown)}, which this build does not run (it runs ${CONTINUATION_MODES.join(', ')}), so runs write no checkpoint and never suspend.` }]
   }
   if (c.mode !== 'off' && env.OPS_CHECKPOINTS === undefined) {
     return [{ secret: 'OPS_CHECKPOINTS', problem: `OPS_CONTINUATION is ${c.mode}, and the OPS_CHECKPOINTS R2 binding is missing from this deploy, so no run checkpoint can be written.` }]

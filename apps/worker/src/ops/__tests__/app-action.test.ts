@@ -72,7 +72,7 @@ class FakeRunDb implements RunDb {
   results: unknown[] = []
   completes: CompleteOutcome[] = []
   async start() {
-    return { outcome: 'started' as const, stateVersion: 3, attempt: 1 }
+    return { outcome: 'started' as const, stateVersion: 3, attempt: 1, continuations: 0 }
   }
   async extend() {
     return true

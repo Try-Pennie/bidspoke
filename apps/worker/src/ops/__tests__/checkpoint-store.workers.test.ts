@@ -8,8 +8,12 @@
  */
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { CHECKPOINT_FORMAT, CheckpointRefused, checkpointStoreFrom, decodeCheckpoint, encodeCheckpoint, type Checkpoint } from '../checkpoint'
+import { CHECKPOINT_FORMAT, CONTINUATION_BUDGET, CheckpointRefused, checkpointStoreFrom, decodeCheckpoint, encodeCheckpoint, type Checkpoint } from '../checkpoint'
 import type { OpsEnv } from '../index'
+import { organizationIdFrom } from '../ops-db'
+import type { NamedCheckpoint } from '../ops-writes'
+import type { RunContext } from '../run-invocation'
+import { walkOpsDefinition, type OpsStepHandler } from '../run-walk'
 
 const opsEnv = env as unknown as OpsEnv
 
@@ -68,5 +72,65 @@ describe('the checkpoint store on R2 (workerd)', () => {
 
   it('answers null for a key nothing was written at', async () => {
     expect(await checkpointStoreFrom(opsEnv).get(`checkpoints/v1/${ORG}/${RUN_ID}/99-1.json`)).toBeNull()
+  })
+})
+
+/**
+ * Suspend and resume through the real bucket (#1951, on): one slice writes and
+ * names its checkpoint and ends to continue; the next, a new holder at a later
+ * state version, resumes from what R2 holds, and refuses an object altered in
+ * R2 after it was named rather than walking the run from its first step.
+ */
+describe('suspend and resume through R2 (workerd)', () => {
+  const RESUME_RUN = '0192f4a0-0000-7000-8000-0000000019ab'
+  const def = {
+    nodes: ['s0', 's1', 's2', 's3'].map((id) => ({ id, namespace: id, type: 'step', config: {} })),
+    edges: [{ id: 't-s0', source: 'trigger', target: 's0' }, { id: 's0-s1', source: 's0', target: 's1' }, { id: 's1-s2', source: 's1', target: 's2' }, { id: 's2-s3', source: 's2', target: 's3' }],
+  }
+  const continuation = { mode: 'on' as const, budget: { ...CONTINUATION_BUDGET, sliceSteps: 2 }, store: () => checkpointStoreFrom(opsEnv), log: () => undefined }
+
+  function slice(row: { pointer: NamedCheckpoint | null; continuations: number }, stateVersion: number): RunContext {
+    let t = Date.parse('2026-10-28T12:00:00.000Z')
+    return {
+      run: {
+        ...IDENTITY, runRequestId: RESUME_RUN, organizationId: organizationIdFrom(ORG), triggerKind: 'schedule', claimToken: `token-${stateVersion}`,
+        claimExpiresAt: '2026-10-28T12:01:00.000Z', stateVersion, attempts: 0, unchargedAttempts: 0, maxAttempts: 3, resumeReason: null,
+        resumedFromExecutionId: null, payload: {}, payloadRef: null,
+      },
+      executionId: `0192f4a0-0000-7000-8000-0000000000${stateVersion}0`, attempt: 1, signal: new AbortController().signal,
+      send: () => Promise.reject(new Error('no step here sends')), now: () => (t += 5), recordStep: async () => undefined,
+      stateVersion, continuations: row.continuations,
+      checkpoints: {
+        name: async (ack) => {
+          row.pointer = { key: ack.key, stateVersion, steps: ack.steps, sha256: ack.sha256, bytes: ack.bytes }
+          return 'recorded'
+        },
+        read: async () => row.pointer,
+      },
+    }
+  }
+
+  it('the next slice resumes from what the bucket holds, and the run finishes once', async () => {
+    const ran: string[] = []
+    const step: OpsStepHandler = async ({ node }) => { ran.push(node.id); return { output: { ran: node.id } } }
+    const row = { pointer: null as NamedCheckpoint | null, continuations: 0 }
+    expect(await walkOpsDefinition(def, slice(row, 10), { step }, { continuation })).toEqual({ outcome: 'continue' })
+    row.continuations++
+    expect(await walkOpsDefinition(def, slice(row, 12), { step }, { continuation })).toEqual({ outcome: 'done' })
+    expect(ran).toEqual(['s0', 's1', 's2', 's3'])
+  })
+
+  it('an object altered in the bucket after it was named is refused by name, and no step runs', async () => {
+    const ran: string[] = []
+    const step: OpsStepHandler = async ({ node }) => { ran.push(node.id); return { output: { ran: node.id } } }
+    const row = { pointer: null as NamedCheckpoint | null, continuations: 0 }
+    await walkOpsDefinition(def, slice(row, 20), { step }, { continuation })
+    row.continuations++
+    // Written over outside the store's only-where-nothing-is put, as a torn or tampered object would be.
+    await opsEnv.OPS_CHECKPOINTS!.put(row.pointer!.key, '{"v":1}')
+    ran.length = 0
+    const end = await walkOpsDefinition(def, slice(row, 22), { step }, { continuation })
+    expect(end).toEqual({ outcome: 'failed', error: expect.stringMatching(/^checkpoint_corrupt: /) })
+    expect(ran).toEqual([])
   })
 })

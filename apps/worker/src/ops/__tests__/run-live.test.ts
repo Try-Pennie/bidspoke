@@ -42,7 +42,7 @@ function opsDb(answers: Record<string, unknown>) {
 }
 
 const LIFECYCLE = {
-  start_run_execution: [{ outcome: 'started', state_version: 3, attempt: 1 }],
+  start_run_execution: [{ outcome: 'started', state_version: 3, attempt: 1, continuations: 0 }],
   extend_run_lease: true,
   complete_run_request: [{ outcome: 'completed', run_status: 'failed', state_version: 4 }],
   save_workflow_definition: 'saved',

@@ -247,9 +247,17 @@ describe('OPS_CONTINUATION (#1951)', () => {
     expect(report.not_configured_secrets).toEqual(['OPS_CHECKPOINTS'])
   })
 
-  it('a value this build does not run (on, before the next slice of #1951) is off, and reported by name', async () => {
+  it('on with its bucket bound is configured, and on without it is reported by the binding\'s name', async () => {
     const { env } = configured()
-    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONTINUATION: 'on', OPS_CHECKPOINTS: bucket } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: opsDatabase().fetch }))
+    const bound = await runOpsTick(liveTickPorts({ ...env, OPS_CONTINUATION: 'on', OPS_CHECKPOINTS: bucket } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: opsDatabase().fetch }))
+    expect(bound.not_configured_secrets ?? []).toEqual([])
+    const unbound = await runOpsTick(liveTickPorts({ ...env, OPS_CONTINUATION: 'on' } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: opsDatabase().fetch }))
+    expect(unbound.not_configured_secrets).toEqual(['OPS_CHECKPOINTS'])
+  })
+
+  it('a value this build does not run is off, and reported by name with the modes it does run', async () => {
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONTINUATION: 'suspend', OPS_CHECKPOINTS: bucket } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: opsDatabase().fetch }))
     expect(report.outcome).toBe('not_configured')
     expect(report.not_configured_secrets).toEqual(['OPS_CONTINUATION'])
   })
