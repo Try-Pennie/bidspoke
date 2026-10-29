@@ -127,6 +127,26 @@
  * did not land, and an unread history is said as such. Both subjects share it,
  * since both write the same Submission the website writes; a relay post carries
  * no stamp, so it never asks.
+ * EVERY TIMED OUT WRITE (#2938). The 2026-10-28 send_salesforce report said
+ * 1,208 leads were written directly. 9 of them timed out at the step's 5.25 s
+ * deadline with no retry, and the report did not say so: its sample of 200 reads
+ * a timed out write only by chance (all 9 had landed, read by hand). So every
+ * direct write whose step timed out (stepTimeoutMs, the error the engine's step
+ * deadline records, engine/retry.ts) is read back too, sampled or not, FIRST and
+ * within the same read budget, and the message says how many timed out and what
+ * reading each found: arrived complete, arrived only once the read-back sent it
+ * again (its stamp's attempt), did not arrive complete, or could not be checked,
+ * never lost (L11). Each that did not arrive, or could not be checked, is named
+ * as timed out, and one that did not arrive leads the title. HOW MANY: they are
+ * among the day's steps already read, so no further database read; 9 of 1,208 on
+ * 2026-10-28, and OUTCOME_WRITE_TIMEOUT_MS expects 1 or 2 in 1,000, so about ten
+ * more Salesforce reads (about 5 s) a day. A Salesforce slowdown can time out
+ * every write, at most the subject's maxSteps (5,000), but a sampled subject's
+ * reads stop at DIRECT_READ_BUDGET_MS (about 600 at half a second each) and the
+ * rest are said as could not be checked, so the morning run is no longer than
+ * before; the invalid state subject reads every write already. A timed out
+ * step ended when Bidspoke stopped waiting, not when Salesforce answered, so
+ * SEND ORDER bounds its write as one with no answer recorded.
  *
  * NOT CHECKED HERE, from #2173's acceptance: that fields the body did not send
  * are unchanged (that needs a snapshot taken before the write, which only the
@@ -187,7 +207,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
 import { bidspokeRunLink } from '../engine/context'
 import type { SalesforceRead } from '../engine/inquiry-post'
-import { parseWriteMarker, WRITE_MARKER_FIELD } from '../engine/write-marker'
+import { ENGINE_ATTEMPT, parseWriteMarker, WRITE_MARKER_FIELD } from '../engine/write-marker'
+import { stepTimeoutMs } from '../engine/retry'
 import { MAIN_FLOW_WORKFLOW_ID, OUTCOME_POSTS, RELAY_OMITTED_KEYS, RELAY_RENAMES, portStatus, type Definition, type OutcomePost } from './main-flow-port/transform'
 import { isSalesforceApiName, isSalesforceRecordId, salesforcePortFor } from './writeback-replay'
 import { FIELD_HISTORY_ROW_LIMIT, LAST_MODIFIED_MARGIN_MS, queryRecords, salesforceTimeMs, sameSalesforceValue, soqlTime } from './salesforce-field-conflict'
@@ -392,12 +413,14 @@ export interface WatchedStep {
   started_at: string
   /** When the step ended, so when its write had been answered (#2806). Absent or null: SEND_BOUND_MS after the send. */
   completed_at?: string | null
+  /** The step's error. A step that timed out at its own deadline says so here (stepTimeoutMs, #2938). */
+  error_message?: string | null
   input: unknown
   output: unknown
 }
 
-/** The step columns both reads select, so neither can drop the times a write is judged and ordered by. */
-export const STEP_COLUMNS = 'execution_id, step_type, status, started_at, completed_at, input, output'
+/** The step columns both reads select, so neither can drop the times a write is judged and ordered by, or whether it timed out. */
+export const STEP_COLUMNS = 'execution_id, step_type, status, started_at, completed_at, error_message, input, output'
 
 /** One outcome post step of a run, as the send order reads it (#2806). */
 export interface SendStep {
@@ -405,6 +428,8 @@ export interface SendStep {
   step_namespace: string
   started_at: string | null
   completed_at?: string | null
+  /** A step that timed out recorded when Bidspoke stopped waiting, not an answer (#2938). */
+  error_message?: string | null
 }
 
 /** One relay post of the eight other outcome steps, as its step recorded it. */
@@ -422,7 +447,12 @@ export interface RelayReadBack {
 }
 
 export type RunVerdict =
-  | { kind: 'landed'; executionId: string }
+  /**
+   * `resent` (#2938): the Submission holds this write's stamp from a resend
+   * (attempt 1 or 2), so it arrived only when the Salesforce read-back sent it
+   * again, never from the run's own send.
+   */
+  | { kind: 'landed'; executionId: string; resent?: true }
   /**
    * `problems` are plain word clauses, joined into one sentence by the message,
    * naming no field by its API name (#2652). `fields` keeps, for the job run
@@ -440,7 +470,7 @@ export type RunVerdict =
    * `changedAfterwards` (#3005): fields the Submission's field history shows this
    * write setting, then another Salesforce user setting to what they hold now.
    */
-  | { kind: 'moved_on'; executionId: string; laterWrite: string[]; newerSubmission: boolean; leadFromEarlierRun?: string; changedAfterwards?: ChangedAfterwards[] }
+  | { kind: 'moved_on'; executionId: string; laterWrite: string[]; newerSubmission: boolean; leadFromEarlierRun?: string; changedAfterwards?: ChangedAfterwards[]; resent?: true }
   | { kind: 'unchecked'; executionId: string; reason: string }
   /**
    * Overwritten since by a LATER Main Flow run's write to the same Submission, so
@@ -477,11 +507,24 @@ export interface CanaryWatchReport {
   lastWasRelay: boolean
   /** Of the native runs that sent a write, how many the step itself recorded as completed. */
   nativeCompleted: number
+  /**
+   * Every native write whose step timed out at its own deadline (#2938), read
+   * back whether or not the sample picked it: the verdicts in the order read, a
+   * write the sample also holds being the same verdict, read once. `limitsMs`
+   * holds each deadline they timed out at, once. Absent when the day's steps
+   * were not read; empty verdicts on a day none timed out.
+   */
+  timedOut?: TimedOutReadBack
   relay: RelayReadBack | { error: string }
   /** The step read failed, so nothing was checked. */
   readError?: string
   /** Main Flow does not hold this subject's port and none of its posts went direct, so nothing was read or posted (#2174). */
   notSwitchedOn?: true
+}
+
+export interface TimedOutReadBack {
+  verdicts: RunVerdict[]
+  limitsMs: number[]
 }
 
 export interface CanaryWatchMessage {
@@ -616,26 +659,42 @@ interface SubmissionWrite {
   sentWithin: SentWithin
 }
 
-/** The span of time a write reached Salesforce within, and whether it is the step's own (`recorded`) or only its run's bound. */
+/**
+ * The span of time a write reached Salesforce within, whether it is the step's
+ * own (`recorded`) or only its run's bound, and whether a step of it timed out
+ * (#2938), so its span runs to the bound however soon Bidspoke stopped waiting.
+ */
 interface SentWithin {
   spans: Array<{ from: number; to: number }>
   recorded: boolean
+  timedOut: boolean
 }
 
-/** A step's span: from its start, the send, to its end, the answer, or SEND_BOUND_MS on when it recorded none. Null with no start. */
-function stepSpan(startedAt: unknown, completedAt: unknown): { from: number; to: number } | null {
-  const from = typeof startedAt === 'string' && startedAt !== '' ? Date.parse(startedAt) : Number.NaN
+/** A step as a send time is read from: its start, its end, and its error. */
+type SpanStep = { started_at: unknown; completed_at?: unknown; error_message?: unknown }
+
+/**
+ * A step's span: from its start, the send, to its end, the answer, or
+ * SEND_BOUND_MS on when it recorded none. Null with no start. A step that timed
+ * out at its own deadline (#2938) ended when Bidspoke stopped waiting, not when
+ * Salesforce answered, and its write can still land after that (23 of 42 timed
+ * out reject patches did, #2163), so it is bounded as one with no answer.
+ */
+function stepSpan(step: SpanStep): { from: number; to: number } | null {
+  const from = typeof step.started_at === 'string' && step.started_at !== '' ? Date.parse(step.started_at) : Number.NaN
   if (!Number.isFinite(from)) return null
-  const to = typeof completedAt === 'string' && completedAt !== '' ? Date.parse(completedAt) : Number.NaN
+  const answered = stepTimeoutMs(step.error_message) === null ? step.completed_at : null
+  const to = typeof answered === 'string' && answered !== '' ? Date.parse(answered) : Number.NaN
   return { from, to: Number.isFinite(to) && to >= from ? to : from + SEND_BOUND_MS }
 }
 
 /** A run's writes, from the steps recorded, or else from its own start: none before it, none more than SEND_BOUND_MS after. */
-function sentWithin(executionId: string, steps: ReadonlyArray<{ started_at: unknown; completed_at?: unknown }>): SentWithin {
-  const spans = steps.map((s) => stepSpan(s.started_at, s.completed_at)).filter((s): s is { from: number; to: number } => s !== null)
-  if (spans.length > 0) return { spans, recorded: true }
+function sentWithin(executionId: string, steps: readonly SpanStep[]): SentWithin {
+  const spans = steps.map(stepSpan).filter((s): s is { from: number; to: number } => s !== null)
+  const timedOut = steps.some((s) => stepTimeoutMs(s.error_message) !== null)
+  if (spans.length > 0) return { spans, recorded: true, timedOut }
   const minted = mintedMsFromUuidV7(executionId)
-  return { spans: minted === null ? [] : [{ from: minted, to: minted + SEND_BOUND_MS }], recorded: false }
+  return { spans: minted === null ? [] : [{ from: minted, to: minted + SEND_BOUND_MS }], recorded: false, timedOut }
 }
 
 /** How another run's write falls against this one's: sent after this one was answered, answered before this one was sent, or neither. */
@@ -646,6 +705,8 @@ export const ORDER_UNKNOWN_REASONS = {
   overlap: 'the two were sent at nearly the same time',
   otherUnrecorded: "that run's send time is not recorded",
   ownUnrecorded: "this run's send time is not recorded",
+  ownTimedOut: "this run's write timed out, so when it reached Salesforce is not known",
+  otherTimedOut: "that run's write timed out, so when it reached Salesforce is not known",
 } as const
 
 /**
@@ -659,7 +720,15 @@ function sendOrder(other: SentWithin, mine: SentWithin): SendOrder {
   const [m] = mine.spans
   if (m && other.spans.some((s) => s.from > m.to)) return { order: 'later' }
   if (m && other.spans.length > 0 && other.spans.every((s) => s.to < m.from)) return { order: 'earlier' }
-  const reason = !mine.recorded ? ORDER_UNKNOWN_REASONS.ownUnrecorded : !other.recorded ? ORDER_UNKNOWN_REASONS.otherUnrecorded : ORDER_UNKNOWN_REASONS.overlap
+  const reason = !mine.recorded
+    ? ORDER_UNKNOWN_REASONS.ownUnrecorded
+    : !other.recorded
+      ? ORDER_UNKNOWN_REASONS.otherUnrecorded
+      : mine.timedOut
+        ? ORDER_UNKNOWN_REASONS.ownTimedOut
+        : other.timedOut
+          ? ORDER_UNKNOWN_REASONS.otherTimedOut
+          : ORDER_UNKNOWN_REASONS.overlap
   return { order: 'unknown', reason }
 }
 
@@ -937,10 +1006,13 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
   }
 
   let stampFinding: StampFinding | null = null
+  // This run's own stamp from a resend: the Salesforce read-back sent the write again (#2938).
+  let resent = false
   if (stamped) {
     const stamp = parseWriteMarker(current[WRITE_MARKER_FIELD])
     if (!stamp) stampFinding = { kind: 'none' }
-    else if (stamp.executionId !== executionId || stamp.stepNamespace !== w.stepNamespace) {
+    else if (stamp.executionId === executionId && stamp.stepNamespace === w.stepNamespace) resent = stamp.attempt > ENGINE_ATTEMPT
+    else {
       // A customer's later visit writes the same Submission again (#2485). The
       // stamp names that write's run and step, and the run link names its
       // workflow: the same step of a Main Flow run whose write was sent after
@@ -998,8 +1070,9 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
             newerSubmission,
             ...(leadFromEarlierRun ? { leadFromEarlierRun } : {}),
             ...(changedAfterwards.length > 0 ? { changedAfterwards } : {}),
+            ...(resent ? { resent: true as const } : {}),
           }
-        : { kind: 'landed', executionId }
+        : { kind: 'landed', executionId, ...(resent ? { resent: true as const } : {}) }
 
   // Salesforce did not answer the history read: the reads stop here, as on any unanswered read.
   if (history?.kind === 'unread' && history.stop) return { verdict: verdict(false), stop: true }
@@ -1116,6 +1189,10 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
   // read (#2174), and the report keeps how many there were in all.
   const sampled = subject.sampleSize === null ? toRead : pickEvenly(toRead, subject.sampleSize)
   if (sampled.length < toRead.length) report.nativeWrites = toRead.length
+  // Every write whose step timed out, in the sample or not (#2938): the one most
+  // likely to be lost, which a sample reads only by chance. They are already in
+  // the day's steps, so no further database read is needed.
+  const timedOutSteps = toRead.filter((s) => stepTimeoutMs(s.error_message) !== null)
 
   const relay = await relayPromise
   const relayWrites: Array<SubmissionWrite | { executionId: string; unchecked: string }> = []
@@ -1145,7 +1222,7 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
       const w = s.step_type === 'salesforce' ? nativeWrite(s, subject.step) : null
       return w && !('unchecked' in w) ? [w] : []
     })
-  const today = writesOf(sampled)
+  const today = writesOf([...new Set([...timedOutSteps, ...sampled])])
   let dayBefore: Promise<SubmissionWrite[]> | null = null
   const earlierRun: EarlierRunLookup = async (w, leadIds) => {
     const hit = earlierRunAmong(today, w, leadIds)
@@ -1159,8 +1236,10 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
   // its write (#2806).
   const known = new Map<string, SendStep[]>()
   const know = (s: SendStep) => known.set(s.execution_id, [...(known.get(s.execution_id) ?? []), s])
-  for (const s of steps) know({ execution_id: s.execution_id, step_namespace: subject.step, started_at: s.started_at, completed_at: s.completed_at })
-  if (!('error' in relay)) for (const s of relay.sample) know({ execution_id: s.execution_id, step_namespace: s.step_namespace, started_at: s.started_at, completed_at: s.completed_at })
+  for (const s of steps) know({ execution_id: s.execution_id, step_namespace: subject.step, started_at: s.started_at, completed_at: s.completed_at, error_message: s.error_message })
+  if (!('error' in relay)) {
+    for (const s of relay.sample) know({ execution_id: s.execution_id, step_namespace: s.step_namespace, started_at: s.started_at, completed_at: s.completed_at, error_message: s.error_message })
+  }
   const fetched = new Map<string, Promise<SendStep[]>>()
   const orderOf: SendOrderLookup = async (other, stepNamespace, w) => {
     const ofStep = (rows: readonly SendStep[]) => rows.filter((r) => stepNamespace === null || r.step_namespace === stepNamespace)
@@ -1185,17 +1264,28 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
       return { kind: 'unchecked', executionId: w.executionId, reason: `The check failed on this run (${formatErr(e)}).` }
     }
   }
+  // The timed out writes first, then the sample, under one budget: a slow day
+  // spends it on the writes most likely lost. A write in both is read once.
   const directDeadline = subject.readBudgetMs === null ? Number.POSITIVE_INFINITY : deps.now() + subject.readBudgetMs
-  for (const s of sampled) {
+  const verdictOf = new Map<WatchedStep, RunVerdict>()
+  const readDirect = async (s: WatchedStep): Promise<RunVerdict> => {
+    const done = verdictOf.get(s)
+    if (done) return done
     const w = nativeWrite(s, subject.step)
-    report.native.push(
+    const v: RunVerdict =
       'unchecked' in w
         ? { kind: 'unchecked', executionId: s.execution_id, reason: w.unchecked }
         : deps.now() >= directDeadline
           ? { kind: 'unchecked', executionId: s.execution_id, reason: 'The direct reads ran out of time before this write.' }
-          : await judge(w),
-    )
+          : await judge(w)
+    verdictOf.set(s, v)
+    return v
   }
+  const timedOut: RunVerdict[] = []
+  for (const s of timedOutSteps) timedOut.push(await readDirect(s))
+  const limitsMs = [...new Set(timedOutSteps.flatMap((s) => stepTimeoutMs(s.error_message) ?? []))].sort((a, b) => a - b)
+  report.timedOut = { verdicts: timedOut, limitsMs }
+  for (const s of sampled) report.native.push(await readDirect(s))
 
   if ('error' in relay) {
     report.relay = relay
@@ -1380,6 +1470,60 @@ function directLine(native: RunVerdict[], span: string, subject: CanaryWatchSubj
   return line
 }
 
+/** A step deadline in seconds, as "5.25 s". */
+const seconds = (ms: number) => `${(ms / 1000).toLocaleString('en-US', { maximumFractionDigits: 3 })} s`
+
+/** "a", "a or b", "a, b or c". */
+const joinOr = (items: string[]): string => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} or ${items[items.length - 1]}`)
+
+/**
+ * The timed out writes' own sentence (#2938): how many of the day's direct
+ * writes timed out, at what limit, and what reading each one back found. Every
+ * one is read, sampled or not, so its counts are of all of them. "Arrived
+ * complete" is read back and matched; one whose read failed could not be
+ * checked, never lost (L11); one the read-back had to send again is said so.
+ * A day none timed out says that too, so a quiet line means none, not unread.
+ */
+function timedOutLine(t: TimedOutReadBack, written: number): string {
+  const vs = t.verdicts
+  const k = vs.length
+  if (k === 0) return written === 1 ? 'It did not time out waiting for Salesforce.' : `None of the ${fmt(written)} timed out waiting for Salesforce.`
+  const head = k === written ? (k === 1 ? 'It timed out' : `All ${fmt(k)} timed out`) : `${fmt(k)} of the ${fmt(written)} timed out`
+  const said = `${head} after ${joinOr(t.limitsMs.map(seconds))} without an answer from Salesforce.`
+  const landed = vs.filter(landedFully)
+  const resent = landed.filter((v) => v.resent).length
+  const them = resent === 1 ? 'it' : 'them'
+  const count = (kind: RunVerdict['kind']) => vs.filter((v) => v.kind === kind).length
+  if (k === 1) {
+    const [v] = vs
+    const outcome =
+      v.kind === 'landed' || v.kind === 'moved_on'
+        ? resent > 0
+          ? 'It arrived complete, but only after Bidspoke sent it again.'
+          : 'It arrived complete.'
+        : v.kind === 'not_landed'
+          ? 'It did not arrive complete.'
+          : v.kind === 'unchecked'
+            ? 'It could not be checked.'
+            : v.kind === 'superseded'
+              ? 'A later run wrote the same Submission, so it was not compared.'
+              : 'Another run wrote the same Submission and which arrived last cannot be told, so it was not compared.'
+    return `${said} ${outcome}`
+  }
+  if (landed.length === k) {
+    return `${said} All ${fmt(k)} were checked, and all ${fmt(k)} arrived complete${resent > 0 ? `, ${fmt(resent)} of them only after Bidspoke sent ${them} again` : ''}.`
+  }
+  const [notLanded, unchecked, superseded, unorderedN] = [count('not_landed'), count('unchecked'), count('superseded'), count('order_unknown')]
+  const parts = [
+    landed.length > 0 ? `${fmt(landed.length)} arrived complete${resent > 0 ? ` (${fmt(resent)} only after Bidspoke sent ${them} again)` : ''}` : null,
+    notLanded > 0 ? `${fmt(notLanded)} did not arrive complete` : null,
+    unchecked > 0 ? `${fmt(unchecked)} could not be checked` : null,
+    superseded > 0 ? `${fmt(superseded)} ${superseded === 1 ? 'was' : 'were'} replaced by a later run that wrote the same Submission` : null,
+    unorderedN > 0 ? `${fmt(unorderedN)} ${unorderedN === 1 ? 'was' : 'were'} not compared, as another run wrote the same Submission and which arrived last cannot be told` : null,
+  ].filter((p): p is string => p !== null)
+  return `${said} Of those ${fmt(k)}, ${joinAnd(parts)}.`
+}
+
 /** The Fix line for a pile of writes left unordered (#2806): no write was shown lost, so it never says move back to Pipedream. */
 const UNORDERED_FIX =
   "More writes than usual could not be ordered against another run that wrote the same Submission. Open the runs above: a send time that is not recorded means Main Flow's step records are missing; writes sent at nearly the same time are usually one visit sent twice."
@@ -1423,6 +1567,7 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string, su
   const lines: string[] = [subject.intro]
 
   lines.push(n === 0 ? `No leads were written directly from ${span}.` : directLine(report.native, span, subject, written))
+  if (n > 0 && report.timedOut) lines.push(timedOutLine(report.timedOut, written))
   if (report.skipped.length > 0) {
     const k = report.skipped.length
     const reasons = joinAnd([...new Set(report.skipped.map((s) => SKIP_WORDS[s.reason] ?? `the step said ${s.reason}`))])
@@ -1453,9 +1598,16 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string, su
     }
   }
 
-  const bad = report.native.filter(isBad)
+  // A timed out write that did not arrive, or could not be checked, is named as
+  // timed out, first, and once even when the sample holds it too (#2938).
+  const timedOut = report.timedOut?.verdicts ?? []
+  const timedOutIds = new Set(timedOut.map((v) => v.executionId))
+  const bad = [...timedOut.filter(isBad), ...report.native.filter(isBad).filter((v) => !timedOutIds.has(v.executionId))]
   for (const v of bad.slice(0, MAX_LISTED_RUNS)) {
-    lines.push(v.kind === 'not_landed' ? `${runLabel(appUrl, v.executionId)}: ${sayProblems(v.problems)}.` : `${runLabel(appUrl, v.executionId)} could not be checked: ${v.reason}`)
+    const label = runLabel(appUrl, v.executionId)
+    const late = timedOutIds.has(v.executionId)
+    if (v.kind === 'not_landed') lines.push(late ? `${label} timed out and did not arrive complete: ${sayProblems(v.problems)}.` : `${label}: ${sayProblems(v.problems)}.`)
+    else lines.push(`${label}${late ? ' timed out and' : ''} could not be checked: ${v.reason}`)
   }
   if (bad.length > MAX_LISTED_RUNS) {
     lines.push(`${fmt(bad.length - MAX_LISTED_RUNS)} more runs did not arrive complete or could not be checked; the job run record lists them all.`)
@@ -1479,10 +1631,19 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string, su
   }
 
   const alert = bad.length > 0 || offDirect || storm || pile
+  const t = timedOut.length
+  const timedOutNotLanded = timedOut.filter((v) => v.kind === 'not_landed').length
+  const timedOutUnchecked = timedOut.filter((v) => v.kind === 'unchecked').length
+  const theTimedOut = (k: number) => (t === 1 ? 'the one write that timed out' : `${fmt(k)} of the ${fmt(t)} writes that timed out`)
   let title: string
-  if (notLanded > 0 && unchecked > 0) title = `${TITLE}: ${fmt(notLanded)} of ${ofN} did not arrive complete, and ${fmt(unchecked)} could not be checked`
+  // A timed out write that did not arrive leads the title, never folded into the sample's count (#2938).
+  if (timedOutNotLanded > 0) {
+    const others = report.native.filter((v) => v.kind === 'not_landed' && !timedOutIds.has(v.executionId)).length
+    title = `${TITLE}: ${theTimedOut(timedOutNotLanded)} did not arrive complete${others > 0 ? `, and ${fmt(others)} more of ${ofN} did not` : ''}`
+  } else if (notLanded > 0 && unchecked > 0) title = `${TITLE}: ${fmt(notLanded)} of ${ofN} did not arrive complete, and ${fmt(unchecked)} could not be checked`
   else if (notLanded > 0) title = `${TITLE}: ${fmt(notLanded)} of ${ofN} did not arrive complete`
   else if (unchecked > 0) title = `${TITLE}: ${fmt(unchecked)} of ${ofN} could not be checked`
+  else if (timedOutUnchecked > 0) title = `${TITLE}: ${theTimedOut(timedOutUnchecked)} could not be checked`
   // Not "back on": when nothing in the window went direct, the window cannot show it ever left.
   else if (neverDirect) title = `${TITLE}: Main Flow is not writing directly`
   else if (report.lastWasRelay) title = `${TITLE}: Main Flow is back on Pipedream`
@@ -1505,9 +1666,9 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string, su
     ...(alert
       ? {
           fixHint: [
-            notLanded > 0
+            notLanded + timedOutNotLanded > 0
               ? 'Open each run above and its Submission in Salesforce. If writes are being lost, move Main Flow back to Pipedream with the saved rollback record.'
-              : unchecked > 0
+              : unchecked + timedOutUnchecked > 0
                 ? 'Check Salesforce is answering and its login works. The check runs again tomorrow morning; check these runs by hand meanwhile.'
                 : null,
             offDirect ? ROLLBACK_FIX : null,
@@ -1535,6 +1696,24 @@ export function canaryWatchBlocks(message: CanaryWatchMessage): unknown[] {
   ]
 }
 
+/** The timed out writes in the job run record (#2938): counts, and the runs that did not arrive or could not be checked, by id, never a value. */
+function timedOutSummary(t: TimedOutReadBack | undefined): Record<string, unknown> {
+  if (!t) return {}
+  const vs = t.verdicts
+  return {
+    timed_out: vs.length,
+    timed_out_limits_ms: t.limitsMs,
+    timed_out_landed: vs.filter(landedFully).length,
+    // Of those, the ones that arrived only when the read-back sent them again.
+    timed_out_resent: vs.filter(landedFully).filter((v) => v.resent).length,
+    timed_out_not_landed: vs.filter((v) => v.kind === 'not_landed').length,
+    timed_out_unchecked: vs.filter((v) => v.kind === 'unchecked').length,
+    timed_out_superseded: vs.filter((v) => v.kind === 'superseded').length,
+    timed_out_order_unknown: vs.filter((v) => v.kind === 'order_unknown').length,
+    timed_out_runs: vs.filter(isBad),
+  }
+}
+
 function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWatchSubject): JobRunEnding {
   const count = (k: RunVerdict['kind']) => report.native.filter((v) => v.kind === k).length
   if (report.notSwitchedOn) {
@@ -1549,7 +1728,7 @@ function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWat
       ? 'not_posted'
       : report.readError
         ? 'read_failed'
-        : report.native.some(isBad)
+        : report.native.some(isBad) || (report.timedOut?.verdicts.some(isBad) ?? false)
           ? 'not_all_landed'
           : report.lastWasRelay || report.relayAfterSwitch > 0
             ? 'off_direct_write'
@@ -1586,6 +1765,8 @@ function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWat
       order_unknown_runs: unordered(report.native),
       // Landed, with a Lead holding an earlier run's Engine ids from the Submission's first completion (#2485).
       lead_from_first_completion: leadFromFirstCompletion(report.native),
+      // Every write whose step timed out, read back sampled or not (#2938), and the deadlines they timed out at.
+      ...timedOutSummary(report.timedOut),
       skipped: report.skipped.length,
       relay_invalid_state: report.relayInvalidState,
       relay_after_switch: report.relayAfterSwitch,
@@ -1668,6 +1849,7 @@ export async function runCanaryWatch(subject: CanaryWatchSubject, deps: CanaryWa
     const movedOn = report.native.filter((v) => v.kind === 'moved_on').length
     console.log(
       `[${subject.job}] from=${from} to=${to} native_writes=${report.nativeWrites ?? report.native.length} native=${report.native.length} landed=${landed} moved_on=${movedOn} order_unknown=${unordered(report.native).length} skipped=${report.skipped.length} ` +
+        `timed_out=${report.timedOut?.verdicts.length ?? 0} timed_out_landed=${report.timedOut?.verdicts.filter(landedFully).length ?? 0} ` +
         `relay_watched_step=${report.relayInvalidState} relay_after_switch=${report.relayAfterSwitch} last_was_relay=${report.lastWasRelay} posted=${posted}${report.readError ? ` read_error=${report.readError}` : ''}`,
     )
   }
@@ -1770,7 +1952,7 @@ export async function readSendSteps(supabase: SupabaseClient, executionId: strin
   if (minted === null) return []
   const { data, error } = await supabase
     .from('execution_steps')
-    .select('execution_id, step_namespace, started_at, completed_at')
+    .select('execution_id, step_namespace, started_at, completed_at, error_message')
     .eq('workflow_id', MAIN_FLOW_WORKFLOW_ID)
     .eq('execution_id', executionId)
     .in('step_namespace', [...OUTCOME_POSTS])
