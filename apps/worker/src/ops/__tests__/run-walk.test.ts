@@ -464,11 +464,11 @@ describe('walkOpsDefinition: a slice boundary in observe mode (#1951)', () => {
  */
 function runRow() {
   const row = { continuations: 0, stateVersion: 4, pointer: null as NamedCheckpoint | null, reads: 0 }
-  const slice = (over: { checkpoints?: Partial<RunCheckpoints>; tick?: number } = {}) => {
+  const slice = (over: { checkpoints?: Partial<RunCheckpoints>; tick?: number; runVariables?: RunVariablesRecord | null } = {}) => {
     row.stateVersion += 2
     const sv = row.stateVersion
     return runCtx({
-      tick: over.tick, continuations: row.continuations, stateVersion: sv,
+      tick: over.tick, continuations: row.continuations, stateVersion: sv, runVariables: over.runVariables,
       checkpoints: {
         name: async (ack) => {
           row.pointer = { key: ack.key, stateVersion: sv, steps: ack.steps, sha256: ack.sha256, bytes: ack.bytes }
@@ -782,17 +782,19 @@ describe('walkOpsDefinition: a secret value is masked out of everything the run 
     expect(JSON.stringify({ end, records: run.records })).not.toContain(SECRET)
   })
 
-  it('never writes a checkpoint holding a secret, and says so once, carrying on in the slice', async () => {
+  it('a checkpoint whose masked form would still show a secret is never written, and says so once, carrying on in the slice', async () => {
+    // A secret whose value is its own name: the mask names the variable, so the value would still be there.
+    const SELF = 'API_TOKEN'
     const m = memoryStore()
     const o = slicing('on', () => m.store, stepsBudget(1))
     const run = runCtx({ runVariables: withSecret() })
-    const end = await walkOpsDefinition(leaky, run.ctx, { action_a: echo, action_b: async () => ({ output: null }) }, { ...o, secretValues: { API_TOKEN: SECRET } })
+    const end = await walkOpsDefinition(leaky, run.ctx, { action_a: echo, action_b: async () => ({ output: null }) }, { ...o, secretValues: { API_TOKEN: SELF } })
     // Every boundary falls after the transform holding the secret, so no slice ended and nothing was written.
     expect(end).toEqual({ outcome: 'done' })
     expect(m.objects.size).toBe(0)
     expect(run.named).toEqual([])
     expect(stepsOf(o.logs, 'checkpoint_skipped')).toEqual([expect.objectContaining({ reason: 'holds_secret' })])
-    expect(JSON.stringify(o.logs)).not.toContain(SECRET)
+    expect(stepsOf(o.logs, 'suspend_failed')).toEqual([])
   })
 
   it('still writes a checkpoint when no step output holds a secret, the secret read only in a step\'s settings', async () => {
@@ -803,5 +805,123 @@ describe('walkOpsDefinition: a secret value is masked out of everything the run 
     expect(await walkOpsDefinition(reads, run.ctx, { action_b: async () => ({ output: { ok: true } }) }, { ...o, secretValues: { API_TOKEN: SECRET } })).toEqual({ outcome: 'continue' })
     expect(m.objects.size).toBe(1)
     expect([...m.objects.values()].join('')).not.toContain(SECRET)
+  })
+})
+
+// ── a run reading a secret can still be sliced (#3024) ───────────────────────
+
+describe('walkOpsDefinition: a checkpoint holding a secret is written masked and refilled on resume (#3024)', () => {
+  const SECRET = 'fake-sliced-walk-secret-1'
+  const ROTATED = 'fake-sliced-walk-secret-2'
+  const withSecret = (): RunVariablesRecord => ({ source: 'bidding', servedAt: '2026-10-29T14:00:00.000Z', values: {}, secretKeys: ['API_TOKEN'] })
+  // A transform that copies the secret into its output, then two steps that read what it answered.
+  const carries = {
+    nodes: [node('shape', 'transform', { mappings: [{ source: 'env.API_TOKEN', target: 'token' }] }), node('use', 'action_a'), node('last', 'action_a')],
+    edges: [edge('trigger', 'shape'), edge('shape', 'use'), edge('use', 'last')],
+  }
+  const sliceOf = (rr: ReturnType<typeof runRow>) => rr.slice({ runVariables: withSecret() })
+
+  it('suspends at a boundary after a step whose output holds the secret, the checkpoint holding only its mask, and the next slice reads the real value', async () => {
+    const m = memoryStore()
+    const rr = runRow()
+    const r = recorder(() => ({ ok: true }))
+    const first = slicing('on', () => m.store, stepsBudget(1))
+    const one = sliceOf(rr)
+    expect(await walkOpsDefinition(carries, one.ctx, { action_a: r.handler }, { ...first, secretValues: { API_TOKEN: SECRET } })).toEqual({ outcome: 'continue' })
+    expect(m.objects.size).toBe(1)
+    const body = [...m.objects.values()][0]
+    expect(body).not.toContain(SECRET)
+    expect(JSON.parse(body).v).toBe(2)
+    expect(stepsOf(first.logs, 'checkpoint_skipped')).toEqual([])
+    expect(stepsOf(first.logs, 'suspend')).toHaveLength(1)
+    // The step record is masked as before.
+    expect(one.records[0].output).toEqual({ token: 'API_TOKEN' })
+
+    rr.row.continuations++
+    const second = slicing('on', () => m.store, stepsBudget(50))
+    expect(await walkOpsDefinition(carries, sliceOf(rr).ctx, { action_a: r.handler }, { ...second, secretValues: { API_TOKEN: SECRET } })).toEqual({ outcome: 'done' })
+    expect(r.seen.map((x) => x.node)).toEqual(['use', 'last'])
+    expect(r.seen[0].steps).toEqual({ shape: { token: SECRET } })
+    expect(stepsOf(second.logs, 'resumed')).toHaveLength(1)
+  })
+
+  it('refills with the value served to the resuming slice, so a secret changed between slices reaches the steps after the pause', async () => {
+    const m = memoryStore()
+    const rr = runRow()
+    const r = recorder()
+    await walkOpsDefinition(carries, sliceOf(rr).ctx, { action_a: r.handler }, { ...slicing('on', () => m.store, stepsBudget(1)), secretValues: { API_TOKEN: SECRET } })
+    rr.row.continuations++
+    await walkOpsDefinition(carries, sliceOf(rr).ctx, { action_a: r.handler }, { ...slicing('on', () => m.store, stepsBudget(50)), secretValues: { API_TOKEN: ROTATED } })
+    expect(r.seen[0].steps).toEqual({ shape: { token: ROTATED } })
+  })
+
+  it('fails a resumed slice by name, running nothing, when a masked secret was served empty: it never resumes with the mask as the value', async () => {
+    const m = memoryStore()
+    const rr = runRow()
+    const r = recorder()
+    await walkOpsDefinition(carries, sliceOf(rr).ctx, { action_a: r.handler }, { ...slicing('on', () => m.store, stepsBudget(1)), secretValues: { API_TOKEN: SECRET } })
+    rr.row.continuations++
+    const o = slicing('on', () => m.store, stepsBudget(50))
+    const next = sliceOf(rr)
+    const end = await walkOpsDefinition(carries, next.ctx, { action_a: r.handler }, { ...o, secretValues: { API_TOKEN: '' } })
+    expect(end).toEqual({ outcome: 'failed', error: expect.stringMatching(/^checkpoint_secret_unserved: .*env\.API_TOKEN/) })
+    expect(r.seen).toEqual([])
+    expect(next.records).toEqual([])
+    expect(stepsOf(o.logs, 'resume_refused')).toEqual([expect.objectContaining({ reason: 'checkpoint_secret_unserved' })])
+    expect(JSON.stringify({ end, logs: o.logs })).not.toContain(SECRET)
+  })
+
+  it('fails a resumed slice by name, running nothing, when the secret was rotated to a value its masked form cannot be refilled with unambiguously', async () => {
+    // The step answered the secret inside a JSON body; a value with no quote reads the same raw and escaped there.
+    const reads = {
+      nodes: [node('send', 'action_a', { token: '{{env.API_TOKEN}}' }), node('use', 'action_b')],
+      edges: [edge('trigger', 'send'), edge('send', 'use')],
+    }
+    const sends: OpsStepHandler = async ({ ctx }) => ({ output: { body: JSON.stringify({ token: ctx.env.API_TOKEN }) } })
+    const m = memoryStore()
+    const rr = runRow()
+    const r = recorder()
+    expect(await walkOpsDefinition(reads, sliceOf(rr).ctx, { action_a: sends, action_b: r.handler }, { ...slicing('on', () => m.store, stepsBudget(1)), secretValues: { API_TOKEN: SECRET } })).toEqual({ outcome: 'continue' })
+    rr.row.continuations++
+    const o = slicing('on', () => m.store, stepsBudget(50))
+    const end = await walkOpsDefinition(reads, sliceOf(rr).ctx, { action_a: sends, action_b: r.handler }, { ...o, secretValues: { API_TOKEN: 'fake-sliced-"quoted"-secret' } })
+    expect(end).toEqual({ outcome: 'failed', error: expect.stringMatching(/^checkpoint_secret_changed: .*env\.API_TOKEN/) })
+    expect(r.seen).toEqual([])
+    expect(stepsOf(o.logs, 'resume_refused')).toEqual([expect.objectContaining({ reason: 'checkpoint_secret_changed' })])
+    expect(JSON.stringify({ end, logs: o.logs })).not.toContain('quoted')
+  })
+
+  it('fails a resumed slice by name, running nothing and reading no checkpoint, when a masked secret was not served at all', async () => {
+    const m = memoryStore()
+    const rr = runRow()
+    const r = recorder()
+    await walkOpsDefinition(carries, sliceOf(rr).ctx, { action_a: r.handler }, { ...slicing('on', () => m.store, stepsBudget(1)), secretValues: { API_TOKEN: SECRET } })
+    rr.row.continuations++
+    rr.row.reads = 0
+    const end = await walkOpsDefinition(carries, sliceOf(rr).ctx, { action_a: r.handler }, { ...slicing('on', () => m.store, stepsBudget(50)), secretValues: {} })
+    expect(end).toEqual({ outcome: 'failed', error: expect.stringMatching(/secret variable env\.API_TOKEN/) })
+    expect(r.seen).toEqual([])
+    expect(rr.row.reads).toBe(0)
+  })
+
+  it('still resumes from a format 1 checkpoint written before #3024', async () => {
+    const m = memoryStore()
+    const rr = runRow()
+    const v1 = {
+      v: 1, runRequestId: RUN.runRequestId, organizationId: RUN.organizationId, workflowId: RUN.workflowId, workflowVersion: RUN.workflowVersion,
+      executionChainId: RUN.executionChainId, stateVersion: 4, executionId: '0192f4a0-0000-7000-8000-0000000000ee', attempt: 1, writtenAt: '2026-10-28T14:00:00.000Z',
+      path: [{ seq: 0, nodeId: 's0', namespace: 's0', output: { saw: 'written by format 1' }, edgeId: 's0-s1' }],
+      nextNodeId: 's1', totals: { steps: 1, computeMs: 10, slices: 1 },
+    }
+    const body = JSON.stringify(v1)
+    const key = `checkpoints/v1/${RUN.organizationId}/${RUN.runRequestId}/4-1.json`
+    m.objects.set(key, body)
+    const sha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body)))].map((b) => b.toString(16).padStart(2, '0')).join('')
+    rr.row.pointer = { key, stateVersion: 4, steps: 1, sha256, bytes: new TextEncoder().encode(body).length }
+    rr.row.continuations = 1
+    const r = recorder()
+    expect(await walkOpsDefinition(chain(3), rr.slice().ctx, { action_a: r.handler }, slicing('on', () => m.store, stepsBudget(50)))).toEqual({ outcome: 'done' })
+    expect(r.seen.map((x) => x.node)).toEqual(['s1', 's2'])
+    expect(r.seen[0].steps).toEqual({ s0: { saw: 'written by format 1' } })
   })
 })
