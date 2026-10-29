@@ -937,8 +937,9 @@ function parseStreakRecord(raw: string): StreakRecord {
 /**
  * Stamps completed, counts each problem's run, and keeps the report. A report
  * that cannot be read is kept as a failing one naming why, so it pages: it must
- * never read as a healthy tick. Each problem held below three in a row is
- * logged by name (ops_tick_problem_held) with its count.
+ * never read as a healthy tick. Each problem held below the count its rule
+ * waits for (three, or two for the nightly purges, #3018) is logged by name
+ * (ops_tick_problem_held) with its count and that count as pages_at.
  */
 export async function recordOpsTickCompleted(kv: KVNamespace, raw: unknown, nowMs: number): Promise<void> {
   const receivedAt = new Date(nowMs).toISOString()
