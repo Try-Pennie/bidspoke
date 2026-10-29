@@ -52,7 +52,7 @@ import { writeHeartbeat, writeHeartbeatCompleted } from './cron-heartbeat'
 import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
 import {
   CONNECTION_CHECK_JOB, CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, SF_LIMITS_JOB, TOMBSTONE_SERVE_WINDOW_MS, parseOpsJobId, parseOpsJobReport, parseOpsTickReport,
-  parseSealedEnvelope, problemRuleOf, sweepOfProblemKey,
+  inARowToPage, parseSealedEnvelope, sweepOfProblemKey,
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
   servedConnectionProblem,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
@@ -953,9 +953,10 @@ export async function recordOpsTickCompleted(kv: KVNamespace, raw: unknown, nowM
   const { runs, carried } = await countRuns(kv, report, keys, nowMs)
   const judged = keys.map((key, i) => ({ key, in_a_row: runs[i] }))
   for (const p of judged) {
-    if (problemRuleOf(p.key) === 'three_in_a_row' && p.in_a_row < OPS_TICK_TICKS_IN_A_ROW_TO_PAGE) {
+    const pagesAt = inARowToPage(p.key)
+    if (pagesAt !== null && p.in_a_row < pagesAt) {
       logLine('warn', {
-        event: 'ops_tick_problem_held', tick_id: report.tick_id, key: p.key, in_a_row: p.in_a_row, pages_at: OPS_TICK_TICKS_IN_A_ROW_TO_PAGE,
+        event: 'ops_tick_problem_held', tick_id: report.tick_id, key: p.key, in_a_row: p.in_a_row, pages_at: pagesAt,
         counted_by: sweepOfProblemKey(p.key) ?? 'tick',
       })
     }
@@ -1013,9 +1014,11 @@ function keptCarried(raw: unknown): CarriedProblem[] | null {
 /** The fixed sentence saying a page's problems were each held until they repeated (#1768: never the running count). */
 function repeatedContext(keys: readonly string[]): string {
   const bySweep = keys.filter((k) => sweepOfProblemKey(k) !== null).length
-  if (bySweep === 0) return `Reported by ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} or more ticks in a row.`
-  if (bySweep === keys.length) return `Reported by ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} or more runs of its sweep in a row.`
-  return `Reported by ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} or more ticks, or runs of its sweep, in a row.`
+  // The fewest any of them waited for (#3018: the nightly purges page on two), true of every one.
+  const n = Math.min(...keys.map((k) => inARowToPage(k) ?? OPS_TICK_TICKS_IN_A_ROW_TO_PAGE))
+  if (bySweep === 0) return `Reported by ${n} or more ticks in a row.`
+  if (bySweep === keys.length) return `Reported by ${n} or more runs of its sweep in a row.`
+  return `Reported by ${n} or more ticks, or runs of its sweep, in a row.`
 }
 
 export interface OpsTickReportCheckDeps {
@@ -1132,24 +1135,28 @@ export async function runOpsTickReportCheck(
   }
   // Runs that cannot be matched to the problems page every problem (L50).
   const runs = kept.problem_streaks
-  const isDue = (run: JudgedProblem | null) => run === null || problemRuleOf(run.key) === 'at_once' || run.in_a_row >= OPS_TICK_TICKS_IN_A_ROW_TO_PAGE
+  const isDue = (run: JudgedProblem | null) => {
+    if (run === null) return true
+    const pagesAt = inARowToPage(run.key)
+    return pagesAt === null || run.in_a_row >= pagesAt
+  }
   const due: Array<{ text: string; run: JudgedProblem | null }> = [
     ...kept.problems.map((text, i) => ({ text, run: runs === null ? null : runs[i] })),
     ...(carried ?? []).map((c) => ({ text: c.text, run: { key: c.key, in_a_row: c.in_a_row } })),
   ].filter(({ run }) => isDue(run))
   if (due.length === 0) {
     const standing = kept.problems.length + (carried?.length ?? 0)
-    console.warn(`[ops-tick] held tick ${kept.tick_id}: each of its ${standing} problem${standing === 1 ? '' : 's'} has stood for fewer than ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} ticks, or runs of its sweep, in a row`)
+    console.warn(`[ops-tick] held tick ${kept.tick_id}: each of its ${standing} problem${standing === 1 ? '' : 's'} has stood for fewer ticks, or runs of its sweep, in a row than its kind waits for before it pages`)
     return 'held'
   }
-  const allHeldThree = due.every(({ run }) => run !== null && problemRuleOf(run.key) === 'three_in_a_row')
+  const allHeld = due.every(({ run }) => run !== null && inARowToPage(run.key) !== null)
   const remedy = kept.outcome === 'not_configured'
     ? { title: 'The ops minute cron is not configured', fixHint: notConfiguredFix(kept.not_configured_secrets) }
     : {
         title: 'The ops minute cron reported a problem',
         // A fixed sentence, never the running count: the alerter would read a
         // new count each minute as a new problem and post it at once (#1768).
-        ...(allHeldThree ? { context: repeatedContext(due.map(({ run }) => (run as JudgedProblem).key)) } : {}),
+        ...(allHeld ? { context: repeatedContext(due.map(({ run }) => (run as JudgedProblem).key)) } : {}),
         fixHint: PROBLEMS_FIX,
       }
   await deps.notifyFailure(supabase, OPS_TICK_JOB, due.map(({ text }) => text), kv, remedy, nowMs, { repeatsHeldByCaller: true })

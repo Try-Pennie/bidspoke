@@ -21,8 +21,8 @@ function rulesInCode(): Record<string, string[]> {
   const end = SOURCE.indexOf('} as const satisfies', start)
   expect(start, 'OPS_TICK_PROBLEM_RULES is no longer a const object in ops-gateway-contract.ts').toBeGreaterThan(-1)
   expect(end).toBeGreaterThan(start)
-  const byRule: Record<string, string[]> = { three_in_a_row: [], at_once: [] }
-  for (const m of SOURCE.slice(start, end).matchAll(/^\s+([a-z_]+): '(three_in_a_row|at_once)',$/gm)) byRule[m[2]].push(m[1])
+  const byRule: Record<string, string[]> = { three_in_a_row: [], two_in_a_row: [], at_once: [] }
+  for (const m of SOURCE.slice(start, end).matchAll(/^\s+([a-z_]+): '(three_in_a_row|two_in_a_row|at_once)',$/gm)) byRule[m[2]].push(m[1])
   return byRule
 }
 
@@ -42,6 +42,12 @@ describe('the ops tick problem rules are documented as the code applies them', (
 
   it('lists every kind held for three ticks in a row, and no other', () => {
     expect(kindsInDoc('| Three ticks in a row |').sort()).toEqual(rulesInCode().three_in_a_row.sort())
+  })
+
+  // #3018: the nightly purges page on the second failed night in a row (Dan, 2026-10-29, on #3051).
+  it('lists every kind held for two runs of its sweep in a row, and no other', () => {
+    expect(rulesInCode().two_in_a_row.length).toBeGreaterThan(0)
+    expect(kindsInDoc('| Two runs of its sweep in a row |').sort()).toEqual(rulesInCode().two_in_a_row.sort())
   })
 
   // The row for the bidding Worker's own kinds also names start_stamp, the key

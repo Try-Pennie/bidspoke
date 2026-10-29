@@ -557,7 +557,7 @@ function startFinishedRunPurge(ports: OpsTickPorts, db: OpsTickDb, dbNowMs: numb
     }
     const problems = stoppedBy === null ? [] : [tickProblem(
       'purge_behind',
-      `The nightly purge removed ${counts.finished_runs_purged.toLocaleString('en-US')} ops runs that ended more than ${FINISHED_RUN_KEPT_DAYS} days ago and stopped at its ${stoppedBy}, and more are left. They are removed on the nights that follow; three nights in a row behind means runs are arriving faster than the purge removes them.`,
+      `The nightly purge removed ${counts.finished_runs_purged.toLocaleString('en-US')} ops runs that ended more than ${FINISHED_RUN_KEPT_DAYS} days ago and stopped at its ${stoppedBy}, and more are left. They are removed on the nights that follow; two nights in a row behind means runs are arriving faster than the purge removes them.`,
       'finished_runs',
     )]
     return { counts, problems }

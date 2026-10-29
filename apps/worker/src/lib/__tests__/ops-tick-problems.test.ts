@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   MAX_REPORT_LOGINS, MAX_REPORT_PROBLEMS, MAX_REPORT_WRITE_BACKS, OPS_TICK_PROBLEM_RULES, OPS_TICK_PROBLEM_SWEEPS, capTickProblems, parseOpsTickReport,
-  OPS_RESEAL_PAGED_VERDICTS, OPS_RESEAL_VERDICTS, problemRuleOf, sweepOfProblemKey, tickProblem,
+  OPS_RESEAL_PAGED_VERDICTS, OPS_RESEAL_VERDICTS, inARowToPage, problemRuleOf, sweepOfProblemKey, tickProblem,
 } from '../ops-gateway-contract'
 import { OPS_SWEEPS } from '../../ops/run-vocabulary'
 
@@ -31,10 +31,10 @@ const THREE_IN_A_ROW = [
   'claim_failed', 'runs_failing',
   // The reseal watch (#2486): its state is read again next tick.
   'reseal_state_failed',
-  // The nightly purges (#3018): three runs of the observation_purge sweep in a
-  // row, so three nights, not three ticks, which a nightly sweep can never reach.
-  'purge_failed', 'purge_behind',
 ]
+// The nightly purges (#3018): two runs of the observation_purge sweep in a row,
+// so the second failed night pages (Dan, 2026-10-29, on #3051).
+const TWO_IN_A_ROW = ['purge_failed', 'purge_behind']
 const AT_ONCE = [
   // The frozen definition copies (#1950): a person must decide, and no later tick changes it.
   'definition_conflict', 'definition_unserved', 'definition_refused', 'definitions_backlog',
@@ -54,10 +54,12 @@ const AT_ONCE = [
 ]
 
 describe('the rule each kind of tick problem pages by', () => {
-  it('holds every transient kind for three ticks in a row and pages every other kind at once', () => {
+  it('holds every transient kind for three ticks in a row, the nightly purges for two nights, and pages every other kind at once', () => {
     const rules = OPS_TICK_PROBLEM_RULES as Record<string, string>
     expect(Object.keys(rules).filter((k) => rules[k] === 'three_in_a_row').sort()).toEqual([...THREE_IN_A_ROW].sort())
+    expect(Object.keys(rules).filter((k) => rules[k] === 'two_in_a_row').sort()).toEqual([...TWO_IN_A_ROW].sort())
     expect(Object.keys(rules).filter((k) => rules[k] === 'at_once').sort()).toEqual([...AT_ONCE].sort())
+    expect(Object.keys(rules)).toHaveLength(THREE_IN_A_ROW.length + TWO_IN_A_ROW.length + AT_ONCE.length)
   })
 
   it('reads the kind before the subject', () => {
@@ -99,7 +101,12 @@ describe('the kinds counted by the runs of their sweep (#2340)', () => {
   it('judges a failed or behind nightly purge by the purge\'s own runs', () => {
     expect(sweepOfProblemKey('purge_failed:finished_runs')).toBe('observation_purge')
     expect(sweepOfProblemKey('purge_behind:finished_runs')).toBe('observation_purge')
-    expect(problemRuleOf('purge_failed:finished_runs')).toBe('three_in_a_row')
+    expect(problemRuleOf('purge_failed:finished_runs')).toBe('two_in_a_row')
+    expect(problemRuleOf('purge_behind:finished_runs')).toBe('two_in_a_row')
+    expect(inARowToPage('purge_failed:step_records')).toBe(2)
+    expect(inARowToPage('sf_limits_read_failing:00Dst0000000001AAA')).toBe(3)
+    expect(inARowToPage('sweep_failed:run_expiry')).toBe(3)
+    expect(inARowToPage('slot_missed:x')).toBeNull()
   })
 
   it('names only kinds the rules table has and sweeps the tick claims', () => {

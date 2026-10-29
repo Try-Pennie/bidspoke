@@ -1368,7 +1368,7 @@ describe('the purge of finished runs (#3018: kept 90 days after they end, purged
     expect(report.problem_keys).toContain('purge_failed:finished_runs')
     expect(report.problem_keys).not.toContain('purge_behind:finished_runs')
     expect(report.problems.join(' ')).toMatch(/statement timeout/)
-    expect(OPS_TICK_PROBLEM_RULES.purge_failed).toBe('three_in_a_row')
+    expect(OPS_TICK_PROBLEM_RULES.purge_failed).toBe('two_in_a_row')
   })
 
   it('a failed purge of finished runs stops none of the other purges, and theirs do not stop it', async () => {

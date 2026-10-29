@@ -703,8 +703,14 @@ export interface OpsTickReport {
  * was served or found), or one no later tick can report again (a missed slot is
  * recorded once, a slot is dispatched once, the agreement check runs every 14
  * minutes), so holding it for three ticks would hold it for ever.
+ * two_in_a_row: the nightly purges (#3018). One failed night is held, and the
+ * second failed night in a row pages (Dan, 2026-10-29, on #3051), counted by
+ * the observation_purge sweep's runs (OPS_TICK_PROBLEM_SWEEPS).
  */
-export type OpsTickProblemRule = 'three_in_a_row' | 'at_once'
+export type OpsTickProblemRule = 'three_in_a_row' | 'two_in_a_row' | 'at_once'
+
+/** How many reports, or runs of its sweep, in a row each held rule waits for before it pages. */
+export const OPS_TICK_IN_A_ROW_TO_PAGE = { three_in_a_row: 3, two_in_a_row: 2 } as const satisfies Record<Exclude<OpsTickProblemRule, 'at_once'>, number>
 
 /** Every kind of problem the tick reports, and its rule. A kind not listed here pages at once. */
 export const OPS_TICK_PROBLEM_RULES = {
@@ -723,18 +729,17 @@ export const OPS_TICK_PROBLEM_RULES = {
   /**
    * One of the nightly purges failed (#3018), keyed by what it purges
    * (finished_runs, run_variables, step_records, ...). Judged by the
-   * observation_purge sweep's runs (OPS_TICK_PROBLEM_SWEEPS), so the third
-   * failed night in a row pages: one failed night only delays a purge a day,
-   * and the next night tries again.
+   * observation_purge sweep's runs (OPS_TICK_PROBLEM_SWEEPS), so the second
+   * failed night in a row pages (Dan, 2026-10-29, on #3051): one failed night
+   * only delays a purge a day, and the next night tries again.
    */
-  purge_failed: 'three_in_a_row',
+  purge_failed: 'two_in_a_row',
   /**
    * The nightly purge of finished runs stopped at its page cap or time budget
    * with runs past their 90 days still left (#3018). Judged by the sweep's
-   * runs: a backlog after an outage drains over a night or two, while three
-   * nights in a row behind means runs arrive faster than the purge removes them.
+   * runs, and paged on the second night in a row behind, as purge_failed is.
    */
-  purge_behind: 'three_in_a_row',
+  purge_behind: 'two_in_a_row',
   workflows_fetch_failed: 'three_in_a_row',
   workflows_save_failed: 'three_in_a_row',
   copies_read_failed: 'three_in_a_row',
@@ -897,6 +902,12 @@ export function tickProblem(kind: OpsTickProblemKind, text: string, subject?: st
 export function problemRuleOf(key: string): OpsTickProblemRule {
   const kind = key.split(':')[0]
   return Object.hasOwn(OPS_TICK_PROBLEM_RULES, kind) ? OPS_TICK_PROBLEM_RULES[kind as OpsTickProblemKind] : 'at_once'
+}
+
+/** How many in a row a problem's key must be reported by before it pages; null for a kind that pages at once. */
+export function inARowToPage(key: string): number | null {
+  const rule = problemRuleOf(key)
+  return rule === 'at_once' ? null : OPS_TICK_IN_A_ROW_TO_PAGE[rule]
 }
 
 /**
