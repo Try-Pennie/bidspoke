@@ -3,11 +3,14 @@
  * path, or {{env.X}} in a template, in its steps and its edge conditions.
  *
  * The one reading of that question for the ops lane. The bidding Worker uses
- * it to serve an ops version only the variables its definition reads
- * (version-variables.ts), and the ops run uses it to refuse, before any step,
- * a definition reading one it was not given (ops/run-walk.ts), so the two can
- * never disagree about which variables a definition reads. No imports, so the
- * ops Worker takes nothing of the bidding Worker's with it.
+ * it to serve an ops run, and an ops step test, only the current values of the
+ * variables its definition reads (ops-gateway.ts readOpsRunVariables,
+ * routes/api/ops-step-test.ts), and to refuse a live save that reads one that
+ * does not exist (routes/api/workflows.ts); the ops run uses it to refuse,
+ * before any step, a definition reading one it was not given
+ * (ops/run-walk.ts). So none of them can disagree about which variables a
+ * definition reads. No imports, so the ops Worker takes nothing of the bidding
+ * Worker's with it.
  */
 
 /** The form a variable's name takes wherever a definition can read it. */
@@ -34,28 +37,21 @@ export function envReferences(definition: Record<string, unknown>): string[] {
 }
 
 /**
- * What a reader of the variables it reads is given (#2702): the plain values,
- * or why not. none_kept: no variables were kept to judge by (a version saved
- * before they were, or no saved version at all). refused: some it reads are
- * secret (an ops run or step is never given a secret) or missing, each named.
- * The one judgement the ops run (ops/run-walk.ts), the ops step test
- * (ops/step-test.ts) and the bidding Worker's live save and switch on check
- * (routes/api/workflows.ts) make, each wording it for its own reader.
+ * Whether every variable a definition or step reads has a value for it (#3003,
+ * phase 7 of #2982): given, or refused naming each it reads that has none. A
+ * secret counts as any other value: an ops run and an ops step test are given
+ * a secret's current value (Dan, 2026-10-29: "Yes, ops reads secrets", and
+ * "Any secret, no exceptions"). `present` is every name that has a value now.
+ * The one judgement the bidding Worker's live save, switch on and restore
+ * check (routes/api/workflows.ts) and the ops step test (ops/step-test.ts)
+ * make, each wording it for its own reader.
  */
-export type VariablesJudged =
-  | { kind: 'given'; env: Record<string, string> }
-  | { kind: 'none_kept' }
-  | { kind: 'refused'; secret: string[]; missing: string[] }
+export type VariablesJudged = { kind: 'given' } | { kind: 'refused'; missing: string[] }
 
-export function judgeVariables(
-  reads: readonly string[], variables: { values: Readonly<Record<string, string>>; secretKeys: readonly string[] } | null,
-): VariablesJudged {
-  if (reads.length === 0) return { kind: 'given', env: {} }
-  if (variables === null) return { kind: 'none_kept' }
-  const secret = reads.filter((k) => variables.secretKeys.includes(k))
-  const missing = reads.filter((k) => !secret.includes(k) && !Object.hasOwn(variables.values, k))
-  if (secret.length > 0 || missing.length > 0) return { kind: 'refused', secret, missing }
-  return { kind: 'given', env: Object.fromEntries(reads.map((k) => [k, variables.values[k]])) }
+export function judgeVariables(reads: readonly string[], present: Iterable<string>): VariablesJudged {
+  const has = new Set(present)
+  const missing = reads.filter((k) => !has.has(k))
+  return missing.length > 0 ? { kind: 'refused', missing } : { kind: 'given' }
 }
 
 /** Variable names as a definition writes them: env.A, env.B. */

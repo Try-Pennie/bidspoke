@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, collectWorkflowDurationStats, runTimeoutAuditCheck, TIMEOUT_AUDIT_RPC_CONCURRENCY, mapWithConcurrency, isAlertWorthyUnderProvision, alertWorthyUnderProvisioned, type NodeDurationStats, type UnderProvisionedNode } from '../timeout-audit'
-import { suggestedTimeoutMs, timeoutSeverity, SAMPLE_CONFIDENT } from '../timeout-suggestion'
+import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, collectWorkflowDurationStats, collectPeriodStats, runTimeoutAuditCheck, TIMEOUT_AUDIT_RPC_CONCURRENCY, mapWithConcurrency, type NodeDurationStats } from '../timeout-audit'
+import { AUDIT_PERIOD_DAYS } from '../timeout-findings'
+import { suggestedTimeoutMs, timeoutSeverity } from '../timeout-suggestion'
 import type { WorkflowDefinition, NodeDefinition } from '../../types'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
@@ -244,25 +245,24 @@ describe('findUnderProvisionedNodes', () => {
   })
 })
 
-describe('warningsSignature with under-provisioned entries', () => {
-  const under = [{
+describe('warningsSignature with the five day findings (#2934)', () => {
+  const period = [{
     workflow_id: 'wf1',
-    workflow_name: 'A',
-    nodes: [{
-      node_id: 'n1', namespace: 'n1', label: null, type: 'code',
-      configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
-      sample_size: 1996, window_days: 1, retries: 2, severity: 'red' as const,
+    workflow_name: 'Main Flow',
+    findings: [{
+      kind: 'losing_runs' as const, node_id: 'n1', namespace: 'n1', label: null, type: 'salesforce',
+      configured_ms: 4500, retries: 0, timed_out: 7, latest_at: '2026-10-29T06:25:00.000Z', burst: null, suggested_ms: null,
     }],
   }]
 
-  it('is stable when only the drifting stats change', () => {
-    const shifted = [{ ...under[0], nodes: [{ ...under[0].nodes[0], suggested_ms: 8000, p99_ms: 5400 }] }]
-    expect(warningsSignature([], under)).toBe(warningsSignature([], shifted))
+  it('is stable when only the counts change', () => {
+    const more = [{ ...period[0], findings: [{ ...period[0].findings[0], timed_out: 9, latest_at: '2026-10-29T08:00:00.000Z' }] }]
+    expect(warningsSignature([], more)).toBe(warningsSignature([], period))
   })
 
   it('changes when the configured value changes', () => {
-    const changed = [{ ...under[0], nodes: [{ ...under[0].nodes[0], configured_ms: 5000 }] }]
-    expect(warningsSignature([], changed)).not.toBe(warningsSignature([], under))
+    const changed = [{ ...period[0], findings: [{ ...period[0].findings[0], configured_ms: 8000 }] }]
+    expect(warningsSignature([], changed)).not.toBe(warningsSignature([], period))
   })
 })
 
@@ -352,60 +352,75 @@ describe('collectWorkflowDurationStats', () => {
   })
 })
 
-describe('isAlertWorthyUnderProvision', () => {
-  const mk = (s: Partial<UnderProvisionedNode>): UnderProvisionedNode => ({
-    node_id: 'n', namespace: 'n', label: null, type: 'code',
-    configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
-    sample_size: 100, window_days: null, retries: 2, severity: 'red', ...s,
+describe('collectPeriodStats (#2934)', () => {
+  const NOW = new Date('2026-10-29T08:17:00.000Z')
+
+  function recordingClient(answer: (args: { p_namespaces: string[] }) => { data: unknown; error: unknown }) {
+    const calls: Array<{ fn: string; args: Record<string, unknown> }> = []
+    const supabase = {
+      rpc: async (fn: string, args: Record<string, unknown>) => {
+        calls.push({ fn, args })
+        return answer(args as { p_namespaces: string[] })
+      },
+    } as unknown as SupabaseClient
+    return { supabase, calls }
+  }
+
+  it('reads the five days before now, ten finished runs an hour, at most ten steps a call', async () => {
+    const namespaces = Array.from({ length: 23 }, (_, i) => `s${i}`)
+    const { supabase, calls } = recordingClient(({ p_namespaces }) => ({
+      data: p_namespaces.map((ns) => ({ step_namespace: ns, p50: 1, p99: 2, max_ms: 3, sample_size: 4, timed_out: 0, timed_out_at: [] })),
+      error: null,
+    }))
+    const stats = await collectPeriodStats(supabase, 'wf', namespaces, NOW)
+    expect(calls.map((c) => c.fn)).toEqual(Array(3).fill('step_timeout_audit_by_workflow'))
+    expect(calls.map((c) => (c.args.p_namespaces as string[]).length)).toEqual([10, 10, 3])
+    expect(calls[0].args).toMatchObject({
+      p_workflow_id: 'wf',
+      p_since: new Date(NOW.getTime() - AUDIT_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString(),
+      p_until: NOW.toISOString(),
+      p_per_hour: 10,
+    })
+    expect(stats?.size).toBe(23)
   })
 
-  it('is worthy when the sample is confident, even on a narrow window', () => {
-    expect(isAlertWorthyUnderProvision(mk({ sample_size: SAMPLE_CONFIDENT, window_days: 2 / 24 }))).toBe(true)
+  it('reads each step once, however often the definition names it', async () => {
+    const { supabase, calls } = recordingClient(() => ({ data: [], error: null }))
+    await collectPeriodStats(supabase, 'wf', ['a', 'a', 'b'], NOW)
+    expect(calls[0].args.p_namespaces).toEqual(['a', 'b'])
   })
 
-  it('is worthy when a thin sample has fully widened to the 7-day window (best effort)', () => {
-    expect(isAlertWorthyUnderProvision(mk({ sample_size: 50, window_days: 7 }))).toBe(true)
+  it('takes the counts as numbers, whatever type PostgREST answers a bigint in', async () => {
+    const { supabase } = recordingClient(() => ({
+      data: [{ step_namespace: 'a', p50: null, p99: null, max_ms: null, sample_size: '0', timed_out: '7', timed_out_at: ['2026-10-29T06:25:08.989Z'] }],
+      error: null,
+    }))
+    const stats = await collectPeriodStats(supabase, 'wf', ['a'], NOW)
+    expect(stats?.get('a')).toEqual({ p50: null, p99: null, max_ms: null, sample_size: 0, timed_out: 7, timed_out_at: ['2026-10-29T06:25:08.989Z'] })
   })
 
-  it('is NOT worthy when a thin sample came from a window we never finished widening', () => {
-    // This is the false-alarm case: the grouped query timed out at 24h/7d, so we
-    // are left judging a low-volume node off a noisy 2-hour sample.
-    expect(isAlertWorthyUnderProvision(mk({ sample_size: 100, window_days: 2 / 24 }))).toBe(false)
-    expect(isAlertWorthyUnderProvision(mk({ sample_size: 100, window_days: null }))).toBe(false)
+  it('answers nothing, and names the failure, when a count does not parse, never a quiet zero', async () => {
+    const { supabase } = recordingClient(() => ({
+      data: [{ step_namespace: 'a', p50: 1, p99: 2, max_ms: 3, sample_size: 40, timed_out: 'seven', timed_out_at: [] }],
+      error: null,
+    }))
+    const failures: string[] = []
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(await collectPeriodStats(supabase, 'wf', ['a'], NOW, failures)).toBeNull()
+    expect(failures).toEqual(['five day step timeouts for workflow wf'])
+    error.mockRestore()
   })
 
-  it('is NOT worthy when only amber — headroom is thin but typical runs still succeed', () => {
-    // Amber means the timeout clears p99/max (real runs pass); only the rare
-    // slow outlier would time out. That's real but low-urgency, same tier as
-    // over-provisioned — dashboard-only, not an unprompted Slack page.
-    expect(isAlertWorthyUnderProvision(mk({ severity: 'amber', sample_size: SAMPLE_CONFIDENT }))).toBe(false)
-  })
-
-  it('is worthy when red and confidently sampled, below the p99 or the slowest run', () => {
-    expect(isAlertWorthyUnderProvision(mk({ severity: 'red', sample_size: SAMPLE_CONFIDENT }))).toBe(true)
-  })
-})
-
-describe('alertWorthyUnderProvisioned', () => {
-  const mkNode = (s: Partial<UnderProvisionedNode>): UnderProvisionedNode => ({
-    node_id: 'n', namespace: 'n', label: null, type: 'code',
-    configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
-    sample_size: 100, window_days: null, retries: 2, severity: 'red', ...s,
-  })
-
-  it('drops nodes off a thin un-widened sample and prunes emptied workflows', () => {
-    const out = alertWorthyUnderProvisioned([
-      { workflow_id: 'wf1', workflow_name: 'Main Flow', nodes: [
-        mkNode({ node_id: 'noisy', sample_size: 100, window_days: 2 / 24 }),
-        mkNode({ node_id: 'solid', sample_size: 5000, window_days: 1 }),
-      ] },
-      { workflow_id: 'wf2', workflow_name: 'All Noise', nodes: [
-        mkNode({ node_id: 'noisy2', sample_size: 80, window_days: 2 / 24 }),
-      ] },
-    ])
-    expect(out).toHaveLength(1)
-    expect(out[0].workflow_id).toBe('wf1')
-    expect(out[0].nodes.map((n) => n.node_id)).toEqual(['solid'])
+  it('answers nothing, and names the failure, when any call fails, so the org is not judged on part of a workflow', async () => {
+    let n = 0
+    const { supabase } = recordingClient(() => (++n === 2 ? { data: null, error: { message: 'canceling statement due to statement timeout' } } : { data: [], error: null }))
+    const failures: string[] = []
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const stats = await collectPeriodStats(supabase, 'wf', Array.from({ length: 15 }, (_, i) => `s${i}`), NOW, failures)
+    expect(stats).toBeNull()
+    expect(failures).toEqual(['five day step timeouts for workflow wf'])
+    expect(String(error.mock.calls[0][0])).toContain('statement timeout')
+    error.mockRestore()
   })
 })
 
@@ -519,6 +534,28 @@ describe('runTimeoutAuditCheck — signature recorded only after a delivered ale
     expect(peak).toBeLessThanOrEqual(TIMEOUT_AUDIT_RPC_CONCURRENCY)
     // Every workflow is still measured: the bound slows the pass, it never thins it.
     expect(new Set(asked)).toEqual(new Set(workflows.map((w) => w.id)))
+  })
+
+  it('2026-10-29 4:17 AM ET: alerts a no retries step that lost runs to its timeout', async () => {
+    // Main Flow's Credit Collections, as production measured it: 7 runs failed on
+    // its 4,500 ms timeout, and of the runs that finished the slowest took 3,427 ms.
+    // The alert that night judged only finished runs and did not list it.
+    vi.mocked(getSlackConnection).mockResolvedValue(enabled as never)
+    vi.mocked(sendTimeoutConfigAlert).mockResolvedValue(undefined as never)
+    const mainFlow = { id: 'wf-main', name: 'Main Flow', definition: def([node({ id: 'collections_apex', type: 'salesforce', label: 'Credit Collections', config: { timeout_ms: 4500, retries: 0 } })]) }
+    const supabase = makeSupabase([mainFlow])
+    ;(supabase as unknown as { rpc: unknown }).rpc = async (fn: string) => fn === 'step_timeout_audit_by_workflow'
+      ? { data: [{ step_namespace: 'collections_apex', p50: 900, p99: 2636, max_ms: 3427, sample_size: 475, timed_out: 7, timed_out_at: [
+        '2026-10-28T15:52:01Z', '2026-10-28T15:52:10Z', '2026-10-28T15:52:20Z', '2026-10-28T15:52:30Z', '2026-10-28T15:53:00Z', '2026-10-28T16:36:00Z', '2026-10-29T06:25:08Z',
+      ] }], error: null }
+      : { data: [{ step_namespace: 'collections_apex', p50: 900, p99: 2774, max_ms: 4198, sample_size: 2624 }], error: null }
+    await runTimeoutAuditCheck(supabase, makeKv(), 'https://app')
+    expect(vi.mocked(sendTimeoutConfigAlert)).toHaveBeenCalledTimes(1)
+    const [, , period] = vi.mocked(sendTimeoutConfigAlert).mock.calls[0]
+    expect(period).toEqual([expect.objectContaining({
+      workflow_name: 'Main Flow',
+      findings: [expect.objectContaining({ kind: 'losing_runs', namespace: 'collections_apex', timed_out: 7, retries: 0 })],
+    })])
   })
 
   it("one org's send failure does not abort the remaining orgs", async () => {

@@ -18,8 +18,8 @@
  *     one): the frozen copy ops holds (ops_workflow_definitions), else asked
  *     of the bidding Worker and frozen. A run whose definition cannot be had is
  *     returned to the queue RUN_DEFINITION_RETRY_MS on, never started, so it
- *     spends no attempt. The variables frozen beside it (#2702) are kept as
- *     they were, and no longer what a run reads (#2998).
+ *     spends no attempt. Nothing about the version's variables is read
+ *     (#3003): a run's variables come with its dispatch.
  *  3. The run's variables (#2998, run-variables.ts): those the tick was served
  *     for it when it claimed it, carried in the item. Its start records them
  *     (the plain values and the secret NAMES, never a secret's value), and
@@ -132,8 +132,9 @@ interface RunVersion {
 
 /**
  * The run's definition at its version: the frozen copy, else the bidding
- * Worker's, frozen with the variables served beside it (#2702, no longer what a
- * run reads, #2998). Throws when neither can be had.
+ * Worker's, frozen. Throws when neither can be had. Variables an older bidding
+ * Worker serves beside it, or an earlier deploy kept with the copy, are
+ * neither read nor saved (#3003), so they can never stop a run.
  */
 async function definitionOf(env: OpsEnv, client: OpsSupabaseClient, run: ClaimedRun, delay: RunLiveDeps['delay']): Promise<RunVersion> {
   const held = await readWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion)
@@ -147,12 +148,12 @@ async function definitionOf(env: OpsEnv, client: OpsSupabaseClient, run: Claimed
   const served = parseServedOpsDefinitions(r.value, asked)
   const def = served.definitions.find((d) => d.workflowId === run.workflowId && d.versionNumber === run.workflowVersion)
   if (def === undefined) {
-    // A version it holds and would not serve says why (#2702), rather than reading as one it lacks.
+    // A version an older bidding Worker held and would not serve says why (#2702), rather than reading as one it lacks.
     const refused = served.refused.find((r) => r.workflowId === run.workflowId)
     throw new Error(refused?.text ?? `the bidding Worker holds no ops lane version ${run.workflowVersion} of workflow ${run.workflowId}`)
   }
   if (def.organizationId !== run.organizationId) throw new Error(`the bidding Worker served workflow ${run.workflowId} under another organization than its run`)
-  const saved = await saveWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion, def.definition, def.variables)
+  const saved = await saveWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion, def.definition)
   // A conflict keeps ops's own copy, which is the one to run; read it back.
   if (saved === 'conflict') {
     const kept = await readWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion)

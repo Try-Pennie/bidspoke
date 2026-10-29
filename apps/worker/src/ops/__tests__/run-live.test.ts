@@ -144,13 +144,33 @@ describe('OpsInternal.run', () => {
     expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'first' } })
   })
 
-  it('freezes the variables served with a version it fetches, as before, and still runs on its dispatch\'s (#2702, #2998)', async () => {
+  // #3003: the variables an earlier deploy kept beside a version are read by nothing, so they can never stop a run.
+  it('saves a version it fetches with no variables, even ones an older bidding Worker served beside it, and runs on its dispatch\'s (#3003)', async () => {
     const kept = { values: { API_BASE: 'served' }, secret_keys: [] }
     const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: readsBase, variables: kept }], unserved: [] }) }
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [], record_ops_step: 'recorded' })
     const variables = { ...VARS, values: { API_BASE: 'current' } }
     expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
-    expect(db.calls.find((c) => c.name === 'save_workflow_definition')?.body).toMatchObject({ p_variables: kept })
+    expect(Object.keys(db.calls.find((c) => c.name === 'save_workflow_definition')?.body ?? {})).not.toContain('p_variables')
+    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'current' } })
+  })
+
+  it('runs a fetched version whose served variables are in a shape ops does not read, on its dispatch\'s (#3003)', async () => {
+    const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: readsBase, variables: { values: 7 } }], unserved: [] }) }
+    const db = opsDb({ ...LIFECYCLE, workflow_definition: [], record_ops_step: 'recorded' })
+    const variables = { ...VARS, values: { API_BASE: 'current' } }
+    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
+    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'current' } })
+  })
+
+  it('runs a held version whose kept variables cannot be read, on its dispatch\'s current values (#3003)', async () => {
+    const db = opsDb({
+      ...LIFECYCLE, record_ops_step: 'recorded',
+      workflow_definition: [{ definition: readsBase, saved_at: '2026-10-17T09:00:00Z', variables: { values: { API_BASE: 7 }, secret_keys: 'x' } }],
+    })
+    const variables = { ...VARS, values: { API_BASE: 'current' } }
+    expect(await runDispatched(env(), await signed({ kind: 'run', run: RUN, variables }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
+    expect(db.names()).not.toContain('save_workflow_definition')
     expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'current' } })
   })
 
@@ -173,7 +193,7 @@ describe('OpsInternal.run', () => {
     expect(lines.join('\n')).not.toContain(PLANTED)
   })
 
-  it('a version the bidding Worker refused to serve returns the run to the queue, naming why (#2702)', async () => {
+  it('a version an older bidding Worker refused to serve returns the run to the queue, naming why (#2702)', async () => {
     const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [], unserved: [], refused: [{ workflow_id: WF, version_number: 3, reason: 'its kept variables cannot be read' }] }) }
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [], complete_run_request: [{ outcome: 'completed', run_status: 'queued', state_version: 3 }] })
     expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables: VARS }), deps(db.fetch))).toMatchObject({ outcome: 'definition_unavailable' })

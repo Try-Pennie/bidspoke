@@ -9,7 +9,6 @@ import type { SealedEnvelope } from '@bidspoke/connection-seal'
 import { resolveActionVersion } from '@bidspoke/service-catalogue/schema'
 import { ActionFailure, implement, type ActionRun, type JsonValue, type RuntimeAction } from '@bidspoke/service-catalogue/runtime'
 import type { TestStepRequest } from '../../lib/ops-connections-contract'
-import type { OpsVersionVariables } from '../../lib/ops-gateway-contract'
 import { ACCESS_TOKEN, CONN, LOGIN_SECRET, ORG, exampleRules, makeDoubles, makeKeys, sealLogin, usableCopy, type Doubles, type TestKeys } from '../connections/__tests__/harness'
 import type { RunStepContext, StepTestRecord, StoredStepTest } from '../ops-writes'
 import { STEP_TEST_OUTPUT_MAX_BYTES, STEP_TEST_REQUESTS_MAX_BYTES, readStepTest, runStepTest, type StepTestDeps } from '../step-test'
@@ -60,7 +59,6 @@ const request = (over: Partial<TestStepRequest> = {}, config: Record<string, unk
   trigger_payload: { name: 'Ada' },
   steps: { earlier: { output: { who: 'ops' }, status: 'completed' } },
   confirm_send: true,
-  version: null,
   variables: null,
   ...over,
 })
@@ -354,61 +352,6 @@ describe('reading a step\'s kept test result', () => {
   })
 })
 
-// #2702: a step test follows the run's rule. It is given the plain values the
-// workflow's newest saved version kept, which the bidding Worker sends with the
-// request, and is refused by name, before anything is sent or kept, when the
-// step reads a secret variable or one that version did not keep.
-describe('a step test\'s environment variables (#2702)', () => {
-  const readsEnv = { args: { text: 'Post to {{env.API_BASE}} as {{ env.TEAM }}' } }
-  const version = (variables: OpsVersionVariables | null, number = 7) => ({ number, variables })
-
-  it('sends the step with the values the newest saved version kept', async () => {
-    const w = world()
-    w.d.respond(Response.json({ ok: true }))
-    const answer = await runStepTest(w.deps, request({ version: version({ values: { API_BASE: 'https://hooks.example.test', TEAM: 'ops' }, secretKeys: [] }) }, readsEnv), new AbortController().signal)
-    expect(answer).toMatchObject({ ok: true, result: { status: 'completed' } })
-    expect(JSON.parse(String(w.d.rec.sent[0].init.body))).toEqual({ text: 'Post to https://hooks.example.test as ops' })
-  })
-
-  it('refuses a step reading a secret variable by name, sending and keeping nothing', async () => {
-    const w = world()
-    const answer = await runStepTest(w.deps, request({ version: version({ values: { TEAM: 'ops' }, secretKeys: ['API_BASE'] }) }, readsEnv), new AbortController().signal)
-    expect(answer).toEqual({
-      ok: false, refused: 'step_test_variable_unavailable', retry_at: null,
-      detail: 'this step reads the secret variable env.API_BASE, and an ops step is never given a secret: a credential belongs in a connection, so nothing was sent',
-    })
-    expect(w.d.rec.sent).toEqual([])
-    expect(w.kept).toEqual([])
-  })
-
-  it('refuses a step reading a variable the newest saved version did not keep, naming it and the version', async () => {
-    const w = world()
-    const answer = await runStepTest(w.deps, request({ version: version({ values: { API_BASE: 'a' }, secretKeys: [] }) }, readsEnv), new AbortController().signal)
-    expect(answer).toMatchObject({
-      ok: false, refused: 'step_test_variable_unavailable',
-      detail: 'this step reads env.TEAM, which was not a variable of this workflow when version 7 was saved, so nothing was sent; add it, save the workflow and test again',
-    })
-    expect(w.d.rec.sent).toEqual([])
-  })
-
-  it('refuses a step reading any variable when no saved version kept their values, never sending a blank', async () => {
-    for (const [given, said] of [
-      [version(null), 'this step reads env.API_BASE, env.TEAM, and version 7 of the workflow was saved before ops kept the values of its variables with it, so nothing was sent; save the workflow and test again'],
-      [null, 'this step reads env.API_BASE, env.TEAM, and no saved version of the workflow kept the values of its variables, so nothing was sent; save the workflow and test again'],
-    ] as const) {
-      const w = world()
-      expect(await runStepTest(w.deps, request({ version: given }, readsEnv), new AbortController().signal)).toMatchObject({ ok: false, refused: 'step_test_variable_unavailable', detail: said })
-      expect(w.d.rec.sent).toEqual([])
-    }
-  })
-
-  it('a step reading no variable runs whatever was kept', async () => {
-    const w = world()
-    w.d.respond(Response.json({ id: 1 }))
-    expect(await runStepTest(w.deps, request({ version: null }), new AbortController().signal)).toMatchObject({ ok: true })
-  })
-})
-
 // #3002 (phase 6 of #2982): bidding sends the CURRENT values of the variables
 // the step reads, secrets decrypted (Dan, 2026-10-29: "Yes, ops reads secrets").
 // The step is given them; a secret's value never reaches what ops keeps or logs,
@@ -439,12 +382,21 @@ describe('a step test\'s current variables (#3002)', () => {
     expect(JSON.parse(String(w.d.rec.sent[0].init.body))).toEqual({ text: `Post to https://hooks.example.test with ${SECRET}` })
   })
 
-  it('reads the current values over any saved version a bidding Worker also names', async () => {
+  it('refuses by name, sending and keeping nothing, a step reading variables when no values were sent for it (#3003)', async () => {
     const w = world()
-    w.d.respond(Response.json({ ok: true }))
-    const saved = { number: 7, variables: { values: { API_BASE: 'https://old.example.test' }, secretKeys: ['TOKEN'] } }
-    await runStepTest(w.deps, request({ variables: current, version: saved }, readsSecret), new AbortController().signal)
-    expect(JSON.parse(String(w.d.rec.sent[0].init.body))).toEqual({ text: `Post to https://hooks.example.test with ${SECRET}` })
+    const answer = await runStepTest(w.deps, request({ variables: null }, readsSecret), new AbortController().signal)
+    expect(answer).toEqual({
+      ok: false, refused: 'step_test_variable_unavailable', retry_at: null,
+      detail: 'this step reads env.API_BASE, env.TOKEN, which have no saved value for this workflow, so nothing was sent; add them on the environment variables page and test again',
+    })
+    expect(w.d.rec.sent).toEqual([])
+    expect(w.kept).toEqual([])
+  })
+
+  it('a step reading no variable runs with none sent', async () => {
+    const w = world()
+    w.d.respond(Response.json({ id: 1 }))
+    expect(await runStepTest(w.deps, request({ variables: null }), new AbortController().signal)).toMatchObject({ ok: true })
   })
 
   it('refuses by name a variable with no saved value, sending and keeping nothing', async () => {

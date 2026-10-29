@@ -1,7 +1,7 @@
 /**
  * The one resolver of which saved environment variable row a workflow's run
  * reads (#2997, phase 1 of #2982). The precedence rules that lived inside
- * servedVersionVariables (#2702) now live here, and the ops gateway's
+ * the version capture's reader (#2702, removed in #3003) live here, and the ops gateway's
  * opsRunVariables applies them to the current rows: the workflow's own row over
  * the organization's, the later saved of two organization rows winning, a row
  * with no value reaching no run, and a row saved for another workflow, or a

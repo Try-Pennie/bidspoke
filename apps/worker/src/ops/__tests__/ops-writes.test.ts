@@ -935,43 +935,26 @@ describe('retention and the definition copies (#1950, ops migration 202610221500
 
   it('saves a definition within its organization and refuses an answer it does not know', async () => {
     const { client, calls } = rpcFetch('saved')
-    expect(await saveWorkflowDefinition(client, ORG, WF, 3, { nodes: [] }, null)).toBe('saved')
+    expect(await saveWorkflowDefinition(client, ORG, WF, 3, { nodes: [] })).toBe('saved')
     expect(calls).toEqual([{ path: '/rest/v1/rpc/save_workflow_definition', body: { p_organization_id: ORG, p_workflow_id: WF, p_version_number: 3, p_definition: { nodes: [] } } }])
     for (const answer of ['already_saved', 'conflict', 'no_copy'] as const) {
-      expect(await saveWorkflowDefinition(rpcFetch(answer).client, ORG, WF, 3, { nodes: [] }, null)).toBe(answer)
+      expect(await saveWorkflowDefinition(rpcFetch(answer).client, ORG, WF, 3, { nodes: [] })).toBe(answer)
     }
-    await expect(saveWorkflowDefinition(rpcFetch('replaced').client, ORG, WF, 3, { nodes: [] }, null)).rejects.toThrow(/save outcome/)
+    await expect(saveWorkflowDefinition(rpcFetch('replaced').client, ORG, WF, 3, { nodes: [] })).rejects.toThrow(/save outcome/)
   })
 
-  it('saves the variables served with a version beside its definition, and names none when none were served (#2702)', async () => {
-    const { client, calls } = rpcFetch('saved')
-    const variables = { values: { API_BASE: 'https://api.example.test' }, secretKeys: ['TOKEN'] }
-    expect(await saveWorkflowDefinition(client, ORG, WF, 3, { nodes: [] }, variables)).toBe('saved')
-    expect(calls[0].body).toEqual({
-      p_organization_id: ORG, p_workflow_id: WF, p_version_number: 3, p_definition: { nodes: [] },
-      p_variables: { values: { API_BASE: 'https://api.example.test' }, secret_keys: ['TOKEN'] },
-    })
-    // None served: the call is the one an ops database without the variables column also answers.
-    const none = rpcFetch('saved')
-    await saveWorkflowDefinition(none.client, ORG, WF, 3, { nodes: [] }, null)
-    expect(Object.keys(none.calls[0].body)).not.toContain('p_variables')
-  })
-
-  it('reads back the variables kept with a version, none when it holds none, and refuses ones it cannot read (#2702)', async () => {
+  it('reads a version without the variables an earlier deploy kept beside it, whatever their shape (#3003)', async () => {
     const def = { nodes: [{ id: 'a' }] }
-    const kept = { values: { API_BASE: 'a' }, secret_keys: ['TOKEN'] }
-    expect(await readWorkflowDefinition(rpcFetch([{ definition: def, saved_at: '2026-10-22T10:00:00Z', variables: kept }]).client, ORG, WF, 3))
-      .toEqual({ definition: def, savedAt: '2026-10-22T10:00:00Z', variables: { values: { API_BASE: 'a' }, secretKeys: ['TOKEN'] } })
-    expect((await readWorkflowDefinition(rpcFetch([{ definition: def, saved_at: '2026-10-22T10:00:00Z', variables: null }]).client, ORG, WF, 3))?.variables).toBeNull()
-    await expect(readWorkflowDefinition(rpcFetch([{ definition: def, saved_at: 'x', variables: { values: { K: 1 }, secret_keys: [] } }]).client, ORG, WF, 3))
-      .rejects.toThrow(/variables/)
+    for (const variables of [{ values: { API_BASE: 'a' }, secret_keys: ['TOKEN'] }, { values: { K: 1 }, secret_keys: [] }, 'x', null]) {
+      expect(await readWorkflowDefinition(rpcFetch([{ definition: def, saved_at: '2026-10-22T10:00:00Z', variables }]).client, ORG, WF, 3))
+        .toEqual({ definition: def, savedAt: '2026-10-22T10:00:00Z' })
+    }
   })
 
   it('reads one version, null when it is not held, and refuses a definition that is not an object', async () => {
     const def = { nodes: [{ id: 'a' }] }
-    // An ops database from before #2702 answers no variables column: none are held.
     expect(await readWorkflowDefinition(rpcFetch([{ definition: def, saved_at: '2026-10-22T10:00:00Z' }]).client, ORG, WF, 3))
-      .toEqual({ definition: def, savedAt: '2026-10-22T10:00:00Z', variables: null })
+      .toEqual({ definition: def, savedAt: '2026-10-22T10:00:00Z' })
     expect(await readWorkflowDefinition(rpcFetch([]).client, ORG, WF, 3)).toBeNull()
     await expect(readWorkflowDefinition(rpcFetch([{ definition: [1], saved_at: 'x' }]).client, ORG, WF, 3)).rejects.toThrow(/not an object/)
     await expect(readWorkflowDefinition(rpcFetch([{ definition: def, saved_at: 'x' }, { definition: def, saved_at: 'y' }]).client, ORG, WF, 3)).rejects.toThrow(/at most 1/)

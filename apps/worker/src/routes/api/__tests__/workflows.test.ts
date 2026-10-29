@@ -3391,12 +3391,13 @@ describe('a created or duplicated workflow is pushed to the GitHub backup (#2879
   })
 })
 
-// #2702, Dan's answers of 2026-10-28: an ops workflow's plain variables are
-// frozen with its version, so switching one on writes a new version (the
-// database trigger keeps today's values with it), and saving live or switching
-// on an ops workflow that reads a secret variable, or one that does not exist
-// for it, is refused up front, naming the variable. The run's own refusal stays.
-describe('an ops workflow\'s environment variables at switch on and a live save (#2702)', () => {
+// An ops workflow reads each variable's CURRENT value when a run starts (#2982,
+// Dan's decision of 2026-10-28), secrets included (2026-10-29, "Any secret, no
+// exceptions"), so a secret no longer blocks anything. Saving live, switching
+// on or restoring onto a live ops workflow that reads a variable that does not
+// exist for it is still refused up front, naming it (#3003). The run's own
+// refusal stays as the backstop.
+describe('an ops workflow\'s environment variables at switch on, a live save and a restore (#3003)', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
 
   beforeEach(async () => {
@@ -3415,7 +3416,10 @@ describe('an ops workflow\'s environment variables at switch on and a live save 
     edges: [{ id: 'e0', source: 'trigger', target: 'shape' }],
   })
   const opsOff = { ...existingWorkflow, lane: 'ops', is_active: false, definition: reads('API_BASE'), definition_schema_version: 1 }
-  const plain = (key: string, over: Record<string, unknown> = {}) => ({ key, value: 'https://api.example.test', is_secret: false, scope: 'global', workflow_id: null, ...over })
+  let rowSeq = 0
+  const plain = (key: string, over: Record<string, unknown> = {}) => ({
+    id: `00000000-0000-4000-9000-${String(++rowSeq).padStart(12, '0')}`, organization_id: USER_ORG, key, value: 'https://api.example.test', is_secret: false, scope: 'global', workflow_id: null, ...over,
+  })
   const client = (workflow: Record<string, unknown>, variables: TableConfig) => makeSupabase({
     users: { single: testUser },
     workflows: [{ single: workflow }],
@@ -3429,7 +3433,7 @@ describe('an ops workflow\'s environment variables at switch on and a live save 
     expect(res.status).toBe(200)
     expect(sb.writes.map((w) => w.p_op)).toEqual(['save', 'patch'])
     const [save, patch] = sb.writes
-    // No definition is sent, so the version snapshots the stored one and the trigger keeps today's values with it.
+    // No definition is sent, so the version snapshots the stored one.
     expect(save).toMatchObject({ p_id: 'wf-1', p_expected_version: 4, p_fields: { message: 'Switched on' } })
     expect(Object.keys(save.p_fields)).toEqual(['message'])
     expect(patch).toMatchObject({ p_fields: { is_active: true }, p_expected_version: 5 })
@@ -3461,16 +3465,29 @@ describe('an ops workflow\'s environment variables at switch on and a live save 
     }
   })
 
-  it('refuses to switch on an ops workflow reading a secret variable, naming it, and writes nothing', async () => {
-    const sb = client(opsOff, { list: [plain('API_BASE', { is_secret: true, value: 'ciphertext-not-real' })] })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
-    expect(res.status).toBe(422)
-    const body = await res.json() as { error: string; message: string; variables: unknown }
-    expect(body).toMatchObject({ error: 'variable_unavailable', variables: { secret: ['API_BASE'], missing: [] } })
-    expect(body.message).toBe('Nothing was saved. It reads the secret variable env.API_BASE, and an ops workflow is never given a secret: a credential belongs in a connection. A switched on ops workflow cannot read a secret variable or one that does not exist.')
-    expect(body.message).not.toMatch(/ciphertext/)
-    expect(sb.writes).toEqual([])
+  it('switches on, saves live and restores onto a live ops workflow that reads a secret variable, as any other (#3003)', async () => {
+    const secretRow = plain('API_BASE', { is_secret: true, value: 'ciphertext-not-real' })
+    const off = client(opsOff, { list: [secretRow] })
+    vi.mocked(createSupabaseClient).mockReturnValue(off as unknown as ReturnType<typeof createSupabaseClient>)
+    const switched = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(switched.status).toBe(200)
+    expect(off.writes.map((w) => w.p_op)).toEqual(['save', 'patch'])
+
+    const live = client({ ...opsOff, is_active: true, definition: reads() }, { list: [secretRow] })
+    vi.mocked(createSupabaseClient).mockReturnValue(live as unknown as ReturnType<typeof createSupabaseClient>)
+    const saved = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: reads('API_BASE') } })
+    expect(saved.status).toBe(200)
+    expect(live.writes.map((w) => w.p_op)).toEqual(['save'])
+
+    const restoring = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: { ...opsOff, is_active: true } }],
+      workflow_versions: [{ single: { id: 'ver-1', definition: reads('API_BASE'), version_number: 1 } }],
+      environment_variables: { list: [secretRow] },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(restoring as unknown as ReturnType<typeof createSupabaseClient>)
+    const restored = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(restored.status).toBe(200)
   })
 
   it('refuses to switch on an ops workflow reading a variable that does not exist for it, naming it', async () => {
@@ -3481,8 +3498,8 @@ describe('an ops workflow\'s environment variables at switch on and a live save 
     expect(res.status).toBe(422)
     expect(await res.json()).toMatchObject({
       error: 'variable_unavailable',
-      variables: { secret: [], missing: ['LIST_ID'] },
-      message: 'Nothing was saved. It reads env.LIST_ID, which is not a variable of this workflow: add it first. A switched on ops workflow cannot read a secret variable or one that does not exist.',
+      variables: { missing: ['LIST_ID'] },
+      message: 'Nothing was saved. It reads env.LIST_ID, which is not a variable of this workflow. Add it on the environment variables page first.',
     })
     expect(sb.writes).toEqual([])
   })
@@ -3497,15 +3514,15 @@ describe('an ops workflow\'s environment variables at switch on and a live save 
     expect(calls).toContainEqual(['in', ['key', ['API_BASE']]])
   })
 
-  it('refuses the live save of an ops workflow reading a secret variable, and lets a switched off draft save', async () => {
-    const live = client({ ...opsOff, is_active: true, definition: reads() }, { list: [plain('TOKEN', { is_secret: true, value: 'x' })] })
+  it('refuses the live save of an ops workflow reading a variable that does not exist, and lets a switched off draft save', async () => {
+    const live = client({ ...opsOff, is_active: true, definition: reads() }, { list: [] })
     vi.mocked(createSupabaseClient).mockReturnValue(live as unknown as ReturnType<typeof createSupabaseClient>)
     const refused = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: reads('TOKEN') } })
     expect(refused.status).toBe(422)
-    expect(await refused.json()).toMatchObject({ error: 'variable_unavailable', variables: { secret: ['TOKEN'], missing: [] } })
+    expect(await refused.json()).toMatchObject({ error: 'variable_unavailable', variables: { missing: ['TOKEN'] } })
     expect(live.writes).toEqual([])
 
-    const draft = client({ ...opsOff, definition: reads() }, { list: [plain('TOKEN', { is_secret: true, value: 'x' })] })
+    const draft = client({ ...opsOff, definition: reads() }, { list: [] })
     vi.mocked(createSupabaseClient).mockReturnValue(draft as unknown as ReturnType<typeof createSupabaseClient>)
     const saved = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: reads('TOKEN') } })
     expect(saved.status).toBe(200)
