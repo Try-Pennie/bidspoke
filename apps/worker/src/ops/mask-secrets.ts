@@ -11,11 +11,18 @@
  * result still says which secret was there, never what it was. A longer value
  * is masked before a shorter one it contains, so no part of it survives. An
  * empty value masks nothing. The value given is never changed.
+ *
+ * A step carries a secret escaped as often as raw: inside a JSON body (a
+ * newline as \n, a quote as \"), in a URL (percent encoded) or in a form body
+ * (a space as +). Each of those forms is masked too, or a multi line secret
+ * such as a private key would survive in the kept request body.
  */
 export function maskSecrets(value: unknown, secrets: Readonly<Record<string, string>>): unknown {
-  const pairs = Object.entries(secrets).filter(([, secret]) => secret !== '').sort(([, a], [, b]) => b.length - a.length)
+  const pairs = Object.entries(secrets)
+    .flatMap(([name, secret]) => [...new Set(secretForms(secret))].map((form) => [name, form] as const))
+    .sort(([, a], [, b]) => b.length - a.length)
   if (pairs.length === 0) return value
-  const maskText = (text: string) => pairs.reduce((masked, [name, secret]) => masked.split(secret).join(name), text)
+  const maskText = (text: string) => pairs.reduce((masked, [name, form]) => masked.split(form).join(name), text)
   const walk = (v: unknown): unknown => {
     if (typeof v === 'string') return maskText(v)
     if (Array.isArray(v)) return v.map(walk)
@@ -23,4 +30,10 @@ export function maskSecrets(value: unknown, secrets: Readonly<Record<string, str
     return v
   }
   return walk(value)
+}
+
+/** A secret as it is written raw, inside a JSON string, percent encoded in a URL, and in a form body. None for an empty one. */
+function secretForms(secret: string): string[] {
+  if (secret === '') return []
+  return [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret), new URLSearchParams({ v: secret }).toString().slice(2)]
 }

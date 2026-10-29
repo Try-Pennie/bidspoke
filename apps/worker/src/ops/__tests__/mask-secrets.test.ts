@@ -28,6 +28,24 @@ describe('maskSecrets', () => {
     expect(maskSecrets('abc-long-abc', { SHORT: 'abc', LONG: 'abc-long-abc' })).toBe('LONG')
   })
 
+  it('masks a secret in the escaped forms a request carries it in: a JSON string, a URL and a form body', () => {
+    const KEY = '-----BEGIN KEY-----\nab"c\\d e&f=g/h\n-----END KEY-----'
+    const json = JSON.stringify({ key: KEY, note: 'kept' })
+    const url = `https://api.example.test/x?key=${encodeURIComponent(KEY)}&q=1`
+    const form = new URLSearchParams({ key: KEY, q: '1' }).toString()
+    const masked = maskSecrets({ json, url, form, raw: KEY }, { PRIVATE_KEY: KEY }) as Record<string, string>
+    expect(masked).toEqual({
+      json: '{"key":"PRIVATE_KEY","note":"kept"}',
+      url: 'https://api.example.test/x?key=PRIVATE_KEY&q=1',
+      form: 'key=PRIVATE_KEY&q=1',
+      raw: 'PRIVATE_KEY',
+    })
+    for (const text of Object.values(masked)) {
+      expect(text).not.toContain('ab')
+      expect(text).not.toContain('BEGIN')
+    }
+  })
+
   it('returns the value unchanged when there is no secret, and never masks an empty value', () => {
     const value = { a: 'plain', b: [1, 'two'] }
     expect(maskSecrets(value, {})).toEqual(value)
