@@ -27,9 +27,13 @@
  *     the OpsConnections live dependencies (ops-connections-live.ts, #2339),
  *     and whose slice boundaries follow OPS_CONTINUATION (#1951,
  *     liveContinuation below): off, or observe, which writes each boundary's
- *     checkpoint to OPS_CHECKPOINTS and names it on the run.
+ *     checkpoint to OPS_CHECKPOINTS and names it on the run; and the
+ *     workflow's retry setting from that same version (#1693, retryPolicyOf
+ *     below), which sets the wait before a retry after a real failure, or ends
+ *     the run at its first one.
  */
 import { uuidv7 } from '@bidspoke/uuidv7'
+import { DEFAULT_RETRY_POLICY, readRetryPolicy, type RetryPolicy } from '@bidspoke/workflow-definition'
 import { parseServedOpsDefinitions, type OpsVersionVariables } from '../lib/ops-gateway-contract'
 import { raceDeadline } from '../lib/alert-claim'
 import { formatErr } from '../lib/format-error'
@@ -197,5 +201,21 @@ export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveD
       const live = liveOpsConnectionsDeps(env, { opensLogins: true, ...(deps.opsFetch ? { opsFetch: deps.opsFetch } : {}) })
       return { ...live.connection, rulesFor: (service) => live.services(service)?.rules }
     }),
-  }), { continuation: liveContinuation(env, deps.continuationBudget) }))
+  }), { continuation: liveContinuation(env, deps.continuationBudget) }), { retry: retryPolicyOf(run, version.definition) })
+}
+
+/**
+ * The workflow's retry setting (#1693), from the run's own version. One the
+ * save would have refused (written by hand, since every save route refuses it)
+ * runs on the default, the setting Dan chose for a workflow that names none,
+ * and is logged by name with why, rather than stopping the run over it.
+ */
+function retryPolicyOf(run: ClaimedRun, definition: Record<string, unknown>): RetryPolicy {
+  const read = readRetryPolicy(definition.retry)
+  if (read.kind === 'ok') return read.policy
+  console.log(JSON.stringify({
+    event: 'ops_run', step: 'retry_setting_invalid', run_request_id: run.runRequestId, workflow_id: run.workflowId,
+    workflow_version: run.workflowVersion, reasons: read.problems.map((p) => p.reason).join(','),
+  }))
+  return DEFAULT_RETRY_POLICY
 }

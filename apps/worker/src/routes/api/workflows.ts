@@ -7,7 +7,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
-import { definitionShapeProblems, findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems, scheduleFromTrigger, unfinishedAppActionSteps, validateSchedule } from '@bidspoke/workflow-definition'
+import { definitionShapeProblems, findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems, retrySaveProblems, scheduleFromTrigger, unfinishedAppActionSteps, validateSchedule } from '@bidspoke/workflow-definition'
 import { reportDefinition } from '../../lib/definition-report'
 import { writeAuditLog } from '../../lib/audit'
 import { copyCleared, copyWarning } from '../../lib/stored-copy'
@@ -143,6 +143,26 @@ function scheduleRefusal(c: Context<{ Bindings: Env; Variables: Variables }>, de
   if (problems.length === 0) return null
   return c.json(
     { error: `Nothing was saved. The workflow's schedule is not valid: ${problems.map((p) => p.message).join('; ')}.`, reason: 'schedule_invalid', problems },
+    400,
+  )
+}
+
+/**
+ * The named 400 for a workflow retry setting the ops run engine would not run
+ * by (#1693, Dan's decision of 2026-10-28), or null: a mode it does not know,
+ * a wait that is not a whole number of seconds from 1 to an hour, a first wait
+ * longer than the longest, a field it does not know, waits on a setting that
+ * never retries, or any setting on a money workflow, whose engine does not
+ * read it. Judged by retrySaveProblems, the function validateDefinition's
+ * `retry` rule applies too, and asked on every route that writes a definition
+ * or makes one live, as scheduleRefusal is. A switch off is never refused.
+ */
+function retryRefusal(c: Context<{ Bindings: Env; Variables: Variables }>, definition: unknown, lane: unknown): Response | null {
+  const retry = definition !== null && typeof definition === 'object' ? (definition as { retry?: unknown }).retry : undefined
+  const problems = retrySaveProblems(retry, lane === 'ops' ? 'ops' : 'money')
+  if (problems.length === 0) return null
+  return c.json(
+    { error: `Nothing was saved. The workflow's retry setting is not valid: ${problems.map((p) => p.message).join('; ')}.`, reason: 'retry_invalid', problems },
     400,
   )
 }
@@ -415,6 +435,9 @@ workflows.post('/', async (c) => {
   if (validationProblem) return c.json({ error: validationProblem }, 400)
   const invalidSchedule = scheduleRefusal(c, body.definition)
   if (invalidSchedule) return invalidSchedule
+  // A created workflow is a money workflow (below), so any retry setting is refused.
+  const invalidRetry = retryRefusal(c, body.definition, 'money')
+  if (invalidRetry) return invalidRetry
 
   if (body.folder_id) {
     const { data: folder, error: folderError } = await supabase
@@ -493,6 +516,8 @@ workflows.post('/:id/duplicate', async (c) => {
   const cloneDefinition = sanitizeDefinition(source.definition)
   const invalidSchedule = scheduleRefusal(c, cloneDefinition)
   if (invalidSchedule) return invalidSchedule
+  const invalidRetry = retryRefusal(c, cloneDefinition, source.lane)
+  if (invalidRetry) return invalidRetry
   const missing = await connectionRefusal(c, supabase, orgId, cloneDefinition)
   if (missing) return missing
 
@@ -693,6 +718,8 @@ workflows.put('/:id', async (c) => {
     if (validationProblem) return c.json({ error: validationProblem }, 400)
     const invalidSchedule = scheduleRefusal(c, def)
     if (invalidSchedule) return invalidSchedule
+    const invalidRetry = retryRefusal(c, def, existing.lane)
+    if (invalidRetry) return invalidRetry
     if (existing.is_active === true) {
       const unfinished = unfinishedStepRefusal(c, def, existing.lane, writtenDefinitionStamp())
       if (unfinished) return unfinished
@@ -916,6 +943,8 @@ workflows.patch('/:id', async (c) => {
     if (validationProblem) return c.json({ error: validationProblem }, 400)
     const invalidSchedule = scheduleRefusal(c, owner.definition)
     if (invalidSchedule) return invalidSchedule
+    const invalidRetry = retryRefusal(c, owner.definition, owner.lane)
+    if (invalidRetry) return invalidRetry
     const unfinished = unfinishedStepRefusal(c, owner.definition, owner.lane, owner.definition_schema_version)
     if (unfinished) return unfinished
     const variables = await opsVariableRefusal(c, supabase, orgId, { id, lane: owner.lane, definition: owner.definition })
@@ -1180,6 +1209,8 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   if (restoreProblem) return c.json({ error: restoreProblem }, 400)
   const invalidSchedule = scheduleRefusal(c, version.definition)
   if (invalidSchedule) return invalidSchedule
+  const invalidRetry = retryRefusal(c, version.definition, owner.lane)
+  if (invalidRetry) return invalidRetry
   if (owner.is_active === true) {
     const unfinished = unfinishedStepRefusal(c, version.definition, owner.lane, writtenDefinitionStamp())
     if (unfinished) return unfinished
