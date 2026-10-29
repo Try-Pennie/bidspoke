@@ -451,3 +451,87 @@ describe('executeIntegrationNode: a non-2xx names its status and body (#708)', (
     expect((caught as { resolvedInput?: unknown }).resolvedInput).toBeTruthy()
   })
 })
+
+// #3057: a fetch that throws (a dropped connection, the executor's own timer
+// aborting it) carried no request, so the failed step's record showed nothing
+// it sent. The executor attaches the same masked request a completed step
+// returns, and notes it to the step before sending, for the step deadline's own
+// error, which wins the race against the executor's and carries nothing.
+describe('executeIntegrationNode: a request that never answered still carries what was sent (#3057)', () => {
+  let fetchMock: FetchMock
+
+  beforeEach(() => {
+    fetchMock = stubFetch()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  const node = () => makeNode({
+    url: 'https://relay.example.test/hook',
+    method: 'POST',
+    body: { submission_id: 'sub-3057' },
+    auth: { type: 'bearer', token: '{{env.RELAY_TOKEN}}' },
+    timeout_ms: 2000,
+  })
+  const ctx = () => makeCtx({ env: { RELAY_TOKEN: 'fake-bearer-token-1' } })
+
+  async function thrown(run: Promise<unknown>): Promise<unknown> {
+    try {
+      await run
+    } catch (err) {
+      return err
+    }
+    throw new Error('expected the executor to throw')
+  }
+
+  it('a network error carries the masked request, and the error is the one fetch threw', async () => {
+    const networkErr = new TypeError('Network connection lost.')
+    fetchMock.mockRejectedValue(networkErr)
+    const err = await thrown(executeIntegrationNode(node(), ctx(), makeEnv()))
+    expect(err).toBe(networkErr)
+    const ri = (err as { resolvedInput?: { resolved: { url: string; body: unknown; headers: Record<string, string> } } }).resolvedInput
+    expect(ri?.resolved.url).toBe('https://relay.example.test/hook')
+    expect(ri?.resolved.body).toEqual({ submission_id: 'sub-3057' })
+    expect(ri?.resolved.headers['Authorization']).toBe('[redacted]')
+    expect(JSON.stringify(ri)).not.toContain('fake-bearer-token-1')
+    expect(formatErr(err)).toBe('Network connection lost.')
+  })
+
+  it("the executor's own timer aborting the fetch carries the masked request", async () => {
+    vi.useFakeTimers()
+    fetchMock.mockImplementation((_url: string, init: { signal: AbortSignal }) => new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), { once: true })
+    }))
+    const pending = thrown(executeIntegrationNode(node(), ctx(), makeEnv()))
+    await vi.advanceTimersByTimeAsync(2000)
+    const err = await pending
+    expect((err as { name?: string }).name).toBe('AbortError')
+    const ri = (err as { resolvedInput?: { resolved: { headers: Record<string, string> } } }).resolvedInput
+    expect(ri?.resolved.headers['Authorization']).toBe('[redacted]')
+    expect(JSON.stringify(ri)).not.toContain('fake-bearer-token-1')
+  })
+
+  it('notes the request to the step before it is sent, the same object a completed step returns', async () => {
+    const order: string[] = []
+    let noted: unknown
+    const c = ctx()
+    c.noteStepInput = (input) => { order.push('noted'); noted = input }
+    fetchMock.mockImplementation(() => { order.push('sent'); return Promise.resolve(mockResponse(200, '{}')) })
+    const result = await executeIntegrationNode(node(), c, makeEnv())
+    expect(order).toEqual(['noted', 'sent'])
+    expect(noted).toBe(result.resolvedInput)
+  })
+
+  it('a value thrown that is not an Error is passed through untouched', async () => {
+    const odd = { reason: 'not an error' }
+    fetchMock.mockRejectedValue(odd)
+    const err = await thrown(executeIntegrationNode(node(), ctx(), makeEnv()))
+    expect(err).toBe(odd)
+    // An object with no message renders as its own JSON, so a request attached
+    // to it would be printed into the step's error message.
+    expect(err).not.toHaveProperty('resolvedInput')
+  })
+})
