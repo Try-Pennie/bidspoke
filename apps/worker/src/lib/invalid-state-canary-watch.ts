@@ -110,6 +110,23 @@
  * own stamp it needs no time test, which Salesforce's whole seconds defeat when
  * the PATCH lands within 2 s (#2937, at supersededByLaterWrite). The rule ends
  * with the inquiry's own move (#2175).
+ * ANOTHER USER CHANGING A FIELD AFTERWARDS (#3005). The 2026-10-29 report said
+ * run 01a1837c-e25d-777a-ab77-bda0d3dd37ba did not arrive complete and told Dan
+ * to move Main Flow back to Pipedream. It had arrived: its Submission held the
+ * run's stamp and link, and Submission__History showed Bidspoke Integration
+ * setting ADV_SO__c and XBC_SO__c at 17:09:29 UTC, inside the step, then
+ * "integration halo", the website's API user, setting both back at 22:33:23.
+ * Current values cannot tell a lost write from one overwritten later, so adding
+ * those fields to LATER_WRITE_FIELDS was rejected. Instead, when a Submission
+ * holds this run's own stamp and link and fields still differ, ONE history query
+ * asks who changed them (changedAfterOwnWrite): a field whose history shows this
+ * write's user setting the value sent inside the write's own span, then another
+ * user setting what it holds now, landed and was changed afterwards, counted
+ * (`changed_afterwards`) and said apart, never with a Fix line. A field with no
+ * history, no row by the writing user, or a history that cannot be read still
+ * did not land, and an unread history is said as such. Both subjects share it,
+ * since both write the same Submission the website writes; a relay post carries
+ * no stamp, so it never asks.
  *
  * NOT CHECKED HERE, from #2173's acceptance: that fields the body did not send
  * are unchanged (that needs a snapshot taken before the write, which only the
@@ -173,7 +190,7 @@ import type { SalesforceRead } from '../engine/inquiry-post'
 import { parseWriteMarker, WRITE_MARKER_FIELD } from '../engine/write-marker'
 import { MAIN_FLOW_WORKFLOW_ID, OUTCOME_POSTS, RELAY_OMITTED_KEYS, RELAY_RENAMES, portStatus, type Definition, type OutcomePost } from './main-flow-port/transform'
 import { isSalesforceApiName, isSalesforceRecordId, salesforcePortFor } from './writeback-replay'
-import { LAST_MODIFIED_MARGIN_MS, salesforceTimeMs, sameSalesforceValue } from './salesforce-field-conflict'
+import { FIELD_HISTORY_ROW_LIMIT, LAST_MODIFIED_MARGIN_MS, queryRecords, salesforceTimeMs, sameSalesforceValue, soqlTime } from './salesforce-field-conflict'
 import { leadNamesAnotherSubmission, leadNamesSubmission } from './returning-customer'
 import { raceDeadline } from './alert-claim'
 import { fetchAllPaged, PAGE_SIZE } from './paginate'
@@ -420,8 +437,10 @@ export type RunVerdict =
    * fully, and said apart. `leadFromEarlierRun` (#2485): the Lead names this
    * Submission and holds the Engine ids that EARLIER run wrote to it, the copy
    * Salesforce makes only at a Submission's first completion.
+   * `changedAfterwards` (#3005): fields the Submission's field history shows this
+   * write setting, then another Salesforce user setting to what they hold now.
    */
-  | { kind: 'moved_on'; executionId: string; laterWrite: string[]; newerSubmission: boolean; leadFromEarlierRun?: string }
+  | { kind: 'moved_on'; executionId: string; laterWrite: string[]; newerSubmission: boolean; leadFromEarlierRun?: string; changedAfterwards?: ChangedAfterwards[] }
   | { kind: 'unchecked'; executionId: string; reason: string }
   /**
    * Overwritten since by a LATER Main Flow run's write to the same Submission, so
@@ -773,6 +792,78 @@ function supersededByLaterWrite(differing: string[], current: Record<string, unk
   return Number.isFinite(started) && Number.isFinite(lastModified) && lastModified - LAST_MODIFIED_MARGIN_MS > started
 }
 
+/** A field another Salesforce user changed after this run's write had landed (#3005): who and when, never the value. */
+export interface ChangedAfterwards {
+  field: string
+  byUserId: string
+  /** The user's name in Salesforce, when the history answer carried one. */
+  byName: string | null
+  at: string
+}
+
+/** What the Submission's field history says about the fields that differ (#3005). */
+type HistoryFinding =
+  | { kind: 'explained'; changes: ChangedAfterwards[] }
+  | { kind: 'not_explained' }
+  | { kind: 'unread'; reason: string; stop: boolean }
+
+/**
+ * Whether Salesforce's field history shows every field in `differing` changed by
+ * another user after this write landed (#3005), in ONE query of
+ * Submission__History since the margin before the write was sent.
+ *
+ * Asked only when the Submission holds this run's own stamp and link, so the
+ * update provably landed, all its fields or none. The rows inside the write's
+ * own send span (its step's start to its end, with the margin either side) are
+ * this write's, so they must all be one user's, the user that made the write; a
+ * second user writing inside the span leaves whose write it was unknown. Then
+ * each field needs a row by that user setting it to the value sent, and its
+ * LATEST row by another user, in a later second, setting it to what it holds
+ * now. A field with no row (Salesforce keeps no history of it), no row by the
+ * writing user, or any other shape is not explained, and still did not land.
+ * A failed read is `unread`, never explained.
+ */
+async function changedAfterOwnWrite(read: Read, w: SubmissionWrite, differing: string[], current: Record<string, unknown>): Promise<HistoryFinding> {
+  const [span] = w.sentWithin.spans
+  if (!w.sentWithin.recorded || !span) return { kind: 'unread', reason: "this run's send time is not recorded, so the history cannot be placed against it", stop: false }
+  // Both are checked before any read of the record; nothing else reaches a query.
+  if (!isSalesforceRecordId(w.recordId) || !differing.every(isSalesforceApiName)) return { kind: 'not_explained' }
+  const fields = differing.map((f) => `'${f}'`).join(',')
+  const soql =
+    `SELECT Field, NewValue, CreatedById, CreatedBy.Name, CreatedDate FROM Submission__History WHERE ParentId = '${w.recordId}' AND Field IN (${fields}) ` +
+    `AND CreatedDate >= ${soqlTime(span.from - LAST_MODIFIED_MARGIN_MS)} ORDER BY CreatedDate, Id LIMIT ${FIELD_HISTORY_ROW_LIMIT}`
+  const r = await read(`/query?q=${encodeURIComponent(soql)}`)
+  if (r.kind === 'no_answer') return { kind: 'unread', reason: `Salesforce did not answer (${r.error})`, stop: true }
+  if (r.status < 200 || r.status >= 300) {
+    const code = errorCodeOf(r.text)
+    return { kind: 'unread', reason: `Salesforce answered ${r.status}${code ? ` ${code}` : ''}`, stop: r.status === 401 || r.status === 403 }
+  }
+  const records = queryRecords(r.text)
+  if (!records) return { kind: 'unread', reason: "Salesforce's answer was not a complete list", stop: false }
+  const rows: Array<{ field: string; value: unknown; by: string; name: string | null; atMs: number }> = []
+  for (const row of records) {
+    const atMs = salesforceTimeMs(row.CreatedDate)
+    const createdBy = asObject(row.CreatedBy)
+    if (typeof row.Field !== 'string' || typeof row.CreatedById !== 'string' || !Number.isFinite(atMs)) {
+      return { kind: 'unread', reason: 'a field history row had no readable field, user or time', stop: false }
+    }
+    rows.push({ field: row.Field, value: row.NewValue, by: row.CreatedById, name: typeof createdBy?.Name === 'string' ? createdBy.Name : null, atMs })
+  }
+  const inSpan = (atMs: number) => atMs >= span.from - LAST_MODIFIED_MARGIN_MS && atMs <= span.to + LAST_MODIFIED_MARGIN_MS
+  const writers = new Set(rows.filter((p) => inSpan(p.atMs)).map((p) => p.by))
+  if (writers.size !== 1) return { kind: 'not_explained' }
+  const [writer] = writers
+  const changes: ChangedAfterwards[] = []
+  for (const field of differing) {
+    const ofField = rows.filter((p) => p.field === field)
+    const mine = ofField.find((p) => p.by === writer && inSpan(p.atMs) && sameSalesforceValue(p.value, w.sent[field]))
+    const last = ofField[ofField.length - 1]
+    if (!mine || !last || last.by === writer || last.atMs <= mine.atMs || !sameSalesforceValue(last.value, current[field])) return { kind: 'not_explained' }
+    changes.push({ field, byUserId: last.by, byName: last.name, at: new Date(last.atMs).toISOString() })
+  }
+  return { kind: 'explained', changes }
+}
+
 /** What the Submission's write stamp says, when it is not this run's. */
 type StampFinding = { kind: 'none' } | { kind: 'other_run'; run: string; order: 'later' | 'earlier' | 'same_run' | 'unknown' }
 
@@ -880,10 +971,16 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
   const differing = sentFields.filter((k) => sent[k] !== REDACTED && (!(k in current) || !sameSalesforceValue(current[k], sent[k]))).sort()
   // With no stamp finding, a stamped write's record holds this run's own stamp (#2937).
   const laterWrite = stampFinding === null && linkFinding === null && differing.length > 0 && supersededByLaterWrite(differing, current, sent, w.startedAt, stamped) ? differing : []
-  const fieldsDiffering = laterWrite.length === 0 ? differing : []
+  // This run's own stamp and link prove its update landed, so a field that
+  // differs was changed since; the field history says by whom (#3005).
+  const history = stamped && stampFinding === null && linkFinding === null && differing.length > 0 && laterWrite.length === 0 ? await changedAfterOwnWrite(read, w, differing, current) : null
+  const changedAfterwards = history?.kind === 'explained' ? history.changes : []
+  const fieldsDiffering = laterWrite.length === 0 && changedAfterwards.length === 0 ? differing : []
+  // A history that could not be read clears nothing, and is said.
+  const historyClauses = history?.kind === 'unread' ? [`its field history could not be read to see whether another user changed them afterwards (${history.reason})`] : []
   // What the Lead check found, said after what the Submission holds.
   const leadProblems: string[] = []
-  const problems = () => [...submissionClauses(stampFinding, linkFinding, fieldsDiffering.length), ...leadProblems]
+  const problems = () => [...submissionClauses(stampFinding, linkFinding, fieldsDiffering.length), ...historyClauses, ...leadProblems]
   const verdict = (newerSubmission: boolean, leadFromEarlierRun: string | null = null): RunVerdict =>
     problems().length > 0
       ? {
@@ -893,9 +990,19 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
           ...(fieldsDiffering.length > 0 ? { fields: fieldsDiffering } : {}),
           ...(stampFinding?.kind === 'other_run' ? { stampedBy: stampFinding.run } : {}),
         }
-      : laterWrite.length > 0 || newerSubmission || leadFromEarlierRun
-        ? { kind: 'moved_on', executionId, laterWrite, newerSubmission, ...(leadFromEarlierRun ? { leadFromEarlierRun } : {}) }
+      : laterWrite.length > 0 || changedAfterwards.length > 0 || newerSubmission || leadFromEarlierRun
+        ? {
+            kind: 'moved_on',
+            executionId,
+            laterWrite,
+            newerSubmission,
+            ...(leadFromEarlierRun ? { leadFromEarlierRun } : {}),
+            ...(changedAfterwards.length > 0 ? { changedAfterwards } : {}),
+          }
         : { kind: 'landed', executionId }
+
+  // Salesforce did not answer the history read: the reads stop here, as on any unanswered read.
+  if (history?.kind === 'unread' && history.stop) return { verdict: verdict(false), stop: true }
 
   // The Lead copy is SubmissionService's, of the Engine ids this write sent.
   if (!sentEngineIds) return { verdict: verdict(false), stop: false }
@@ -1129,6 +1236,9 @@ const isBad = (v: RunVerdict) => v.kind === 'not_landed' || v.kind === 'unchecke
 const supersededByLater = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.laterWrite.some((k) => SALE_COMPLETION_FIELDS.has(k))).length
 /** Landed, then the inquiry relay's PATCH replaced the link the port adds (2026-10-27). */
 const inquiryLinkReplaced = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.laterWrite.some((k) => LATER_WRITE_FIELDS[k] === 'inquiry_link')).length
+/** Landed, then another Salesforce user changed some of its fields, as the field history shows (#3005). */
+const changedAfterwardsRuns = (vs: RunVerdict[]) =>
+  vs.filter((v): v is Extract<RunVerdict, { kind: 'moved_on' }> & { changedAfterwards: ChangedAfterwards[] } => v.kind === 'moved_on' && (v.changedAfterwards?.length ?? 0) > 0)
 const followedNewerSubmission = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.newerSubmission).length
 const leadFromFirstCompletion = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.leadFromEarlierRun).length
 /** Set aside because a later run wrote the same Submission (#2485). */
@@ -1167,7 +1277,13 @@ function movedOnSentences(vs: RunVerdict[], ofThose: string): string {
   const b = followedNewerSubmission(vs)
   const c = leadFromFirstCompletion(vs)
   const i = inquiryLinkReplaced(vs)
+  const changed = changedAfterwardsRuns(vs)
+  const h = changed.length
+  const who = joinAnd([...new Set(changed.flatMap((v) => v.changedAfterwards.map((c) => c.byName ?? 'another Salesforce user')))])
   return [
+    h > 0
+      ? ` ${fmt(h)} ${ofThose} had fields changed afterwards in Salesforce by ${who}. Salesforce's field history shows Bidspoke's values arriving first, so ${h === 1 ? 'the write was' : 'those writes were'} not lost.`
+      : '',
     a > 0 ? ` ${fmt(a)} ${ofThose} ${a === 1 ? 'was' : 'were'} updated again later when the sale finished, which is expected.` : '',
     i > 0
       ? ` ${fmt(i)} ${ofThose} had ${i === 1 ? 'its' : 'their'} second Bidspoke link replaced afterwards by a Pipedream link: Pipedream's credit inquiry step still writes that link, and sometimes finishes after the direct write, which is expected until that step moves off Pipedream too.`
@@ -1254,7 +1370,9 @@ function directLine(native: RunVerdict[], span: string, subject: CanaryWatchSubj
     // A Lead that followed a newer Submission, or holds the first completion's copy, was not compared with this run's ids.
     const compared = followedNewerSubmission(native) + leadFromFirstCompletion(native) > 0 ? ' we compared' : ''
     const lead = subject.checksLead ? (landed === 1 ? `, and the Lead${compared} has matching Engine ids` : `, and each Lead${compared} has matching Engine ids`) : ''
-    line += landed === 1 ? ` The Submission has every field the run sent${lead}.` : ` Each Submission has every field the run sent${lead}.`
+    // A field another user changed since is no longer held, only received (#3005).
+    const has = changedAfterwardsRuns(native).length > 0 ? 'received' : 'has'
+    line += landed === 1 ? ` The Submission ${has} every field the run sent${lead}.` : ` Each Submission ${has} every field the run sent${lead}.`
   }
   line += movedOnSentences(native, notLanded + unchecked + k + u === 0 ? 'of those' : 'of those that arrived complete')
   if (k > 0) line += ` ${fmt(k)} more ${k === 1 ? 'was' : 'were'} replaced by a later run that wrote the same Submission, so ${k === 1 ? 'it was' : 'they were'} not compared.`
@@ -1457,6 +1575,8 @@ function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWat
       superseded_by_later_write: supersededByLater(report.native),
       // Landed, then the inquiry relay's PATCH replaced the PDFlow_4__c link (2026-10-27).
       inquiry_link_replaced: inquiryLinkReplaced(report.native),
+      // Landed, then another Salesforce user changed some of its fields, per the field history (#3005); the runs are in moved_on_runs.
+      changed_afterwards: changedAfterwardsRuns(report.native).length,
       followed_newer_submission: followedNewerSubmission(report.native),
       // Overwritten by a later RUN's write to the same Submission (#2485), not judged; and the runs, by id.
       superseded: overwritten(report.native).length,
