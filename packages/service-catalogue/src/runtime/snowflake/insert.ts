@@ -18,7 +18,11 @@ import { bindText } from './statement'
  *    must be a plain unquoted identifier, so a value can never become SQL.
  */
 
-/** The most rows one INSERT's VALUES list may carry. Snowflake's own limit on a VALUES list (16,384) is the ceiling. */
+/**
+ * The most rows one INSERT's VALUES list may carry. Snowflake limits a VALUES
+ * clause to 200,000 rows (https://docs.snowflake.com/en/sql-reference/sql/insert);
+ * 16,384 is a stricter margin of our own.
+ */
 export const SNOWFLAKE_INSERT_MAX_ROWS = 16_384
 /** The largest request body sent, the size Pipedream sized its batches to (5 MB) less a margin. */
 export const SNOWFLAKE_INSERT_MAX_BODY_BYTES = 4 * 1024 * 1024
