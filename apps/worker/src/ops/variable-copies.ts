@@ -23,8 +23,10 @@
  * tick (the claimed runs' versions still are). A claimed run's own answer
  * reaches this module through copySourceOf, its secrets by name only. The tick
  * skips the refresh when its own workflow fetch failed or its claimed ask did,
- * so a bidding outage costs one failed request a minute, not one per
- * workflow. The names a version reads are taken from its
+ * so a bidding outage costs one failed request a minute, not one per workflow;
+ * one that begins after those succeeded costs at most the
+ * VARIABLE_COPY_REFRESH_AT_ONCE requests already in flight, all ended by the
+ * one deadline. The names a version reads are taken from its
  * copy once held, otherwise from its frozen definition (envReferences, the one
  * reading of that question), at most VARIABLE_COPY_DEFINITIONS_PER_TICK
  * definitions a tick; a version whose names cannot be told is not asked for.

@@ -1046,10 +1046,11 @@ export function parseOpsDefinitionRequest(raw: unknown): OpsDefinitionRequest {
 
 /**
  * The ops tick's run variables request, as the bidding Worker reads it
- * (#2997): exactly { organization_id, runs }, at most
- * MAX_RUN_VARIABLES_PER_REQUEST runs, each exactly { workflow_id,
- * version_number }, none twice. Throws by name on anything else, before any
- * read, so no field naming a variable can reach the reader.
+ * (#2997): exactly { organization_id, runs }, or that and secrets: 'names'
+ * (#3034, the copy refresh), at most MAX_RUN_VARIABLES_PER_REQUEST runs, each
+ * exactly { workflow_id, version_number }, none twice. Throws by name on
+ * anything else, any other value of secrets included, before any read, so no
+ * field naming a variable can reach the reader.
  */
 export function parseOpsRunVariablesRequest(raw: unknown): OpsRunVariablesRequest {
   const names = isRecord(raw) && Object.hasOwn(raw, 'secrets')
