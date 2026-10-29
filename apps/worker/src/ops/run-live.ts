@@ -15,13 +15,18 @@
  * ORDER.
  *  1. The lane, the signature, the item.
  *  2. The run's definition at its recorded version (#1698 1.3: never a newer
- *     one), with the plain variables kept with that version at its save
- *     (#2702): the frozen copy ops holds (ops_workflow_definitions), else asked
- *     of the bidding Worker and frozen. The bidding database is never read for
- *     a variable's current value. A run whose definition cannot be had is
+ *     one): the frozen copy ops holds (ops_workflow_definitions), else asked
+ *     of the bidding Worker and frozen. A run whose definition cannot be had is
  *     returned to the queue RUN_DEFINITION_RETRY_MS on, never started, so it
- *     spends no attempt.
- *  3. invokeRun (run-invocation.ts) with the ops database's own functions,
+ *     spends no attempt. The variables frozen beside it (#2702) are kept as
+ *     they were, and no longer what a run reads (#2998).
+ *  3. The run's variables (#2998, run-variables.ts): those the tick was served
+ *     for it when it claimed it, carried in the item. Its start records them
+ *     (the plain values and the secret NAMES, never a secret's value), and
+ *     only its first start's record is kept, so a retry or a continued slice
+ *     runs on the plain values it first started with; the secret values come
+ *     from this item only and are masked out of everything the run keeps.
+ *  4. invokeRun (run-invocation.ts) with the ops database's own functions,
  *     the real clock, a UUIDv7 execution id, and the body for the definition
  *     (run-body.ts), whose app_action steps send through connectionFetch with
  *     the OpsConnections live dependencies (ops-connections-live.ts, #2339),
@@ -34,7 +39,7 @@
  */
 import { uuidv7 } from '@bidspoke/uuidv7'
 import { DEFAULT_RETRY_POLICY, readRetryPolicy, type RetryPolicy } from '@bidspoke/workflow-definition'
-import { parseServedOpsDefinitions, type OpsVersionVariables } from '../lib/ops-gateway-contract'
+import { parseServedOpsDefinitions } from '../lib/ops-gateway-contract'
 import { raceDeadline } from '../lib/alert-claim'
 import { formatErr } from '../lib/format-error'
 import { dispatchKey, verifyDispatch } from './dispatch-auth'
@@ -52,6 +57,7 @@ import { appActionDeps } from './app-action'
 import { liveOpsConnectionsDeps } from './ops-connections-live'
 import { opsStepHandlers, runBodyFor } from './run-body'
 import { invokeRun, type RunClock, type RunDb, type RunInvocationReport } from './run-invocation'
+import { recordOf, type DispatchedRunVariables, type RunVariablesRecord } from './run-variables'
 
 /** How long a run whose definition could not be had waits before it is claimed again. */
 export const RUN_DEFINITION_RETRY_MS = 60_000
@@ -85,10 +91,14 @@ export const realRunClock: RunClock = {
   }),
 }
 
-/** The ops database as a run uses it: each call one of the ops functions, in the run's organization. */
-export function liveRunDb(client: OpsSupabaseClient): RunDb {
+/**
+ * The ops database as a run uses it: each call one of the ops functions, in the
+ * run's organization. Its start sends the variables record the run keeps at its
+ * first start (#2998).
+ */
+export function liveRunDb(client: OpsSupabaseClient, variables: RunVariablesRecord | null): RunDb {
   return {
-    start: (run, executionId) => startRunExecution(client, run.organizationId, run.runRequestId, run.claimToken, executionId),
+    start: (run, executionId) => startRunExecution(client, run.organizationId, run.runRequestId, run.claimToken, executionId, variables),
     extend: (run, leaseSeconds) => extendRunLease(client, run.organizationId, run.runRequestId, run.claimToken, leaseSeconds),
     recordIntent: (run, intent) => recordSendIntent(client, run.organizationId, { ...intent, runRequestId: run.runRequestId, claimToken: run.claimToken }),
     recordResult: (run, ledgerId, result) => recordSendResult(client, run.organizationId, ledgerId, result),
@@ -115,19 +125,19 @@ export function liveContinuation(env: OpsEnv, budget: ContinuationBudget = CONTI
   }
 }
 
-/** A run's version: its definition and the variables kept with it (#2702). */
+/** A run's version: its definition. */
 interface RunVersion {
   definition: Record<string, unknown>
-  variables: OpsVersionVariables | null
 }
 
 /**
- * The run's definition at its version, with the variables kept with it: the
- * frozen copy, else the bidding Worker's, frozen. Throws when neither can be had.
+ * The run's definition at its version: the frozen copy, else the bidding
+ * Worker's, frozen with the variables served beside it (#2702, no longer what a
+ * run reads, #2998). Throws when neither can be had.
  */
 async function definitionOf(env: OpsEnv, client: OpsSupabaseClient, run: ClaimedRun, delay: RunLiveDeps['delay']): Promise<RunVersion> {
   const held = await readWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion)
-  if (held !== null) return { definition: held.definition, variables: held.variables }
+  if (held !== null) return { definition: held.definition }
   const gateway = env.OPS_GATEWAY
   if (!gateway) throw new Error('the OPS_GATEWAY binding to the bidding Worker is missing from this deploy')
   const asked = [{ workflowId: run.workflowId, versionNumber: run.workflowVersion }]
@@ -146,18 +156,20 @@ async function definitionOf(env: OpsEnv, client: OpsSupabaseClient, run: Claimed
   // A conflict keeps ops's own copy, which is the one to run; read it back.
   if (saved === 'conflict') {
     const kept = await readWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion)
-    if (kept !== null) return { definition: kept.definition, variables: kept.variables }
+    if (kept !== null) return { definition: kept.definition }
   }
-  return { definition: def.definition, variables: def.variables }
+  return { definition: def.definition }
 }
 
 export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveDeps): Promise<RunDispatchAnswer> {
   let run: ClaimedRun
+  let variables: DispatchedRunVariables
   try {
     opsInternalIdentity(env)
     const envelope = await verifyDispatch(await dispatchKey(env.PORTING_CAPTURE_MASTER), signed, deps.nowMs)
     if (envelope.item.kind !== 'run') throw new OpsInternalRefused('not_a_run')
     run = { ...envelope.item.run, organizationId: organizationIdFrom(envelope.item.run.organizationId) }
+    variables = envelope.item.variables
   } catch (err) {
     if (err instanceof OpsInternalRefused) return { refused: err.reason }
     throw err
@@ -190,11 +202,11 @@ export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveD
   }
 
   return invokeRun({
-    db: liveRunDb(client),
+    db: liveRunDb(client, recordOf(variables)),
     clock: deps.clock ?? realRunClock,
     newExecutionId: deps.newExecutionId ?? (() => uuidv7()),
     log: (fields) => console.log(JSON.stringify(fields)),
-  }, run, runBodyFor(version.definition, version.variables, opsStepHandlers({
+  }, run, runBodyFor(version.definition, variables.secretValues, opsStepHandlers({
     // Built the first time an app_action step reaches its connection (app-action.ts), so a run with
     // none never needs the ops connections key, and a deploy without it fails that step by name.
     appAction: appActionDeps(() => {

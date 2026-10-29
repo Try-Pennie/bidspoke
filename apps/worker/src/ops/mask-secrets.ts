@@ -2,8 +2,9 @@
  * Secret variable values masked out of what ops keeps (#2982, Dan's decision
  * of 2026-10-29: ops reads secrets, and "Secret values are masked in the step
  * results ops keeps"). The one masking implementation for ops: the step test
- * uses it (step-test.ts, #3002), and a run's step records (#2998) are to use
- * it too rather than a second copy.
+ * uses it (step-test.ts, #3002), and a run uses it for its step records, its
+ * error and, through holdsSecret, the checkpoints it may write (run-walk.ts,
+ * #2998), rather than a second copy.
  *
  * Given a value and the secrets a step was given (variable name to value), it
  * answers a copy with every occurrence of each value, inside any string at any
@@ -30,6 +31,25 @@ export function maskSecrets(value: unknown, secrets: Readonly<Record<string, str
     return v
   }
   return walk(value)
+}
+
+/**
+ * Whether any secret, in any of the forms maskSecrets masks, is anywhere in
+ * the value: in a string at any depth or an object's key (#2998). A run's
+ * checkpoint, which is written to R2 and must never hold a secret, is skipped
+ * at a boundary where this is true (run-walk.ts), since masking it would
+ * change what the next slice's steps read.
+ */
+export function holdsSecret(value: unknown, secrets: Readonly<Record<string, string>>): boolean {
+  const forms = Object.values(secrets).flatMap(secretForms)
+  if (forms.length === 0) return false
+  const holds = (v: unknown): boolean => {
+    if (typeof v === 'string') return forms.some((form) => v.includes(form))
+    if (Array.isArray(v)) return v.some(holds)
+    if (v !== null && typeof v === 'object') return Object.entries(v).some(([k, inner]) => holds(k) || holds(inner))
+    return false
+  }
+  return holds(value)
 }
 
 /** A secret as it is written raw, inside a JSON string, percent encoded in a URL, and in a form body. None for an empty one. */

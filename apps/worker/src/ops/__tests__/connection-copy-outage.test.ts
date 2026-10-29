@@ -68,6 +68,7 @@ function opsDb() {
     purgeObservations: async () => { throw new Error('not claimed') },
     purgeStepTests: async () => { throw new Error('not claimed') },
     purgeStepRecords: async () => { throw new Error('not claimed') },
+    purgeRunVariables: async () => { throw new Error('not claimed') },
     // Every version held: this test is about the connection copies.
     missingDefinitions: async () => ({ missing: [], reachedLimit: false }),
     saveDefinition: async () => { throw new Error('nothing is missing') },
@@ -140,6 +141,7 @@ function ports(db: OpsTickDb, fetchConnections: () => Promise<unknown>): OpsTick
       fetchWorkflows: async () => ({ served_at: new Date(clock.value).toISOString(), complete: true, workflows: [] }),
       fetchConnections,
       fetchDefinitions: async () => { throw new Error('nothing is missing') },
+      fetchRunVariables: async () => { throw new Error('the observe tick claims no run') },
       started: async () => {},
       completed: async () => {},
       jobStarted: async () => {},

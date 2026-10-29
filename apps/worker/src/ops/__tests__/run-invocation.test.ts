@@ -114,7 +114,7 @@ class FakeRunDb implements RunDb {
     if (run.claimToken !== this.token || this.status !== 'claimed') throw new OpsClaimLostError('start_run_execution: lost')
     this.status = 'running'
     this.stateVersion += 1
-    return { outcome: 'started' as const, stateVersion: this.stateVersion, attempt: run.attempts + 1, continuations: this.continuations }
+    return { outcome: 'started' as const, stateVersion: this.stateVersion, attempt: run.attempts + 1, continuations: this.continuations, runVariables: null }
   }
 
   async extend(run: ClaimedRun, leaseSeconds: number) {

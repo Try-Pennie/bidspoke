@@ -70,9 +70,9 @@ export class OpsGateway extends WorkerEntrypoint<Env> {
    * The current variables of the runs the tick claimed (#2997): the request
    * read by name first (parseOpsRunVariablesRequest: one organization, at most
    * MAX_RUN_VARIABLES_PER_REQUEST runs, never a variable name), then the reads,
-   * retries off, and each secret decrypted through the key ring. Served ahead
-   * of any ops caller (OPS_GATEWAY_SERVED_AHEAD). Who may call it and whose
-   * data: readOpsRunVariables in ops-gateway.ts.
+   * retries off, and each secret decrypted through the key ring. The ops tick
+   * calls it since #2998. Who may call it and whose data: readOpsRunVariables
+   * in ops-gateway.ts.
    */
   opsRunVariables(request: unknown) {
     const parsed = parseOpsRunVariablesRequest(request)

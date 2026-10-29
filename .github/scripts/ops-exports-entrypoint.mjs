@@ -36,6 +36,14 @@ export const ENTRYPOINT = 'OpsConnections'
 /** OPS_CONNECTIONS_METHODS in apps/worker/src/lib/ops-connections-contract.ts; a test holds the two equal. */
 export const METHODS = ['verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode', 'addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects', 'signInClient', 'testStep', 'stepTestResult']
 
+/**
+ * What a deployed script must export: the Worker, its entrypoint, every method
+ * the other Worker calls, and the binding those calls go through (for the
+ * message). This script checks the ops Worker's OpsConnections; the same
+ * reading checks the bidding Worker's OpsGateway (bidding-exports-gateway.mjs, #2998).
+ */
+export const OPS_ENTRYPOINT_SPEC = { worker: OPS, entrypoint: ENTRYPOINT, methods: METHODS, binding: "the bidding Worker's OPS_CONNECTIONS binding" }
+
 const API = 'https://api.cloudflare.com/client/v4'
 
 /** The pull request files that can change whether the binding resolves, whatever their patch. */
@@ -129,44 +137,51 @@ function braceSpan(src, open) {
   return null
 }
 
-/** Whether a bundled main module exports ENTRYPOINT as a WorkerEntrypoint class with every method. */
-export function entrypointVerdict(source) {
+/** Whether a bundled main module exports spec.entrypoint as a WorkerEntrypoint class with every one of spec.methods. */
+export function exportsEntrypoint(source, spec) {
+  const { worker, entrypoint, methods, binding } = spec
   let local = null
   for (const list of source.matchAll(/export\s*\{([^}]*)\}/g)) {
-    for (const spec of list[1].split(',').map((s) => s.trim()).filter(Boolean)) {
-      const m = /^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/.exec(spec)
-      if (m && (m[2] ?? m[1]) === ENTRYPOINT) local = m[1]
+    for (const item of list[1].split(',').map((s) => s.trim()).filter(Boolean)) {
+      const m = /^([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?$/.exec(item)
+      if (m && (m[2] ?? m[1]) === entrypoint) local = m[1]
     }
   }
-  if (!local) return { ok: false, lines: [`${OPS}: the deployed script does not export ${ENTRYPOINT}, so every call through the bidding Worker's OPS_CONNECTIONS binding would throw`] }
+  if (!local) return { ok: false, lines: [`${worker}: the deployed script does not export ${entrypoint}, so every call through ${binding} would throw`] }
 
   const name = escape(local)
   const decl = new RegExp(`(?:\\b(?:var|let|const)\\s+${name}\\s*=\\s*class(?:\\s+[\\w$]+)?|\\bclass\\s+${name})\\s+extends\\s+WorkerEntrypoint\\d*\\s*\\{`).exec(source)
-  if (!decl) return { ok: false, lines: [`${OPS}: the deployed ${ENTRYPOINT} (${local} in the bundle) is not a class extending WorkerEntrypoint`] }
+  if (!decl) return { ok: false, lines: [`${worker}: the deployed ${entrypoint} (${local} in the bundle) is not a class extending WorkerEntrypoint`] }
   const span = braceSpan(source, decl.index + decl[0].length - 1)
-  if (!span) return { ok: false, lines: [`${OPS}: the deployed ${ENTRYPOINT} class body could not be read to its end`] }
+  if (!span) return { ok: false, lines: [`${worker}: the deployed ${entrypoint} class body could not be read to its end`] }
   const body = source.slice(...span)
-  const missing = METHODS.filter((method) => !new RegExp(`^\\s+(?:async\\s+)?${escape(method)}\\s*\\(`, 'm').test(body))
-  if (missing.length > 0) return { ok: false, lines: [`${OPS}: the deployed ${ENTRYPOINT} lacks ${missing.join(', ')}, so those calls through the binding would throw`] }
-  return { ok: true, lines: [`${OPS}: the deployed script exports ${ENTRYPOINT}, a WorkerEntrypoint, with ${METHODS.join(', ')}`] }
+  const missing = methods.filter((method) => !new RegExp(`^\\s+(?:async\\s+)?${escape(method)}\\s*\\(`, 'm').test(body))
+  if (missing.length > 0) return { ok: false, lines: [`${worker}: the deployed ${entrypoint} lacks ${missing.join(', ')}, so those calls through the binding would throw`] }
+  return { ok: true, lines: [`${worker}: the deployed script exports ${entrypoint}, a WorkerEntrypoint, with ${methods.join(', ')}`] }
 }
 
-async function cloudflareJson(fetchFn, token, url, what) {
+/** Whether a bundled main module exports OpsConnections as a WorkerEntrypoint class with every method. */
+export function entrypointVerdict(source) {
+  return exportsEntrypoint(source, OPS_ENTRYPOINT_SPEC)
+}
+
+async function cloudflareJson(fetchFn, token, url, what, worker) {
   const res = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } })
   const body = await res.json().catch(() => null)
   if (!res.ok || body?.success !== true) {
     const why = (Array.isArray(body?.errors) ? body.errors : []).map((e) => `${e?.code} ${e?.message}`).join('; ') || 'no error given'
-    throw new Error(`${OPS}: reading its ${what} failed with ${res.status}: ${why}`)
+    throw new Error(`${worker}: reading its ${what} failed with ${res.status}: ${why}`)
   }
   return body.result
 }
 
-/** The verdict for the live ops Worker: its latest deployment's one version, read from the script content. */
-export async function checkDeployedOps(fetchFn, token, account) {
+/** The verdict for a live Worker named by spec: its latest deployment's one version, read from the script content. */
+export async function checkDeployedScript(fetchFn, token, account, spec) {
+  const OPS = spec.worker
   const base = `${API}/accounts/${account}/workers/scripts/${OPS}`
-  const result = await cloudflareJson(fetchFn, token, `${base}/deployments`, 'deployments')
+  const result = await cloudflareJson(fetchFn, token, `${base}/deployments`, 'deployments', OPS)
   const deployments = Array.isArray(result?.deployments) ? [...result.deployments] : []
-  if (deployments.length === 0) throw new Error(`${OPS}: no deployment found, so nothing serves the OpsConnections entrypoint`)
+  if (deployments.length === 0) throw new Error(`${OPS}: no deployment found, so nothing serves the ${spec.entrypoint} entrypoint`)
   deployments.sort((a, b) => String(b.created_on).localeCompare(String(a.created_on)))
   const latest = deployments[0]
   const versions = (Array.isArray(latest.versions) ? latest.versions : []).filter((v) => Number(v?.percentage) > 0)
@@ -177,8 +192,13 @@ export async function checkDeployedOps(fetchFn, token, account) {
   const res = await fetchFn(`${base}/content/v2`, { headers: { Authorization: `Bearer ${token}` } })
   const text = await res.text()
   if (!res.ok) throw new Error(`${OPS}: reading its script content failed with ${res.status}`)
-  const verdict = entrypointVerdict(mainModuleOf(text))
+  const verdict = exportsEntrypoint(mainModuleOf(text), spec)
   return { ok: verdict.ok, lines: [`${OPS}: version ${versions[0].version_id} serves 100% (deployed ${latest.created_on})`, ...verdict.lines] }
+}
+
+/** The verdict for the live ops Worker's OpsConnections. */
+export async function checkDeployedOps(fetchFn, token, account) {
+  return checkDeployedScript(fetchFn, token, account, OPS_ENTRYPOINT_SPEC)
 }
 
 async function main() {
