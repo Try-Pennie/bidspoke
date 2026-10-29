@@ -22,6 +22,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=project.sh
 . "$HERE/project.sh"
+# Run by hand, this waits for a running suite rather than writing into its
+# database (#3012); run by run.sh, it shares run.sh's lock.
+# shellcheck source=lock.sh
+. "$HERE/lock.sh"
+suite_lock_acquire || exit 2
 MIGRATIONS_LABEL="${SUITE_MIGRATIONS#"$ROOT"/}"
 
 # The image's `postgres` database on purpose: pg_cron is preloaded with

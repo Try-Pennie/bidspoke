@@ -27,6 +27,13 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 2
 fi
 
+# One run at a time per container (#3012): the container is shared by every
+# worktree and session on this Mac. Held until this script exits, however it
+# exits; start-db.sh and replay.sh below share it. See lock.sh.
+# shellcheck source=lock.sh
+. "$HERE/lock.sh"
+suite_lock_acquire || exit 2
+
 if ! bash "$HERE/start-db.sh" ${1:-}; then exit 2; fi
 bash "$HERE/replay.sh"
 replay_status=$?
