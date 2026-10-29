@@ -8,14 +8,14 @@
 import { describe, expect, it } from 'vitest'
 import { maskSecrets } from '../mask-secrets'
 
-const SECRETS = { API_TOKEN: 'tok-9f8e7d6c5b4a', SIGNING_KEY: 'sk_live_0123456789' }
+const SECRETS = { API_TOKEN: 'fake-api-token-value', SIGNING_KEY: 'fake-signing-key-for-masking-tests' }
 
 describe('maskSecrets', () => {
   it('replaces each secret value with its name inside strings, at any depth and in keys', () => {
     const value = {
-      header: 'Bearer tok-9f8e7d6c5b4a',
-      list: ['sk_live_0123456789', 1, null, true, { deep: 'x tok-9f8e7d6c5b4a y tok-9f8e7d6c5b4a' }],
-      'tok-9f8e7d6c5b4a': 'a key that is a secret',
+      header: 'Bearer fake-api-token-value',
+      list: ['fake-signing-key-for-masking-tests', 1, null, true, { deep: 'x fake-api-token-value y fake-api-token-value' }],
+      'fake-api-token-value': 'a key that is a secret',
     }
     expect(maskSecrets(value, SECRETS)).toEqual({
       header: 'Bearer API_TOKEN',
@@ -53,8 +53,8 @@ describe('maskSecrets', () => {
   })
 
   it('never changes the value it was given', () => {
-    const value = { a: 'tok-9f8e7d6c5b4a' }
+    const value = { a: 'fake-api-token-value' }
     maskSecrets(value, SECRETS)
-    expect(value).toEqual({ a: 'tok-9f8e7d6c5b4a' })
+    expect(value).toEqual({ a: 'fake-api-token-value' })
   })
 })

@@ -415,7 +415,7 @@ describe('a step test\'s environment variables (#2702)', () => {
 // each replaced by the variable's name. A variable with no saved value is
 // refused by name, before anything is sent or kept.
 describe('a step test\'s current variables (#3002)', () => {
-  const SECRET = 'tok-live-3002-9f8e7d6c5b4a'
+  const SECRET = 'fake-step-test-token-value'
   const readsSecret = { args: { text: 'Post to {{env.API_BASE}} with {{env.TOKEN}}' } }
   const current = { values: { API_BASE: 'https://hooks.example.test' }, secretValues: { TOKEN: SECRET } }
 
