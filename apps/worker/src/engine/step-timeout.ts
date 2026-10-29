@@ -169,6 +169,17 @@ export interface TimeoutColumns {
   error_message?: unknown
 }
 
+/**
+ * Which of our deadlines stopped a recorded step, its own or its parallel
+ * block's, read from the marker alone: null on a row with no marker or with a
+ * value the engine never writes. Unlike stepTimedOut it has no text fallback,
+ * so a reader that keeps one (the outage check, #3069) keeps it beside this.
+ */
+export function deadlineKindOf(row: TimeoutColumns): TimeoutKind | null {
+  const kind = row.timeout_kind
+  return (TIMEOUT_KINDS as readonly unknown[]).includes(kind) ? (kind as TimeoutKind) : null
+}
+
 /** Whether a recorded step was stopped by its own deadline. */
 export function stepTimedOut(row: TimeoutColumns): boolean {
   if (row.timeout_kind !== null && row.timeout_kind !== undefined) return row.timeout_kind === STEP_DEADLINE

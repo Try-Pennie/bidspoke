@@ -28,6 +28,7 @@ import {
   timeoutMarker,
   stepTimedOut,
   stepTimedOutAfterMs,
+  deadlineKindOf,
 } from '../step-timeout'
 
 describe('the step deadline error carries its own classification', () => {
@@ -194,5 +195,31 @@ describe('our own timers mark the error they caused, and only that one', () => {
     expect(controller.signal.aborted).toBe(false)
     expect(timer.fired()).toBe(false)
     expect(stepTimeoutMarkerOf(timer.mark(new Error('fetch failed')))).toBeNull()
+  })
+})
+
+describe('which deadline stopped a step, from the marker alone (#3069)', () => {
+  it('names either deadline the engine marks', () => {
+    expect(deadlineKindOf({ timeout_kind: STEP_DEADLINE })).toBe(STEP_DEADLINE)
+    expect(deadlineKindOf({ timeout_kind: PARALLEL_BLOCK_DEADLINE })).toBe(PARALLEL_BLOCK_DEADLINE)
+  })
+
+  // #3068: the outage check counts a run as an upstream timeout by this read, so
+  // each of our other deadlines must be named by it too, not only the first two.
+  it('names every one of our deadlines, the ones #3068 added included', () => {
+    for (const kind of [CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE]) {
+      expect(deadlineKindOf({ timeout_kind: kind })).toBe(kind)
+    }
+  })
+
+  it('reads nothing from a row with no marker, whatever its text says', () => {
+    expect(deadlineKindOf({ timeout_kind: null, error_message: stepTimeoutMessage(5_250) })).toBeNull()
+    expect(deadlineKindOf({ error_message: stepTimeoutMessage(5_250) })).toBeNull()
+  })
+
+  it('reads nothing from a value the engine never writes', () => {
+    for (const timeout_kind of ['gateway', 'STEP', '', 1, true]) {
+      expect(deadlineKindOf({ timeout_kind })).toBeNull()
+    }
   })
 })
