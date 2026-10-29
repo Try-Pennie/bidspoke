@@ -210,6 +210,48 @@ run beside the rest of the tick and awaited before its report.
   organization through the `ops-connection-login` signal, naming it by its name
   and service, and sends the all clear once a complete list no longer names it.
 
+## Where connection code may reach a login
+
+The rules CLAUDE.md states for ops connection code, with the checks behind each:
+
+- **Every connection bound request goes through connectionFetch**
+  (`apps/worker/src/ops/connections/`). Its login minters (`minters/`, below)
+  follow decision 2 ("A failing login", below) and refuse a Google mailbox or
+  drive not on the organization's `google_delegation_subjects` list (F129,
+  proven by attempting one in `minters/__tests__/google.test.ts`; the list and
+  its two audited writers are under "Google: delegation scopes and the mailbox
+  allowlist", below).
+- **No ops module calls the platform fetch** except the live wiring
+  (`ops-connections-live.ts`) and the ConnectionTokenObject's token endpoint call
+  (`ops-connection-requests-through-fetch.test.ts`).
+- **Only the modules `connection-seal-open-callers.test.ts` lists may open a
+  sealed login.**
+- **A person bound connection (an OAuth user login) is refreshed only in its
+  `ConnectionTokenObject`** (`src/ops/connection-token-object.ts`, #2335). The
+  refresh is single flight. The rotated refresh token is kept in the object's
+  storage before the access token is returned, then handed back to
+  `service_connections.credential_enc` by the object's alarm through
+  `OPS_GATEWAY.storeRotatedEnvelope` (the bidding function
+  `store_rotated_envelope`, a compare and set on the generation the object last
+  knew). While the object holds a generation ahead of the row, the object is
+  authoritative. Its tests run in workerd
+  (`src/ops/__tests__/connection-token-object.workers.test.ts`). What a lost
+  object or a rollback costs is in disaster-recovery.md (rollback floors).
+- **`connection_copies` has one writer, the minute serve**
+  (`ops-connection-copies-one-writer.test.ts`): verify and clearReauth use the
+  candidate envelope for one call and never write it (OpsConnections, below).
+- **A rotation of the ops key** (#2333) moves every login to the new kid with
+  `OpsInternal.resealConnections` (`src/ops/reseal.ts`), which the minute cron
+  runs only while `OPS_RESEAL` is set; a new kid is named by its full date
+  (`ops-YYYY-MM-DD`), never a prefix of a registered kid, which `keys.test.ts`
+  refuses. The four steps, the `preview` and `apply` modes and the
+  `nothing_left` line to wait for are in disaster-recovery.md ("Rotating the ops
+  private key").
+- **The bidding Worker reaches this code only through the named entrypoint
+  `OpsConnections`** (below; contract in `src/lib/ops-connections-contract.ts`),
+  and the first ops deploy exporting it is the ops rollback floor
+  (disaster-recovery.md).
+
 ## OpsConnections (`apps/worker/src/ops/ops-connections-entrypoint.ts`)
 
 The ops Worker's named entrypoint for the bidding Worker's `OPS_CONNECTIONS`

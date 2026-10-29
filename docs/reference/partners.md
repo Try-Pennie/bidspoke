@@ -352,6 +352,26 @@ For reference, the values a partner produces flow into the [Partner Bid node](..
 | `extra` | object | Values pulled via `extra_extraction`. |
 | `cap_count` | number | Today's cap count after this attempt. |
 
+## Saving a partner
+
+Partner saves are versioned (#2132). The partners page saves through
+`PUT /api/partners/:id/page` (#2133), whose `save_partner_page` function writes
+the partner half through the `save_partner_config` function. That function
+writes just the fields a save names, and refuses a save made from a version that
+is no longer stored with `409` `stale_version`, carrying the current row and who
+last changed it.
+
+Other writers (a step rename's `rename_partner_step_namespace`, hand run SQL) do
+not go through that function, which is why the `partner_configs_bump_version`
+trigger, not the function, moves `version`: every writer moves it. The columns
+it ignores are the ones `partner_configs_unversioned_columns()` lists, which the
+audit trigger reads too.
+
+A `428` `reload_required` means the page was opened before the save it sends was
+retired, so it must be reloaded: the old `PUT /api/partners/:id` and
+`PUT /api/partners/:id/buyer-profile` answer only that (#2187). The request and
+answer shapes are in the [REST API reference](api.md).
+
 ## See also
 
 - [The bidding model](../concepts/bidding-model.md)

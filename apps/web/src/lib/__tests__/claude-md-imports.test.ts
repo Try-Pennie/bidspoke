@@ -32,16 +32,22 @@ const PROJECT_SHARE_BUDGET = 60_000
  * character budget alone undercounts by about a quarter. Every request in a
  * session re-reads this total, so each line here is paid for once per message.
  *
- * Set a little above the size after the #2192 cut (14,963 tokens, down from
- * 18,172 on 2026-10-29), which moved the task only runbooks (migration
+ * Set 537 tokens above the size after the third #2192 cut (9,006 tokens, down
+ * from 14,963 on 2026-10-29), the same headroom the second cut left. The
+ * second cut (18,172 down to 14,963) moved the task only runbooks (migration
  * mechanics, the Worker secrets table, the encryption key rotation, the push
- * to main history, the Cloudflare log access history) into docs and left a one
- * or two line rule pointing at each. When this fails, move a runbook, history
- * or measurement into docs/ and leave the rule that points to it, rather than
- * raising the ceiling.
+ * to main history, the Cloudflare log access history) into docs. The third
+ * moved the package and app detail into each one's README.md, the ops Worker,
+ * run variable and step test mechanics into docs/ops-worker.md, the ops
+ * connection mechanics into docs/ops-connections-logins.md, the binding's
+ * deadlines into docs/disaster-recovery.md, the partner save detail into
+ * docs/reference/partners.md and the App Action step into
+ * docs/nodes/app-action.md. Each left a one or two line rule pointing at its
+ * doc. When this fails, move a runbook, history or measurement into docs/ and
+ * leave the rule that points to it, rather than raising the ceiling.
  */
 const CHARS_PER_TOKEN = 2.78
-const PROJECT_TOKEN_BUDGET = 15_500
+const PROJECT_TOKEN_BUDGET = 9_543
 
 function tokensOf(chars: number): number {
   return Math.ceil(chars / CHARS_PER_TOKEN)

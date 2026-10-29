@@ -13,101 +13,20 @@ The planning list is [TODO.md](./TODO.md) (#2606): read it before work on anythi
 - **Language:** TypeScript everywhere, strict mode
 
 ## Monorepo
-- `apps/web` — Next.js frontend
-- `apps/worker` — Cloudflare Worker (API + execution engine)
-- `apps/worker-tail`: tail consumer that writes per-execution cost, and copies each
-  cron guard `FAILED OPEN` log line into `cron_guard_fail_opens` (#2166), the second
-  record the hourly cron guard check counts alongside its own KV record, and copies
-  each `[cron-once] delivery` line into `cron_tick_deliveries` (#2284), the record of
-  every tick delivery the check reads to page on a tick that may have run twice,
-  and copies each `[slack] post outcome` line into `slack_post_outcomes` (#2364),
-  the record the minute Slack refusal check reads to page through Better Stack
-  when Slack refuses alert posts
-- `apps/compare-outbound`: the outbound Worker of the `bidspoke-code-nodes-compare`
-  dispatch namespace (#1708). Shadow runs dispatch their code there, and it refuses
-  every request a script makes, so a shadow run sends nothing. Its own deploy leg.
-- `apps/ops-outbound`: the outbound Worker of the `bidspoke-code-nodes-ops` dispatch
-  namespace the ops Worker binds (#1709). It refuses every request until Phase 2
-  defines what ops code may reach. A separate Worker from compare-outbound, which
-  must refuse for ever. Deployed by its own leg, Deploy Ops Outbound, since the ops
-  lane went live on 2026-10-06 (`OPS_WORKER_DEPLOYED` in
-  `apps/worker/src/lib/secret-lists.ts`); Deploy Ops Worker then deploys
-  `bidspoke-worker-ops` and proves `ops.trypennie.dev` answers as it.
-- `packages/*`: code both apps import, so there is one implementation rather than
-  a copy per app. Plain TypeScript source with no build step, listed in
-  `transpilePackages` for Next. A package with tests must also be named in the CI
-  test job, which `apps/web/src/lib/__tests__/ci-runs-every-package-suite.test.ts`
-  enforces, because that job names its suites one by one and a new one would
-  otherwise be green locally and never run in CI.
-  - `packages/uuidv7`: UUIDv7 execution ids, minted identically by the Worker for
-    live runs and by the browser for canvas test runs, plus the UTC day the
-    execution archive derives from them.
-  - `packages/connection-seal` (#2333): `seal` and `open` for ops connection
-    logins. Bidding seals to an ops PUBLIC key (RSA-OAEP-256 wrapping a fresh
-    AES-256-GCM key), bound by the canonical JSON of `{organization_id,
-    connection_id, service, generation, kid}`; only ops, holding the private
-    key, opens. Public keys are the code constant `src/keys.ts` (empty until the
-    ops key is generated); a test fails on any private key material in the package.
-  - `packages/script-hygiene`: trailing whitespace stripping for code node scripts
-    (#1117), applied by the canvas serialiser and by every worker route that writes
-    a definition, so a pasted script cannot carry column padding into storage. It
-    leaves lines inside template literals alone because those spaces are value.
-  - `packages/buyer-profile`: the one vocabulary, validator and evaluator set for
-    buyer profiles and the buyer_select node (#1408, milestone 52). Populations,
-    the wired population list, US states, out reasons with labels, signal
-    operators, the tier matcher both pricing homes walk (the legacy `above`
-    ladder in `bid-resolver.ts` is adapted into it), the Eastern clock, the
-    eligibility evaluator and ranking, the sale outcome rules (the classifier's
-    signal matching lives here and is imported back), the profile validator, the
-    sale payload builder, the deadline wrapper, and the two click node rules that
-    their executors and save validation share: the buyer_click_send over cap
-    percent (#1553), the partner id rule both click nodes store their buyer by (#1543),
-    and the one cap predicate `isCap` that save validation and both click nodes judge
-    a cap by, with buyer_click_check's budget and last good copy bound (#1557), and the `{prospect_id}` click URL rule both enabling a click buyer and buyer_click_check read (#1546), and a click buyer's delivery (`click-delivery.ts`, #1639): the success line rule (`successPatternOf`) that buyer_click_send, canvas save validation and the profile validator all apply, and the route choice by state (`pickClickRoute`) the node posts by and the profile form's save confirmation describes. `fixtures/tripoint/` holds the
-    redacted response shapes captured from production on 2026-09-21.
-  - `packages/node-types`: the one list of node types a saved definition can carry
-    (`NODE_TYPES`, `NodeType`), the traits each has (`NODE_TRAITS`: network,
-    dispatch or storage, walker only, synthesizes attempts, references partners,
-    static handles, executor file) and `assertNever` (#1411). Both apps re-export
-    it from their old paths (`apps/worker/src/types.ts`, `apps/web/src/types/workflow.ts`).
-    Adding a node type: add it here with its traits, and the compiler then names
-    every switch and record that must handle it (`executeNode`, save validation,
-    colours, cards, heights); the coverage tests name the palette, preview, config
-    panel, shadow exemption, changelog glossary and similar fallback placements.
-  - `packages/service-catalogue`: the ops service catalogue (#2337, #1689 Phase 7).
-    Two entry points and no root one: `@bidspoke/service-catalogue/schema` is
-    declarative (services, actions, arguments, traits, the `(key, version)` lookup)
-    for web, the validator and the MCP tool; `/runtime` holds each action's `run`
-    and the services' auth function slots, for the Workers only. Web never imports
-    `runtime` (`apps/web/src/lib/__tests__/service-catalogue-runtime-stays-out-of-web.test.ts`,
-    which also scans every package web depends on), and `schema` never reaches it
-    (the package's own `catalogue.test.ts`). An action is
-    `{ key, name, version, arguments[], sideEffect, idempotent, run }` and is never
-    edited once released (D1): `src/fingerprints.json` holds a sha256 per
-    `key@version` over its arguments, traits and the source of its run file
-    `src/runtime/actions/<key>.v<version>.ts` plus every file that run file
-    reaches through relative value imports (type only imports are left out) or
-    through a workspace package, followed into its source, plus the resolved
-    version of every npm package reached and its whole dependency closure in the
-    lockfile; a changed one fails, asking for a new version. A new version's
-    fingerprint line is printed by the failing test for you to add. Every action
-    decides `sideEffect` and `idempotent` itself, with `idempotentBecause` saying
-    why, never from a Pipedream annotation (R11). Steps resolve an action by
-    `(key, version)` and a missing version is refused as `action_version_missing`,
-    never run on the newest. Snowflake (#2337) was its first service, then Slack
-    (`slack.send-message`, the ops bot of Dan's decision 6, never the alerts bot:
-    the create and Reconnect routes compare the bot ops verify measured with the
-    alerts bot, `lib/slack-alert-bot.ts`, #2654);
-    `src/__fixtures__/catalogue` is a test only service that proves the machinery.
-  - `packages/slack-client` (#2337): `createSlackClient`, the one place a Slack Web
-    API client is built, used by the Worker's alerts and Settings routes with a bot
-    token, and by the catalogue's ops Slack actions and the ops Slack verify bound
-    to a connection's fetch (`createSlackClient({ fetch })`, which sends through
-    connectionFetch, since the library itself sends only through the global
-    fetch). It pins slack-web-api-client exactly, with retry
-    and debug logging off, and holds the only declaration of the library.
-    `slack-calls-one-client.test.ts` scans every workspace package and fails on any
-    other Slack client or import.
+Each package, and each of the three small apps, keeps its detail in its own README.md.
+- `apps/web`: Next.js frontend
+- `apps/worker`: Cloudflare Worker (API + execution engine)
+- `apps/worker-tail`: tail consumer that writes per-execution cost and copies the log lines the cron guard, cron delivery and Slack refusal checks read
+- `apps/compare-outbound`: outbound Worker that refuses every request a shadow run's code makes, for ever
+- `apps/ops-outbound`: outbound Worker of the ops dispatch namespace, refusing every request until Phase 2
+- `packages/*`: code both apps import, one implementation rather than a copy per app; plain TypeScript with no build step, listed in `transpilePackages`. A package with tests must also be named in the CI test job, which names its suites one by one (`ci-runs-every-package-suite.test.ts`), or it is green locally and never runs in CI.
+  - `uuidv7`: execution ids, minted the same by the Worker and the browser
+  - `connection-seal`: `seal` and `open` for ops connection logins
+  - `script-hygiene`: strips trailing whitespace from code node scripts
+  - `buyer-profile`: the one vocabulary, validator and evaluators for buyer profiles and the buyer_select and click nodes
+  - `node-types`: the one list of node types and their traits; a new node type starts here
+  - `service-catalogue`: the ops service catalogue; web imports only `/schema`, and a released action is never edited
+  - `slack-client`: the one place a Slack Web API client is built
 
 ## Key conventions
 - All Worker routes are in `apps/worker/src/index.ts`, handlers in `src/routes/`
@@ -137,8 +56,7 @@ The planning list is [TODO.md](./TODO.md) (#2606): read it before work on anythi
   `.order()` beside) is reported to Better Stack every time,
   and inside a scheduled job the read fails with `BIDSPOKE_ROW_CAP` (#1436, `lib/row-cap.ts`).
   A list read that may pass 1,000 rows pages with `fetchAllPaged` under a full order. The cap
-  is the Data API's `max_rows` dashboard setting; `ROW_CAP` equals `PAGE_SIZE`. #1437 tracks
-  bounding the reads still unbounded and then retiring the big table lists the older check used.
+  is the Data API's `max_rows` dashboard setting; `ROW_CAP` equals `PAGE_SIZE`.
   CI holds every `.from(` in `apps/worker/src`, on any table, to those declarations before it
   ships (`worker-big-table-pagination.test.ts`), also accepting `.maybeSingle()`, which refuses
   more than one row itself. A read bounded by its filter
@@ -154,17 +72,10 @@ The planning list is [TODO.md](./TODO.md) (#2606): read it before work on anythi
   `__guards__/worker/workflow-connection-check-guard.test.ts` fails on one that does not.
   What counts as naming a connection is the one database predicate
   `definition_connection_ids`, which `connection_references` reads too.
-- Partner saves are versioned (#2132). The partners page saves through
-  `PUT /api/partners/:id/page` (#2133), whose `save_partner_page` function writes the
-  partner half through the `save_partner_config` function, which writes just the fields a save
-  names and refuses one made from a version that is no longer stored (409 `stale_version`,
-  carrying the current row and who last changed it). Other writers (a step rename's
-  `rename_partner_step_namespace`, hand run SQL) do not go through it, which is why the
-  `partner_configs_bump_version` trigger, not the function, moves `version`: every writer
-  moves it. The columns it ignores are the ones `partner_configs_unversioned_columns()`
-  lists, which the audit trigger reads too. A 428 `reload_required` means the page was
-  opened before the save it sends was retired, so it must be reloaded: the old
-  `PUT /api/partners/:id` and `PUT /api/partners/:id/buyer-profile` answer only that (#2187).
+- Partner saves are versioned (#2132): the partners page saves through
+  `PUT /api/partners/:id/page`, and the `partner_configs_bump_version` trigger, not the save
+  function, moves `version`, so every writer moves it. Stale saves and the retired routes:
+  [docs/reference/partners.md](./docs/reference/partners.md) (Saving a partner).
 - How soon bidding sees a partner change, from ANY writer, is `BIDDING_PICKUP`
   (`apps/web/src/lib/bidding-pickup.ts`), whose doc comment holds the method and the
   measured figures, and which `__guards__/worker/bidding-pickup-bound.test.ts` re-derives
@@ -247,15 +158,17 @@ Migrations must be **backward-compatible (expand/contract)** so schema and code 
 
 **The ops database is a separate Supabase project** (#1709, decision D8): "Bidspoke Ops", ref `zwihpjxouklvkvngkvmw` (repo variable `SUPABASE_OPS_PROJECT_ID`), us-west-2, Micro. It holds run data of workflows ported off Pipedream and serves no browser. Its migrations live in `supabase-ops/supabase/migrations` and its tests in `supabase-ops/supabase/tests`; prove them with `SQL_SUITE_PROJECT=ops bash scripts/sql-suite/run.sh`. Apply them with `supabase --workdir supabase-ops link --project-ref zwihpjxouklvkvngkvmw` once, then `supabase --workdir supabase-ops db push --linked`, never from the repo root, which is linked to the bidding project. Every ops table carries `organization_id uuid NOT NULL` and RLS, and anon and authenticated reach nothing: the first migration revokes the platform's default grants.
 
-**The ops Worker** (`apps/worker/wrangler.ops.toml`, `src/ops/`) serves only when its `LANE` var is `ops`. Its database client and its one read live in `src/ops/ops-db.ts`: every ops query goes through `readOpsRows`, which takes an `OrganizationId` by type, filters on it and refuses a row of any other organization, and `apps/web/src/lib/__guards__/worker/ops-reads-through-helper.test.ts` fails on any other `.from(`, `.rpc(` or `.schema(` against the ops client. Both database clients carry the local dev write guard in `src/lib/local-dev-write-guard.ts`. The ops Worker binds itself as `SELF` to the `OpsInternal` entrypoint, so a run handed off there gets its own 30 s of CPU but no wall clock of its own: it is cancelled the moment the invocation that sent it ends, so the sender must await every run it dispatches (#1946, measured in docs/ops-ceilings-spike.md). Its minute cron (#1949) runs one tick of `src/ops/tick.ts` in observe mode: it computes which schedule slots are due on the database clock, records each in `schedule_fire_observations`, and sends each to `OpsInternal.observe` signed (`src/ops/dispatch-auth.ts`), but claims and runs nothing. It reads the ops workflows' state from the bidding Worker's `OpsGateway` entrypoint over its `OPS_GATEWAY` binding (Dan's decision 4, 2026-10-16, recorded on #1698 and #1949: the bidding database stays the one home of every definition) and keeps the last good copy in `ops_workflow_copies`; it plans from that copy as saved, never from its own fetch, and a copy not newer than the last known switch off may not start. The same tick keeps the ops connections the same way (#2335, `src/ops/connection-serve.ts`): `OpsGateway.opsConnections()` serves every `ops_key` row's sealed envelope, public config and target, never a plaintext login and never a `bidding_ring` row, each with `serve_until` 6 hours ahead (Dan's decision 3), plus the removals of the last 7 hours, each malformed row refused by name in `lib/ops-gateway-contract.ts`; with bidding down a copy is refused as `connection_copy_expired` once its window passes (`src/ops/__tests__/connection-copy-outage.test.ts`). `OpsGateway.moneyIdentities(organizationId)` serves that organization's money Salesforce org id and username, measured daily on bidding (`lib/money-identity.ts`, `money-identity` in `CRON_JOBS`), so ops verify can refuse a connection that authenticates as money's user. The tick stamps its heartbeat through the gateway, so the bidding Worker watches it (`ops-tick` in `cron-heartbeat.ts`). The tick's other sweeps (Salesforce limits every 240 s, connection checks every 14 minutes) and the Salesforce lane caps, which arrive only by an approval migration naming who approved, are described in docs/reference/observability.md and docs/ops-connections-logins.md. A step a service rate limits (a 429, or a 503 with Retry-After) suspends its run as `rate_limit_wait`, which spends no retry attempt; one step may wait at most 10 times and never past 6 hours after its first wait (`OPS_STEP_REQUEUE_MAX` and `OPS_STEP_REQUEUE_WAIT_MAX_MS` in `src/ops/run-vocabulary.ts`, which a test holds equal to `complete_run_request`'s constants; Dan kept these values on 2026-10-27), and the wait past either fails the run as `requeue_cap_reached` (#2859). `wrangler.ops.toml` always names its cron, because a config that names no cron leaves the old one firing. Ops writes go through one choke point that the database enforces (#1948): `service_role` holds SELECT only on the run engine tables, so every write is one of the SECURITY DEFINER functions, and `callOpsRpc` in `src/ops/ops-writes.ts` is the only `.rpc(` on the ops client and refuses any function not listed in `src/ops/ops-rpcs.ts`. A new ops function goes in `ops-rpcs.ts`, and a new run status or reason goes in `src/ops/run-vocabulary.ts` together with its CHECK constraint, which a test compares. Every connection bound request goes through `connectionFetch` (`src/ops/connections/`), whose login minters (`minters/`) follow decision 2 (a refused login is needs_reauth at once; a timeout or 5xx is `refresh_failing` until 5 failures, the first at least 15 minutes old) and refuse a Google mailbox or drive not on the organization's `google_delegation_subjects` list (F129, proven by attempting one in `minters/__tests__/google.test.ts`), whose only writers are `add_google_delegation_subject` and `remove_google_delegation_subject`, each writing its `ops_audit_log` record in the same transaction (#2338, docs/ops-connections-logins.md); only the modules `connection-seal-open-callers.test.ts` lists may open a sealed login; the admin setup for each service is in docs/ops-connections-logins.md. A person bound connection (an OAuth user login) is refreshed only in its `ConnectionTokenObject` (`src/ops/connection-token-object.ts`, #2335): single flight, the rotated refresh token kept in the object's storage before the access token is returned, then handed back to `service_connections.credential_enc` by the object's alarm through `OPS_GATEWAY.storeRotatedEnvelope` (`store_rotated_envelope`, a compare and set on the generation the object last knew); while the object holds a generation ahead of the row it is authoritative. Its tests run in workerd (`src/ops/__tests__/connection-token-object.workers.test.ts`). A rotation of the ops key (#2333, docs/disaster-recovery.md) moves every login to the new kid with `OpsInternal.resealConnections` (`src/ops/reseal.ts`), which the minute cron runs only while `OPS_RESEAL` is set in `wrangler.ops.toml` (`preview` writes nothing, `apply` reseals): it reseals the logins the token objects hold first (`resealLogin`), then the rows through `OPS_GATEWAY.replaceConnectionEnvelope` (`replace_connection_envelope`, a compare and set on the generation and kid it read, which keeps the generation), and is run until its `ops_reseal` log line says `nothing_left`. Then `OPS_RESEAL` is removed and the old kid deleted from `keys.ts` (rotation step 4); a new kid is named by its full date (`ops-YYYY-MM-DD`), never a prefix of a registered kid, which `keys.test.ts` refuses. The bidding Worker reaches ops connections only through the named entrypoint `OpsConnections` (`src/ops/ops-connections-entrypoint.ts`, #2335; contract in `src/lib/ops-connections-contract.ts`): verify and clearReauth use the candidate envelope for one call and never write `connection_copies`, whose only writer is the minute serve (`ops-connection-copies-one-writer.test.ts`); no ops module calls the platform fetch except the live wiring (`ops-connections-live.ts`) and the ConnectionTokenObject's token endpoint call (`ops-connection-requests-through-fetch.test.ts`); and the first ops deploy exporting `OpsConnections` is the ops rollback floor, since a rollback below it removes the entrypoint bidding's binding needs (docs/disaster-recovery.md).
+**The ops Worker** (`apps/worker/wrangler.ops.toml`, `src/ops/`) serves only when its `LANE` var is `ops`. Every ops read goes through `readOpsRows` (`src/ops/ops-db.ts`). A run handed off to `OpsInternal` is cancelled when the invocation that sent it ends, so await every run you dispatch. `wrangler.ops.toml` always names its cron. Ops writes go only through the functions listed in `src/ops/ops-rpcs.ts`, and a new run status or reason goes in `src/ops/run-vocabulary.ts` with its CHECK constraint. The tick, the gateway, rate limit waits, run variables and step tests: [docs/ops-worker.md](./docs/ops-worker.md).
 
-**The bidding Worker's binding to ops** (#2335): `OPS_CONNECTIONS`, to the ops Worker's named entrypoint `OpsConnections` (contract `src/lib/ops-connections-contract.ts`). Bidding reaches it only through `src/lib/ops-connections-client.ts`, which races every call against `OPS_CONNECTIONS_DEADLINES_MS` (each longer than ops's `OPS_CONNECTIONS_CEILINGS_MS`, a test compares them) and answers `ops_connections_unavailable` (503) when the binding is absent, throws, times out or answers something unreadable, logging the platform's reference id and never claiming ops is down. Nothing on the money path may import it or name the binding (`__guards__/worker/ops-connections-off-money-path.test.ts` follows every runtime import from the engine, the Durable Objects and the webhook, shadow and custom endpoint routes). Cloudflare deploys a binding to a missing entrypoint green, so CI reads the deployed ops script before merging a change that touches the binding (`.github/scripts/ops-exports-entrypoint.mjs`, which skips, never blocks, when it cannot tell), and Deploy calls through the binding afterwards (`ops-connections-probe.mjs`, route `GET /api/admin/ops-connections-probe`).
+**Ops connections**: every connection bound request goes through `connectionFetch` (`src/ops/connections/`); only the modules `connection-seal-open-callers.test.ts` lists may open a sealed login; a person bound (OAuth) login is refreshed only in its `ConnectionTokenObject`; a new ops key kid is named by its full date (`ops-YYYY-MM-DD`). How, and the checks behind each: [docs/ops-connections-logins.md](./docs/ops-connections-logins.md).
 
-**The App Action step** (`app_action`, #2339, ops only): one catalogue action at the version the step pinned, never the newest (D1), sent through the connection the step names; its ops executor is `src/ops/app-action.ts`, run by `run-walk.ts`. A step on a person's own account runs only when whoever bound it (`boundBy`, stamped at save by `lib/app-action-binders.ts`) owns the connection, refused by name otherwise (#2753). A step is unfinished until its action, connection and required fields are set, and a workflow holding one cannot be switched on, saved live or restored onto a live workflow (`unfinishedAppActionSteps`, read through `blockingProblems`, #2781). Its form is `components/canvas/AppActionConfig.tsx`; its data picker reads the trigger's test payload and each earlier step's kept test result.
+**The bidding Worker's binding to ops** (`OPS_CONNECTIONS`, #2335): bidding reaches it only through `src/lib/ops-connections-client.ts`, and nothing on the money path may import that or name the binding. Deadlines, CI's deployed check and the probe: docs/disaster-recovery.md.
 
-**An ops run's environment variables** (#2982, Dan's decisions of 2026-10-28 and 29, reversing #2702's "frozen with the version"): a run reads each variable's CURRENT value when it starts, secrets included ("Any secret, no exceptions"). After claiming runs, the minute tick asks the bidding Worker once per organization (`OpsGateway.opsRunVariables`, `readOpsRunVariables` in `lib/ops-gateway.ts`), which derives the names from the version it holds (`envReferences`), resolves them with the one resolver (`lib/resolve-variables.ts`, through `lib/current-variables.ts`) and decrypts each secret; each run's answer rides its signed dispatch (`src/ops/run-variables.ts`). Its first start records the plain values and the secret NAMES only (`run_requests.run_variables`), so every retry and continued slice runs on what it started with, and a secret's value is never stored on ops: it is masked out of every step record, error and log (`src/ops/mask-secrets.ts`). While bidding cannot be reached, a run may use the last good copy of the plain values (`ops_variable_copies`, `src/ops/variable-copies.ts`, written only by the tick); a run reading a secret cannot, and waits. A variable missing when a run starts fails it by name before anything sends (`runVariablesFor`). The step test is sent the current values the same way (`routes/api/ops-step-test.ts`) and refuses a missing one (`step_test_variable_unavailable`). Saving a switched on ops workflow, switching one on, or restoring onto one is refused up front (`variable_unavailable`) only when it reads a variable that does not exist for it; a secret is a variable like any other (#3003). `judgeVariables` in `lib/definition-env-references.ts` is that one judgement, for the live save and the step test. The version capture #2702 added (`capture_version_env_variables`, `workflow_versions.env_capture`, `ops_workflow_definitions.variables`, `save_workflow_definition`'s `p_variables`) is read by nothing since #3003 and is dropped by its contract migration.
+**The App Action step** (`app_action`, ops only, [docs/nodes/app-action.md](./docs/nodes/app-action.md)): it runs its catalogue action at the version the step pinned, never the newest; a step on a person's own account runs only when whoever bound it owns the connection; a workflow holding an unfinished step cannot be switched on, saved live or restored onto a live workflow.
 
-**Testing an ops step** (#2762): the canvas's test goes through `routes/api/ops-step-test.ts` to `OpsConnections.testStep`, which runs the step on ops (`src/ops/step-test.ts`) and keeps its result in `step_test_results` 7 days (`purge_step_test_results`, nightly); `stepTestResult` reads it back. Both are on `OPS_CONNECTIONS_METHODS` since the ops deploy carried them (#2764), so CI's deployed ops check requires them. A test of an action that changes something is refused as `step_test_send_unconfirmed` unless the person ticked Send for real (`confirm_send`), and each such action says what a test sends in its catalogue `realSend` (display only, outside the fingerprint; the catalogue check refuses one without it). Each step an ops run walks is recorded on ops as it finishes (`record_ops_step` into `ops_step_records`, purged past 7 days by `purge_ops_step_records`, #2703), and `run_step_context` reads a past run's steps for Build from run.
+**An ops run's environment variables** (#2982): a run reads each variable's current value when it starts, and a secret's value is never stored on ops. `judgeVariables` (`lib/definition-env-references.ts`) is the one judgement of whether a definition's variables can be used. How: docs/ops-worker.md.
+
+**Testing an ops step** (#2762): a test of an action that changes something is refused unless the person ticked Send for real (`confirm_send`), and each such action declares what a test sends in its catalogue `realSend`. The rest: docs/ops-worker.md.
 
 **Ops services** (`packages/service-catalogue`, #2337): HTTP (#2760) and Supabase (#2763) join Snowflake, Slack, Salesforce, Google, OpenAI and Anthropic. An HTTP connection names one host, the header its key goes in, and a check path verify asks; the host is never another catalogue service's, never an address by number, and never one bidding sends to (`schema/http-host.ts`, `lib/connection-money-targets.ts`). A Supabase connection names one project, never the bidding project or the ops project itself (`schema/supabase-project.ts`, `laneProjectRefs` in `src/ops/ops-db.ts`), refused at save, at verify and on every send.
 
