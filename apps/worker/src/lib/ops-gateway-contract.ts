@@ -39,6 +39,11 @@
  * And since #2340, the heartbeat stamps of the ops jobs other than the tick
  * (opsJobStarted, opsJobCompleted), each a sweep inside the tick that the
  * bidding Worker watches under its own id (OPS_GATEWAY_JOBS, below).
+ *
+ * And since #2997 (phase 1 of #2982), the current variables of the runs the
+ * tick claims (opsRunVariables): each version's plain values and decrypted
+ * secrets, the names derived by the bidding Worker from the version it holds.
+ * Served ahead of any ops caller (OPS_GATEWAY_SERVED_AHEAD, below).
  */
 import { CURRENT_OPS_KID, KID_PATTERN } from '@bidspoke/connection-seal'
 import type { OpsSweep } from '../ops/run-vocabulary'
@@ -114,6 +119,33 @@ export interface OpsGatewayBinding {
 }
 
 /**
+ * Every OpsGateway method the ops Worker may call: exactly the methods
+ * OpsGatewayBinding declares, which OPS_GATEWAY_BINDING_NAMES_EVERY_METHOD
+ * holds at compile time.
+ */
+export const OPS_GATEWAY_METHODS = [
+  'opsWorkflows', 'opsTickStarted', 'opsTickCompleted', 'opsJobStarted', 'opsJobCompleted', 'storeRotatedEnvelope', 'replaceConnectionEnvelope',
+  'opsConnections', 'moneyIdentities', 'opsWorkflowDefinitions',
+] as const
+export type OpsGatewayMethod = (typeof OPS_GATEWAY_METHODS)[number]
+
+/**
+ * Methods the bidding Worker serves ahead of the ops Worker calling them, kept
+ * off OpsGatewayBinding so no ops code can call one (#2997): an ops deploy
+ * that called a method its bidding Worker did not export yet would fail every
+ * call. opsRunVariables (phase 1 of #2982) ships on bidding first; the ops
+ * change that calls it (phase 2) moves it onto OPS_GATEWAY_METHODS and the
+ * binding once the bidding deploy carries it. The entrypoint test requires
+ * the entrypoint to serve exactly both lists, and fails on any ops source
+ * naming a method on this one.
+ */
+export const OPS_GATEWAY_SERVED_AHEAD = ['opsRunVariables'] as const
+
+type SameNames<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never
+/** Fails to compile when OpsGatewayBinding and OPS_GATEWAY_METHODS name different methods. */
+export const OPS_GATEWAY_BINDING_NAMES_EVERY_METHOD: SameNames<keyof OpsGatewayBinding, OpsGatewayMethod> = true
+
+/**
  * The most workflow versions one definition request names (#1950). The ops tick
  * asks only for the versions its frozen copy lacks, so a request is usually
  * empty or one; past this the rest wait a minute for the next tick.
@@ -175,6 +207,72 @@ export interface ServedOpsDefinitions {
 
 /** The longest reason a refused version carries: a sentence for a page, never a payload. */
 export const MAX_REFUSED_REASON = 300
+
+/**
+ * The most runs one opsRunVariables request names (#2997): the tick claims at
+ * most TICK_CLAIM_LIMIT (40) runs a minute across every organization, and asks
+ * once per organization, so one request always holds them.
+ */
+export const MAX_RUN_VARIABLES_PER_REQUEST = 40
+
+/**
+ * What the ops tick asks for the runs it claimed (#2997, phase 1 of #2982):
+ * one organization and its runs, each by workflow and version, and nothing
+ * else. Never a variable name: the bidding Worker derives the names from the
+ * version it holds (envReferences), so ops can never be served a variable no
+ * saved definition reads.
+ */
+export interface OpsRunVariablesRequest {
+  organization_id: string
+  runs: Array<{ workflow_id: string; version_number: number }>
+}
+
+/**
+ * Why the bidding Worker will not serve one run's variables. Each refuses only
+ * its own run:
+ *  - version_missing: no such workflow, or no such version of it;
+ *  - other_organization: the workflow belongs to another organization than the one asked about;
+ *  - not_ops_lane: the workflow is not on the ops lane;
+ *  - workflow_deleted: the workflow is soft deleted;
+ *  - version_unreadable: the stored definition is not an object, so what it reads cannot be told;
+ *  - secret_unreadable: a secret the definition reads will not decrypt (keys names each), never served blank.
+ */
+export const RUN_VARIABLES_REFUSALS = ['version_missing', 'other_organization', 'not_ops_lane', 'workflow_deleted', 'version_unreadable', 'secret_unreadable'] as const
+export type RunVariablesRefusal = (typeof RUN_VARIABLES_REFUSALS)[number]
+
+/**
+ * One run's current variables: every one its version's definition reads that
+ * has a saved value, each resolved by the one resolver (resolve-variables.ts),
+ * a plain one under values and a secret one, decrypted, under secret_values
+ * (Dan, 2026-10-29: "Yes, ops reads secrets"). One with no saved value is left
+ * out, so ops names it missing. served_at is when the bidding Worker read them.
+ */
+export interface ServedRunVariables {
+  workflow_id: string
+  version_number: number
+  values: Record<string, string>
+  secret_values: Record<string, string>
+  served_at: string
+}
+
+/** One run refused by name. keys names the secrets that would not decrypt, and is empty for every other reason. */
+export interface RefusedRunVariables {
+  workflow_id: string
+  version_number: number
+  refused: RunVariablesRefusal
+  keys: string[]
+}
+
+/** The answer: one entry per run asked about, in the order asked. */
+export interface ServedOpsRunVariables {
+  organization_id: string
+  runs: Array<ServedRunVariables | RefusedRunVariables>
+}
+
+/** One run's answer as the ops Worker reads it. */
+export type ReadRunVariables =
+  | { kind: 'served'; workflowId: string; versionNumber: number; values: Record<string, string>; secretValues: Record<string, string>; servedAt: string }
+  | { kind: 'refused'; workflowId: string; versionNumber: number; reason: RunVariablesRefusal; keys: string[] }
 
 /**
  * How long a served connection copy may be used: Dan's decision 3 (2026-10-17,
@@ -890,6 +988,110 @@ export function parseOpsDefinitionRequest(raw: unknown): OpsDefinitionRequest {
     return { workflow_id: v.workflow_id, version_number: v.version_number }
   })
   return { versions }
+}
+
+/**
+ * The ops tick's run variables request, as the bidding Worker reads it
+ * (#2997): exactly { organization_id, runs }, at most
+ * MAX_RUN_VARIABLES_PER_REQUEST runs, each exactly { workflow_id,
+ * version_number }, none twice. Throws by name on anything else, before any
+ * read, so no field naming a variable can reach the reader.
+ */
+export function parseOpsRunVariablesRequest(raw: unknown): OpsRunVariablesRequest {
+  if (!isRecord(raw) || Object.keys(raw).length !== 2 || typeof raw.organization_id !== 'string' || !UUID.test(raw.organization_id) || !Array.isArray(raw.runs)) {
+    throw new OpsGatewayContractError('a run variables request is exactly { organization_id: uuid, runs: [...] }')
+  }
+  if (raw.runs.length > MAX_RUN_VARIABLES_PER_REQUEST) {
+    throw new OpsGatewayContractError(`a run variables request names at most ${MAX_RUN_VARIABLES_PER_REQUEST} runs, not ${raw.runs.length}`)
+  }
+  const seen = new Set<string>()
+  const runs = raw.runs.map((r: unknown) => {
+    if (!isRecord(r) || Object.keys(r).length !== 2 || typeof r.workflow_id !== 'string' || !UUID.test(r.workflow_id) || !isVersionNumber(r.version_number)) {
+      throw new OpsGatewayContractError('each run in a run variables request is exactly { workflow_id: uuid, version_number: whole number from 1 }')
+    }
+    const id = `${r.workflow_id}:${r.version_number}`
+    if (seen.has(id)) throw new OpsGatewayContractError(`a run variables request names workflow ${r.workflow_id} version ${r.version_number} twice`)
+    seen.add(id)
+    return { workflow_id: r.workflow_id, version_number: r.version_number }
+  })
+  return { organization_id: raw.organization_id, runs }
+}
+
+/** A map of variable names to text, or null. Its values are never echoed into a message. */
+function variableText(raw: unknown): Record<string, string> | null {
+  if (!isRecord(raw)) return null
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (!ENV_KEY.test(key) || typeof value !== 'string') return null
+    out[key] = value
+  }
+  return out
+}
+
+const SERVED_RUN_FIELDS = ['secret_values', 'served_at', 'values', 'version_number', 'workflow_id'].join()
+const REFUSED_RUN_FIELDS = ['keys', 'refused', 'version_number', 'workflow_id'].join()
+
+/** One run entry of the answer, or why it cannot be read. Never quotes a value. */
+function readRunEntry(row: unknown): ReadRunVariables | string {
+  if (!isRecord(row) || typeof row.workflow_id !== 'string' || !UUID.test(row.workflow_id) || !isVersionNumber(row.version_number)) return 'it does not name a workflow and version'
+  const fields = Object.keys(row).sort().join()
+  if (fields === SERVED_RUN_FIELDS) {
+    const values = variableText(row.values)
+    const secretValues = variableText(row.secret_values)
+    if (values === null || secretValues === null) return 'its variables are not names and text'
+    if (Object.keys(secretValues).some((k) => Object.hasOwn(values, k))) return 'it names a variable both plain and secret'
+    if (!isTime(row.served_at)) return 'it has no served_at time'
+    return { kind: 'served', workflowId: row.workflow_id, versionNumber: row.version_number, values, secretValues, servedAt: row.served_at }
+  }
+  if (fields === REFUSED_RUN_FIELDS) {
+    if (!(RUN_VARIABLES_REFUSALS as readonly unknown[]).includes(row.refused)) return 'it is refused for a reason the ops Worker does not know'
+    if (!Array.isArray(row.keys) || !row.keys.every((k) => typeof k === 'string' && ENV_KEY.test(k))) return 'its refused keys are not variable names'
+    return { kind: 'refused', workflowId: row.workflow_id, versionNumber: row.version_number, reason: row.refused as RunVariablesRefusal, keys: (row.keys as string[]).slice() }
+  }
+  return 'it is neither a served nor a refused run'
+}
+
+/**
+ * The bidding Worker's run variables answer, as the ops Worker reads it
+ * (#2997). Throws when the answer is not the shape at all or answers for
+ * another organization. A run entry it cannot read, did not ask about, or
+ * answered twice is named in unreadable and left out, as is a run asked about
+ * and not answered, so one bad entry never fails the others. No text it
+ * writes quotes a served value.
+ */
+export function parseServedOpsRunVariables(raw: unknown, asked: OpsRunVariablesRequest): { runs: ReadRunVariables[]; unreadable: string[] } {
+  if (!isRecord(raw) || !Array.isArray(raw.runs) || typeof raw.organization_id !== 'string') {
+    throw new OpsGatewayContractError('the bidding Worker answered the run variables request with something other than { organization_id, runs }')
+  }
+  if (raw.organization_id !== asked.organization_id) {
+    throw new OpsGatewayContractError(`the bidding Worker answered the run variables request for organization ${asked.organization_id} as another organization's`)
+  }
+  const wanted = new Set(asked.runs.map((r) => `${r.workflow_id}:${r.version_number}`))
+  const answered = new Set<string>()
+  const runs: ReadRunVariables[] = []
+  const unreadable: string[] = []
+  raw.runs.forEach((row: unknown, i: number) => {
+    const read = readRunEntry(row)
+    const name = isRecord(row) && typeof row.workflow_id === 'string' && UUID.test(row.workflow_id)
+      ? `workflow ${row.workflow_id} version ${isVersionNumber(row.version_number) ? row.version_number : 'unknown'}` : `run ${i}`
+    if (typeof read === 'string') {
+      unreadable.push(`The bidding Worker answered the variables of ${name} in a shape the ops Worker does not read (${read}).`)
+      return
+    }
+    const id = `${read.workflowId}:${read.versionNumber}`
+    if (!wanted.has(id) || answered.has(id)) {
+      unreadable.push(`The bidding Worker answered the variables of ${name}, which the ops tick did not ask about or was already answered.`)
+      return
+    }
+    answered.add(id)
+    runs.push(read)
+  })
+  for (const r of asked.runs) {
+    if (!answered.has(`${r.workflow_id}:${r.version_number}`)) {
+      unreadable.push(`The bidding Worker did not answer the variables of workflow ${r.workflow_id} version ${r.version_number}.`)
+    }
+  }
+  return { runs, unreadable }
 }
 
 /** One served definition as the ops Worker keeps it. */

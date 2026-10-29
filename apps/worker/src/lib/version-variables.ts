@@ -11,8 +11,8 @@
  * the next save, and a run never reads the bidding database for them.
  *
  * WHAT IS SERVED. Only the variables the definition reads (envReferences, the
- * same reading the ops run refuses by), each resolved by the env loader's own
- * rules (rowReach): the organization's value with the workflow's own laid over
+ * same reading the ops run refuses by), each resolved by the one resolver
+ * (resolve-variables.ts, #2997): the organization's value with the workflow's own laid over
  * it, the later saved of two organization rows winning, a row saved for
  * another workflow or a workflow's own value of an organization only key never
  * reaching it. A plain variable is served by its value, a secret one by its
@@ -21,7 +21,7 @@
  * variables were kept serves null.
  */
 import { envReferences, ENV_KEY } from './definition-env-references'
-import { rowReach } from './env-row-reach'
+import { resolveVariables } from './resolve-variables'
 import type { ServedOpsVariables } from './ops-gateway-contract'
 
 interface CapturedRow {
@@ -31,6 +31,9 @@ interface CapturedRow {
   scope: string
   workflow_id: string | null
 }
+
+/** A kept secret's stand in value while resolving: present, and never text that could be served. */
+const SECRET_KEPT_BY_NAME = Symbol('a secret kept by name')
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
 
@@ -54,22 +57,18 @@ export function servedVersionVariables(
 ): ServedOpsVariables | null {
   if (capture === null || capture === undefined) return null
   if (!Array.isArray(capture)) throw new Error(`the variables kept with ${versionName} are not a list of saved variables`)
-  const orgRows = new Map<string, CapturedRow>()
-  const ownRows = new Map<string, CapturedRow>()
-  for (const raw of capture) {
+  const rows = capture.map((raw) => {
     const row = capturedRow(raw)
     if (row === null) throw new Error(`the variables kept with ${versionName} hold a row that is not a saved variable`)
-    // An empty value is no value, as the env loader skips it, so the run names it missing rather than send a blank.
-    if (row.value === '') continue
-    const reach = rowReach(row)
-    // Later rows win, as the env loader reads them in the order they were saved.
-    if (reach === 'org') orgRows.set(row.key, row)
-    else if (reach === 'workflow' && row.workflow_id === workflowId) ownRows.set(row.key, row)
-  }
+    // The capture keeps a secret by name, its value left out, so for the
+    // resolver it stands in as present: a workflow's own secret still withholds
+    // the organization's plain value of the same name. Never served.
+    return row.is_secret ? { ...row, value: SECRET_KEPT_BY_NAME } : row
+  })
   const served: ServedOpsVariables = { values: {}, secret_keys: [] }
-  for (const key of envReferences(definition)) {
-    const row = ownRows.get(key) ?? orgRows.get(key)
-    if (row === undefined) continue
+  // The one resolver (resolve-variables.ts) applies the precedence rules; the
+  // capture is in saved order, as the rules require.
+  for (const [key, row] of resolveVariables(rows, workflowId, envReferences(definition))) {
     if (row.is_secret) served.secret_keys.push(key)
     else served.values[key] = row.value as string
   }
