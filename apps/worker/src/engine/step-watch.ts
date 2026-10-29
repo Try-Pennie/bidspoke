@@ -79,12 +79,17 @@ export function stepContext(ctx: ExecutionContext, hooks: StepHooks): ExecutionC
  * step that timed out still records what it sent. It is put on outside the
  * at-risk watch, which has already given a Salesforce failure its own request
  * by then; the Salesforce node notes nothing here.
+ *
+ * `onNoted` is told each request as it is noted, the same object, never a copy
+ * (#3064): a parallel block that stops waiting for a child still running writes
+ * the child's row itself, and records on it the request the child noted last.
  */
 export async function runWatchedStep<T>(
   ctx: ExecutionContext,
   node: Pick<NodeDefinition, 'type' | 'namespace' | 'config'>,
   work: (stepCtx: ExecutionContext) => Promise<T>,
   retries: () => number,
+  onNoted?: (input: ResolvedStepInput) => void,
 ): Promise<T> {
   const postAnswerUpdate = ctx.afterAnswer === true && node.type === 'salesforce' && node.config.operation === 'update'
   const inquiryPost = node.type === 'salesforce' && isCreditInquiryPost(node.config)
@@ -94,7 +99,7 @@ export async function runWatchedStep<T>(
     : undefined
   // The last request the step noted: on a retry, the attempt that failed last.
   let notedInput: ResolvedStepInput | null = null
-  const hooks: StepHooks = { noteStepInput: (input) => { notedInput = input } }
+  const hooks: StepHooks = { noteStepInput: (input) => { notedInput = input; onNoted?.(input) } }
   const stepCtx = stepContext(ctx, hooks)
   try {
     return await withWriteMarker(stepCtx, marker, () => runWatched(
