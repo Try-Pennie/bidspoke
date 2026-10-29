@@ -48,8 +48,10 @@
  * parallel slot (Main Flow's credit collections post, #2832) can fail before the
  * answer without failing the run, and the run then reaches this capture degraded
  * like one whose write after the answer failed. It is logged and left alone: the
- * failure alert still reports it, on its own side of the answer, and nothing
- * here may call it an outcome to enter by hand.
+ * failure alert reports it on its own side of the answer, except when it reads
+ * as an upstream outage (a timeout does), which that alert stays quiet for, so a
+ * timed out post before the answer pages nothing until the read-back (#2835)
+ * can settle it. Nothing here may call it an outcome to enter by hand.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ErrorType, ResolvedStepInput } from '../types'
