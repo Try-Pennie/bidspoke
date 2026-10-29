@@ -179,6 +179,7 @@ describe('the invalid state canary watch', () => {
     expect(posted[0].title).toBe('Direct Salesforce writes: the one write arrived complete')
   })
 
+  // Marked as a resend (#2938), so a timed out write that arrived only because the read-back sent it again is said apart.
   it('a landed resend from the read-back (attempt 1) still counts as this run landing', async () => {
     const held = { ...landedSubmission(RUN_A, LEAD_A), Bidspoke_Write__c: marker(RUN_A, 1) }
     const { d } = deps({
@@ -186,7 +187,7 @@ describe('the invalid state canary watch', () => {
       records: { [SUB_A]: ok(held), [LEAD_A]: ok(landedLead(RUN_A)) },
     })
     const report = await runInvalidStateWatch(d)
-    expect(report.native).toEqual([{ kind: 'landed', executionId: RUN_A }])
+    expect(report.native).toEqual([{ kind: 'landed', executionId: RUN_A, resent: true }])
     expect(report.nativeCompleted).toBe(0)
   })
 

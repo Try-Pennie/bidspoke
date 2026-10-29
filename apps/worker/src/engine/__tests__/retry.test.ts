@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { withRetry, linkAbort } from '../retry'
+import { withRetry, linkAbort, stepTimeoutMessage, stepTimeoutMs } from '../retry'
+import { formatErr } from '../../lib/format-error'
 import { classifyStepError } from '../error-classifier'
 import { PartnerApiError } from '../partner-bid-error'
 import type { ErrorType } from '../../types'
@@ -182,6 +183,23 @@ describe('saturation signals (2026-06-10 create_prospect incident)', () => {
     const never = () => new Promise(() => {})
     await expect(withRetry(never, { retries: 0, backoff: 'linear', timeout_ms: 10 }, alwaysTransient))
       .rejects.toThrow(/Step timed out after 10ms \(in-flight upstream call canceled/)
+  })
+
+  // #2938: the daily direct write report finds a timed out step by the error its
+  // step row records, so the reader and this writer must agree on the words.
+  it('the error a timed out step records is the one stepTimeoutMs reads its deadline back from', async () => {
+    const never = () => new Promise(() => {})
+    const err = await withRetry(never, { retries: 0, backoff: 'linear', timeout_ms: 10 }, alwaysTransient).catch((e: unknown) => e)
+    expect(stepTimeoutMs(formatErr(err))).toBe(10)
+    expect(stepTimeoutMs(stepTimeoutMessage(5_250))).toBe(5_250)
+  })
+
+  it('stepTimeoutMs reads nothing from any other error, nor from no error', () => {
+    expect(stepTimeoutMs('Salesforce token fetch timed out after 10000 ms')).toBeNull()
+    expect(stepTimeoutMs('Parallel group timed out after 20000ms before this child completed')).toBeNull()
+    expect(stepTimeoutMs('HTTP 503: Step timed out after 10ms')).toBeNull()
+    expect(stepTimeoutMs(null)).toBeNull()
+    expect(stepTimeoutMs(undefined)).toBeNull()
   })
 
   // #66: the per-attempt signal must actually abort on timeout, so the executor's

@@ -36,7 +36,7 @@ import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
 import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
 import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
 import {
-  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
+  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, FINISHED_RUN_KEPT_DAYS, FINISHED_RUN_PURGE, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -228,6 +228,8 @@ function fake(opts: {
   variableCopies?: readonly VariableCopy[]
   /** What each page of the variable copy purge answers (#2999). */
   variableCopiesPurge?: { purged: number; more: boolean }
+  /** What each page of the finished run purge answers (#3018), by page from 1; none purged by default. */
+  finishedRunsPurge?: (page: number) => { purged: number; tombstoned: number; more: boolean }
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
@@ -295,6 +297,11 @@ function fake(opts: {
     async purgeRunVariables(limit: number) { fail('purgeRunVariables'); calls.push(`purgeRunVariables:${limit}`); return opts.runVariablesPurge ?? { purged: 0, more: false } },
     savedVariableCopies: [] as VariableCopyInput[][],
     async purgeVariableCopies(limit: number) { fail('purgeVariableCopies'); calls.push(`purgeVariableCopies:${limit}`); return opts.variableCopiesPurge ?? { purged: 0, more: false } },
+    async purgeFinishedRuns(terminalBefore: Date, limit: number) {
+      fail('purgeFinishedRuns'); calls.push(`purgeFinishedRuns:${terminalBefore.toISOString()}:${limit}`)
+      const page = calls.filter((c) => c.startsWith('purgeFinishedRuns:')).length
+      return opts.finishedRunsPurge?.(page) ?? { purged: 0, tombstoned: 0, more: false }
+    },
     async readVariableCopies(organizationId: OrganizationId, versions: ReadonlyArray<{ workflowId: string; versionNumber: number }>): Promise<VariableCopy[]> {
       fail('readVariableCopies'); calls.push(`readVariableCopies:${organizationId}:${versions.map((v) => `${v.workflowId}:${v.versionNumber}`).join(',')}`)
       return (opts.variableCopies ?? []).filter((c) => versions.some((v) => v.workflowId === c.workflowId && v.versionNumber === c.versionNumber))
@@ -1205,7 +1212,7 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     const report = await runOpsTick(f.ports)
     expect(f.db.calls).toContain('purgeStepTests:1000')
     expect(report.counts.step_tests_purged).toBe(3)
-    expect(report.problem_keys).toContain('sweep_failed:observation_purge')
+    expect(report.problem_keys).toContain('purge_failed:schedule_observations')
   })
 
   // #2703: each step of an ops run is kept 7 days, deleted with its run, the
@@ -1226,13 +1233,13 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     const report = await runOpsTick(both.ports)
     expect(both.db.calls).toContain('purgeStepRecords:1000')
     expect(report.counts.step_records_purged).toBe(4)
-    expect(report.problem_keys).toContain('sweep_failed:observation_purge')
+    expect(report.problem_keys).toEqual(expect.arrayContaining(['purge_failed:schedule_observations', 'purge_failed:step_test_results']))
 
     const records = fake({ dbNow: NIGHT, failing: { purgeStepRecords: new Error('lock timeout') }, observationsPurge: { purged: 2, more: false }, stepTestsPurge: { purged: 1, more: false } })
     const failed = await runOpsTick(records.ports)
     expect(failed.counts.observations_purged).toBe(2)
     expect(failed.counts.step_tests_purged).toBe(1)
-    expect(failed.problem_keys).toContain('sweep_failed:observation_purge')
+    expect(failed.problem_keys).toContain('purge_failed:step_records')
   })
 
   // #2998: a run's recorded variables are cleared 7 days after it ends, the same as its step records.
@@ -1250,13 +1257,13 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     const failed = await runOpsTick(failing.ports)
     expect(failing.db.calls).toContain('purgeRunVariables')
     expect(failed.counts.step_records_purged).toBe(2)
-    expect(failed.problem_keys).toContain('sweep_failed:observation_purge')
+    expect(failed.problem_keys).toContain('purge_failed:run_variables')
   })
 
   it('a failed step test purge is the sweep\'s problem and stops nothing else', async () => {
     const f = fake({ dbNow: NIGHT, failing: { purgeStepTests: new Error('lock timeout') } })
     const report = await runOpsTick(f.ports)
-    expect(report.problem_keys).toContain('sweep_failed:observation_purge')
+    expect(report.problem_keys).toContain('purge_failed:step_test_results')
     expect(f.db.calls).toEqual(expect.arrayContaining(['readCopies', 'dueQueueDepth', 'purgeTombstones']))
   })
 
@@ -1269,7 +1276,8 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
   it('a failed purge is its own problem and stops nothing else', async () => {
     const f = fake({ dbNow: NIGHT, failing: { purgeObservations: new Error('lock timeout') } })
     const report = await runOpsTick(f.ports)
-    expect(report.problem_keys).toContain('sweep_failed:observation_purge')
+    expect(report.problem_keys).toContain('purge_failed:schedule_observations')
+    expect(report.problem_keys).not.toContain('sweep_failed:observation_purge')
     expect(f.db.calls).toEqual(expect.arrayContaining(['readCopies', 'dueQueueDepth', 'purgeTombstones']))
   })
 
@@ -1277,6 +1285,105 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     const f = fake({ dbNow: NIGHT, failing: { now: new Error('down') } })
     await runOpsTick(f.ports)
     expect(f.db.calls).not.toContain('claim:observation_purge')
+  })
+})
+
+// #3018: Dan decided on 2026-10-29 that a finished ops run, its trigger payload
+// included, is kept 90 days after it ends, then the nightly purge deletes it.
+describe('the purge of finished runs (#3018: kept 90 days after they end, purged nightly)', () => {
+  const NIGHT = '2026-10-17T07:15:00.000Z' // 03:15 EDT
+  // 90 days before NIGHT on the database clock, worked out by hand: 17 days back
+  // to 30 September, 30 to 31 August, 31 to 31 July, and 12 more.
+  const CUTOFF = '2026-07-19T07:15:00.000Z'
+  const purgeCalls = (f: Fake) => f.db.calls.filter((c) => c.startsWith('purgeFinishedRuns:'))
+
+  it('keeps a finished run 90 days, from one named constant', () => {
+    expect(FINISHED_RUN_KEPT_DAYS).toBe(90)
+  })
+
+  it('is not run outside the nightly purge\'s hour', async () => {
+    const f = fake({})
+    const report = await runOpsTick(f.ports)
+    expect(purgeCalls(f)).toEqual([])
+    expect(report.counts.finished_runs_purged).toBeUndefined()
+  })
+
+  it('deletes the runs that ended more than 90 days before the database clock, a page of 1,000 at a time, and counts what it removed', async () => {
+    const f = fake({ dbNow: NIGHT, finishedRunsPurge: () => ({ purged: 37, tombstoned: 2, more: false }) })
+    const report = await runOpsTick(f.ports)
+    expect(purgeCalls(f)).toEqual([`purgeFinishedRuns:${CUTOFF}:1000`])
+    expect(FINISHED_RUN_PURGE.pageLimit).toBe(1000)
+    expect(report.counts.finished_runs_purged).toBe(37)
+    expect(report.counts.finished_run_dedup_tombstones).toBe(2)
+    expect(report.problem_keys).toEqual([])
+    expect(report.sweeps_run).toContain('observation_purge')
+  })
+
+  it('records a night with nothing to remove as zero, not as absent', async () => {
+    const f = fake({ dbNow: NIGHT })
+    const report = await runOpsTick(f.ports)
+    expect(report.counts.finished_runs_purged).toBe(0)
+  })
+
+  it('pages while there is more, and stops at its page cap with a problem saying it fell behind', async () => {
+    const f = fake({ dbNow: NIGHT, finishedRunsPurge: () => ({ purged: 1000, tombstoned: 0, more: true }) })
+    const report = await runOpsTick(f.ports)
+    expect(purgeCalls(f)).toHaveLength(FINISHED_RUN_PURGE.maxPages)
+    expect(report.counts.finished_runs_purged).toBe(FINISHED_RUN_PURGE.maxPages * 1000)
+    expect(report.problem_keys).toContain('purge_behind:finished_runs')
+    expect(report.problems.join(' ')).toMatch(/100,000 ops runs .*more are left/)
+  })
+
+  it('stops when a page says there is no more, with no problem', async () => {
+    const f = fake({ dbNow: NIGHT, finishedRunsPurge: (page) => ({ purged: page < 3 ? 1000 : 12, tombstoned: 0, more: page < 3 }) })
+    const report = await runOpsTick(f.ports)
+    expect(purgeCalls(f)).toHaveLength(3)
+    expect(report.counts.finished_runs_purged).toBe(2012)
+    expect(report.problem_keys).not.toContain('purge_behind:finished_runs')
+  })
+
+  it('starts no page once its time budget is spent, and says it fell behind', async () => {
+    const f = fake({ dbNow: NIGHT, finishedRunsPurge: () => ({ purged: 1000, tombstoned: 0, more: true }) })
+    // The Worker clock moves 10 s each time it is read, so the budget runs out after a few pages.
+    let clock = WORKER_NOW
+    const report = await runOpsTick({ ...f.ports, now: () => (clock += 10_000) })
+    const pages = purgeCalls(f).length
+    expect(pages).toBeGreaterThan(0)
+    expect(pages).toBeLessThan(10)
+    expect(report.counts.finished_runs_purged).toBe(pages * 1000)
+    expect(report.problem_keys).toContain('purge_behind:finished_runs')
+  })
+
+  // Fail loud (#3018): a failed purge is reported, never swallowed, and the
+  // runs it removed before failing are still counted.
+  it('a failed page is its own problem, reported with the error, and counts the pages before it', async () => {
+    const f = fake({
+      dbNow: NIGHT,
+      finishedRunsPurge: (page) => {
+        if (page === 3) throw new Error('canceling statement due to statement timeout')
+        return { purged: 1000, tombstoned: 0, more: true }
+      },
+    })
+    const report = await runOpsTick(f.ports)
+    expect(purgeCalls(f)).toHaveLength(3)
+    expect(report.counts.finished_runs_purged).toBe(2000)
+    expect(report.problem_keys).toContain('purge_failed:finished_runs')
+    expect(report.problem_keys).not.toContain('purge_behind:finished_runs')
+    expect(report.problems.join(' ')).toMatch(/statement timeout/)
+    expect(OPS_TICK_PROBLEM_RULES.purge_failed).toBe('two_in_a_row')
+  })
+
+  it('a failed purge of finished runs stops none of the other purges, and theirs do not stop it', async () => {
+    const f = fake({ dbNow: NIGHT, failing: { purgeFinishedRuns: new Error('lock timeout'), purgeObservations: new Error('lock timeout') }, stepRecordsPurge: { purged: 5, more: false } })
+    const report = await runOpsTick(f.ports)
+    expect(report.counts.step_records_purged).toBe(5)
+    expect(report.problem_keys).toEqual(expect.arrayContaining(['purge_failed:finished_runs', 'purge_failed:schedule_observations']))
+    expect(f.db.calls).toEqual(expect.arrayContaining(['readCopies', 'dueQueueDepth']))
+
+    const other = fake({ dbNow: NIGHT, failing: { purgeRunVariables: new Error('lock timeout') }, finishedRunsPurge: () => ({ purged: 4, tombstoned: 0, more: false }) })
+    const second = await runOpsTick(other.ports)
+    expect(second.counts.finished_runs_purged).toBe(4)
+    expect(second.problem_keys).toContain('purge_failed:run_variables')
   })
 })
 
@@ -2192,7 +2299,7 @@ describe('the last good copy of each version\'s plain variables (#2999, phase 3 
     expect(quiet.db.calls).not.toContain('purgeVariableCopies')
     const failing = fake({ dbNow: '2026-10-17T07:15:00.000Z', failing: { purgeVariableCopies: new Error('lock timeout') } })
     const failed = await runOpsTick(failing.ports)
-    expect(failed.problem_keys).toContain('sweep_failed:observation_purge')
+    expect(failed.problem_keys).toContain('purge_failed:variable_copies')
     expect(failing.db.calls).toContain('purgeRunVariables')
   })
 })

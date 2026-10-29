@@ -681,8 +681,14 @@ export interface OpsTickReport {
  * was served or found), or one no later tick can report again (a missed slot is
  * recorded once, a slot is dispatched once, the agreement check runs every 14
  * minutes), so holding it for three ticks would hold it for ever.
+ * two_in_a_row: the nightly purges (#3018). One failed night is held, and the
+ * second failed night in a row pages (Dan, 2026-10-29, on #3051), counted by
+ * the observation_purge sweep's runs (OPS_TICK_PROBLEM_SWEEPS).
  */
-export type OpsTickProblemRule = 'three_in_a_row' | 'at_once'
+export type OpsTickProblemRule = 'three_in_a_row' | 'two_in_a_row' | 'at_once'
+
+/** How many reports, or runs of its sweep, in a row each held rule waits for before it pages. */
+export const OPS_TICK_IN_A_ROW_TO_PAGE = { three_in_a_row: 3, two_in_a_row: 2 } as const satisfies Record<Exclude<OpsTickProblemRule, 'at_once'>, number>
 
 /** Every kind of problem the tick reports, and its rule. A kind not listed here pages at once. */
 export const OPS_TICK_PROBLEM_RULES = {
@@ -691,8 +697,27 @@ export const OPS_TICK_PROBLEM_RULES = {
   db_clock: 'three_in_a_row',
   /** claim_ops_sweep itself failed, which every sweep asks again on the next tick (the 2026-10-19 page). */
   sweep_claim_failed: 'three_in_a_row',
-  /** A minute sweep (lease_expiry, run_expiry) failed after its claim: claimed again 50 s on. */
+  /**
+   * A sweep failed after its claim: a minute sweep (lease_expiry, run_expiry)
+   * is claimed again 50 s on. The nightly observation_purge reports its
+   * purges' failures as purge_failed instead, since no tick after a failed
+   * night can report it again.
+   */
   sweep_failed: 'three_in_a_row',
+  /**
+   * One of the nightly purges failed (#3018), keyed by what it purges
+   * (finished_runs, run_variables, step_records, ...). Judged by the
+   * observation_purge sweep's runs (OPS_TICK_PROBLEM_SWEEPS), so the second
+   * failed night in a row pages (Dan, 2026-10-29, on #3051): one failed night
+   * only delays a purge a day, and the next night tries again.
+   */
+  purge_failed: 'two_in_a_row',
+  /**
+   * The nightly purge of finished runs stopped at its page cap or time budget
+   * with runs past their 90 days still left (#3018). Judged by the sweep's
+   * runs, and paged on the second night in a row behind, as purge_failed is.
+   */
+  purge_behind: 'two_in_a_row',
   workflows_fetch_failed: 'three_in_a_row',
   workflows_save_failed: 'three_in_a_row',
   copies_read_failed: 'three_in_a_row',
@@ -857,6 +882,12 @@ export function problemRuleOf(key: string): OpsTickProblemRule {
   return Object.hasOwn(OPS_TICK_PROBLEM_RULES, kind) ? OPS_TICK_PROBLEM_RULES[kind as OpsTickProblemKind] : 'at_once'
 }
 
+/** How many in a row a problem's key must be reported by before it pages; null for a kind that pages at once. */
+export function inARowToPage(key: string): number | null {
+  const rule = problemRuleOf(key)
+  return rule === 'at_once' ? null : OPS_TICK_IN_A_ROW_TO_PAGE[rule]
+}
+
 /**
  * The kinds a sweep that runs less often than the tick reports, each with the
  * sweep whose runs judge it (#2340). The tick reports such a problem only on a
@@ -868,7 +899,8 @@ export function problemRuleOf(key: string): OpsTickProblemRule {
  * the bidding Worker carries it, sentence and count, until the sweep runs
  * again (ops-gateway.ts countRuns). A kind not listed is judged by ticks.
  *
- * Only the sf_limits sweep's kinds are listed. The connection_check sweep and
+ * The sf_limits sweep's kinds are listed, and the nightly purges' (#3018),
+ * whose sweep runs one tick in about 1,440. The connection_check sweep and
  * the write back check that rides it, and the queue_agreement sweep, report in
  * the same way and are not yet listed (spooled on #2340).
  */
@@ -879,6 +911,8 @@ export const OPS_TICK_PROBLEM_SWEEPS = {
   sf_limits_unreadable: 'sf_limits',
   sf_limits_read_failed: 'sf_limits',
   sf_limits_read_failing: 'sf_limits',
+  purge_failed: 'observation_purge',
+  purge_behind: 'observation_purge',
 } as const satisfies Partial<Record<OpsTickProblemKind, OpsSweep>>
 
 /** The sweep whose runs judge a problem's key, read from its kind; null for a kind judged by ticks. */
