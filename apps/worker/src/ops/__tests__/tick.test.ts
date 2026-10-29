@@ -33,10 +33,11 @@ import type {
 import { RUN_LEASE_SECONDS, type RunInvocationReport } from '../run-invocation'
 import type { DispatchedRunVariables } from '../run-variables'
 import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
+import { RUN_DISPATCH_DEADLINE_MS } from '../tick-live'
 import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
 import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
 import {
-  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, FINISHED_RUN_KEPT_DAYS, FINISHED_RUN_PURGE, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
+  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, FINISHED_RUN_KEPT_DAYS, NIGHTLY_PURGE, NIGHTLY_PURGE_DESIGN, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -158,6 +159,9 @@ function sfTarget(over: Partial<SfLimitsTarget> = {}): SfLimitsTarget {
   }
 }
 
+/** What a nightly purge page answers in the fake: the same each page, or by page from 1 (a throw is that page failing). */
+type PurgeAnswer = { purged: number; more: boolean } | ((page: number) => { purged: number; more: boolean })
+
 function fake(opts: {
   copies?: WorkflowCopy[]
   fetch?: () => Promise<unknown>
@@ -169,10 +173,12 @@ function fake(opts: {
   tombstones?: { purged: number; more: boolean }
   /** What each page of the Salesforce lease sweep answers (#2334). */
   sfLeases?: { swept: number; more: boolean }
-  /** What each page of the observation purge answers (#1950). */
-  observationsPurge?: { purged: number; more: boolean }
-  stepTestsPurge?: { purged: number; more: boolean }
-  stepRecordsPurge?: { purged: number; more: boolean }
+  /** What each page of the observation purge answers (#1950), the same each page or by page from 1 (#3053). */
+  observationsPurge?: PurgeAnswer
+  stepTestsPurge?: PurgeAnswer
+  stepRecordsPurge?: PurgeAnswer
+  /** Awaited before every nightly purge page answers (#3053), so a case can see what the tick did meanwhile. */
+  purgeGate?: () => Promise<void>
   /** The database clock, when a case needs another time than DB_NOW. */
   dbNow?: string
   /** The versions missing_workflow_definitions lists (#1950); none by default. */
@@ -221,13 +227,13 @@ function fake(opts: {
   /** The gateway clock the copy refresh's deadline waits on (#3034); it never fires unless a test makes it. */
   refreshSleep?: (ms: number) => Promise<void>
   /** What each page of the run variables purge answers (#2998). */
-  runVariablesPurge?: { purged: number; more: boolean }
+  runVariablesPurge?: PurgeAnswer
   /** The frozen definitions ops holds, by `workflowId:version` (#2999); none by default. */
   heldDefinitions?: Record<string, Record<string, unknown>>
   /** The variable copies ops holds (#2999); none by default. */
   variableCopies?: readonly VariableCopy[]
   /** What each page of the variable copy purge answers (#2999). */
-  variableCopiesPurge?: { purged: number; more: boolean }
+  variableCopiesPurge?: PurgeAnswer
   /** What each page of the finished run purge answers (#3018), by page from 1; none purged by default. */
   finishedRunsPurge?: (page: number) => { purged: number; tombstoned: number; more: boolean }
 } = {}): Fake {
@@ -241,6 +247,13 @@ function fake(opts: {
     calls.push(name)
     const e = opts.failing?.[name]
     if (e) throw e
+  }
+  /** One page of a nightly purge: counted by its calls, gated, then answered the same each page or by page from 1. */
+  const purgePage = async (name: keyof OpsTickDb, limit: number, answer: PurgeAnswer | undefined) => {
+    fail(name); calls.push(`${name}:${limit}`)
+    const page = calls.filter((c) => c === name).length
+    await opts.purgeGate?.()
+    return (typeof answer === 'function' ? answer(page) : answer) ?? { purged: 0, more: false }
   }
   const db = {
     calls,
@@ -291,15 +304,16 @@ function fake(opts: {
       fail('saveDefinition'); db.savedDefinitions.push({ organizationId, workflowId, versionNumber, definition })
       return opts.saveDef?.(workflowId) ?? 'saved'
     },
-    async purgeObservations(limit: number) { fail('purgeObservations'); calls.push(`purgeObservations:${limit}`); return opts.observationsPurge ?? { purged: 0, more: false } },
-    async purgeStepTests(limit: number) { fail('purgeStepTests'); calls.push(`purgeStepTests:${limit}`); return opts.stepTestsPurge ?? { purged: 0, more: false } },
-    async purgeStepRecords(limit: number) { fail('purgeStepRecords'); calls.push(`purgeStepRecords:${limit}`); return opts.stepRecordsPurge ?? { purged: 0, more: false } },
-    async purgeRunVariables(limit: number) { fail('purgeRunVariables'); calls.push(`purgeRunVariables:${limit}`); return opts.runVariablesPurge ?? { purged: 0, more: false } },
+    async purgeObservations(limit: number) { return purgePage('purgeObservations', limit, opts.observationsPurge) },
+    async purgeStepTests(limit: number) { return purgePage('purgeStepTests', limit, opts.stepTestsPurge) },
+    async purgeStepRecords(limit: number) { return purgePage('purgeStepRecords', limit, opts.stepRecordsPurge) },
+    async purgeRunVariables(limit: number) { return purgePage('purgeRunVariables', limit, opts.runVariablesPurge) },
     savedVariableCopies: [] as VariableCopyInput[][],
-    async purgeVariableCopies(limit: number) { fail('purgeVariableCopies'); calls.push(`purgeVariableCopies:${limit}`); return opts.variableCopiesPurge ?? { purged: 0, more: false } },
+    async purgeVariableCopies(limit: number) { return purgePage('purgeVariableCopies', limit, opts.variableCopiesPurge) },
     async purgeFinishedRuns(terminalBefore: Date, limit: number) {
       fail('purgeFinishedRuns'); calls.push(`purgeFinishedRuns:${terminalBefore.toISOString()}:${limit}`)
       const page = calls.filter((c) => c.startsWith('purgeFinishedRuns:')).length
+      await opts.purgeGate?.()
       return opts.finishedRunsPurge?.(page) ?? { purged: 0, tombstoned: 0, more: false }
     },
     async readVariableCopies(organizationId: OrganizationId, versions: ReadonlyArray<{ workflowId: string; versionNumber: number }>): Promise<VariableCopy[]> {
@@ -1189,9 +1203,9 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     const report = await runOpsTick(f.ports)
     expect(OBSERVATION_PURGE_EVERY_SECONDS).toBe(20 * 3600)
     expect(f.db.calls).toContain(`claim:observation_purge:${OBSERVATION_PURGE_EVERY_SECONDS}`)
-    expect(f.db.calls.filter((c) => c === 'purgeObservations')).toHaveLength(10)
+    expect(f.db.calls.filter((c) => c === 'purgeObservations')).toHaveLength(NIGHTLY_PURGE.maxPages.schedule_observations)
     expect(f.db.calls).toContain('purgeObservations:1000')
-    expect(report.counts.observations_purged).toBe(10_000)
+    expect(report.counts.observations_purged).toBe(NIGHTLY_PURGE.maxPages.schedule_observations * 1000)
   })
 
   // #2339: a step's test result is kept 7 days, the same as run history; this
@@ -1200,8 +1214,8 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     const f = fake({ dbNow: NIGHT, stepTestsPurge: { purged: 1000, more: true } })
     const report = await runOpsTick(f.ports)
     expect(f.db.calls).toContain('purgeStepTests:1000')
-    expect(f.db.calls.filter((c) => c === 'purgeStepTests')).toHaveLength(10)
-    expect(report.counts.step_tests_purged).toBe(10_000)
+    expect(f.db.calls.filter((c) => c === 'purgeStepTests')).toHaveLength(NIGHTLY_PURGE.maxPages.step_test_results)
+    expect(report.counts.step_tests_purged).toBe(NIGHTLY_PURGE.maxPages.step_test_results * 1000)
     const quiet = fake({})
     await runOpsTick(quiet.ports)
     expect(quiet.db.calls).not.toContain('purgeStepTests')
@@ -1221,8 +1235,8 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     const f = fake({ dbNow: NIGHT, stepRecordsPurge: { purged: 1000, more: true } })
     const report = await runOpsTick(f.ports)
     expect(f.db.calls).toContain('purgeStepRecords:1000')
-    expect(f.db.calls.filter((c) => c === 'purgeStepRecords')).toHaveLength(10)
-    expect(report.counts.step_records_purged).toBe(10_000)
+    expect(f.db.calls.filter((c) => c === 'purgeStepRecords')).toHaveLength(NIGHTLY_PURGE.maxPages.step_records)
+    expect(report.counts.step_records_purged).toBe(NIGHTLY_PURGE.maxPages.step_records * 1000)
     const quiet = fake({})
     await runOpsTick(quiet.ports)
     expect(quiet.db.calls).not.toContain('purgeStepRecords')
@@ -1247,8 +1261,8 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     const f = fake({ dbNow: NIGHT, runVariablesPurge: { purged: 1000, more: true } })
     const report = await runOpsTick(f.ports)
     expect(f.db.calls).toContain('purgeRunVariables:1000')
-    expect(f.db.calls.filter((c) => c === 'purgeRunVariables')).toHaveLength(10)
-    expect(report.counts.run_variables_purged).toBe(10_000)
+    expect(f.db.calls.filter((c) => c === 'purgeRunVariables')).toHaveLength(NIGHTLY_PURGE.maxPages.run_variables)
+    expect(report.counts.run_variables_purged).toBe(NIGHTLY_PURGE.maxPages.run_variables * 1000)
     const quiet = fake({})
     await runOpsTick(quiet.ports)
     expect(quiet.db.calls).not.toContain('purgeRunVariables')
@@ -1312,7 +1326,7 @@ describe('the purge of finished runs (#3018: kept 90 days after they end, purged
     const f = fake({ dbNow: NIGHT, finishedRunsPurge: () => ({ purged: 37, tombstoned: 2, more: false }) })
     const report = await runOpsTick(f.ports)
     expect(purgeCalls(f)).toEqual([`purgeFinishedRuns:${CUTOFF}:1000`])
-    expect(FINISHED_RUN_PURGE.pageLimit).toBe(1000)
+    expect(NIGHTLY_PURGE.pageLimit).toBe(1000)
     expect(report.counts.finished_runs_purged).toBe(37)
     expect(report.counts.finished_run_dedup_tombstones).toBe(2)
     expect(report.problem_keys).toEqual([])
@@ -1328,8 +1342,8 @@ describe('the purge of finished runs (#3018: kept 90 days after they end, purged
   it('pages while there is more, and stops at its page cap with a problem saying it fell behind', async () => {
     const f = fake({ dbNow: NIGHT, finishedRunsPurge: () => ({ purged: 1000, tombstoned: 0, more: true }) })
     const report = await runOpsTick(f.ports)
-    expect(purgeCalls(f)).toHaveLength(FINISHED_RUN_PURGE.maxPages)
-    expect(report.counts.finished_runs_purged).toBe(FINISHED_RUN_PURGE.maxPages * 1000)
+    expect(purgeCalls(f)).toHaveLength(NIGHTLY_PURGE.maxPages.finished_runs)
+    expect(report.counts.finished_runs_purged).toBe(NIGHTLY_PURGE.maxPages.finished_runs * 1000)
     expect(report.problem_keys).toContain('purge_behind:finished_runs')
     expect(report.problems.join(' ')).toMatch(/100,000 ops runs .*more are left/)
   })
@@ -1344,14 +1358,15 @@ describe('the purge of finished runs (#3018: kept 90 days after they end, purged
 
   it('starts no page once its time budget is spent, and says it fell behind', async () => {
     const f = fake({ dbNow: NIGHT, finishedRunsPurge: () => ({ purged: 1000, tombstoned: 0, more: true }) })
-    // The Worker clock moves 10 s each time it is read, so the budget runs out after a few pages.
+    // The Worker clock moves 30 s each time it is read, so the budget runs out well before the page cap.
     let clock = WORKER_NOW
-    const report = await runOpsTick({ ...f.ports, now: () => (clock += 10_000) })
+    const report = await runOpsTick({ ...f.ports, now: () => (clock += 30_000) })
     const pages = purgeCalls(f).length
     expect(pages).toBeGreaterThan(0)
-    expect(pages).toBeLessThan(10)
+    expect(pages).toBeLessThan(NIGHTLY_PURGE.maxPages.finished_runs)
     expect(report.counts.finished_runs_purged).toBe(pages * 1000)
     expect(report.problem_keys).toContain('purge_behind:finished_runs')
+    expect(report.problems.join(' ')).toMatch(/stopped at its time budget/)
   })
 
   // Fail loud (#3018): a failed purge is reported, never swallowed, and the
@@ -1384,6 +1399,154 @@ describe('the purge of finished runs (#3018: kept 90 days after they end, purged
     const second = await runOpsTick(other.ports)
     expect(second.counts.finished_runs_purged).toBe(4)
     expect(second.problem_keys).toContain('purge_failed:run_variables')
+  })
+})
+
+// #3053: every nightly purge is sized against the rows it must remove a day at
+// the designed 50,000 runs a day, all of them run beside the tick on one time
+// budget, and any of them stopping with rows left is purge_behind.
+describe('the nightly purges keep up with the designed run volume (#3053)', () => {
+  const NIGHT = '2026-10-17T07:15:00.000Z' // 03:15 EDT
+  type Subject = keyof typeof NIGHTLY_PURGE.maxPages
+  const SUBJECTS = Object.keys(NIGHTLY_PURGE.maxPages) as Subject[]
+  /** Each purge's database call and the count its rows are reported under. */
+  const PURGE: Record<Subject, { call: string; count: string }> = {
+    finished_runs: { call: 'purgeFinishedRuns', count: 'finished_runs_purged' },
+    step_records: { call: 'purgeStepRecords', count: 'step_records_purged' },
+    run_variables: { call: 'purgeRunVariables', count: 'run_variables_purged' },
+    schedule_observations: { call: 'purgeObservations', count: 'observations_purged' },
+    step_test_results: { call: 'purgeStepTests', count: 'step_tests_purged' },
+    variable_copies: { call: 'purgeVariableCopies', count: 'variable_copies_purged' },
+  }
+  /** The fake's option making one purge answer each page with `answer`. */
+  const answering = (s: Subject, answer: (page: number) => { purged: number; more: boolean }) => {
+    switch (s) {
+      case 'finished_runs': return { finishedRunsPurge: (page: number) => ({ ...answer(page), tombstoned: 0 }) }
+      case 'step_records': return { stepRecordsPurge: answer }
+      case 'run_variables': return { runVariablesPurge: answer }
+      case 'schedule_observations': return { observationsPurge: answer }
+      case 'step_test_results': return { stepTestsPurge: answer }
+      case 'variable_copies': return { variableCopiesPurge: answer }
+    }
+  }
+  const always = () => ({ purged: 1000, more: true })
+  const everyBehind = Object.assign({}, ...SUBJECTS.map((s) => answering(s, always))) as Parameters<typeof fake>[0]
+  /** The purge pages a tick asked for, in order, by the subject each removes. */
+  const pagesAsked = (f: Fake): Subject[] => f.db.calls.flatMap((c) => {
+    const s = SUBJECTS.find((x) => c.startsWith(`${PURGE[x].call}:`))
+    return s ? [s] : []
+  })
+
+  it('names every purge the nightly sweep runs, each with its own page cap', () => {
+    expect(SUBJECTS.sort()).toEqual(['finished_runs', 'run_variables', 'schedule_observations', 'step_records', 'step_test_results', 'variable_copies'])
+  })
+
+  // The arithmetic, as code: the designed rows a day come from the run volume
+  // the engine is modelled for (docs/ops-ceilings-spike.md P9), and each cap
+  // removes twice a day's rows in a night, so a night lost to a failure drains.
+  it('derives the rows each purge removes a day from the designed 50,000 runs a day', () => {
+    const d = NIGHTLY_PURGE_DESIGN
+    expect(d.runsPerDay).toBe(50_000)
+    expect(d.rowsPerDay.finished_runs).toBe(d.runsPerDay)
+    expect(d.rowsPerDay.run_variables).toBe(d.runsPerDay)
+    expect(d.rowsPerDay.step_records).toBe(d.runsPerDay * d.stepRecordsPerRun)
+    expect(d.stepRecordsPerRun).toBeGreaterThanOrEqual(20)
+    expect(d.rowsPerDay.schedule_observations).toBe(68 * 1440)
+  })
+
+  it.each(SUBJECTS)('%s: its page cap removes at least twice its designed rows a day in one night', (s) => {
+    expect(NIGHTLY_PURGE.maxPages[s] * NIGHTLY_PURGE.pageLimit).toBeGreaterThanOrEqual(2 * NIGHTLY_PURGE_DESIGN.rowsPerDay[s])
+  })
+
+  it('removes a designed day of every purge in half its time budget at the assumed page time', () => {
+    const d = NIGHTLY_PURGE_DESIGN
+    const pages = SUBJECTS.reduce((n, s) => n + Math.ceil(d.rowsPerDay[s] / NIGHTLY_PURGE.pageLimit), 0)
+    expect(pages * d.assumedPageMs).toBeLessThanOrEqual(NIGHTLY_PURGE.budgetMs / 2)
+  })
+
+  // A minute cron may make 10,000 subrequests and run 15 minutes of wall clock
+  // (docs/ops-ceilings-spike.md P1, P3), and every page is one subrequest.
+  it('keeps every page it may take inside a quarter of the tick\'s subrequests, and its budget inside a run dispatch\'s deadline', () => {
+    const pages = SUBJECTS.reduce((n, s) => n + NIGHTLY_PURGE.maxPages[s], 0)
+    expect(pages).toBeLessThanOrEqual(10_000 / 4)
+    expect(NIGHTLY_PURGE.budgetMs + 10 * NIGHTLY_PURGE_DESIGN.assumedPageMs).toBeLessThan(RUN_DISPATCH_DEADLINE_MS)
+  })
+
+  it.each(SUBJECTS)('%s: stopping at its page cap with rows left is purge_behind for it alone', async (s) => {
+    const f = fake({ dbNow: NIGHT, ...answering(s, always) })
+    const report = await runOpsTick(f.ports)
+    expect(pagesAsked(f).filter((x) => x === s)).toHaveLength(NIGHTLY_PURGE.maxPages[s])
+    expect(report.counts[PURGE[s].count]).toBe(NIGHTLY_PURGE.maxPages[s] * 1000)
+    expect((report.problem_keys ?? []).filter((k) => k.startsWith('purge_'))).toEqual([`purge_behind:${s}`])
+    expect(report.problems.join(' ')).toMatch(/stopped at its page cap, and more are left/)
+    expect(OPS_TICK_PROBLEM_RULES.purge_behind).toBe('two_in_a_row')
+  })
+
+  it('shares one time budget fairly: a page of each purge in turn, and once it is spent every purge with rows left is behind', async () => {
+    const f = fake({ dbNow: NIGHT, ...everyBehind })
+    // The Worker clock moves 20 s each time it is read, so the budget runs out after a few rounds.
+    let clock = WORKER_NOW
+    const report = await runOpsTick({ ...f.ports, now: () => (clock += 20_000) })
+    const asked = pagesAsked(f)
+    expect(new Set(asked.slice(0, SUBJECTS.length))).toEqual(new Set(SUBJECTS))
+    expect(asked.length).toBeLessThan(SUBJECTS.reduce((n, s) => n + NIGHTLY_PURGE.maxPages[s], 0))
+    for (const s of SUBJECTS) expect(report.problem_keys).toContain(`purge_behind:${s}`)
+    expect(report.problems.join(' ')).toMatch(/stopped at its time budget/)
+  })
+
+  it('a small purge finishes on its first page however far behind a large one is', async () => {
+    const f = fake({ dbNow: NIGHT, stepRecordsPurge: always, stepTestsPurge: { purged: 12, more: false } })
+    const report = await runOpsTick(f.ports)
+    expect(pagesAsked(f).indexOf('step_test_results')).toBeLessThan(SUBJECTS.length)
+    expect(report.counts.step_tests_purged).toBe(12)
+    expect(report.problem_keys).toContain('purge_behind:step_records')
+    expect(report.problem_keys).not.toContain('purge_behind:step_test_results')
+  })
+
+  // Fail loud, and each purge its own boundary: a page that throws mid-night
+  // stops that purge alone, reported with its error and what it removed first.
+  it('a purge erroring mid-night is purge_failed with the rows it removed, and the others page on', async () => {
+    const f = fake({
+      dbNow: NIGHT,
+      stepRecordsPurge: (page) => {
+        if (page === 3) throw new Error('canceling statement due to statement timeout')
+        return { purged: 1000, more: true }
+      },
+      observationsPurge: (page) => ({ purged: 1000, more: page < 5 }),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(pagesAsked(f).filter((s) => s === 'step_records')).toHaveLength(3)
+    expect(report.counts.step_records_purged).toBe(2000)
+    expect(pagesAsked(f).filter((s) => s === 'schedule_observations')).toHaveLength(5)
+    expect(report.counts.observations_purged).toBe(5000)
+    expect(report.problem_keys).toContain('purge_failed:step_records')
+    expect(report.problem_keys).not.toContain('purge_behind:step_records')
+    expect(report.problem_keys).not.toContain('purge_behind:schedule_observations')
+    expect(report.problems.join(' ')).toMatch(/step records .*failed after removing 2,000: .*statement timeout/)
+  })
+
+  it('runs beside the rest of the tick, so no page holds the schedules and the claim behind it', async () => {
+    const asked: string[][] = []
+    const f: Fake = fake({
+      dbNow: NIGHT,
+      purgeGate: async () => {
+        for (let i = 0; i < 200 && !f.db.calls.includes('dueQueueDepth'); i++) await new Promise((r) => setTimeout(r, 0))
+        asked.push([...f.db.calls])
+      },
+    })
+    await runOpsTick(f.ports)
+    expect(asked.length).toBe(SUBJECTS.length)
+    for (const callsSoFar of asked) expect(callsSoFar).toContain('dueQueueDepth')
+  })
+
+  it('records every purge as zero on a night with nothing to remove, and the pages and time the night took', async () => {
+    const f = fake({ dbNow: NIGHT })
+    let clock = WORKER_NOW
+    const report = await runOpsTick({ ...f.ports, now: () => (clock += 1000) })
+    for (const s of SUBJECTS) expect(report.counts[PURGE[s].count], s).toBe(0)
+    expect(report.counts.nightly_purge_pages).toBe(SUBJECTS.length)
+    expect(report.counts.nightly_purge_ms).toBeGreaterThan(0)
+    expect(report.problem_keys).toEqual([])
   })
 })
 
@@ -2291,9 +2454,9 @@ describe('the last good copy of each version\'s plain variables (#2999, phase 3 
   it('purges stale copies and those of workflows gone from the lane in the nightly sweep, paging while there is more, and counts them', async () => {
     const f = fake({ dbNow: '2026-10-17T07:15:00.000Z', variableCopiesPurge: { purged: 1000, more: true } })
     const report = await runOpsTick(f.ports)
-    expect(f.db.calls.filter((c) => c === 'purgeVariableCopies')).toHaveLength(10)
+    expect(f.db.calls.filter((c) => c === 'purgeVariableCopies')).toHaveLength(NIGHTLY_PURGE.maxPages.variable_copies)
     expect(f.db.calls).toContain('purgeVariableCopies:1000')
-    expect(report.counts.variable_copies_purged).toBe(10_000)
+    expect(report.counts.variable_copies_purged).toBe(NIGHTLY_PURGE.maxPages.variable_copies * 1000)
     const quiet = fake({})
     await runOpsTick(quiet.ports)
     expect(quiet.db.calls).not.toContain('purgeVariableCopies')
