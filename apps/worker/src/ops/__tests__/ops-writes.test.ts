@@ -66,6 +66,7 @@ import {
   readRunStepContext,
   purgeOpsStepRecords,
   purgeRunVariables,
+  purgeTerminalRunRequests,
   purgeVariableCopies,
   readVariableCopies,
   saveVariableCopies,
@@ -1083,6 +1084,21 @@ describe('the step record wrappers (#2703)', () => {
     const { client, calls } = rpcFetch([{ purged: 3, more: true }])
     expect(await purgeVariableCopies(client, 1000)).toEqual({ purged: 3, more: true })
     expect(calls[0]).toEqual({ path: '/rest/v1/rpc/purge_variable_copies', body: { p_limit: 1000 } })
+  })
+
+  // #3018: the nightly purge of finished runs, with the cutoff the tick derives from the database clock.
+  it('purge_terminal_run_requests sends its cutoff and limit and reads its page', async () => {
+    const { client, calls } = rpcFetch([{ purged: 7, tombstoned: 1, more: true }])
+    expect(await purgeTerminalRunRequests(client, new Date('2026-07-19T07:15:00.000Z'), 1000)).toEqual({ purged: 7, tombstoned: 1, more: true })
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/purge_terminal_run_requests', body: { p_terminal_before: '2026-07-19T07:15:00.000Z', p_limit: 1000 } })
+  })
+
+  it('purge_terminal_run_requests throws on a database refusal and on an answer it cannot read, never reading either as nothing purged', async () => {
+    const refused = rpcFetch({ code: '22023', message: 'purge_terminal_run_requests: the cutoff must be at least a day ago, not 2026-10-17' }, { status: 400 })
+    await expect(purgeTerminalRunRequests(refused.client, new Date('2026-10-17T07:15:00.000Z'), 1000)).rejects.toThrow(/the cutoff must be at least a day ago/)
+    await expect(purgeTerminalRunRequests(rpcFetch([]).client, new Date('2026-07-19T07:15:00.000Z'), 1000)).rejects.toThrow(/purge_terminal_run_requests/)
+    await expect(purgeTerminalRunRequests(rpcFetch([{ purged: '7', tombstoned: 0, more: false }]).client, new Date('2026-07-19T07:15:00.000Z'), 1000))
+      .rejects.toThrow(/purged/)
   })
 
   it('purge_ops_step_records reads its page', async () => {

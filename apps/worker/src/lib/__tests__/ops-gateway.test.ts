@@ -903,6 +903,75 @@ describe('three ticks in a row (#2506)', () => {
       }
     })
   })
+
+  // #3018. The purges run once a night, in the observation_purge sweep. Judged
+  // by ticks, a failed night's problem was on one report and the clean tick
+  // after it ended its run of one, so a purge failing every night never paged.
+  // Judged by the sweep's runs, the second failed night in a row pages (Dan,
+  // 2026-10-29, on #3051), and the ticks between nights carry it. Nights are
+  // every fourth tick here, the count depending only on which reports ran the
+  // sweep.
+  describe('a failed nightly purge (#3018)', () => {
+    const FAILED = 'The nightly purge of ops runs that ended more than 90 days ago failed: canceling statement due to statement timeout.'
+    const BEHIND = 'The nightly purge removed 100,000 ops runs that ended more than 90 days ago and stopped at its page cap, and more are left.'
+    const failed: [string, string] = ['purge_failed:finished_runs', FAILED]
+    const behind: [string, string] = ['purge_behind:finished_runs', BEHIND]
+    const ran = (n: number) => ((n - 1) % 4 === 0 ? ['lease_expiry', 'run_expiry', 'observation_purge'] : ['lease_expiry', 'run_expiry'])
+    const at = (n: number, nightProblems: Array<[string, string]>) =>
+      ran(n).includes('observation_purge') && nightProblems.length > 0
+        ? bad(n, nightProblems, { sweeps_run: ran(n) })
+        : report(n, { sweeps_run: ran(n) })
+
+    it('holds the first failed night and pages on the second in a row, held through the clean ticks between', async () => {
+      const store = kv()
+      const d = deps()
+      const verdicts: string[] = []
+      for (let n = 1; n <= 5; n++) verdicts.push(await tick(store, d, n, at(n, [failed])))
+      expect(verdicts).toEqual(['held', 'held', 'held', 'held', 'alerted'])
+      expect(d.sent).toEqual([{
+        errors: [FAILED], title: 'The ops minute cron reported a problem',
+        context: 'Reported by 2 or more runs of its sweep in a row.',
+        options: { repeatsHeldByCaller: true },
+      }])
+    })
+
+    it('pages a purge left behind on the second night in a row the same way', async () => {
+      const store = kv()
+      const d = deps()
+      const verdicts: string[] = []
+      for (let n = 1; n <= 5; n++) verdicts.push(await tick(store, d, n, at(n, [behind])))
+      expect(verdicts).toEqual(['held', 'held', 'held', 'held', 'alerted'])
+    })
+
+    it('ends the count on a clean night: failed, clean, failed pages nothing', async () => {
+      const store = kv()
+      const d = deps()
+      const nights: Array<Array<[string, string]>> = [[failed], [], [failed]]
+      for (let n = 1; n <= 9; n++) await tick(store, d, n, at(n, nights[Math.floor((n - 1) / 4)] ?? []))
+      expect(d.sent).toEqual([])
+    })
+
+    it('sends the all clear once a night\'s purge no longer fails', async () => {
+      const store = kv()
+      const d = deps()
+      for (let n = 1; n <= 8; n++) await tick(store, d, n, at(n, [failed]))
+      expect(await tick(store, d, 9, at(9, []))).toBe('healthy')
+      expect(d.recovered).toEqual([OPS_TICK_JOB])
+    })
+
+    // Only the purge's kinds page on the second run: the sf_limits sweep's still need three.
+    it('leaves the other kinds judged by their sweep\'s runs at three', async () => {
+      const store = kv()
+      const d = deps()
+      const sfRan = (n: number) => ((n - 1) % 4 === 0 ? ['lease_expiry', 'run_expiry', 'sf_limits'] : ['lease_expiry', 'run_expiry'])
+      const sf: [string, string] = ['sf_limits_read_failing:00Dst0000000001AAA', 'The /limits read failed with a failure the next read may not meet.']
+      const verdicts: string[] = []
+      for (let n = 1; n <= 9; n++) {
+        verdicts.push(await tick(store, d, n, sfRan(n).includes('sf_limits') ? bad(n, [sf], { sweeps_run: sfRan(n) }) : report(n, { sweeps_run: sfRan(n) })))
+      }
+      expect(verdicts).toEqual(['held', 'held', 'held', 'held', 'held', 'held', 'held', 'held', 'alerted'])
+    })
+  })
 })
 
 type KvShape = { get: (k: string) => Promise<string | null>; put: (k: string, v: string, o?: { expirationTtl?: number }) => Promise<void>; delete: (k: string) => Promise<void> }
