@@ -12,7 +12,7 @@ import {
 
 const SERVED_AT = '2026-10-29T14:00:00.000Z'
 const DISPATCHED: DispatchedRunVariables = {
-  source: 'bidding', servedAt: SERVED_AT, values: { API_BASE: 'https://api.example.test', REGION: 'us' }, secretValues: { API_TOKEN: 'sk_live_planted_1' },
+  source: 'bidding', servedAt: SERVED_AT, values: { API_BASE: 'https://api.example.test', REGION: 'us' }, secretValues: { API_TOKEN: 'fake-planted-secret-value' },
 }
 
 describe('the variables a run dispatch carries', () => {
@@ -42,7 +42,7 @@ describe('the record a run keeps of its variables', () => {
     expect(record).toEqual({ source: 'bidding', servedAt: SERVED_AT, values: DISPATCHED.values, secretKeys: ['API_TOKEN'] })
     const row = recordRow(record)
     expect(row).toEqual({ source: 'bidding', served_at: SERVED_AT, values: DISPATCHED.values, secret_keys: ['API_TOKEN'] })
-    expect(JSON.stringify(row)).not.toContain('sk_live_planted_1')
+    expect(JSON.stringify(row)).not.toContain('fake-planted-secret-value')
   })
 
   it('reads back the row start_run_execution answers, null as no record, and refuses any other shape by name', () => {
@@ -60,7 +60,7 @@ describe('runVariablesFor: what a run is given', () => {
 
   it('gives the recorded plain values and the secrets served for this start, only those the definition reads', () => {
     expect(runVariablesFor(['API_BASE', 'API_TOKEN'], recorded, DISPATCHED.secretValues)).toEqual({
-      env: { API_BASE: 'https://api.example.test', API_TOKEN: 'sk_live_planted_1' }, secrets: { API_TOKEN: 'sk_live_planted_1' },
+      env: { API_BASE: 'https://api.example.test', API_TOKEN: 'fake-planted-secret-value' }, secrets: { API_TOKEN: 'fake-planted-secret-value' },
     })
     expect(runVariablesFor([], null, {})).toEqual({ env: {}, secrets: {} })
   })

@@ -1732,7 +1732,7 @@ describe('the reseal watch (#2486)', () => {
 
 describe('the variables of the runs a live tick claims (#2998, phase 2 of #2982)', () => {
   const ORG_2 = organizationIdFrom('7a2d3c9f-1e4b-4d2f-8b66-2c3d4e5f6071')
-  const PLANTED = 'sk_live_PLANTED_tick_2998'
+  const PLANTED = 'fake-tick-secret-value'
 
   it('asks the bidding Worker once per organization for every run it will start, each workflow and version once, and puts each run\'s answer in its own dispatch', async () => {
     const f = fake({

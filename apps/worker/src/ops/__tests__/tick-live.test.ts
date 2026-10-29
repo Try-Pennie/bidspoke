@@ -67,7 +67,7 @@ function opsDatabase(extra: Record<string, unknown> = {}) {
 }
 
 /** What the tick was served for a run (#2998). */
-const VARIABLES = { source: 'bidding' as const, servedAt: '2026-10-17T10:02:30.000Z', values: { API_BASE: 'https://api.example.test' }, secretValues: { API_TOKEN: 'sk_live_tick_live_planted' } }
+const VARIABLES = { source: 'bidding' as const, servedAt: '2026-10-17T10:02:30.000Z', values: { API_BASE: 'https://api.example.test' }, secretValues: { API_TOKEN: 'fake-tick-live-secret' } }
 
 function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: number; jobStamps: string[]; jobReports: unknown[]; definitionRequests: unknown[]; variableRequests: unknown[] } {
   const g = {
@@ -112,7 +112,7 @@ function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: num
       const r = request as { organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> }
       return {
         organization_id: r.organization_id,
-        runs: r.runs.map((x) => ({ ...x, values: { API_BASE: 'https://api.example.test' }, secret_values: { API_TOKEN: 'sk_live_tick_live_planted' }, served_at: '2026-10-17T10:02:30.000Z' })),
+        runs: r.runs.map((x) => ({ ...x, values: { API_BASE: 'https://api.example.test' }, secret_values: { API_TOKEN: 'fake-tick-live-secret' }, served_at: '2026-10-17T10:02:30.000Z' })),
       }
     },
   }

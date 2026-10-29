@@ -722,8 +722,8 @@ describe('walkOpsDefinition: the variables a run started with (#2998)', () => {
       return { output: null }
     }
     const run = runCtx({ runVariables: recorded({ LIST_ID: 'l', REGION: 'us' }, ['API_BASE']) })
-    expect(await walkOpsDefinition(def, run.ctx, { action_a: handler }, { secretValues: { API_BASE: 'sk_live_walk_secret' } })).toEqual({ outcome: 'done' })
-    expect(seenEnv).toEqual([{ API_BASE: 'sk_live_walk_secret', LIST_ID: 'l', REGION: 'us' }])
+    expect(await walkOpsDefinition(def, run.ctx, { action_a: handler }, { secretValues: { API_BASE: 'fake-walk-secret-value' } })).toEqual({ outcome: 'done' })
+    expect(seenEnv).toEqual([{ API_BASE: 'fake-walk-secret-value', LIST_ID: 'l', REGION: 'us' }])
   })
 
   it('refuses, before any step runs, a variable that did not exist when the run started, naming it, never sending a blank', async () => {
@@ -757,7 +757,7 @@ describe('walkOpsDefinition: the variables a run started with (#2998)', () => {
 // ── a secret is never stored (#2998) ─────────────────────────────────────────
 
 describe('walkOpsDefinition: a secret value is masked out of everything the run keeps (#2998)', () => {
-  const SECRET = 'sk_live_PLANTED_9f8e7d6c'
+  const SECRET = 'fake-planted-walk-secret'
   const withSecret = (): RunVariablesRecord => ({ source: 'bidding', servedAt: '2026-10-29T14:00:00.000Z', values: { API_BASE: 'https://api.example.test' }, secretKeys: ['API_TOKEN'] })
   // A transform that copies the secret into its output, then a step that answers with it and one that fails quoting it.
   const leaky = {

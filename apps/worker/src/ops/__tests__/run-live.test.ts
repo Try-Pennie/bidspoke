@@ -145,7 +145,7 @@ describe('OpsInternal.run', () => {
   })
 
   it('gives a run the secret its dispatch carried, records the secret\'s name only, and masks its value from every record and log line (#2998)', async () => {
-    const PLANTED = 'sk_live_PLANTED_run_live_2998'
+    const PLANTED = 'fake-run-live-secret-value'
     const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'env.TOKEN', target: 't' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
     const db = opsDb({ ...LIFECYCLE, record_ops_step: 'recorded', workflow_definition: [{ definition: def, saved_at: '2026-10-17T09:00:00Z' }] })
     const lines: string[] = []

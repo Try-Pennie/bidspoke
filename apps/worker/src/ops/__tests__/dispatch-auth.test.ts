@@ -35,7 +35,7 @@ const RUN = {
 
 /** The variables the tick was served for the run (#2998), a planted secret value among them. */
 const VARIABLES = {
-  source: 'bidding' as const, servedAt: '2026-10-17T10:02:30.000Z', values: { API_BASE: 'https://api.example.test' }, secretValues: { API_TOKEN: 'sk_live_planted_dispatch' },
+  source: 'bidding' as const, servedAt: '2026-10-17T10:02:30.000Z', values: { API_BASE: 'https://api.example.test' }, secretValues: { API_TOKEN: 'fake-dispatch-secret' },
 }
 
 describe('a run dispatch (#1950)', () => {
