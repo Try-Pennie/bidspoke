@@ -6,6 +6,7 @@ import { CONFIG_FAULT_WORDS } from '../engine/nodes/lead-validation'
 import { scheduleInWords } from './schedule-words'
 import { SLACK_ALERT_LOGIN_LINK } from '@bidspoke/service-catalogue/schema'
 import { DRAIN_STALL_SCHEDULES } from './strand-schedules'
+import { AUDIT_PERIOD_DAYS, TIMED_OUT_RUNS_TO_LIST, type HeadroomFinding, type LosingRunsFinding, type OutageFinding, type PeriodFinding, type WorkflowPeriodFindings } from './timeout-findings'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
 import type { SupabaseClient } from '@supabase/supabase-js'
 // Type only, so this cannot create an import cycle with the watcher that calls
@@ -1134,117 +1135,142 @@ export async function sendMatrixValidationAlert(
   return (await postMessage(connection.bot_token, channel, blocks, `Bid matrix problem: ${total} found`, 'bid-matrix-validation')) !== null
 }
 
-// Structural shapes of one workflow's offending nodes. Defined here (rather than
-// imported from timeout-audit) so slack.ts has no dependency back on its caller.
+// Structural shape of one workflow's sub floor nodes. Defined here (rather than
+// imported from timeout-audit) so slack.ts has no dependency back on its caller;
+// the five day findings come from the pure timeout-findings module.
 interface TimeoutConfigWarning {
   workflow_id: string
   workflow_name: string
   nodes: Array<{ node_id: string; label: string | null; namespace: string; type: string; configured_ms: number; floor_ms: number }>
 }
 
-interface TimeoutUnderProvisionedWarning {
-  workflow_id: string
-  workflow_name: string
-  nodes: Array<{
-    node_id: string
-    label: string | null
-    namespace: string
-    type: string
-    configured_ms: number
-    suggested_ms: number
-    p99_ms: number
-    max_ms: number
-    sample_size: number
-    retries: number
-    severity: 'red' | 'amber'
-  }>
+const timeoutMs = (v: number) => `${v.toLocaleString('en-US')}ms`
+const etClock = (iso: string) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(iso))
+const etDay = (iso: string) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' }).format(new Date(iso))
+
+/** "between 11:52 AM and 12:36 PM ET Oct 28", naming the day twice only when the span crosses midnight. */
+export function etSpan(start: string, end: string): string {
+  return etDay(start) === etDay(end)
+    ? `between ${etClock(start)} and ${etClock(end)} ET ${etDay(start)}`
+    : `between ${etClock(start)} ET ${etDay(start)} and ${etClock(end)} ET ${etDay(end)}`
+}
+
+function stepHead(f: { label: string | null; namespace: string; type: string }, nodeUrl: string): string {
+  return `• <${nodeUrl}|${f.label || f.namespace}> (${f.type}): `
 }
 
 /**
- * One under-provisioned step, saying what was measured (2026-10-27). The alert
- * carries only red steps, and red is the timeout below the slowest run when the
- * step has no retries and below the p99 when it has some (timeoutSeverity), so
- * the line names whichever it was. It used to say "most runs would time out" of
- * both, which neither measures.
+ * A step losing runs to its timeout (#2934): how many runs failed on it in the
+ * five days (a run whose last try timed out, after any retries it had) and when
+ * the latest did, the burst most of them came in when there
+ * was one, and the five day suggestion only when it is above the setting.
  */
-export function underProvisionedLine(n: TimeoutUnderProvisionedWarning['nodes'][number], nodeUrl: string): string {
-  const ms = (v: number) => `${v.toLocaleString('en-US')}ms`
-  const runs = n.sample_size.toLocaleString('en-US')
-  const head = `• <${nodeUrl}|${n.label || n.namespace}> (${n.type}): `
-  return n.retries === 0
-    ? `${head}set to ${ms(n.configured_ms)} with no retries, and its slowest of ${runs} recent runs took ${ms(n.max_ms)}, so a run that slow fails. Try ${ms(n.suggested_ms)} (p99 ${ms(n.p99_ms)}).`
-    : `${head}set to ${ms(n.configured_ms)}, below the p99 of ${ms(n.p99_ms)} over ${runs} recent runs, so more than 1 run in 100 takes longer and is retried. Try ${ms(n.suggested_ms)}.`
+export function losingRunsLine(f: LosingRunsFinding, nodeUrl: string): string {
+  const burst = f.burst ? ` ${f.burst.count} of them came ${etSpan(f.burst.start, f.burst.end)}.` : ''
+  const tryValue = f.suggested_ms != null ? ` Try ${timeoutMs(f.suggested_ms)}.` : ''
+  const latest = f.latest_at ? `, the latest at ${etClock(f.latest_at)} ET ${etDay(f.latest_at)}` : ''
+  return `${stepHead(f, nodeUrl)}${f.timed_out.toLocaleString('en-US')} runs failed on its ${timeoutMs(f.configured_ms)} timeout in the last ${AUDIT_PERIOD_DAYS} days${latest}.${burst}${tryValue}`
+}
+
+/** A step whose lost runs all came in one short burst: its count and window, and no value. */
+export function outageLine(f: OutageFinding, nodeUrl: string): string {
+  return `${stepHead(f, nodeUrl)}${f.timed_out.toLocaleString('en-US')} runs timed out at ${timeoutMs(f.configured_ms)}, all ${etSpan(f.start, f.end)}.`
 }
 
 /**
- * Alert that one or more active workflows have a step whose timeout is below the
- * node-type reliability floor (fails on cold runs) or below the history-based
- * suggested value (real runs time out or burn retries). Posted by the daily
- * audit cron, deduped upstream so it fires only when the offending set changes.
- * The caller passes an already fetched connection and has already checked
- * config_alerts_enabled.
+ * A step set below its five day suggestion that lost at most one run. It says
+ * only what was measured: a finished run of a Salesforce step can take longer
+ * than its timeout (Send Salesforce finished at 7,422 ms against 5,250), so the
+ * line never claims a run that slow would fail.
+ */
+export function headroomLine(f: HeadroomFinding, nodeUrl: string): string {
+  const runs = `${f.sample_size.toLocaleString('en-US')} runs sampled`
+  const measured = f.retries === 0
+    ? `set to ${timeoutMs(f.configured_ms)} with no retries; over the last ${AUDIT_PERIOD_DAYS} days its slowest finished run took ${timeoutMs(f.max_ms)} and its p99 was ${timeoutMs(f.p99_ms)} (${runs}).`
+    : f.configured_ms < f.p99_ms
+      ? `set to ${timeoutMs(f.configured_ms)}, below its p99 over the last ${AUDIT_PERIOD_DAYS} days of ${timeoutMs(f.p99_ms)} (${runs}).`
+      : `set to ${timeoutMs(f.configured_ms)}; its p99 over the last ${AUDIT_PERIOD_DAYS} days was ${timeoutMs(f.p99_ms)} (${runs}).`
+  return `${stepHead(f, nodeUrl)}${measured} Try ${timeoutMs(f.suggested_ms)}.`
+}
+
+/**
+ * The daily Step Timeout Warnings alert. Sub floor steps first (they fail on
+ * every cold run), then, judged over five days (#2934): steps losing runs to
+ * their timeout, likely upstream outages, and steps with little headroom.
+ * Posted by the daily audit cron, deduped upstream so it fires only when the
+ * listed set changes. The caller passes an already fetched connection and has
+ * already checked config_alerts_enabled.
  */
 export async function sendTimeoutConfigAlert(
   connection: SlackConnection,
   warnings: TimeoutConfigWarning[],
-  underProvisioned: TimeoutUnderProvisionedWarning[],
+  period: WorkflowPeriodFindings[],
   appUrl: string
 ): Promise<void> {
   const subFloorCount = warnings.reduce((sum, w) => sum + w.nodes.length, 0)
-  const underCount = underProvisioned.reduce((sum, w) => sum + w.nodes.length, 0)
-  const totalNodes = subFloorCount + underCount
+  const ofKind = <K extends PeriodFinding['kind']>(kind: K) =>
+    period
+      .map((w) => ({ ...w, findings: w.findings.filter((f): f is Extract<PeriodFinding, { kind: K }> => f.kind === kind) }))
+      .filter((w) => w.findings.length > 0)
+  const losing = ofKind('losing_runs')
+  const outages = ofKind('outage')
+  const headroom = ofKind('headroom')
+  const count = (ws: Array<{ findings: unknown[] }>) => ws.reduce((sum, w) => sum + w.findings.length, 0)
+  const totalNodes = subFloorCount + count(losing) + count(outages) + count(headroom)
   if (totalNodes === 0) return
 
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Step Timeout Warnings', emoji: false } },
   ]
-
-  if (subFloorCount > 0) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Below the reliable minimum:* ${subFloorCount} step${subFloorCount === 1 ? '' : 's'} ${subFloorCount === 1 ? 'has' : 'have'} a timeout below the minimum that reliably works for the node type. On a cold run the step exceeds it before the work starts, so it times out and fails on every retry. Raise each to at least the listed minimum.`,
-      },
-    })
-    for (const w of warnings) {
-      const lines = w.nodes
-        .slice(0, 20)
-        .map((n) => {
-          const nodeUrl = `${appUrl}/workflows/${w.workflow_id}?node=${n.node_id}`
-          return `• <${nodeUrl}|${n.label || n.namespace}> (${n.type}): set to ${n.configured_ms}ms, needs at least ${n.floor_ms}ms`
-        })
-      const more = w.nodes.length > 20 ? `\n_and ${w.nodes.length - 20} more_` : ''
-      blocks.push({
-        type: 'section',
-        text: { type: 'mrkdwn', text: `*${w.workflow_name}*\n${lines.join('\n')}${more}` },
-      })
+  const steps = (n: number) => `${n} step${n === 1 ? '' : 's'}`
+  const nodeUrlOf = (workflowId: string, nodeId: string) => `${appUrl}/workflows/${workflowId}?node=${nodeId}`
+  const section = <F extends { node_id: string }>(
+    intro: string,
+    workflows: Array<{ workflow_id: string; workflow_name: string; findings: F[] }>,
+    line: (f: F, nodeUrl: string) => string,
+  ) => {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: intro } })
+    for (const w of workflows) {
+      const lines = w.findings.slice(0, 20).map((f) => line(f, nodeUrlOf(w.workflow_id, f.node_id)))
+      const more = w.findings.length > 20 ? `\n_and ${w.findings.length - 20} more_` : ''
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${w.workflow_name}*\n${lines.join('\n')}${more}` } })
     }
   }
 
-  if (underCount > 0) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Below the suggested value:* ${underCount} step${underCount === 1 ? '' : 's'} ${underCount === 1 ? 'has' : 'have'} a timeout that recent runs have taken longer than. A step with no retries fails such a run; a step with retries spends one on it.`,
-      },
-    })
-    for (const w of underProvisioned) {
-      const lines = w.nodes.slice(0, 20).map((n) => underProvisionedLine(n, `${appUrl}/workflows/${w.workflow_id}?node=${n.node_id}`))
-      const more = w.nodes.length > 20 ? `\n_and ${w.nodes.length - 20} more_` : ''
-      blocks.push({
-        type: 'section',
-        text: { type: 'mrkdwn', text: `*${w.workflow_name}*\n${lines.join('\n')}${more}` },
-      })
-    }
+  if (subFloorCount > 0) {
+    section(
+      `*Below the reliable minimum:* ${steps(subFloorCount)} ${subFloorCount === 1 ? 'has' : 'have'} a timeout below the minimum that reliably works for the node type. On a cold run the step exceeds it before the work starts, so it times out and fails on every retry. Raise each to at least the listed minimum.`,
+      warnings.map((w) => ({ workflow_id: w.workflow_id, workflow_name: w.workflow_name, findings: w.nodes })),
+      (n, nodeUrl) => `${stepHead(n, nodeUrl)}set to ${n.configured_ms}ms, needs at least ${n.floor_ms}ms`,
+    )
+  }
+  if (losing.length > 0) {
+    section(
+      `*Losing runs to the timeout:* ${steps(count(losing))} had ${TIMED_OUT_RUNS_TO_LIST} or more runs fail on the timeout in the last ${AUDIT_PERIOD_DAYS} days.`,
+      losing,
+      losingRunsLine,
+    )
+  }
+  if (outages.length > 0) {
+    section(
+      `*Likely upstream outages:* every run ${count(outages) === 1 ? 'this step' : 'these steps'} lost to the timeout in the last ${AUDIT_PERIOD_DAYS} days came in one burst of two hours or less. That points to the service they call, not to a timeout set too low, so no new value is suggested.`,
+      outages,
+      outageLine,
+    )
+  }
+  if (headroom.length > 0) {
+    section(
+      `*Little headroom:* ${steps(count(headroom))} lost at most one run to the timeout in the last ${AUDIT_PERIOD_DAYS} days, but ${count(headroom) === 1 ? 'is' : 'are'} set below the value suggested by how long ${count(headroom) === 1 ? 'its' : 'their'} runs take.`,
+      headroom,
+      headroomLine,
+    )
   }
 
   await postMessage(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    `Step timeout warnings: ${totalNodes} step${totalNodes === 1 ? '' : 's'} need a higher timeout`,
+    `Step timeout warnings: ${steps(totalNodes)}`,
     'timeout-config',
   )
 }

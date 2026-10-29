@@ -4,8 +4,8 @@
  * workflow scoped row that names no workflow reaches none, and so does a
  * workflow's own value for a key that is the organization's only
  * (org-only-env-keys). The one predicate the env loader, the daily decrypt
- * check, and the one variable resolver (resolve-variables.ts, #2997, read by
- * an ops version's kept variables and the ops gateway's current ones) all
+ * check, and the one variable resolver (resolve-variables.ts, #2997, read for
+ * the ops gateway's current variables and a live ops save's check) all
  * apply, so each judges exactly the rows a run can be handed (L11).
  *
  * Its own module, with no imports but the organization only keys, so a reader
