@@ -29,7 +29,7 @@ import { LeadValidationConfigFault } from './nodes/lead-validation'
 import { reportLeadValidationEvent, type LeadValidationAlertDeps } from '../lib/lead-validation-config-alert'
 import { constantsNamespacesOf, type TriggerType } from '@bidspoke/workflow-definition'
 import { withRetry } from './retry'
-import { stepTimeoutMarkerOf, timeoutMarker, PARALLEL_BLOCK_DEADLINE, type StepTimeoutMarker } from './step-timeout'
+import { stepTimeoutMarkerOf, timeoutMarker, abortAfter, PARALLEL_BLOCK_DEADLINE, CODE_CHAIN_DEADLINE, BID_GROUP_DEADLINE, type StepTimeoutMarker } from './step-timeout'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
 import { fieldPresenceColumns, fieldPresenceForCapture, shouldLogCapture } from './field-presence'
 import { detectDroppedEmail } from './dropped-fields'
@@ -2015,7 +2015,7 @@ export async function walkGraph(
         }
       }
 
-      const runAttempt = async ({ partner_id, attemptIndex }: { partner_id: string; attemptIndex: number }): Promise<BidGroupAttempt> => {
+      const runAttempt = async ({ partner_id, attemptIndex, groupDeadline }: { partner_id: string; attemptIndex: number; groupDeadline?: { ms: number; passed: () => boolean } }): Promise<BidGroupAttempt> => {
         const slug = slugByPartnerId.get(partner_id) ?? `partner-${attemptIndex}`
         const childNamespace = `${node.namespace}.${slug}`
         const childNode: NodeDefinition = {
@@ -2032,6 +2032,8 @@ export async function walkGraph(
         let attemptErrorType: ErrorType = null
         let attemptOutput: import('./nodes/partner-bid').PartnerBidOutput | null = null
         let attemptResolvedInput: ResolvedStepInput | null = null
+        // Set when the partner bid's own timer stopped the attempt (#3068).
+        let attemptTimeout: StepTimeoutMarker | null = null
 
         try {
           const result = await executePartnerBidNode(childNode, ctx, env, supabase)
@@ -2043,8 +2045,12 @@ export async function walkGraph(
           attemptError = formatErr(err)
           attemptErrorType = classifyStepError(err)
           attemptResolvedInput = extractResolvedInput(err)
+          attemptTimeout = stepTimeoutMarkerOf(err)
           forwardBlockSightings(err)
         }
+        // A race that stopped waiting for this attempt marks its row, whatever the
+        // attempt did after: that is the deadline the group decided on (#3068).
+        if (groupDeadline?.passed()) attemptTimeout = timeoutMarker(BID_GROUP_DEADLINE, groupDeadline.ms)
 
         recordStepOutput(ctx, childNamespace, { output: attemptOutput, status: attemptStatus, error: attemptError, error_type: attemptErrorType })
         // Log with the bid_group's REAL node id as step_node_id. childNode.id is
@@ -2058,7 +2064,7 @@ export async function walkGraph(
         // failures before payload construction).
         const attemptInput: ResolvedStepInput = attemptResolvedInput
           ?? { template: { partner_id }, resolved: { partner_id } }
-        logStep(stepLogQueue, executionId, executionStartedAt, { ...childNode, id: node.id }, attemptStatus, attemptInput, attemptOutput, attemptError, attemptErrorType, 0, attemptStart, attemptOrderBase + attemptIndex, node.id)
+        logStep(stepLogQueue, executionId, executionStartedAt, { ...childNode, id: node.id }, attemptStatus, attemptInput, attemptOutput, attemptError, attemptErrorType, 0, attemptStart, attemptOrderBase + attemptIndex, node.id, undefined, attemptTimeout)
 
         const attemptStatusLog = attemptStatus === 'completed' ? 'step_complete' : 'step_error'
         log({ event: attemptStatusLog, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: childNamespace, step_type: 'partner_bid', duration_ms: Date.now() - attemptStartMs, error_message: attemptError, error_type: attemptErrorType })
@@ -2262,7 +2268,9 @@ export async function walkGraph(
           live_percent_in_force: selectOutput.live_percent_in_force,
         },
       }
-      logStep(stepLogQueue, executionId, executionStartedAt, node, selectStatus, selectResolvedInput, selectOutput, selectFailure?.message, selectErrorType, 0, selectStartedAt, selectStartOrder)
+      // The node's budget ending its walk marks its row (#3068), but never a row
+      // that failed for another reason, such as a handle that is not wired.
+      logStep(stepLogQueue, executionId, executionStartedAt, node, selectStatus, selectResolvedInput, selectOutput, selectFailure?.message, selectErrorType, 0, selectStartedAt, selectStartOrder, undefined, undefined, selectFailure ? null : selectResult.deadline)
       lastOutput = selectOutput
 
       const selectDurationMs = Date.now() - selectStartMs
@@ -2410,7 +2418,8 @@ export async function walkGraph(
           // resolveValue is cheap (string templating against ctx); fine on the
           // hot path for a chain of ~3-5 nodes.
           const chainResolvedInput = buildCodeStepInput(chainNode, ctx, env)
-          logStep(stepLogQueue, executionId, executionStartedAt, chainNode, r.status, chainResolvedInput, r.output ?? null, r.error, chainErrorType, 0, stepStartedAtIso, stepOrder, undefined, r.logs)
+          // The chain's own deadline marks the step it failed on (#3068).
+          logStep(stepLogQueue, executionId, executionStartedAt, chainNode, r.status, chainResolvedInput, r.output ?? null, r.error, chainErrorType, 0, stepStartedAtIso, stepOrder, undefined, r.logs, r.status === 'failed' ? chainResult.timeout : null)
           // The bundle's raw records for this step become sightings through the one detector
           // (#1265); the chain response came straight from JSON, so the records are re-read.
           noteSandboxBlocks(ctx, chainNode.namespace, ctx.codeBundleName ?? codeBundleName(ctx.trigger.workflow_id), readBlockRecords(r.blocks))
@@ -3083,7 +3092,11 @@ export async function executeCodeChain(
   chain: NodeDefinition[],
   ctx: ExecutionContext,
   env: Env
-): Promise<{ results: ChainStepResult[] }> {
+): Promise<{
+  results: ChainStepResult[]
+  /** Set only when the chain's own timer stopped the dispatch (#3068): the marker for the failed step's row. Kept off the results, which come from the bundle's JSON. */
+  timeout?: StepTimeoutMarker
+}> {
   // Withhold platform master secrets from the sandbox; partner creds + DB env
   // vars (decrypted by env-loader) still flow (#108).
   const mergedEnv = buildSandboxEnv(env, ctx.env)
@@ -3110,7 +3123,9 @@ export async function executeCodeChain(
   // sum — the time it would take to run them one after another on the bundle.
   const chainTimeoutMs = chain.reduce((sum, n) => sum + ((n.config?.timeout_ms as number | undefined) ?? 30000), 0)
   const controller = new AbortController()
-  const chainTimer = setTimeout(() => controller.abort(), chainTimeoutMs)
+  // Knows whether it was the one that aborted the dispatch, so only its own abort
+  // marks the step as stopped by the chain's deadline (#3068).
+  const chainTimer = abortAfter(controller, chainTimeoutMs, CODE_CHAIN_DEADLINE)
 
   // The one switch for where a run's code goes (#1708): a shadow run's chain runs
   // only on its compare bundle, and never falls back to the money namespace.
@@ -3118,7 +3133,7 @@ export async function executeCodeChain(
   try {
     target = codeDispatchTarget(env, ctx, { chain: true })
   } catch (err) {
-    clearTimeout(chainTimer)
+    chainTimer.clear()
     const permanent = (err as { permanent?: unknown }).permanent === true ? { permanent: true as const } : {}
     return { results: [{ namespace: chain[0].namespace, status: 'failed', error: formatErr(err), durationMs: 0, ...permanent }] }
   }
@@ -3137,13 +3152,16 @@ export async function executeCodeChain(
     if (err instanceof Error && err.name === 'AbortError') timedOut = true
     else bindingError = err
   } finally {
-    clearTimeout(chainTimer)
+    chainTimer.clear()
   }
 
   // A timeout fails the chain (the caller throws StepFailureError) — do NOT fall
   // back to per-node, which would re-run the chain and could repeat side effects.
+  // Its wording is unchanged; the marker says so only when the chain's own timer
+  // caused the abort, never because of what the abort said (#3068).
   if (timedOut) {
-    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: `Code chain timed out after ${chainTimeoutMs}ms`, durationMs: chainTimeoutMs }] }
+    const failed = { results: [{ namespace: chain[0].namespace, status: 'failed' as const, error: `Code chain timed out after ${chainTimeoutMs}ms`, durationMs: chainTimeoutMs }] }
+    return chainTimer.fired() ? { ...failed, timeout: timeoutMarker(CODE_CHAIN_DEADLINE, chainTimeoutMs) } : failed
   }
 
   // A transient binding throw (not a genuine "Worker not found") must fail the

@@ -1423,3 +1423,63 @@ describe('a live claim that misses its deadline hands the lead to the deferred r
     expect(h.buyerCalls).toEqual([])
   })
 })
+
+/**
+ * #3068: a budget that ends the node's walk is one of our deadlines, so the
+ * result carries the marker the walker writes on the node's own row
+ * ('buyer_select', with the budget's length). It is set only where the node's
+ * own budget clock says the budget is spent, never from a reason's wording, and
+ * nothing about the route, the reason or the sale changes.
+ */
+describe('the budget that ended the walk is marked on the result (#3068)', () => {
+  const marker = (ms: number) => ({ timeout_kind: 'buyer_select', timed_out_after_ms: ms })
+
+  it('decide only: profiles that take the whole budget', async () => {
+    const h = harness()
+    h.deps.loadProfiles = async () => { h.clockMs += BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS + 1; return snapshot(buyer('p-1', 'tripoint', 1)) }
+    const r = await run(h, ctx(), node({ mode: 'decide_only' }))
+    expect(out(r)).toMatchObject({ _route: 'deferred', reason: 'rehearsal_deadline' })
+    expect(r.deadline).toEqual(marker(BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS))
+  })
+
+  it('decide only: a ledger call the budget cut short inside the attempt', async () => {
+    const r = await run(harness({ slowReserveMs: 5_000 }), ctx(), node({ mode: 'decide_only' }))
+    expect(out(r)).toMatchObject({ _route: 'deferred', reason: 'rehearsal_deadline' })
+    expect(r.deadline).toEqual(marker(BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS))
+  })
+
+  it('live: profiles that take the whole pre-call budget', async () => {
+    const h = harness()
+    h.deps.loadProfiles = async () => { h.clockMs += BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS + 1; return snapshot(buyer('p-1', 'tripoint', 1)) }
+    const r = await run(h)
+    expect(out(r)).toMatchObject({ _route: 'no_sale', reason: 'object_deadline' })
+    expect(r.failure).toBeUndefined()
+    expect(r.deadline).toEqual(marker(BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS))
+  })
+
+  it('live: a reserve the pre-call budget cut short', async () => {
+    const r = await run(harness({ slowReserveMs: 5_000 }))
+    expect(out(r)).toMatchObject({ _route: 'no_sale', reason: 'object_deadline' })
+    expect(r.deadline).toEqual(marker(BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS))
+  })
+
+  it('an object deadline with budget still left is the object\'s, not the budget\'s: not marked', async () => {
+    const h = harness()
+    h.deps.saleClient = () => new SharedClaim({ operation: 'lead sale claim', ms: 300 })
+    const r = await run(h)
+    expect(out(r)).toMatchObject({ reason: 'object_deadline' })
+    expect(r.deadline).toBeUndefined()
+  })
+
+  it('a sale, a decline and a refusal carry no marker', async () => {
+    expect((await run(harness())).deadline).toBeUndefined()
+    expect((await run(harness({ answers: { tripoint: [DUPLICATE] } }))).deadline).toBeUndefined()
+    expect((await run(harness({ profiles: new Error('down') }))).deadline).toBeUndefined()
+  })
+
+  it('a buyer call that ran past the budget is not the budget: the budget ends when the call starts', async () => {
+    const r = await run(harness({ advanceOnBuyerCall: BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS + 1 }))
+    expect(out(r)._route).toBe('sold')
+    expect(r.deadline).toBeUndefined()
+  })
+})
