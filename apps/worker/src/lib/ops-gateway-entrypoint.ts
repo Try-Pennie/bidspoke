@@ -24,7 +24,7 @@ import { createSupabaseClient } from './supabase'
 import { readMoneyIdentities } from './money-identity'
 import { parseOpsDefinitionRequest, parseOpsRunVariablesRequest } from './ops-gateway-contract'
 import {
-  readOpsConnections, readOpsRunVariables, readOpsWorkflowDefinitions, readOpsWorkflows, recordOpsJobCompleted, recordOpsJobStarted, recordOpsTickCompleted, recordOpsTickStarted,
+  readOpsConnections, readOpsRunVariableNames, readOpsRunVariables, readOpsWorkflowDefinitions, readOpsWorkflows, recordOpsJobCompleted, recordOpsJobStarted, recordOpsTickCompleted, recordOpsTickStarted,
   replaceConnectionEnvelope, storeRotatedEnvelope,
 } from './ops-gateway'
 import { secretKeys } from './secret-crypto'
@@ -72,11 +72,15 @@ export class OpsGateway extends WorkerEntrypoint<Env> {
    * MAX_RUN_VARIABLES_PER_REQUEST runs, never a variable name), then the reads,
    * retries off, and each secret decrypted through the key ring. The ops tick
    * calls it since #2998. Who may call it and whose data: readOpsRunVariables
-   * in ops-gateway.ts.
+   * in ops-gateway.ts. A request with secrets 'names' (#3034, the ops copy
+   * refresh) goes to readOpsRunVariableNames instead, which is handed no key,
+   * so the key ring is never even read for it and no secret is decrypted.
    */
   opsRunVariables(request: unknown) {
     const parsed = parseOpsRunVariablesRequest(request)
-    return readOpsRunVariables(createSupabaseClient(this.env, { retry: false }), secretKeys(this.env), parsed, Date.now())
+    const supabase = createSupabaseClient(this.env, { retry: false })
+    if (parsed.secrets === 'names') return readOpsRunVariableNames(supabase, parsed, Date.now())
+    return readOpsRunVariables(supabase, secretKeys(this.env), parsed, Date.now())
   }
 
   async opsTickStarted() {

@@ -147,6 +147,7 @@ function ports(db: OpsTickDb, fetchConnections: () => Promise<unknown>): OpsTick
       fetchConnections,
       fetchDefinitions: async () => { throw new Error('nothing is missing') },
       fetchRunVariables: async () => { throw new Error('the observe tick claims no run') },
+      sleep: () => new Promise<void>(() => undefined),
       started: async () => {},
       completed: async () => {},
       jobStarted: async () => {},

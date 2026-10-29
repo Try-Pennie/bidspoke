@@ -14,7 +14,14 @@ import {
   MAX_VARIABLE_COPIES_PER_SAVE, MAX_VARIABLE_COPY_KEY_BYTES, MAX_VARIABLE_COPY_NAMES, MAX_VARIABLE_COPY_VALUE_BYTES, type VariableCopy,
 } from '../ops-writes'
 import { COPIES_STALE_AFTER_MS } from '../tick'
-import { copyInputOf, judgeCopy } from '../variable-copies'
+import { GATEWAY_DEADLINE_MS } from '../tick-live'
+import { VARIABLE_COPY_REFRESH_DEADLINE_MS, copyInputOf, copySourceOf, judgeCopy } from '../variable-copies'
+
+describe('the refresh\'s one deadline (#3034)', () => {
+  it('is one gateway call\'s, so the refresh never holds a tick longer than a single request to the bidding Worker could', () => {
+    expect(VARIABLE_COPY_REFRESH_DEADLINE_MS).toBe(GATEWAY_DEADLINE_MS)
+  })
+})
 
 describe('the database and the Worker agree on the copy\'s numbers', () => {
   it('the purge deletes at the age a fallback refuses, and the save holds the bounds copyInputOf checks first', () => {
@@ -33,19 +40,25 @@ const WF = '00000000-0000-4000-8000-0000000029a1'
 const PLANTED = 'fake-copy-planted-secret'
 const SIX_HOURS = 6 * 60 * 60 * 1000
 
-const served = (values: Record<string, string>, secretValues: Record<string, string> = {}) => ({
-  kind: 'served' as const, workflowId: WF, versionNumber: 3, values, secretValues, servedAt: '2026-10-29T10:00:00.000Z',
+const served = (values: Record<string, string>, secretKeys: string[] = []) => ({
+  workflowId: WF, versionNumber: 3, values, secretKeys, servedAt: '2026-10-29T10:00:00.000Z',
 })
 
 describe('a copy entry (copyInputOf)', () => {
   it('keeps each plain value, each secret by NAME only, and names absent each name the version reads that bidding did not serve', () => {
-    const input = copyInputOf(ORG, served({ API_BASE: 'https://a.example.test' }, { API_TOKEN: PLANTED }), ['API_BASE', 'API_TOKEN', 'GONE'])
+    const input = copyInputOf(ORG, served({ API_BASE: 'https://a.example.test' }, ['API_TOKEN']), ['API_BASE', 'API_TOKEN', 'GONE'])
     expect(input).toEqual({
       organizationId: ORG, workflowId: WF, versionNumber: 3, servedAt: '2026-10-29T10:00:00.000Z',
       values: { API_BASE: 'https://a.example.test' }, secretKeys: ['API_TOKEN'], absentKeys: ['GONE'],
     })
-    // The planted secret is nowhere in what would be written.
-    expect(JSON.stringify(input)).not.toContain(PLANTED)
+  })
+
+  it('a claimed run\'s answer reaches the copy with its secrets by NAME only, before the copy code sees it (#3034)', () => {
+    const source = copySourceOf({
+      kind: 'served', workflowId: WF, versionNumber: 3, values: { API_BASE: 'a' }, secretValues: { API_TOKEN: PLANTED }, servedAt: '2026-10-29T10:00:00.000Z',
+    })
+    expect(source).toEqual(served({ API_BASE: 'a' }, ['API_TOKEN']))
+    expect(JSON.stringify(source)).not.toContain(PLANTED)
   })
 
   it('keeps only the names the version reads, so a value bidding served beyond them is not written', () => {

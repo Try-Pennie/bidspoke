@@ -280,6 +280,8 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
         if (!gateway) throw noGateway()
         return bounded('the bidding Worker\'s run variables', () => gateway.opsRunVariables(request), GATEWAY_DEADLINE_MS, options.delay)
       },
+      // #3034: the variables copy refresh's one deadline waits on this, the clock every gateway deadline here uses.
+      sleep: options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
       started: async () => {
         if (!gateway) throw noGateway()
         await bounded('the bidding Worker\'s heartbeat', () => gateway.opsTickStarted(), GATEWAY_DEADLINE_MS, options.delay)

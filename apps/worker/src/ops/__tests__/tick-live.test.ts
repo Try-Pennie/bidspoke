@@ -556,6 +556,23 @@ describe('the bindings', () => {
     expect(waited).toEqual([GATEWAY_DEADLINE_MS])
   })
 
+  it('sends a names request through as asked, and the copy refresh\'s deadline waits on the injected clock (#3034)', async () => {
+    const g = gateway()
+    const { env } = configured(g)
+    const waited: number[] = []
+    // The gateway call's own deadline never passes here; the refresh's wait returns at once.
+    const delay = (ms: number) => {
+      waited.push(ms)
+      return ms === 1234 ? Promise.resolve() : new Promise<void>(() => undefined)
+    }
+    const ports = liveTickPorts(env, null, { sealRegistry, now: () => NOW, delay })
+    const names = { organization_id: ORG, runs: [{ workflow_id: WF, version_number: 3 }], secrets: 'names' as const }
+    await ports.gateway.fetchRunVariables(names)
+    expect(g.variableRequests).toEqual([names])
+    await ports.gateway.sleep(1234)
+    expect(waited).toEqual([GATEWAY_DEADLINE_MS, 1234])
+  })
+
   it('signs a run\'s variables into its dispatch, which OpsInternal verifies whole', async () => {
     const seen: unknown[] = []
     const s = { ...self(), run: async (signed: unknown) => {
