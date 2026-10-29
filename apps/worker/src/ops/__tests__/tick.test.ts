@@ -17,7 +17,8 @@
  * database clock, so a fire computed on the wrong one is visible.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { MAX_DEFINITIONS_PER_REQUEST, OPS_TICK_PROBLEM_RULES } from '../../lib/ops-gateway-contract'
+import { MAX_DEFINITIONS_PER_REQUEST, OPS_TICK_PROBLEM_RULES, OpsGatewayContractError } from '../../lib/ops-gateway-contract'
+import { VARIABLE_COPY_REFRESH_AT_ONCE, VARIABLE_COPY_REFRESH_DEADLINE_MS } from '../variable-copies'
 import { organizationIdFrom, type OrganizationId } from '../ops-db'
 import {
   OpsWriteTimeoutError, type ConnectionCopyInput, type SaveConnectionCopiesResult, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
@@ -118,7 +119,9 @@ interface Fake {
   /** The definition requests sent to the bidding Worker (#1950). */
   definitionRequests: Array<{ versions: Array<{ workflow_id: string; version_number: number }> }>
   /** The run variables requests sent to the bidding Worker (#2998). */
-  variableRequests: Array<{ organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> }>
+  variableRequests: Array<{ organization_id: string; runs: Array<{ workflow_id: string; version_number: number }>; secrets?: 'names' }>
+  /** Every wait the copy refresh's one deadline asked the gateway clock for (#3034). */
+  refreshWaits: number[]
   /** The variables each run's dispatch carried, by run request id (#2998). */
   ranVariables: Record<string, DispatchedRunVariables>
   dispatched: DispatchItem[]
@@ -214,7 +217,9 @@ function fake(opts: {
   /** The measured identities of connections bidding never stored that a complete serve removes (#2573); none by default. */
   unservedRemoved?: UnservedIdentityRemoved[]
   /** What the bidding Worker answers a run variables request with (#2998); each run served no variables by default. */
-  serveRunVariables?: (request: { organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> }) => Promise<unknown>
+  serveRunVariables?: (request: { organization_id: string; runs: Array<{ workflow_id: string; version_number: number }>; secrets?: 'names' }) => Promise<unknown>
+  /** The gateway clock the copy refresh's deadline waits on (#3034); it never fires unless a test makes it. */
+  refreshSleep?: (ms: number) => Promise<void>
   /** What each page of the run variables purge answers (#2998). */
   runVariablesPurge?: { purged: number; more: boolean }
   /** The frozen definitions ops holds, by `workflowId:version` (#2999); none by default. */
@@ -341,7 +346,8 @@ function fake(opts: {
   const objectReads: string[] = []
   const definitionRequests: Array<{ versions: Array<{ workflow_id: string; version_number: number }> }> = []
   const ranRuns: string[] = []
-  const variableRequests: Array<{ organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> }> = []
+  const variableRequests: Array<{ organization_id: string; runs: Array<{ workflow_id: string; version_number: number }>; secrets?: 'names' }> = []
+  const refreshWaits: number[] = []
   const ranVariables: Record<string, DispatchedRunVariables> = {}
   const ports: OpsTickPorts = {
     mode: opts.mode ?? 'observe',
@@ -379,6 +385,10 @@ function fake(opts: {
         if (opts.serveRunVariables) return opts.serveRunVariables(request)
         return servedVariables(request)
       },
+      sleep: (ms) => {
+        refreshWaits.push(ms)
+        return opts.refreshSleep ? opts.refreshSleep(ms) : new Promise<void>(() => undefined)
+      },
       jobStarted: async (job) => { jobStamps.push(`started:${job}`); if (opts.jobStampFails) throw new Error('the gateway is not deployed') },
       jobCompleted: async (job) => { jobStamps.push(`completed:${job}`); if (opts.jobStampFails) throw new Error('the gateway is not deployed') },
     },
@@ -411,19 +421,22 @@ function fake(opts: {
       dispatched.push(item)
     },
   }
-  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes, objectReads, definitionRequests, ranRuns, variableRequests, ranVariables }
+  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes, objectReads, definitionRequests, ranRuns, variableRequests, ranVariables, refreshWaits }
 }
 
 /** The bidding Worker's answer to a run variables request (#2998): each run asked about served what `per` says, none by default. */
 function servedVariables(
-  request: { organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> },
+  request: { organization_id: string; runs: Array<{ workflow_id: string; version_number: number }>; secrets?: 'names' },
   per: (r: { workflow_id: string; version_number: number }) => Record<string, unknown> = () => ({ values: {}, secret_values: {} }),
 ) {
   return {
     organization_id: request.organization_id,
     runs: request.runs.map((r) => {
       const answer = per(r)
-      return 'refused' in answer ? { ...r, keys: [], ...answer } : { ...r, values: {}, secret_values: {}, served_at: '2026-10-17T10:02:29.000Z', ...answer }
+      if ('refused' in answer) return { ...r, keys: [], ...answer }
+      const { secret_values: secretValues, ...served } = { ...r, values: {}, secret_values: {}, served_at: '2026-10-17T10:02:29.000Z', ...answer }
+      // A names request (#3034) is answered with each secret by name, as readOpsRunVariableNames does.
+      return request.secrets === 'names' ? { ...served, secret_keys: Object.keys(secretValues as object) } : { ...served, secret_values: secretValues }
     }),
   }
 }
@@ -1967,16 +1980,124 @@ describe('the last good copy of each version\'s plain variables (#2999, phase 3 
     expect(observe.db.savedVariableCopies).toEqual([])
   })
 
-  it('stops refreshing after the first failed request, and counts it', async () => {
+  it('counts a failed refresh once, and writes nothing from it', async () => {
     const f = fake({
       mode: 'live', copies: [copy(), copy({ workflowId: WF_B, organizationId: ORG_2 })],
       heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE'), [`${WF_B}:3`]: reading('API_BASE') },
       serveRunVariables: down,
     })
     const report = await runOpsTick(f.ports)
-    expect(f.variableRequests).toHaveLength(1)
     expect(f.db.savedVariableCopies).toEqual([])
     expect(report.counts).toMatchObject({ variable_copies_refresh_failed: 1 })
+  })
+
+  describe('the refresh asks for secret names only, all at once under one deadline (#3034)', () => {
+    /** Six organizations, one switched on workflow each, so the refresh sends six requests. */
+    const ORGS = [0, 1, 2, 3, 4, 5].map((i) => organizationIdFrom(`6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f7${i}`))
+    const WFS = [0, 1, 2, 3, 4, 5].map((i) => `00000000-0000-4000-8000-0000000034a${i}`)
+    const six = {
+      copies: ORGS.map((organizationId, i) => copy({ workflowId: WFS[i], organizationId })),
+      heldDefinitions: Object.fromEntries(WFS.map((w) => [`${w}:3`, reading('API_BASE', 'API_TOKEN')])),
+    }
+    /** An answer a few turns of the event loop later, so the requests overlap whenever the refresh lets them. */
+    const later = async <T>(value: T): Promise<T> => {
+      for (let i = 0; i < 5; i++) await Promise.resolve()
+      return value
+    }
+
+    it('the refresh asks by name, a claimed run\'s ask never does, and the copy keeps the secret by name', async () => {
+      const f = fake({
+        mode: 'live', copies: [copy(), copy({ workflowId: WF_B })], claimed: [claimedRun(WF_A, 1)],
+        heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE', 'API_TOKEN'), [`${WF_B}:3`]: reading('API_BASE', 'API_TOKEN') },
+        serveRunVariables: async (request) => servedVariables(request, () => ({ values: { API_BASE: 'b' }, secret_values: { API_TOKEN: PLANTED } })),
+      })
+      const report = await runOpsTick(f.ports)
+      const claimedAsk = f.variableRequests.find((r) => r.runs.some((x) => x.workflow_id === WF_A))
+      const refreshAsk = f.variableRequests.find((r) => r.runs.some((x) => x.workflow_id === WF_B))
+      expect(claimedAsk).toEqual({ organization_id: ORG, runs: [{ workflow_id: WF_A, version_number: 3 }] })
+      expect(refreshAsk).toEqual({ organization_id: ORG, runs: [{ workflow_id: WF_B, version_number: 3 }], secrets: 'names' })
+      // The claimed run still got its secret's value; the copy holds it by name only.
+      expect(f.ranVariables[claimedRun(WF_A, 1).runRequestId]).toMatchObject({ secretValues: { API_TOKEN: PLANTED } })
+      expect(f.db.savedVariableCopies[0].map((c) => [c.workflowId, c.values, c.secretKeys])).toEqual(expect.arrayContaining([
+        [WF_A, { API_BASE: 'b' }, ['API_TOKEN']], [WF_B, { API_BASE: 'b' }, ['API_TOKEN']],
+      ]))
+      expect(JSON.stringify(f.db.savedVariableCopies)).not.toContain(PLANTED)
+      expect(report.counts).toMatchObject({ variable_copies_versions_written: 2, variable_copies_refresh_requests: 1 })
+    })
+
+    it(`sends its requests concurrently, never more than VARIABLE_COPY_REFRESH_AT_ONCE (${VARIABLE_COPY_REFRESH_AT_ONCE}) at once`, async () => {
+      let inFlight = 0
+      let most = 0
+      const f = fake({
+        mode: 'live', ...six,
+        serveRunVariables: async (request) => {
+          inFlight++
+          most = Math.max(most, inFlight)
+          try {
+            return await later(servedVariables(request, () => ({ values: { API_BASE: 'b' } })))
+          } finally {
+            inFlight--
+          }
+        },
+      })
+      const report = await runOpsTick(f.ports)
+      expect(VARIABLE_COPY_REFRESH_AT_ONCE).toBeGreaterThan(1)
+      expect(VARIABLE_COPY_REFRESH_AT_ONCE).toBeLessThan(ORGS.length)
+      expect(most).toBe(VARIABLE_COPY_REFRESH_AT_ONCE)
+      expect(f.variableRequests).toHaveLength(ORGS.length)
+      expect(f.variableRequests.every((r) => r.secrets === 'names')).toBe(true)
+      expect(f.db.savedVariableCopies.flat()).toHaveLength(ORGS.length)
+      expect(report.counts).toMatchObject({ variable_copies_refresh_requests: ORGS.length, variable_copies_versions_written: ORGS.length })
+    })
+
+    it('waits one deadline for the whole refresh, not one a request, and writes nothing from a refresh that ran out of it', async () => {
+      const f = fake({
+        mode: 'live', ...six,
+        // Every request hangs; the deadline, passing a few turns later, is what ends the refresh.
+        serveRunVariables: () => new Promise<never>(() => undefined),
+        refreshSleep: () => later(undefined),
+      })
+      const report = await runOpsTick(f.ports)
+      expect(f.refreshWaits).toEqual([VARIABLE_COPY_REFRESH_DEADLINE_MS])
+      expect(f.variableRequests).toHaveLength(VARIABLE_COPY_REFRESH_AT_ONCE)
+      expect(f.db.savedVariableCopies).toEqual([])
+      expect(report.counts).toMatchObject({ variable_copies_refresh_failed: 1 })
+    })
+
+    it('stops at the first failure: starts no further request, and writes none of the refresh\'s answers, while a claimed run\'s copy is still written', async () => {
+      const f = fake({
+        mode: 'live', ...six,
+        copies: [...six.copies, copy()], claimed: [claimedRun(WF_A, 1)],
+        heldDefinitions: { ...six.heldDefinitions, [`${WF_A}:3`]: reading('API_BASE') },
+        serveRunVariables: async (request) => {
+          // The claimed ask is answered; of the refresh, the first organization's request fails and the rest are answered.
+          if (request.secrets === 'names' && request.organization_id === ORGS[0]) throw new Error('the bidding Worker\'s run variables did not answer within 15 s')
+          return later(servedVariables(request, () => ({ values: { API_BASE: 'b' } })))
+        },
+      })
+      const report = await runOpsTick(f.ports)
+      const refreshAsks = f.variableRequests.filter((r) => r.secrets === 'names')
+      expect(refreshAsks).toHaveLength(VARIABLE_COPY_REFRESH_AT_ONCE)
+      expect(f.db.savedVariableCopies.flat().map((c) => c.workflowId)).toEqual([WF_A])
+      expect(report.counts).toMatchObject({ variable_copies_refresh_failed: 1, variable_copies_versions_written: 1 })
+      expect(report.counts.variable_copies_refresh_requests).toBeUndefined()
+    })
+
+    it('a bidding Worker from before names refuses the request whole: the refresh writes nothing, and the claimed run still runs on its live answer', async () => {
+      const f = fake({
+        mode: 'live', copies: [copy(), copy({ workflowId: WF_B })], claimed: [claimedRun(WF_A, 1)],
+        heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE'), [`${WF_B}:3`]: reading('API_BASE') },
+        serveRunVariables: async (request) => {
+          // What the bidding Worker answered before #3034: it read exactly two fields, so it refused this request rather than decrypting for it.
+          if (Object.keys(request).length !== 2) throw new OpsGatewayContractError('a run variables request is exactly { organization_id: uuid, runs: [...] }')
+          return servedVariables(request, () => ({ values: { API_BASE: 'b' } }))
+        },
+      })
+      const report = await runOpsTick(f.ports)
+      expect(f.ranRuns).toEqual([claimedRun(WF_A, 1).runRequestId])
+      expect(f.db.savedVariableCopies.flat().map((c) => c.workflowId)).toEqual([WF_A])
+      expect(report.counts).toMatchObject({ variable_copies_refresh_failed: 1, runs_variables_live: 1 })
+    })
   })
 
   it('a save that fails is counted, and no run is lost over it', async () => {

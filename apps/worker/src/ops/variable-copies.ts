@@ -13,12 +13,20 @@
  * THE ONE WRITER (writeVariableCopies), the minute tick in live mode, after its
  * own opsRunVariables answers. It writes the versions the claimed runs were
  * served, and refreshes every switched on workflow that may start at its
- * current version (asked of the bidding Worker in requests of
- * MAX_RUN_VARIABLES_PER_REQUEST, one after another, stopping at the first that
- * fails), all in one save_variable_copies call, which rewrites only the rows
- * that changed. The tick skips the refresh when its own workflow fetch failed
- * or its claimed ask did, so a bidding outage costs one failed request a
- * minute, not one per workflow. The names a version reads are taken from its
+ * current version, all in one save_variable_copies call, which rewrites only
+ * the rows that changed. The refresh (#3034) asks the bidding Worker in the
+ * names mode (secrets 'names'), so bidding decrypts nothing and sends no
+ * secret value, in requests of MAX_RUN_VARIABLES_PER_REQUEST, at most
+ * VARIABLE_COPY_REFRESH_AT_ONCE at once, all under one deadline,
+ * VARIABLE_COPY_REFRESH_DEADLINE_MS: the first failure or the deadline ends
+ * it, no further request is started, and none of its answers is written that
+ * tick (the claimed runs' versions still are). A claimed run's own answer
+ * reaches this module through copySourceOf, its secrets by name only. The tick
+ * skips the refresh when its own workflow fetch failed or its claimed ask did,
+ * so a bidding outage costs one failed request a minute, not one per workflow;
+ * one that begins after those succeeded costs at most the
+ * VARIABLE_COPY_REFRESH_AT_ONCE requests already in flight, all ended by the
+ * one deadline. The names a version reads are taken from its
  * copy once held, otherwise from its frozen definition (envReferences, the one
  * reading of that question), at most VARIABLE_COPY_DEFINITIONS_PER_TICK
  * definitions a tick; a version whose names cannot be told is not asked for.
@@ -33,8 +41,12 @@
  * as it does today. Any other is returned to the queue unstarted. A run the
  * bidding Worker refused by name never reaches here.
  */
+import { raceDeadline } from '../lib/alert-claim'
 import { ENV_KEY, envReferences, namedVariables as named } from '../lib/definition-env-references'
-import { MAX_RUN_VARIABLES_PER_REQUEST, parseServedOpsRunVariables, type OpsRunVariablesRequest, type ReadRunVariables } from '../lib/ops-gateway-contract'
+import {
+  MAX_RUN_VARIABLES_PER_REQUEST, parseServedOpsRunVariableNames,
+  type OpsRunVariableNamesRequest, type OpsRunVariablesRequest, type ReadRunVariableNames, type ReadRunVariables,
+} from '../lib/ops-gateway-contract'
 import { formatErr } from '../lib/format-error'
 import type { OrganizationId } from './ops-db'
 import {
@@ -59,6 +71,25 @@ export const VARIABLE_COPY_DEFINITIONS_PER_TICK = 40
 export const MAX_VARIABLE_COPY_VERSION_BYTES = 1024 * 1024
 export const MAX_VARIABLE_COPY_SAVE_BYTES = 4 * 1024 * 1024
 
+/**
+ * The most refresh requests in flight at once (#3034). Four: under the
+ * platform's six simultaneous outbound connections an invocation may hold, so
+ * the tick's own database calls running beside the refresh are not queued
+ * behind it, and at most four bidding invocations read the bidding database
+ * for it at once (each reads up to MAX_RUN_VARIABLES_PER_REQUEST versions in
+ * parallel). The Pipedream export's 346 workflows make 9 requests, 3 rounds.
+ */
+export const VARIABLE_COPY_REFRESH_AT_ONCE = 4
+
+/**
+ * The one deadline the whole refresh runs under (#3034): one gateway call's
+ * (GATEWAY_DEADLINE_MS in tick-live.ts, which a test holds equal), so the
+ * refresh can hold a tick no longer than a single request could, however many
+ * workflows are switched on. Sequential requests with a deadline each could
+ * have held it about 2 minutes at 346 workflows.
+ */
+export const VARIABLE_COPY_REFRESH_DEADLINE_MS = 15_000
+
 /** The ops database, as the copy uses it. The live one is ops-writes.ts through tick-live.ts. */
 export interface VariableCopyDb {
   readVariableCopies(organizationId: OrganizationId, versions: ReadonlyArray<{ workflowId: string; versionNumber: number }>): Promise<VariableCopy[]>
@@ -68,7 +99,23 @@ export interface VariableCopyDb {
   readDefinition(organizationId: OrganizationId, workflowId: string, versionNumber: number): Promise<Record<string, unknown> | null>
 }
 
-type Served = Extract<ReadRunVariables, { kind: 'served' }>
+/**
+ * One version's variables as the copy is written from them: the plain values
+ * and each secret by NAME (#3034). No field a secret value could travel in, so
+ * nothing past copySourceOf ever holds one.
+ */
+export interface CopySource {
+  workflowId: string
+  versionNumber: number
+  values: Record<string, string>
+  secretKeys: readonly string[]
+  servedAt: string
+}
+
+/** A claimed run's served answer as the copy takes it: its secrets by name, their values left behind (#3034). */
+export function copySourceOf(read: Extract<ReadRunVariables, { kind: 'served' }>): CopySource {
+  return { workflowId: read.workflowId, versionNumber: read.versionNumber, values: { ...read.values }, secretKeys: Object.keys(read.secretValues), servedAt: read.servedAt }
+}
 
 const bytes = (text: string) => new TextEncoder().encode(text).length
 
@@ -79,7 +126,7 @@ const bytes = (text: string) => new TextEncoder().encode(text).length
  * kept. Null for a version past the database's bounds, so it is left out
  * rather than failing the save of every other.
  */
-export function copyInputOf(organizationId: OrganizationId, served: Served, names: readonly string[]): VariableCopyInput | null {
+export function copyInputOf(organizationId: OrganizationId, served: CopySource, names: readonly string[]): VariableCopyInput | null {
   const unique = [...new Set(names)]
   if (unique.length > MAX_VARIABLE_COPY_NAMES) return null
   if (unique.some((n) => !ENV_KEY.test(n) || bytes(n) > MAX_VARIABLE_COPY_KEY_BYTES)) return null
@@ -93,7 +140,7 @@ export function copyInputOf(organizationId: OrganizationId, served: Served, name
       if (size > MAX_VARIABLE_COPY_VALUE_BYTES) return null
       total += size
       values[n] = served.values[n]
-    } else if (Object.hasOwn(served.secretValues, n)) {
+    } else if (served.secretKeys.includes(n)) {
       secretKeys.push(n)
     } else {
       absentKeys.push(n)
@@ -178,9 +225,12 @@ export interface CopyTarget {
 
 export interface WriteVariableCopies {
   db: VariableCopyDb
+  /** The gateway's opsRunVariables; the refresh sends only names requests through it. */
   fetchRunVariables(request: OpsRunVariablesRequest): Promise<unknown>
-  /** What the tick's claimed ask served, each with its organization. */
-  served: ReadonlyArray<{ organizationId: OrganizationId; read: Served }>
+  /** The clock the refresh's one deadline waits on (the gateway's, injected so a test can pass it). */
+  sleep(ms: number): Promise<void>
+  /** What the tick's claimed ask served, each with its organization, its secrets by name (copySourceOf). */
+  served: ReadonlyArray<{ organizationId: OrganizationId; read: CopySource }>
   /** Every switched on workflow that may start, at its current version; empty when the refresh is skipped. */
   refresh: readonly CopyTarget[]
   /** One line per failure, never a value. */
@@ -191,6 +241,46 @@ function bump(counts: Record<string, number>, key: string, by = 1): void {
   counts[key] = (counts[key] ?? 0) + by
 }
 
+type RefreshOutcome =
+  | { kind: 'answered'; answers: Array<{ request: OpsRunVariableNamesRequest; read: { runs: ReadRunVariableNames[]; unreadable: string[] } }> }
+  | { kind: 'failed'; request: OpsRunVariableNamesRequest | null; error: string }
+
+/**
+ * The refresh's requests (#3034): at most VARIABLE_COPY_REFRESH_AT_ONCE in
+ * flight, all under one VARIABLE_COPY_REFRESH_DEADLINE_MS deadline. The first
+ * failure (a throw, or an answer that is not the shape at all) or the deadline
+ * ends it: no further request is started, and every answer, earlier ones
+ * included, is dropped, so a refresh is written whole or not at all. A late
+ * answer after the end is ignored.
+ */
+async function refreshAnswers(w: WriteVariableCopies, requests: readonly OpsRunVariableNamesRequest[]): Promise<RefreshOutcome> {
+  const answers: Extract<RefreshOutcome, { kind: 'answered' }>['answers'] = []
+  let failure: Extract<RefreshOutcome, { kind: 'failed' }> | null = null
+  let next = 0
+  const sender = async () => {
+    while (failure === null && next < requests.length) {
+      const request = requests[next++]
+      try {
+        const read = parseServedOpsRunVariableNames(await w.fetchRunVariables(request), request)
+        if (failure === null) answers.push({ request, read })
+      } catch (err) {
+        failure ??= { kind: 'failed', request, error: formatErr(err) }
+      }
+    }
+  }
+  const raced = await raceDeadline(
+    () => Promise.all(Array.from({ length: Math.min(VARIABLE_COPY_REFRESH_AT_ONCE, requests.length) }, sender)),
+    VARIABLE_COPY_REFRESH_DEADLINE_MS,
+    (ms) => w.sleep(ms),
+  )
+  if (raced.kind === 'timed_out') {
+    failure ??= { kind: 'failed', request: null, error: `the refresh did not finish within ${VARIABLE_COPY_REFRESH_DEADLINE_MS / 1000} s` }
+  } else if (raced.kind === 'threw') {
+    failure ??= { kind: 'failed', request: null, error: formatErr(raced.error) }
+  }
+  return failure ?? { kind: 'answered', answers }
+}
+
 /**
  * The copies' one write, a tick at most (the module comment says what is
  * written and when). Never throws: each failure is counted, and logged without
@@ -198,7 +288,7 @@ function bump(counts: Record<string, number>, key: string, by = 1): void {
  */
 export async function writeVariableCopies(w: WriteVariableCopies): Promise<Record<string, number>> {
   const counts: Record<string, number> = {}
-  const served = new Map<string, { organizationId: OrganizationId; read: Served }>()
+  const served = new Map<string, { organizationId: OrganizationId; read: CopySource }>()
   for (const s of w.served) served.set(versionKey(s.organizationId, s.read.workflowId, s.read.versionNumber), s)
   const wanted = new Map<string, CopyTarget>()
   for (const s of w.served) wanted.set(versionKey(s.organizationId, s.read.workflowId, s.read.versionNumber), { organizationId: s.organizationId, workflowId: s.read.workflowId, versionNumber: s.read.versionNumber })
@@ -243,32 +333,45 @@ export async function writeVariableCopies(w: WriteVariableCopies): Promise<Recor
     }
   }
 
-  // 2. The refresh: every version whose names are known and that no claimed run was served, one request after another.
-  const requests: OpsRunVariablesRequest[] = []
+  // 2. The refresh: every version whose names are known and that no claimed run was served, by name only, concurrently under one deadline.
+  const requests: OpsRunVariableNamesRequest[] = []
   for (const organizationId of organizations) {
     const ask = (byOrganization.get(organizationId) ?? []).filter((t) => {
       const key = versionKey(organizationId, t.workflowId, t.versionNumber)
       return names.has(key) && !served.has(key)
     })
     for (let at = 0; at < ask.length; at += MAX_RUN_VARIABLES_PER_REQUEST) {
-      requests.push({ organization_id: organizationId, runs: ask.slice(at, at + MAX_RUN_VARIABLES_PER_REQUEST).map((t) => ({ workflow_id: t.workflowId, version_number: t.versionNumber })) })
+      requests.push({
+        organization_id: organizationId,
+        runs: ask.slice(at, at + MAX_RUN_VARIABLES_PER_REQUEST).map((t) => ({ workflow_id: t.workflowId, version_number: t.versionNumber })),
+        secrets: 'names',
+      })
     }
   }
-  for (const request of requests) {
-    try {
-      const read = parseServedOpsRunVariables(await w.fetchRunVariables(request), request)
-      bump(counts, 'variable_copies_refresh_requests')
-      const organizationId = request.organization_id as OrganizationId
-      for (const r of read.runs) {
-        if (r.kind === 'served') served.set(versionKey(organizationId, r.workflowId, r.versionNumber), { organizationId, read: r })
-        else bump(counts, 'variable_copies_refresh_refused')
-      }
-      if (read.unreadable.length > 0) bump(counts, 'variable_copies_refresh_unreadable', read.unreadable.length)
-    } catch (err) {
-      // The bidding Worker is likely down: each further request would wait out its own deadline.
+  if (requests.length > 0) {
+    const outcome = await refreshAnswers(w, requests)
+    if (outcome.kind === 'failed') {
+      // The bidding Worker is likely down, or one answer could not be read at all: nothing of this refresh is written.
       bump(counts, 'variable_copies_refresh_failed')
-      w.log('variable_copies_refresh_failed', { organization_id: request.organization_id, versions: request.runs.length, error: formatErr(err) })
-      break
+      w.log('variable_copies_refresh_failed', {
+        ...(outcome.request === null ? {} : { organization_id: outcome.request.organization_id, versions: outcome.request.runs.length }),
+        requests: requests.length, error: outcome.error,
+      })
+    } else {
+      for (const { request, read } of outcome.answers) {
+        bump(counts, 'variable_copies_refresh_requests')
+        const organizationId = request.organization_id as OrganizationId
+        for (const r of read.runs) {
+          if (r.kind === 'served') {
+            served.set(versionKey(organizationId, r.workflowId, r.versionNumber), {
+              organizationId, read: { workflowId: r.workflowId, versionNumber: r.versionNumber, values: r.values, secretKeys: r.secretKeys, servedAt: r.servedAt },
+            })
+          } else {
+            bump(counts, 'variable_copies_refresh_refused')
+          }
+        }
+        if (read.unreadable.length > 0) bump(counts, 'variable_copies_refresh_unreadable', read.unreadable.length)
+      }
     }
   }
 
