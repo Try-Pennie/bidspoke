@@ -919,8 +919,9 @@ describe('the OpsGateway entrypoint', () => {
     // replaceConnectionEnvelope: the reseal's write back (#2333), tested in ops-gateway-replace-envelope.test.ts.
     // opsJobStarted and opsJobCompleted: the ops jobs' stamps (#2340), tested in ops-gateway-jobs.test.ts and below.
     // opsWorkflowDefinitions: the frozen definition copies (#1950), tested in ops-gateway-definitions.test.ts and below.
+    // opsRunVariables: the runs' current variables (#2997), served ahead of any ops caller, tested in ops-gateway-run-variables.test.ts.
     expect(Object.getOwnPropertyNames(OpsGateway.prototype).sort()).toEqual([
-      'constructor', 'moneyIdentities', 'opsConnections', 'opsJobCompleted', 'opsJobStarted', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflowDefinitions', 'opsWorkflows',
+      'constructor', 'moneyIdentities', 'opsConnections', 'opsJobCompleted', 'opsJobStarted', 'opsRunVariables', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflowDefinitions', 'opsWorkflows',
       'replaceConnectionEnvelope', 'storeRotatedEnvelope',
     ])
   })
