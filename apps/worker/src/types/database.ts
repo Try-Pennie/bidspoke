@@ -3855,6 +3855,24 @@ export type Database = {
           sample_size: number
         }[]
       }
+      step_timeout_audit_by_workflow: {
+        Args: {
+          p_namespaces: string[]
+          p_per_hour: number
+          p_since: string
+          p_until: string
+          p_workflow_id: string
+        }
+        Returns: {
+          max_ms: number
+          p50: number
+          p99: number
+          sample_size: number
+          step_namespace: string
+          timed_out: number
+          timed_out_at: string[]
+        }[]
+      }
       store_rotated_envelope: {
         Args: {
           p_connection_id: string

@@ -13,8 +13,10 @@
  *   - GET /api/config-warnings, for the dashboard panel (live, per org).
  *   - runTimeoutAuditCheck, a daily cron that posts a Slack alert, deduped via
  *     KV so it only fires when the set of offending nodes changes. The alert
- *     covers sub-floor nodes AND under-provisioned ones (timeout below the
- *     history-based suggested value); over-provisioned stays dashboard-only.
+ *     covers sub-floor nodes and, judged over five days (#2934,
+ *     timeout-findings.ts), steps losing runs to their timeout, likely upstream
+ *     outages and thin headroom. Over-provisioned stays dashboard-only, and the
+ *     dashboard keeps the fresher adaptive reading below.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { orgIdsToTell, slackOrgIds } from './alert-fanout'
@@ -22,8 +24,15 @@ import { logReadFailure } from './scheduled-read'
 import { readOrgWorkflows, type OrgWorkflow } from './org-workflows'
 import type { WorkflowDefinition } from '../types'
 import { suggestionFloorMs } from './timeout-floor'
-import { DEFAULT_RETRIES, SAMPLE_CONFIDENT, suggestedTimeoutMs, timeoutSeverity } from './timeout-suggestion'
+import { SAMPLE_CONFIDENT, nodeRetries, suggestedTimeoutMs, underProvision } from './timeout-suggestion'
 import { getSlackConnection, sendTimeoutConfigAlert } from './slack'
+import {
+  AUDIT_PERIOD_DAYS,
+  findPeriodFindings,
+  periodFindingsSignature,
+  type PeriodStepStats,
+  type WorkflowPeriodFindings,
+} from './timeout-findings'
 
 export interface SubFloorNode {
   node_id: string
@@ -63,9 +72,10 @@ export interface WorkflowOverProvisioned {
 
 // Under-provisioned ("below suggested") side of the audit. Also history-based,
 // but urgent in the other direction: a timeout below the suggested value means
-// real runs will time out — either burning retries (amber) or failing outright
-// (red, below p99/max). Surfaced on the dashboard AND in the daily Slack alert,
-// alongside the sub-floor list.
+// real runs will time out, either burning retries (amber) or failing outright
+// (red, below p99/max). Surfaced on the dashboard from the fresh adaptive
+// reading; the daily Slack alert makes the same judgement over five days
+// (timeout-findings.ts, #2934).
 export interface UnderProvisionedNode {
   node_id: string
   namespace: string
@@ -157,18 +167,18 @@ export function scanWorkflowDefinitions(
 /**
  * Stable signature of an org's offending set, used for KV change detection. Two
  * scans with the same offenders produce the same string regardless of ordering,
- * so the alert fires only when something actually changes. Under-provisioned
- * entries deliberately exclude suggested_ms/p99 — those drift with live stats
- * day to day, and including them would re-fire the alert on every cron run for
- * an unchanged config. Membership (node + configured value) is the signal.
+ * so the alert fires only when something actually changes. The five day
+ * findings contribute which step, at which setting, read which way
+ * (periodFindingsSignature), never their counts, which move every day and would
+ * re-send an unchanged alert.
  */
 export function warningsSignature(
   warnings: WorkflowTimeoutWarnings[],
-  underProvisioned: WorkflowUnderProvisioned[] = []
+  period: WorkflowPeriodFindings[] = []
 ): string {
   return [
     ...warnings.flatMap((w) => w.nodes.map((n) => `${w.workflow_id}:${n.node_id}:${n.configured_ms}:${n.floor_ms}`)),
-    ...underProvisioned.flatMap((w) => w.nodes.map((n) => `${w.workflow_id}:${n.node_id}:${n.configured_ms}:under`)),
+    ...(period.length > 0 ? [periodFindingsSignature(period)] : []),
   ]
     .sort()
     .join('|')
@@ -212,11 +222,6 @@ export async function getOrgTimeoutWarnings(
       definition: w.definition as WorkflowDefinition | null,
     }))
   )
-}
-
-function nodeRetries(config: Record<string, unknown> | undefined): number {
-  const r = config?.retries
-  return typeof r === 'number' ? r : DEFAULT_RETRIES
 }
 
 /**
@@ -286,57 +291,24 @@ export function findUnderProvisionedNodes(
     if (!stats || stats.p99 == null || stats.max_ms == null) continue
     if (stats.sample_size < UNDER_PROVISION_MIN_SAMPLE) continue
     const retries = nodeRetries(node.config)
-    const suggested = suggestedTimeoutMs(node.type, stats.p99, stats.max_ms, retries)
-    if (timeout >= suggested) continue
+    const judged = underProvision(node.type, timeout, retries, stats.p99, stats.max_ms)
+    if (!judged) continue
     out.push({
       node_id: node.id,
       namespace: node.namespace,
       label: node.label ?? null,
       type: node.type,
       configured_ms: timeout,
-      suggested_ms: suggested,
+      suggested_ms: judged.suggested_ms,
       p99_ms: stats.p99,
       max_ms: stats.max_ms,
       sample_size: stats.sample_size,
       window_days: stats.window_days ?? null,
       retries,
-      severity: timeoutSeverity(timeout, stats.p99, stats.max_ms, retries),
+      severity: judged.severity,
     })
   }
   return out
-}
-
-/**
- * An under-provisioned warning is trustworthy enough to fire an unprompted Slack
- * alert only when its p99 came from a sample we can trust: either the namespace
- * locked at SAMPLE_CONFIDENT runs, or we fully widened to the 7-day window and
- * that is simply all the history that exists. A thin sample from a window we
- * never finished widening means the grouped query timed out and we fell back to
- * a noisy 2-hour sample — whose p99 swings by seconds run-to-run and produces
- * exactly the false "below the suggested value" alerts this guards against. The
- * dashboard panel still shows these (with their sample size visible); only the
- * push alert is held to the higher bar.
- *
- * Also requires severity 'red': amber means typical runs still clear the
- * timeout (p99/max) and only a rare slow outlier would burn a retry — real,
- * but the same low-urgency tier as over-provisioned nodes, which are already
- * dashboard-only. Without this, a node sitting a few hundred ms under its
- * suggestion (configured essentially at, not meaningfully below, the
- * suggested value) paged the same as one whose timeout is below its p99 or
- * its slowest run.
- */
-export function isAlertWorthyUnderProvision(node: UnderProvisionedNode): boolean {
-  if (node.severity !== 'red') return false
-  return node.sample_size >= SAMPLE_CONFIDENT || (node.window_days ?? 0) >= 7
-}
-
-/** Keep only the alert-worthy under-provisioned nodes, dropping emptied workflows. */
-export function alertWorthyUnderProvisioned(
-  warnings: WorkflowUnderProvisioned[]
-): WorkflowUnderProvisioned[] {
-  return warnings
-    .map((w) => ({ ...w, nodes: w.nodes.filter(isAlertWorthyUnderProvision) }))
-    .filter((w) => w.nodes.length > 0)
 }
 
 export interface OrgHistoryWarnings {
@@ -352,10 +324,13 @@ export interface OrgHistoryWarnings {
  * RPC error (e.g. statement timeout on the wide join) stops widening and keeps
  * whatever the narrower windows returned.
  *
- * This is THE sampling rule for every batch surface (canvas badge endpoint,
- * audit, Slack cron). The config panel's per-node endpoint applies the same
- * stop threshold to its per-namespace RPC, so all surfaces see the same stats
- * for the same node.
+ * The sampling rule for the interactive surfaces: the canvas badge endpoint
+ * and the dashboard panel. The config panel's per-node endpoint applies the
+ * same stop threshold to its per-namespace RPC, so those surfaces see the same
+ * stats for the same node. The daily Slack alert does NOT use it: it judges
+ * five days (collectPeriodStats, #2934), because someone editing a step wants
+ * to know how it runs now and an unprompted alert should not fire on one slow
+ * patch.
  */
 export async function collectWorkflowDurationStats(
   supabase: SupabaseClient,
@@ -424,7 +399,7 @@ export async function collectWorkflowDurationStats(
  * History-based warnings (under- and over-provisioned) across an org's active
  * workflows, from one shared stats pass: one grouped percentile query per
  * workflow (step_duration_percentiles_by_workflow) rather than one per node.
- * Powers the dashboard panel; the under side also feeds the Slack cron.
+ * Powers the dashboard panel.
  */
 export async function getOrgHistoryWarnings(
   supabase: SupabaseClient,
@@ -434,10 +409,9 @@ export async function getOrgHistoryWarnings(
   const data = await activeWorkflowsOrNone(supabase, orgId, 'step timeouts', { failures: opts.failures, label: 'workflows (step history)' })
 
   // Adaptive grouped percentile queries per workflow, run in parallel so the
-  // dashboard load doesn't serialize them; the daily cron passes a small
-  // concurrency instead (#1884). Same sampling rule as the canvas badge endpoint
-  // and the config panel, so the audit never flags a node those surfaces call
-  // fine (or vice versa).
+  // dashboard load doesn't serialize them. Same sampling rule as the canvas
+  // badge endpoint and the config panel, so the panel never flags a node those
+  // surfaces call fine (or vice versa).
   const results = await mapWithConcurrency(
     data,
     opts.concurrency ?? Number.POSITIVE_INFINITY,
@@ -471,9 +445,89 @@ export async function getOrgHistoryWarnings(
   return { under_provisioned, over_provisioned }
 }
 
+/** Finished runs sampled from each hour of the period (#2934). */
+export const AUDIT_SAMPLE_PER_HOUR = 10
+
 /**
- * How many workflows the daily audit measures at once (#1884). Each one is a
- * grouped percentile query over up to a week of execution_steps; on 2026-10-08
+ * Steps asked about in one call. Measured on production 2026-10-29: the even
+ * sample of all 22 Engine Bidding steps, the busiest per step, took 5.3 s cold,
+ * so ten a call keeps each well inside the Data API's 8 s.
+ */
+export const AUDIT_STEPS_PER_CALL = 10
+
+/**
+ * One workflow's five day reading for the daily alert (#2934): an even sample of
+ * finished runs and the runs that failed on the timeout, from
+ * step_timeout_audit_by_workflow, AUDIT_STEPS_PER_CALL steps a call. Null, with
+ * the failure named in `failures` and logged, when any call fails: the alert
+ * does not judge an org on part of a workflow (#1303).
+ */
+export async function collectPeriodStats(
+  supabase: SupabaseClient,
+  workflowId: string,
+  namespaces: string[],
+  now: Date,
+  failures?: string[],
+): Promise<Map<string, PeriodStepStats> | null> {
+  const until = now.toISOString()
+  const since = new Date(now.getTime() - AUDIT_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString()
+  const unique = [...new Set(namespaces)]
+  const stats = new Map<string, PeriodStepStats>()
+  for (let i = 0; i < unique.length; i += AUDIT_STEPS_PER_CALL) {
+    const chunk = unique.slice(i, i + AUDIT_STEPS_PER_CALL)
+    const { data, error } = await supabase.rpc('step_timeout_audit_by_workflow', {
+      p_workflow_id: workflowId,
+      p_since: since,
+      p_until: until,
+      p_namespaces: chunk,
+      p_per_hour: AUDIT_SAMPLE_PER_HOUR,
+    })
+    if (error) {
+      console.error(
+        `[timeout-audit] five day reading failed for workflow ${workflowId} (${chunk.length} of ${unique.length} steps, from step ${i}): ${String((error as { message?: string })?.message ?? error)}`
+      )
+      failures?.push(`five day step timeouts for workflow ${workflowId}`)
+      return null
+    }
+    for (const r of (data ?? []) as Array<{ step_namespace: string; p50: number | null; p99: number | null; max_ms: number | null; sample_size: number | string; timed_out: number | string; timed_out_at: string[] | null }>) {
+      stats.set(r.step_namespace, {
+        p50: r.p50 ?? null,
+        p99: r.p99 ?? null,
+        max_ms: r.max_ms ?? null,
+        sample_size: Number(r.sample_size),
+        timed_out: Number(r.timed_out),
+        timed_out_at: r.timed_out_at ?? [],
+      })
+    }
+  }
+  return stats
+}
+
+/**
+ * The daily alert's five day findings across an org's active workflows, a few
+ * workflows at a time (#1884). Workflows with nothing to list are left out.
+ */
+export async function getOrgPeriodFindings(
+  supabase: SupabaseClient,
+  orgId: string,
+  opts: { concurrency: number; failures: string[]; now: Date },
+): Promise<WorkflowPeriodFindings[]> {
+  const data = await activeWorkflowsOrNone(supabase, orgId, 'five day step timeouts', { failures: opts.failures, label: 'workflows (five day step timeouts)' })
+  const results = await mapWithConcurrency(data, opts.concurrency, async (w) => {
+    const definition = w.definition as WorkflowDefinition | null
+    if (!Array.isArray(definition?.nodes) || definition.nodes.length === 0) return null
+    const stats = await collectPeriodStats(supabase, w.id, definition.nodes.map((n) => n.namespace), opts.now, opts.failures)
+    if (!stats) return null
+    const findings = findPeriodFindings(definition, stats)
+    return findings.length > 0 ? { workflow_id: w.id, workflow_name: w.name, findings } : null
+  })
+  return results.filter((r): r is WorkflowPeriodFindings => r !== null)
+}
+
+/**
+ * How many workflows the daily audit measures at once (#1884). Each one is now
+ * its five day reading (collectPeriodStats, #2934), one call per ten steps, run
+ * in turn. When each was a grouped percentile query over up to a week, on 2026-10-08
  * at 08:15 UTC the audit started about a dozen of them in the same instant, the
  * slowest took 23.5 s, and lead requests slowed to 8.5 s behind them. Two at a
  * time costs the audit some wall time (about 2 s per query at the mean) and
@@ -507,15 +561,15 @@ export async function mapWithConcurrency<T, R>(
  * Daily cron: scan every Slack-connected org's active workflows and alert when
  * the offending set changes. Called from the Worker scheduled handler.
  */
-export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike, appUrl: string): Promise<void> {
+export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike, appUrl: string, now: Date = new Date()): Promise<void> {
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'timeout-audit', 'measure-from-database'))
   if (orgIds.length === 0) return
 
   for (const orgId of orgIds) {
     const failures: string[] = []
-    const [warnings, history] = await Promise.all([
+    const [warnings, period] = await Promise.all([
       getOrgTimeoutWarnings(supabase, orgId, { failures }),
-      getOrgHistoryWarnings(supabase, orgId, { concurrency: TIMEOUT_AUDIT_RPC_CONCURRENCY, failures }),
+      getOrgPeriodFindings(supabase, orgId, { concurrency: TIMEOUT_AUDIT_RPC_CONCURRENCY, failures, now }),
     ])
     // A read that failed answers empty, which would read as "all clear" and be
     // recorded, and the unchanged set would then re-alert as new once the reads
@@ -524,11 +578,7 @@ export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike,
       console.error(`[timeout-audit] org ${orgId} not judged this run, because these reads failed: ${failures.join(', ')}`)
       continue
     }
-    // Only alert on under-provisioned nodes whose p99 came from a confident
-    // sample — a thin sample from a timed-out widening query is the false-alarm
-    // source, not a real signal. The dashboard panel keeps the full set.
-    const underProvisioned = alertWorthyUnderProvisioned(history.under_provisioned)
-    const signature = warningsSignature(warnings, underProvisioned)
+    const signature = warningsSignature(warnings, period)
     const key = `timeout-audit:sig:${orgId}`
     const previous = await kv.get(key)
 
@@ -537,7 +587,7 @@ export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike,
 
     // Transition to "all clear" (nothing to act on): record the new state so we
     // don't re-evaluate it, and stay quiet — resolution is self-evident in the UI.
-    if (warnings.length === 0 && underProvisioned.length === 0) {
+    if (warnings.length === 0 && period.length === 0) {
       await kv.put(key, signature, { expirationTtl: SIGNATURE_TTL_SECONDS })
       continue
     }
@@ -550,7 +600,7 @@ export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike,
     if (!connection || !connection.config_alerts_enabled) continue
 
     try {
-      await sendTimeoutConfigAlert(connection, warnings, underProvisioned, appUrl)
+      await sendTimeoutConfigAlert(connection, warnings, period, appUrl)
       // Record only after a confirmed send.
       await kv.put(key, signature, { expirationTtl: SIGNATURE_TTL_SECONDS })
     } catch (e) {

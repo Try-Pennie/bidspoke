@@ -74,3 +74,27 @@ export function timeoutSeverity(
   const redThreshold = retries >= 1 ? p99 : maxMs
   return configuredMs < redThreshold ? 'red' : 'amber'
 }
+
+/** The retries a node runs with: its own setting, or the engine's default. */
+export function nodeRetries(config: Record<string, unknown> | undefined): number {
+  const r = config?.retries
+  return typeof r === 'number' ? r : DEFAULT_RETRIES
+}
+
+/**
+ * A timeout below the suggested value, and how far below: the one judgement
+ * the dashboard panel's fresh reading and the daily alert's five day reading
+ * both make (#2934), so the two can differ only in the runs they read. Null
+ * when the timeout is at or above the suggestion.
+ */
+export function underProvision(
+  nodeType: string | undefined,
+  configuredMs: number,
+  retries: number,
+  p99: number,
+  maxMs: number,
+): { suggested_ms: number; severity: 'red' | 'amber' } | null {
+  const suggested = suggestedTimeoutMs(nodeType, p99, maxMs, retries)
+  if (configuredMs >= suggested) return null
+  return { suggested_ms: suggested, severity: timeoutSeverity(configuredMs, p99, maxMs, retries) }
+}

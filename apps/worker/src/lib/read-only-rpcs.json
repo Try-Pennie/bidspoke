@@ -18,6 +18,7 @@
     "step_duration_percentiles",
     "step_duration_percentiles_by_workflow",
     "step_duration_percentiles_typed",
+    "step_timeout_audit_by_workflow",
     "stranded_step_partitions",
     "unpaginated_big_tables",
     "workflow_stats_rollup",
