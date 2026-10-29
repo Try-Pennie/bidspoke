@@ -143,6 +143,7 @@ function deps(over: Partial<CanaryWatchDeps> & { steps?: WatchedStep[]; records?
     readRelay: async () => ({ total: 0, sample: [] }),
     // No other run's step rows: a run outside the day is ordered by its own start (#2806).
     readSendSteps: async () => [],
+    readRunSubmissions: async () => new Map(),
     salesforce: async () => sf.read,
     post: async (m) => {
       posted.push(m)
