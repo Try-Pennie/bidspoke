@@ -48,6 +48,7 @@ import {
   TERMINAL_RUN_REQUEST_STATUSES,
   TRIGGER_KINDS,
   UNCHARGED_RESUME_REASONS,
+  VARIABLE_COPY_KINDS,
 } from '../../../../worker/src/ops/run-vocabulary'
 import { PLANNED_TRIGGER_TYPES, TRIGGER_TYPES } from '@bidspoke/workflow-definition'
 
@@ -115,6 +116,8 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     ['ops_step_records_status_check', OPS_STEP_RECORD_STATUSES],
     // Where a run's recorded variables came from (#2998).
     ['run_requests_run_variables_check', RUN_VARIABLE_SOURCES],
+    // What the last good copy holds of each name a version reads (#2999).
+    ['ops_variable_copies_kind_check', VARIABLE_COPY_KINDS],
   ] as const)('%s', (name, values) => {
     expect(sorted(constraintValues(SQL, name))).toEqual(sorted(values))
   })

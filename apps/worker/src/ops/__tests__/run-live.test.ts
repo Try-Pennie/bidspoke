@@ -122,6 +122,16 @@ describe('OpsInternal.run', () => {
     expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_status: 'completed', p_output: { base: 'current' } })
   })
 
+  it('runs on the kept copy\'s values when the tick had to use them, and records that they came from the copy (#2999)', async () => {
+    const db = opsDb({ ...LIFECYCLE, record_ops_step: 'recorded', workflow_definition: [{ definition: readsBase, saved_at: '2026-10-17T09:00:00Z' }] })
+    const variables = { source: 'copy' as const, servedAt: '2026-10-17T09:58:00.000Z', values: { API_BASE: 'kept' }, secretValues: {} }
+    expect(await runDispatched(env(), await signed({ kind: 'run', run: RUN, variables }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
+    expect(db.calls.find((c) => c.name === 'start_run_execution')?.body.p_variables).toEqual({
+      source: 'copy', served_at: '2026-10-17T09:58:00.000Z', values: { API_BASE: 'kept' }, secret_keys: [],
+    })
+    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'kept' } })
+  })
+
   it('a retry or a continued slice runs on the plain values its first start recorded, whatever its dispatch now carries (#2998)', async () => {
     const first = { source: 'bidding', served_at: '2026-10-17T09:30:00.000Z', values: { API_BASE: 'first' }, secret_keys: [] }
     const db = opsDb({
