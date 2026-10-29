@@ -164,6 +164,27 @@
  * an earlier sent run's link means this post never landed, and one whose order
  * cannot be told is order unknown (SEND ORDER). What Pipedream answered is not
  * read: a 2xx said only that Pipedream took the post.
+ * A RELAY POST WHOSE STEP FAILED (#2939). The 2026-10-28 reports counted run
+ * 01a18160-b7e9-7e54-a11a-87c69b02a7ae as could not be checked: its
+ * engine_no_bids_sf_post timed out three times and, like every failed webhook
+ * step (the webhook executor attaches no request to its error), recorded no
+ * input, so there was no body and no Submission to read. Its Submission held no
+ * run link: the outcome never reached Salesforce. So a sampled relay post whose
+ * step failed with nothing recorded is read back by its run link alone, on the
+ * Submission its run's trigger payload names (`Submission__c`, where every
+ * compared post's body takes its `submissionId`, checked against the production
+ * definition in canary-watch-relay-failed-post.test.ts; one database read for
+ * the day's few, readRunSubmissions). Every outcome post sends the run link and
+ * Salesforce saves one PATCH whole or not at all, so: this run's link means it
+ * arrived, its fields not compared (`arrived_unrecorded`); no sign of it (no
+ * link, an earlier sent run's link, or no Submission) means it is not in
+ * Salesforce and counts as did not, against Pipedream. A step that failed
+ * outright is then NEVER SENT; one that timed out is NOT FOUND, never "never
+ * sent", because Pipedream may have taken it after Bidspoke stopped waiting
+ * (L11). A later run's link, or one that cannot be ordered, is set aside as for
+ * any relay post, and a read that fails, of Salesforce or the database, is could
+ * not be checked. A post that recorded nothing and did not fail is still could
+ * not be checked: nothing says what happened to it.
  *
  * ONE MESSAGE A DAY to Main Flow's organization's alerts channel. A day with any
  * run that did not land, or could not be checked, or a check that could not run,
@@ -199,7 +220,7 @@
  *
  * REMOVING IT. Both subjects end with the canaries: the phase 6 pull request
  * (#2175, which moves the other seven posts and so leaves no relay to compare
- * against) deletes this file, its four tests, both CRON_JOBS entries and both
+ * against) deletes this file, its tests, both CRON_JOBS entries and both
  * blocks in index.ts. The steps are in docs/main-flow-relay-port.md. Until then,
  * a day on which no other post went through the relay says so.
  */
@@ -441,7 +462,7 @@ export interface RelayReadBack {
   /** Relay posts of the eight other outcome steps in the window. */
   total: number
   /** The sample's verdicts, in the order read: what Salesforce saved, never what Pipedream answered. */
-  sample: RunVerdict[]
+  sample: RelayVerdict[]
   /** Sampled posts with no Submission to write, which the relay's filter stops: read for nothing. */
   noSubmission: number
 }
@@ -486,6 +507,24 @@ export type RunVerdict =
    * said and counted with `reason`, a clause naming what was missing.
    */
   | { kind: 'order_unknown'; executionId: string; otherExecutionId: string; reason: string }
+
+/**
+ * A sampled relay post whose step failed and recorded nothing it sent (#2939),
+ * judged by its run link on the Submission its run's trigger names. `problems`
+ * say what the Submission holds instead, for the job run record.
+ */
+export type FailedPostVerdict =
+  /** The step failed outright, and Salesforce holds no sign of the post. */
+  | { kind: 'never_sent'; executionId: string; problems: string[] }
+  /** The step timed out, and Salesforce held no sign of the post when read; Pipedream may still have taken it. */
+  | { kind: 'not_found'; executionId: string; problems: string[] }
+  /** The Submission holds this run's link, so the post arrived; what it sent was not recorded to compare. */
+  | { kind: 'arrived_unrecorded'; executionId: string }
+
+/** What a relay post read back found: a direct write's verdicts, and a failed post's (#2939). */
+export type RelayVerdict = RunVerdict | FailedPostVerdict
+
+type Unchecked = Extract<RunVerdict, { kind: 'unchecked' }>
 
 export interface CanaryWatchReport {
   from: string
@@ -557,6 +596,13 @@ export interface CanaryWatchDeps {
    * Throws on a failed read.
    */
   readSendSteps: (executionId: string) => Promise<SendStep[]>
+  /**
+   * The `Submission__c` each run's trigger payload holds, for the sampled relay
+   * posts whose step failed and recorded nothing it sent (#2939), runs started
+   * in [from, to). A run the database does not hold is absent from the map; one
+   * whose trigger named no Submission maps to null. Throws on a failed read.
+   */
+  readRunSubmissions: (executionIds: string[], fromIso: string, toIso: string) => Promise<Map<string, unknown>>
   /**
    * Whether the live Main Flow holds this subject's port (portStatus), read
    * before anything else. Absent, or a read that throws, counts as holding it, so
@@ -736,7 +782,7 @@ function sendOrder(other: SentWithin, mine: SentWithin): SendOrder {
  * Where run `other`'s writes of `stepNamespace` (any outcome post when null)
  * fall against write `w` (#2806). Throws when its send times could not be read.
  */
-type SendOrderLookup = (other: string, stepNamespace: string | null, w: SubmissionWrite) => Promise<SendOrder>
+type SendOrderLookup = (other: string, stepNamespace: string | null, w: Pick<SubmissionWrite, 'sentWithin'>) => Promise<SendOrder>
 
 /** A native step's write, from what the step recorded (the body after the port's omit, rename and inject). */
 function nativeWrite(step: WatchedStep, stepNamespace: string): SubmissionWrite | { unchecked: string } {
@@ -755,10 +801,13 @@ function nativeWrite(step: WatchedStep, stepNamespace: string): SubmissionWrite 
  * and RELAY_RENAMES applied, to the body's own `submissionId`. The port's relay
  * parity test proves the native step sends the same PATCH, so the two sides are
  * judged on one body shape. A body with no `submissionId` is one the relay's
- * filter stops, so nothing was written.
+ * filter stops, so nothing was written. A step that failed with no body
+ * recorded is judged by its run link alone (#2939, checkFailedPost).
  */
-function relayWrite(step: RelayStep): SubmissionWrite | { unchecked: string } | { noSubmission: true } {
-  let body: unknown = asObject(asObject(step.input)?.resolved)?.body
+function relayWrite(step: RelayStep): SubmissionWrite | { unchecked: string } | { noSubmission: true } | { failedUnrecorded: true } {
+  const resolved = asObject(asObject(step.input)?.resolved)
+  if (step.status === 'failed' && (!resolved || resolved.body === undefined || resolved.body === null)) return { failedUnrecorded: true }
+  let body: unknown = resolved?.body
   if (typeof body === 'string') {
     try {
       body = JSON.parse(body)
@@ -1149,6 +1198,48 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
   return { verdict: verdict(followedNewer), stop: false }
 }
 
+/** A sampled relay post whose step failed and recorded nothing it sent (#2939), with the Submission its run's trigger names. */
+interface FailedPost {
+  executionId: string
+  recordId: string
+  /** The step timed out at its own deadline, so Pipedream may have taken the post after Bidspoke stopped waiting. */
+  timedOut: boolean
+  sentWithin: SentWithin
+}
+
+/**
+ * A failed post's read-back, by its run link alone (#2939): every outcome post
+ * sends it, and Salesforce saves one PATCH whole or not at all. This run's link
+ * means it arrived. A later run's link, or one that cannot be ordered, is set
+ * aside as for any relay post. Otherwise Salesforce holds no sign of it: never
+ * sent when the step failed outright, not found when it timed out (L11). A read
+ * that fails is could not be checked. `stop` says Salesforce stopped answering.
+ */
+async function checkFailedPost(p: FailedPost, read: Read, appUrl: string, orderOf: SendOrderLookup): Promise<{ verdict: RelayVerdict; stop: boolean }> {
+  const { executionId } = p
+  const unchecked = (reason: string, stop = false) => ({ verdict: { kind: 'unchecked' as const, executionId, reason }, stop })
+  const noSign = (problems: string[]) => ({ verdict: { kind: p.timedOut ? ('not_found' as const) : ('never_sent' as const), executionId, problems }, stop: false })
+  const expectedLink = bidspokeRunLink(appUrl, MAIN_FLOW_WORKFLOW_ID, executionId)
+  if (!expectedLink) return unchecked('The app address is not set, so the run link cannot be compared.')
+  const sub = await readRecord(read, 'Submission', `/sobjects/Submission__c/${p.recordId}?fields=${RUN_LINK_FIELD},LastModifiedDate`)
+  if (sub.kind === 'unread') return unchecked(sub.reason, sub.stop)
+  if (sub.kind === 'missing') return noSign(['the Submission does not exist in Salesforce'])
+  const link = sub.body[RUN_LINK_FIELD]
+  if (link === expectedLink) return { verdict: { kind: 'arrived_unrecorded', executionId }, stop: false }
+  const other = otherRunInLink(link, expectedLink, executionId)
+  if (other) {
+    let o: SendOrder
+    try {
+      o = await orderOf(other, null, p)
+    } catch (e) {
+      return unchecked(`The send time of the run whose link the Submission holds could not be read (${formatErr(e)}).`)
+    }
+    if (o.order === 'later') return { verdict: { kind: 'superseded', executionId, byExecutionId: other }, stop: false }
+    if (o.order === 'unknown') return { verdict: { kind: 'order_unknown', executionId, otherExecutionId: other, reason: o.reason }, stop: false }
+  }
+  return noSign(submissionClauses(null, link === null || link === undefined || link === '' ? 'none' : 'other', 0))
+}
+
 /** Reads the window and every native run in it back from Salesforce. Never throws. */
 async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from: string, to: string): Promise<CanaryWatchReport> {
   const report: CanaryWatchReport = { from, to, native: [], skipped: [], relayInvalidState: 0, relayAfterSwitch: 0, lastWasRelay: false, nativeCompleted: 0, relay: { total: 0, sample: [], noSubmission: 0 } }
@@ -1195,13 +1286,37 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
   const timedOutSteps = toRead.filter((s) => stepTimeoutMs(s.error_message) !== null)
 
   const relay = await relayPromise
-  const relayWrites: Array<SubmissionWrite | { executionId: string; unchecked: string }> = []
+  const relayWrites: Array<SubmissionWrite | { executionId: string; unchecked: string } | { executionId: string; failed: FailedPost }> = []
   let noSubmission = 0
   if (!('error' in relay)) {
-    for (const s of relay.sample) {
-      const w = relayWrite(s)
+    const parsed = relay.sample.map((s) => ({ s, w: relayWrite(s) }))
+    // A failed post recorded no body, so its Submission is the one its run's
+    // trigger names (#2939): one database read for the day's few.
+    const failedIds = parsed.filter(({ w }) => 'failedUnrecorded' in w).map(({ s }) => s.execution_id)
+    let submissions = new Map<string, unknown>()
+    let submissionsError: string | null = null
+    if (failedIds.length > 0) {
+      try {
+        submissions = await deps.readRunSubmissions(failedIds, from, to)
+      } catch (e) {
+        submissionsError = formatErr(e)
+      }
+    }
+    for (const { s, w } of parsed) {
+      const executionId = s.execution_id
       if ('noSubmission' in w) noSubmission++
-      else relayWrites.push('unchecked' in w ? { executionId: s.execution_id, unchecked: w.unchecked } : w)
+      else if ('unchecked' in w) relayWrites.push({ executionId, unchecked: w.unchecked })
+      else if (!('failedUnrecorded' in w)) relayWrites.push(w)
+      else if (submissionsError !== null) relayWrites.push({ executionId, unchecked: `The run's Submission could not be read from the database (${submissionsError}).` })
+      else if (!submissions.has(executionId)) {
+        relayWrites.push({ executionId, unchecked: 'The post recorded nothing it sent, and its run is not in the database to say which Submission it was for.' })
+      } else {
+        const recordId = submissions.get(executionId)
+        // No Submission: the relay's filter stops such a post, so nothing was written.
+        if (recordId === null || recordId === undefined || recordId === '') noSubmission++
+        else if (typeof recordId !== 'string' || !isSalesforceRecordId(recordId)) relayWrites.push({ executionId, unchecked: "The run's Submission id is not one Salesforce would accept." })
+        else relayWrites.push({ executionId, failed: { executionId, recordId, timedOut: stepTimeoutMs(s.error_message) !== null, sentWithin: sentWithin(executionId, [s]) } })
+      }
     }
   }
 
@@ -1254,16 +1369,18 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
     }
     return sendOrder(sentWithin(other, rows), w.sentWithin)
   }
-  const judge = async (w: SubmissionWrite): Promise<RunVerdict> => {
-    if (!read || stopReason) return { kind: 'unchecked', executionId: w.executionId, reason: stopReason ?? 'Salesforce stopped answering earlier in this check.' }
+  /** One read-back under the day's one circuit: none once Salesforce stopped answering, and a throw is could not be checked. */
+  const guarded = async <V extends RelayVerdict>(executionId: string, check: (read: Read) => Promise<{ verdict: V; stop: boolean }>): Promise<V | Unchecked> => {
+    if (!read || stopReason) return { kind: 'unchecked', executionId, reason: stopReason ?? 'Salesforce stopped answering earlier in this check.' }
     try {
-      const { verdict, stop } = await checkWrite(w, read, deps.appUrl, earlierRun, orderOf)
+      const { verdict, stop } = await check(read)
       if (stop) stopReason = 'Salesforce stopped answering earlier in this check.'
       return verdict
     } catch (e) {
-      return { kind: 'unchecked', executionId: w.executionId, reason: `The check failed on this run (${formatErr(e)}).` }
+      return { kind: 'unchecked', executionId, reason: `The check failed on this run (${formatErr(e)}).` }
     }
   }
+  const judge = (w: SubmissionWrite): Promise<RunVerdict> => guarded(w.executionId, (r) => checkWrite(w, r, deps.appUrl, earlierRun, orderOf))
   // The timed out writes first, then the sample, under one budget: a slow day
   // spends it on the writes most likely lost. A write in both is read once.
   const directDeadline = subject.readBudgetMs === null ? Number.POSITIVE_INFINITY : deps.now() + subject.readBudgetMs
@@ -1291,11 +1408,13 @@ async function measure(subject: CanaryWatchSubject, deps: CanaryWatchDeps, from:
     report.relay = relay
     return report
   }
-  const sample: RunVerdict[] = []
+  const judgeFailed = (p: FailedPost): Promise<RelayVerdict> => guarded(p.executionId, (r) => checkFailedPost(p, r, deps.appUrl, orderOf))
+  const sample: RelayVerdict[] = []
   const deadline = deps.now() + RELAY_READ_BUDGET_MS
   for (const w of relayWrites) {
     if ('unchecked' in w) sample.push({ kind: 'unchecked', executionId: w.executionId, reason: w.unchecked })
     else if (deps.now() >= deadline) sample.push({ kind: 'unchecked', executionId: w.executionId, reason: 'The relay reads ran out of time before this post.' })
+    else if ('failed' in w) sample.push(await judgeFailed(w.failed))
     else sample.push(await judge(w))
   }
   report.relay = { total: relay.total, sample, noSubmission }
@@ -1318,24 +1437,24 @@ const SKIP_WORDS: Record<string, string> = {
 }
 
 /** Landed fully ("arrived complete"): every field sent was saved, whether or not a later write has moved it on since (#2396). */
-const landedFully = (v: RunVerdict) => v.kind === 'landed' || v.kind === 'moved_on'
+const landedFully = (v: RelayVerdict) => v.kind === 'landed' || v.kind === 'moved_on'
 
 /** Did not land fully, or could not be checked: what alerts, and what the record lists by run. */
-const isBad = (v: RunVerdict) => v.kind === 'not_landed' || v.kind === 'unchecked'
+const isBad = (v: RelayVerdict) => v.kind === 'not_landed' || v.kind === 'unchecked'
 
-const supersededByLater = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.laterWrite.some((k) => SALE_COMPLETION_FIELDS.has(k))).length
+const supersededByLater = (vs: readonly RelayVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.laterWrite.some((k) => SALE_COMPLETION_FIELDS.has(k))).length
 /** Landed, then the inquiry relay's PATCH replaced the link the port adds (2026-10-27). */
-const inquiryLinkReplaced = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.laterWrite.some((k) => LATER_WRITE_FIELDS[k] === 'inquiry_link')).length
+const inquiryLinkReplaced = (vs: readonly RelayVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.laterWrite.some((k) => LATER_WRITE_FIELDS[k] === 'inquiry_link')).length
 /** Landed, then another Salesforce user changed some of its fields, as the field history shows (#3005). */
-const changedAfterwardsRuns = (vs: RunVerdict[]) =>
+const changedAfterwardsRuns = (vs: readonly RelayVerdict[]) =>
   vs.filter((v): v is Extract<RunVerdict, { kind: 'moved_on' }> & { changedAfterwards: ChangedAfterwards[] } => v.kind === 'moved_on' && (v.changedAfterwards?.length ?? 0) > 0)
-const followedNewerSubmission = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.newerSubmission).length
-const leadFromFirstCompletion = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.leadFromEarlierRun).length
+const followedNewerSubmission = (vs: readonly RelayVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.newerSubmission).length
+const leadFromFirstCompletion = (vs: readonly RelayVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.leadFromEarlierRun).length
 /** Set aside because a later run wrote the same Submission (#2485). */
-const overwritten = (vs: RunVerdict[]) => vs.filter((v): v is Extract<RunVerdict, { kind: 'superseded' }> => v.kind === 'superseded')
+const overwritten = (vs: readonly RelayVerdict[]) => vs.filter((v): v is Extract<RunVerdict, { kind: 'superseded' }> => v.kind === 'superseded')
 
 /** Not judged because another run wrote the same Submission and which arrived last cannot be told (#2806). */
-const unordered = (vs: RunVerdict[]) => vs.filter((v): v is Extract<RunVerdict, { kind: 'order_unknown' }> => v.kind === 'order_unknown')
+const unordered = (vs: readonly RelayVerdict[]) => vs.filter((v): v is Extract<RunVerdict, { kind: 'order_unknown' }> => v.kind === 'order_unknown')
 
 /** At least OVERWRITE_STORM_MIN of the day's direct writes, and OVERWRITE_STORM_SHARE of them. */
 const pileOf = (k: number, native: RunVerdict[]) => k >= OVERWRITE_STORM_MIN && k >= OVERWRITE_STORM_SHARE * native.length
@@ -1362,7 +1481,7 @@ const sayProblems = (clauses: string[]) =>
  * followed a newer Submission was not compared, and a Lead holding the first
  * completion's copy matched the earlier run, never this one.
  */
-function movedOnSentences(vs: RunVerdict[], ofThose: string): string {
+function movedOnSentences(vs: readonly RelayVerdict[], ofThose: string): string {
   const a = supersededByLater(vs)
   const b = followedNewerSubmission(vs)
   const c = leadFromFirstCompletion(vs)
@@ -1390,31 +1509,65 @@ function movedOnSentences(vs: RunVerdict[], ofThose: string): string {
 }
 
 /**
+ * The sampled relay posts whose step failed and recorded nothing it sent, by
+ * what reading their Submission found (#2939). Never sent is claimed only for a
+ * step that failed outright; one that timed out may have reached Pipedream after
+ * Bidspoke stopped waiting, so it is said as not found when read (L11).
+ */
+function failedPostSentences(neverSent: number, notFound: number, arrived: number): string {
+  const [ns, nf] = [neverSent === 1, notFound === 1]
+  return [
+    neverSent > 0
+      ? ` ${fmt(neverSent)} of those that did not ${ns ? 'was' : 'were'} never sent: ${ns ? 'its post' : 'their posts'} failed in Bidspoke and recorded nothing ${ns ? 'it' : 'they'} sent, and Salesforce holds no sign of ${ns ? 'it' : 'them'}.`
+      : '',
+    notFound > 0
+      ? ` ${fmt(notFound)} of those that did not timed out in Bidspoke and ${nf ? 'was' : 'were'} not found in Salesforce: Pipedream may have taken ${nf ? 'it' : 'them'} after Bidspoke stopped waiting, but Salesforce held no sign of ${nf ? 'it' : 'them'} when read.`
+      : '',
+    arrived === 1
+      ? ' The one that arrived though its post failed has its run link on its Submission, but its post recorded nothing it sent, so its fields were not compared.'
+      : arrived > 1
+        ? ` The ${fmt(arrived)} that arrived though their posts failed have their run links on their Submissions, but their posts recorded nothing they sent, so their fields were not compared.`
+        : '',
+  ].join('')
+}
+
+/**
  * The Pipedream comparison, on the direct writes' own measure: of the outcomes
  * read back, how many Salesforce took in full (#2313), those moved on since among
  * them and said (#2396). Outcomes a later run overwrote, and those with no
  * Submission, are said and left out of the count. The direct count is not
- * repeated here: its own paragraph says it (#2652).
+ * repeated here: its own paragraph says it (#2652). A post whose step failed
+ * and that Salesforce holds no sign of counts as did not, against Pipedream,
+ * and is said as never sent or not found (#2939).
  */
 function relayLine(r: RelayReadBack): string {
-  const count = (k: RunVerdict['kind']) => r.sample.filter((v) => v.kind === k).length
+  const count = (k: RelayVerdict['kind']) => r.sample.filter((v) => v.kind === k).length
   const landed = r.sample.filter(landedFully).length
-  const notLanded = count('not_landed')
+  const [notLanded, neverSent, notFound, arrived] = [count('not_landed'), count('never_sent'), count('not_found'), count('arrived_unrecorded')]
+  const didNot = notLanded + neverSent + notFound
   const unchecked = count('unchecked')
   const superseded = count('superseded')
   const orderUnknown = count('order_unknown')
-  const judged = landed + notLanded + unchecked
+  const judged = landed + arrived + didNot + unchecked
   let line: string
   if (judged === 0) {
     line = `In the same hours Pipedream sent ${fmt(r.total)} other outcome${r.total === 1 ? '' : 's'}.`
     if (superseded + orderUnknown + r.noSubmission === 0) line += ' None of them were checked in Salesforce.'
   } else {
+    const allComplete = didNot + unchecked + arrived === 0
     const checked = judged === r.total ? (judged === 1 ? 'the one outcome' : `all ${fmt(judged)} outcomes`) : `${fmt(judged)} of the ${fmt(r.total)} outcomes`
-    const result =
-      notLanded + unchecked === 0
-        ? `, and ${judged === 1 ? 'it' : `all ${fmt(judged)}`} arrived complete.`
-        : `: ${joinAnd([`${fmt(landed)} arrived complete`, ...(notLanded > 0 ? [`${fmt(notLanded)} did not`] : []), ...(unchecked > 0 ? [`${fmt(unchecked)} could not be checked`] : [])])}.`
-    line = `For comparison, we checked ${checked} Pipedream sent in the same hours${result}` + movedOnSentences(r.sample, notLanded + unchecked === 0 ? 'of those' : 'of those that arrived complete')
+    const result = allComplete
+      ? `, and ${judged === 1 ? 'it' : `all ${fmt(judged)}`} arrived complete.`
+      : `: ${joinAnd([
+          `${fmt(landed)} arrived complete`,
+          ...(arrived > 0 ? [`${fmt(arrived)} arrived though Bidspoke recorded ${arrived === 1 ? 'its post' : 'their posts'} as failed`] : []),
+          ...(didNot > 0 ? [`${fmt(didNot)} did not`] : []),
+          ...(unchecked > 0 ? [`${fmt(unchecked)} could not be checked`] : []),
+        ])}.`
+    line =
+      `For comparison, we checked ${checked} Pipedream sent in the same hours${result}` +
+      failedPostSentences(neverSent, notFound, arrived) +
+      movedOnSentences(r.sample, allComplete ? 'of those' : 'of those that arrived complete')
   }
   const more = judged > 0 ? 'more' : 'of them'
   if (superseded > 0) line += ` ${fmt(superseded)} ${more} ${superseded === 1 ? 'was' : 'were'} left out because a later run of Main Flow wrote the same Submission.`
@@ -1781,6 +1934,11 @@ function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWat
               no_submission: report.relay.noSubmission,
               landed: report.relay.sample.filter(landedFully).length,
               not_landed: report.relay.sample.filter((v) => v.kind === 'not_landed').length,
+              // Posts whose step failed and recorded nothing it sent (#2939): no sign in Salesforce,
+              // by a step that failed outright or one that timed out, and those whose run link arrived.
+              never_sent: report.relay.sample.filter((v) => v.kind === 'never_sent').length,
+              not_found: report.relay.sample.filter((v) => v.kind === 'not_found').length,
+              arrived_unrecorded: report.relay.sample.filter((v) => v.kind === 'arrived_unrecorded').length,
               unchecked: report.relay.sample.filter((v) => v.kind === 'unchecked').length,
               // Overwritten by a later RUN, so left out of the rate; not the two below.
               superseded: report.relay.sample.filter((v) => v.kind === 'superseded').length,
@@ -1789,8 +1947,8 @@ function endingOf(report: CanaryWatchReport, posted: boolean, subject: CanaryWat
               order_unknown_runs: unordered(report.relay.sample),
               superseded_by_later_write: supersededByLater(report.relay.sample),
               followed_newer_submission: followedNewerSubmission(report.relay.sample),
-              // Run ids and what was wrong, never a value.
-              runs: report.relay.sample.filter(isBad),
+              // Run ids and what was wrong, never a value, the posts not in Salesforce among them (#2939).
+              runs: report.relay.sample.filter((v) => isBad(v) || v.kind === 'never_sent' || v.kind === 'not_found'),
               // Run ids and the field names a later write changed, never a value.
               moved_on_runs: report.relay.sample.filter((v) => v.kind === 'moved_on'),
             },
@@ -1964,6 +2122,30 @@ export async function readSendSteps(supabase: SupabaseClient, executionId: strin
   return rows
 }
 
+/**
+ * The `Submission__c` each of these Main Flow runs' trigger payloads holds
+ * (#2939), runs started in [from, to), the window their relay posts were listed
+ * by. workflow_executions is partitioned by its start, so the window bounds the
+ * read too. Only that one key is read, never the payload. The ids are the relay
+ * sample's, so never more than RELAY_SAMPLE_SIZE; more throws rather than read
+ * part of them. Throws on a failed read.
+ */
+export async function readRunSubmissionIds(supabase: SupabaseClient, executionIds: string[], from: string, to: string): Promise<Map<string, unknown>> {
+  if (executionIds.length === 0) return new Map()
+  if (executionIds.length > RELAY_SAMPLE_SIZE) throw new Error(`the run Submission read was asked for ${executionIds.length} runs, more than the ${RELAY_SAMPLE_SIZE} it reads`)
+  const { data, error } = await supabase
+    .from('workflow_executions')
+    .select('id, submission:trigger_payload->>Submission__c')
+    .eq('workflow_id', MAIN_FLOW_WORKFLOW_ID)
+    .in('id', executionIds)
+    .gte('started_at', from)
+    .lt('started_at', to)
+    .limit(RELAY_SAMPLE_SIZE)
+  if (error) throw new Error(`run Submission read failed: ${error.message}`)
+  const rows = (data ?? []) as Array<{ id: string; submission: unknown }>
+  return new Map(rows.map((r) => [r.id, r.submission]))
+}
+
 /** The production wiring for one subject: Main Flow's steps and definition, its organization's Salesforce and Slack. Never throws. */
 export async function runCanaryWatchForEnv(subject: CanaryWatchSubject, supabase: SupabaseClient, env: Env): Promise<CanaryWatchReport> {
   const keys = secretKeys(env)
@@ -2010,6 +2192,7 @@ export async function runCanaryWatchForEnv(subject: CanaryWatchSubject, supabase
     readSteps: (from, to) => readWatchedSteps(supabase, subject.step, from, to, subject.maxSteps),
     readRelay: (from, to) => readRelayPosts(supabase, from, to),
     readSendSteps: (executionId) => readSendSteps(supabase, executionId),
+    readRunSubmissions: (executionIds, from, to) => readRunSubmissionIds(supabase, executionIds, from, to),
     salesforce: async () => {
       const port = await salesforcePortFor(env, supabase, keys, await orgId(), MAIN_FLOW_WORKFLOW_ID)
       return async (path: string): Promise<SalesforceRead> => {
