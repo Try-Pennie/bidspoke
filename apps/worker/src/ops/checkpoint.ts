@@ -25,7 +25,10 @@
  * each mask from the secrets served to the slice that reads it (the run's
  * dispatch, never kept), and refuses as checkpoint_secret_unserved, naming the
  * variable, one it was not served or was served empty: a mask never stands in
- * for a value. A checkpoint whose masked form would still show a value (one
+ * for a value. A mask records every form (raw, JSON, URL, form body) in which
+ * the masked value read as the same text, and a value served now that reads
+ * differently across those forms is refused as checkpoint_secret_changed,
+ * never refilled on a guess at its escaping. A checkpoint whose masked form would still show a value (one
  * equal to its own variable's name, say) is not written (CheckpointHoldsSecret).
  * Format 1, written before #3024 with outputs as they were, is still read as
  * written and never refilled; this build writes only format 2 (L1010).
@@ -131,6 +134,7 @@ export const CHECKPOINT_REFUSALS = [
   'checkpoint_missing',
   'checkpoint_key_taken',
   'checkpoint_secret_unserved',
+  'checkpoint_secret_changed',
 ] as const
 export type CheckpointRefusal = (typeof CHECKPOINT_REFUSALS)[number]
 
@@ -247,6 +251,10 @@ export async function decodeCheckpoint(
     if (refilled.kind === 'unserved') {
       const one = refilled.names.length === 1
       throw new CheckpointRefused('checkpoint_secret_unserved', `the checkpoint at ${pointer.key} masked the secret ${one ? 'variable' : 'variables'} ${namedVariables(refilled.names)}, which ${one ? 'was' : 'were'} not served to this slice or ${one ? 'is' : 'are'} empty now, so the run cannot resume with ${one ? 'its value' : 'their values'}`)
+    }
+    if (refilled.kind === 'changed') {
+      const one = refilled.names.length === 1
+      throw new CheckpointRefused('checkpoint_secret_changed', `the secret ${one ? 'variable' : 'variables'} ${namedVariables(refilled.names)} changed since the checkpoint at ${pointer.key} was written, to a value that would be escaped differently where the step output held ${one ? 'it' : 'them'}, so the run cannot resume without guessing how ${one ? 'it was' : 'they were'} written`)
     }
     path.push({ ...step, output: refilled.value })
   }

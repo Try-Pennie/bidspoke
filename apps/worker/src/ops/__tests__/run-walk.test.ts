@@ -871,6 +871,26 @@ describe('walkOpsDefinition: a checkpoint holding a secret is written masked and
     expect(JSON.stringify({ end, logs: o.logs })).not.toContain(SECRET)
   })
 
+  it('fails a resumed slice by name, running nothing, when the secret was rotated to a value its masked form cannot be refilled with unambiguously', async () => {
+    // The step answered the secret inside a JSON body; a value with no quote reads the same raw and escaped there.
+    const reads = {
+      nodes: [node('send', 'action_a', { token: '{{env.API_TOKEN}}' }), node('use', 'action_b')],
+      edges: [edge('trigger', 'send'), edge('send', 'use')],
+    }
+    const sends: OpsStepHandler = async ({ ctx }) => ({ output: { body: JSON.stringify({ token: ctx.env.API_TOKEN }) } })
+    const m = memoryStore()
+    const rr = runRow()
+    const r = recorder()
+    expect(await walkOpsDefinition(reads, sliceOf(rr).ctx, { action_a: sends, action_b: r.handler }, { ...slicing('on', () => m.store, stepsBudget(1)), secretValues: { API_TOKEN: SECRET } })).toEqual({ outcome: 'continue' })
+    rr.row.continuations++
+    const o = slicing('on', () => m.store, stepsBudget(50))
+    const end = await walkOpsDefinition(reads, sliceOf(rr).ctx, { action_a: sends, action_b: r.handler }, { ...o, secretValues: { API_TOKEN: 'fake-sliced-"quoted"-secret' } })
+    expect(end).toEqual({ outcome: 'failed', error: expect.stringMatching(/^checkpoint_secret_changed: .*env\.API_TOKEN/) })
+    expect(r.seen).toEqual([])
+    expect(stepsOf(o.logs, 'resume_refused')).toEqual([expect.objectContaining({ reason: 'checkpoint_secret_changed' })])
+    expect(JSON.stringify({ end, logs: o.logs })).not.toContain('quoted')
+  })
+
   it('fails a resumed slice by name, running nothing and reading no checkpoint, when a masked secret was not served at all', async () => {
     const m = memoryStore()
     const rr = runRow()

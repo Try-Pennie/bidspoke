@@ -21,8 +21,12 @@
  *
  * REFILLABLE (#3024). A checkpoint must come back exactly as the walk had it,
  * so maskSecretsForRefill writes each string holding a secret as a mask that
- * records which variable stood where, in which form, and refillSecrets puts
- * back the values served to the slice that reads it. A mask is a string that
+ * records which variable stood where, and every form in which its value read
+ * as that same text, and refillSecrets puts back the values served to the
+ * slice that reads it. A value that reads the same raw and JSON escaped (one
+ * with no quote, backslash or newline) cannot say which the step wrote, so a
+ * value served now that would be written differently in any of those forms is
+ * refused by name, never refilled on a guess (changed). A mask is a string that
  * starts with MASK_MARK and then 'm', followed by the JSON of its parts. A real
  * string that starts with MASK_MARK is written with MASK_MARK and 'l' before
  * it, so no real string, whatever it holds, can be read as a mask: every
@@ -44,32 +48,39 @@ function formOf(form: SecretForm, secret: string): string {
   }
 }
 
-/** A secret as it is written raw, inside a JSON string, percent encoded in a URL, and in a form body, each text once. None for an empty one. */
-function secretForms(secret: string): Array<{ form: SecretForm; text: string }> {
+/**
+ * A secret as it is written raw, inside a JSON string, percent encoded in a
+ * URL, and in a form body: each text once, with every form that writes it so.
+ * None for an empty one.
+ */
+function secretForms(secret: string): Array<{ forms: SecretForm[]; text: string }> {
   if (secret === '') return []
-  const forms: Array<{ form: SecretForm; text: string }> = []
+  const out: Array<{ forms: SecretForm[]; text: string }> = []
   for (const form of SECRET_FORMS) {
     const text = formOf(form, secret)
-    if (!forms.some((f) => f.text === text)) forms.push({ form, text })
+    const same = out.find((f) => f.text === text)
+    if (same === undefined) out.push({ forms: [form], text })
+    else same.forms.push(form)
   }
-  return forms
+  return out
 }
 
 interface SecretPair {
   name: string
-  form: SecretForm
+  /** Every form in which the value reads as text. */
+  forms: SecretForm[]
   text: string
 }
 
 /** Every secret in every form, longest first, so a longer value wins where two start at one place. */
 function pairsOf(secrets: Readonly<Record<string, string>>): SecretPair[] {
   return Object.entries(secrets)
-    .flatMap(([name, secret]) => secretForms(secret).map(({ form, text }) => ({ name, form, text })))
+    .flatMap(([name, secret]) => secretForms(secret).map(({ forms, text }) => ({ name, forms, text })))
     .sort((a, b) => b.text.length - a.text.length)
 }
 
-/** One piece of a string: text kept as it is, or a secret masked. */
-type Segment = string | { secret: string; form: SecretForm }
+/** One piece of a string: text kept as it is, or a secret masked, with every form its value read as that text in. */
+type Segment = string | { secret: string; forms: SecretForm[] }
 
 /**
  * The string read once from the left into kept text and masked secrets: at
@@ -90,7 +101,7 @@ function secretSegments(text: string, pairs: readonly SecretPair[]): Segment[] |
     }
     if (best === -1) break
     if (next[best] > pos) out.push(text.slice(pos, next[best]))
-    out.push({ secret: pairs[best].name, form: pairs[best].form })
+    out.push({ secret: pairs[best].name, forms: [...pairs[best].forms] })
     pos = next[best] + pairs[best].text.length
   }
   if (pos < text.length) out.push(text.slice(pos))
@@ -155,25 +166,37 @@ export function maskSecretsForRefill(value: unknown, secrets: Readonly<Record<st
   })
 }
 
-/** What a refill answers: the value with every mask refilled, the variables it was not served, or why a mask could not be read. */
+/**
+ * What a refill answers: the value with every mask refilled; the variables it
+ * was not served (or was served empty); the variables whose value served now
+ * would be written differently in forms the masked one read the same in, so
+ * which to write cannot be told; or why a mask could not be read.
+ */
 export type Refilled =
   | { kind: 'refilled'; value: unknown }
   | { kind: 'unserved'; names: string[] }
+  | { kind: 'changed'; names: string[] }
   | { kind: 'malformed'; detail: string }
+
+const isForms = (v: unknown): v is SecretForm[] =>
+  Array.isArray(v) && v.length > 0 && v.every((f) => (SECRET_FORMS as readonly unknown[]).includes(f)) && new Set(v).size === v.length
 
 const isSegment = (v: unknown): v is Segment =>
   typeof v === 'string'
   || (v !== null && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 2
-    && typeof (v as Record<string, unknown>).secret === 'string' && (SECRET_FORMS as readonly unknown[]).includes((v as Record<string, unknown>).form))
+    && typeof (v as Record<string, unknown>).secret === 'string' && isForms((v as Record<string, unknown>).forms))
 
 /**
  * The value maskSecretsForRefill wrote, with each mask refilled from secrets,
  * the values served to this slice, each in the form it was masked in. A
  * masked variable not served, or served empty, is named and nothing is
- * refilled: a mask is never left standing in for a value.
+ * refilled: a mask is never left standing in for a value. So is one whose
+ * value served now reads differently in the forms the masked one read the
+ * same in: the escaping is never guessed.
  */
 export function refillSecrets(value: unknown, secrets: Readonly<Record<string, string>>): Refilled {
   const unserved = new Set<string>()
+  const changed = new Set<string>()
   let malformed: string | null = null
   const refilled = mapStrings(value, (text) => {
     if (!text.startsWith(MASK_MARK)) return text
@@ -196,11 +219,17 @@ export function refillSecrets(value: unknown, secrets: Readonly<Record<string, s
     return segments.map((s) => {
       if (typeof s === 'string') return s
       const served = Object.hasOwn(secrets, s.secret) ? secrets[s.secret] : ''
-      if (served === '') unserved.add(s.secret)
-      return formOf(s.form, served)
+      if (served === '') {
+        unserved.add(s.secret)
+        return ''
+      }
+      const texts = s.forms.map((form) => formOf(form, served))
+      if (texts.some((t) => t !== texts[0])) changed.add(s.secret)
+      return texts[0]
     }).join('')
   })
   if (malformed !== null) return { kind: 'malformed', detail: malformed }
   if (unserved.size > 0) return { kind: 'unserved', names: [...unserved].sort() }
+  if (changed.size > 0) return { kind: 'changed', names: [...changed].sort() }
   return { kind: 'refilled', value: refilled }
 }

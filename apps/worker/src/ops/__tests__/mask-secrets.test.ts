@@ -102,6 +102,15 @@ describe('maskSecretsForRefill and refillSecrets', () => {
     })
   })
 
+  it('refuses, naming the variable, a value served now that would be written differently in a form the masked one read the same in: it never guesses the escaping', () => {
+    // Inside a JSON string, a value with no quote reads the same raw and escaped, so which one the step wrote cannot be told.
+    const body = JSON.stringify({ token: 'fake-token-no-quote' })
+    const masked = maskSecretsForRefill({ body }, { API_TOKEN: 'fake-token-no-quote' })
+    expect(refillSecrets(masked, { API_TOKEN: 'fake-token-"quoted"' })).toEqual({ kind: 'changed', names: ['API_TOKEN'] })
+    // One that reads the same in all those forms too is refilled.
+    expect(refillSecrets(masked, { API_TOKEN: 'fake-token-also-plain' })).toEqual({ kind: 'refilled', value: { body: JSON.stringify({ token: 'fake-token-also-plain' }) } })
+  })
+
   it('never mistakes a real string for a mask: the name maskSecrets writes, and the exact text a mask is stored as, both come back unchanged', () => {
     const storedMask = maskSecretsForRefill('fake-api-token-value', SECRETS) as string
     expect(storedMask).not.toBe('fake-api-token-value')
@@ -125,7 +134,7 @@ describe('maskSecretsForRefill and refillSecrets', () => {
   })
 
   it('refuses a stored mask it cannot read, by name, rather than guessing', () => {
-    for (const bad of ['\u0000m', '\u0000mnot json', '\u0000m[{"secret":"A","form":"rot13"}]', '\u0000m[3]', '\u0000m[{"secret":"A"}]', '\u0000x', '\u0000']) {
+    for (const bad of ['\u0000m', '\u0000mnot json', '\u0000m[{"secret":"A","forms":["rot13"]}]', '\u0000m[{"secret":"A","forms":[]}]', '\u0000m[3]', '\u0000m[{"secret":"A"}]', '\u0000x', '\u0000']) {
       expect(refillSecrets({ v: bad }, SECRETS), JSON.stringify(bad)).toMatchObject({ kind: 'malformed' })
     }
   })

@@ -184,6 +184,28 @@ describe('a checkpoint holding a secret (#3024, format 2)', () => {
     }
   })
 
+  it('refuses as checkpoint_secret_changed, naming the variable and never a value, a secret rotated from one with no quote to one with a quote inside a JSON string', async () => {
+    const cp = checkpoint({
+      path: [
+        { seq: 0, nodeId: 'shape', namespace: 'shape', output: { body: JSON.stringify({ token: SECRET }) }, edgeId: 'shape-pick' },
+        { seq: 1, nodeId: 'pick', namespace: 'pick', output: { _route: 'else' }, edgeId: 'pick-b' },
+      ],
+    })
+    const { pointer, body } = await pointerOf(cp, { API_TOKEN: SECRET })
+    const quoted = 'fake-checkpoint-secret-"quoted"'
+    let err: unknown
+    try {
+      await decodeCheckpoint(body, pointer, IDENTITY, { API_TOKEN: quoted })
+    } catch (e) {
+      err = e
+    }
+    expect(err).toBeInstanceOf(CheckpointRefused)
+    expect((err as CheckpointRefused).reason).toBe('checkpoint_secret_changed')
+    expect((err as Error).message).toMatch(/env\.API_TOKEN/)
+    expect((err as Error).message).not.toContain(SECRET)
+    expect((err as Error).message).not.toContain('quoted')
+  })
+
   it('a real output that equals a mask, or the name maskSecrets writes, comes back as it was and is never refilled', async () => {
     const masked = (await pointerOf(holding(), { API_TOKEN: SECRET })).body
     const storedMask = (JSON.parse(masked).path[0].output as Record<string, string>).token
