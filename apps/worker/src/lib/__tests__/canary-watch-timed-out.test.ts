@@ -109,6 +109,7 @@ function deps(over: Partial<CanaryWatchDeps> & { steps?: WatchedStep[]; records?
     readSteps: async () => over.steps ?? [],
     readRelay: async () => ({ total: 0, sample: [] }),
     readSendSteps: async () => [],
+    readRunSubmissions: async () => new Map(),
     salesforce: async () => async (p: string) => {
       asked.push(p)
       clock += over.clockStepMs ?? 0

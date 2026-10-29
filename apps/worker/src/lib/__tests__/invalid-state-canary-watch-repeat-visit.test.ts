@@ -100,6 +100,7 @@ function deps(opts: { steps: WatchedStep[]; records: Record<string, unknown>; pr
     readRelay: async () => ({ total: 0, sample: [] }),
     // No other run's step rows: a run outside the day is ordered by its own start (#2806).
     readSendSteps: async () => [],
+    readRunSubmissions: async () => new Map(),
     salesforce: async () => async (p: string) => {
       const id = /^\/sobjects\/(?:Submission__c|Lead)\/([A-Za-z0-9]+)\?fields=/.exec(p)?.[1]
       const r = id ? opts.records[id] : undefined
