@@ -51,10 +51,21 @@ export const SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1: ActionSchema = {
     'The INSERT is sent under the step\'s stable request id with retry=true, and Snowflake does not run again a statement it has already run successfully under that id, so sending the same rows again after an uncertain outcome writes them at most once.',
 }
 
+/**
+ * Version 2 of Insert Multiple Rows (#2487): the same arguments, traits and
+ * statement, with the size cap lowered from 4 MB to the 1 MB Snowflake says it
+ * can retry, and the row cap's reason corrected. Version 1 stays for the steps
+ * pinned to it.
+ */
+export const SNOWFLAKE_INSERT_MULTIPLE_ROWS_V2: ActionSchema = {
+  ...SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1,
+  version: 2,
+}
+
 export const SNOWFLAKE_SERVICE: ServiceSchema = {
   key: 'snowflake',
   name: 'Snowflake',
-  actions: [SNOWFLAKE_EXECUTE_SQL_QUERY_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1],
+  actions: [SNOWFLAKE_EXECUTE_SQL_QUERY_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V2],
   // The key pair minter reads `private_key` from the login and `account` and
   // `user` from the target; the catalogue's Snowflake client (snowflakeTargetOf)
   // reads the four optional session fields.

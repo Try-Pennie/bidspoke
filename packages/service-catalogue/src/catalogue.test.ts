@@ -200,6 +200,20 @@ describe('the shipped catalogue', () => {
     }
   })
 
+  it("folds each Insert Multiple Rows version's own statement builder into its fingerprint, never the other's (#2487)", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const reach = (version: number) => collectModuleImports(path.join(SHIPPED.actionsDir, `snowflake.insert-multiple-rows.v${version}.ts`), {
+      root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+      linkOf: (importer, name) => linkedPath(lock, importer, name),
+    })
+    const released = path.join(SRC, 'runtime', 'snowflake', 'insert.ts')
+    const fromV2 = path.join(SRC, 'runtime', 'snowflake', 'insert-rows.ts')
+    // Version 1's caps live in insert.ts, so version 2 must not reach it, and version 1 must not reach the builder later versions share.
+    expect([reach(1).files.includes(released), reach(1).files.includes(fromV2)]).toEqual([true, false])
+    expect([reach(2).files.includes(released), reach(2).files.includes(fromV2)]).toEqual([false, true])
+    expect([reach(1).packages, reach(2).packages]).toEqual([[], []])
+  })
+
   it('is compiled with verbatimModuleSyntax off everywhere an action reaches, so a list of type names alone loads nothing (#2878)', () => {
     // The fingerprint leaves out `import { type A } from './x'` because the
     // compiler and the Worker bundler erase it whole. With verbatimModuleSyntax
