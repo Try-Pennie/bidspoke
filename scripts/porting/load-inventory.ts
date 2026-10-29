@@ -19,10 +19,10 @@
  *
  * Runs on Node's own TypeScript type stripping (Node 23.6 or later).
  */
-import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import {
   differencesAfterWrite,
+  inventoryCredentials,
   planLoad,
   readExport,
   readStoredRows,
@@ -42,20 +42,11 @@ function arg(name: string): string | undefined {
 }
 
 function credentials(): { url: string; key: string } {
-  let url = process.env.SUPABASE_URL
-  let key = process.env.SUPABASE_SECRET_KEY
-  const devVars = path.join(REPO_ROOT, 'apps', 'worker', '.dev.vars')
-  if ((!url || !key) && existsSync(devVars)) {
-    for (const line of readFileSync(devVars, 'utf8').split('\n')) {
-      const m = /^\s*(SUPABASE_URL|SUPABASE_SECRET_KEY)\s*=\s*(.*)\s*$/.exec(line)
-      if (!m) continue
-      const value = m[2].replace(/^(["'])(.*)\1$/, '$2')
-      if (m[1] === 'SUPABASE_URL') url ??= value
-      else key ??= value
-    }
+  try {
+    return inventoryCredentials(process.env, path.join(REPO_ROOT, 'apps', 'worker', '.dev.vars'))
+  } catch (e) {
+    fail(e instanceof Error ? e.message : 'reading the credentials failed')
   }
-  if (!url || !key) fail('SUPABASE_URL and SUPABASE_SECRET_KEY are required, in the environment or in apps/worker/.dev.vars')
-  return { url: url.replace(/\/$/, ''), key }
 }
 
 const dir = process.argv[2]

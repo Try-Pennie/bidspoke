@@ -1,0 +1,107 @@
+{
+  "schema": "workflow.json/2026.01",
+  "id": "p_Fx1Lead",
+  "name": "Demo lead intake",
+  "triggers": [
+    { "type": "http", "runtime": "nodejs20.x", "props": {} }
+  ],
+  "steps": [
+    {
+      "namespace": "normalize",
+      "type": "CodeCell",
+      "lang": "nodejs20.x",
+      "component": true,
+      "uses": {
+        "registry": false,
+        "code": "export default defineComponent({\n  async run({ steps, $ }) {\n    const body = steps.trigger.event.body\n    return { name: String(body.name).trim() }\n  },\n})\n"
+      }
+    },
+    {
+      "namespace": "broken_step",
+      "type": "CodeCell",
+      "lang": "nodejs20.x",
+      "component": true,
+      "uses": {
+        "registry": false,
+        "code": "export default defineComponent({\n  async run({ steps, $ }) {\n    return (\n  },\n})\n"
+      }
+    },
+    {
+      "namespace": "send_request",
+      "type": "CodeCell",
+      "lang": "nodejs20.x",
+      "component": true,
+      "component_owner": "o_Fx1Own",
+      "component_key": "http-custom-request",
+      "uses": { "registry": true, "key": "http-custom-request", "version": "0.0.2" },
+      "props": { "httpRequest": "<redacted>" }
+    },
+    {
+      "namespace": "shared_helper",
+      "type": "CodeCell",
+      "lang": "nodejs20.x",
+      "component": true,
+      "component_owner": "o_Fx1Own",
+      "component_key": "demo-private-helper",
+      "uses": {
+        "registry": false,
+        "key": "demo-private-helper",
+        "version": "0.0.3",
+        "code": "export default {\n  name: 'Demo helper',\n  key: 'demo-private-helper',\n  version: '0.0.3',\n  async run({ $ }) {\n    return 1\n  },\n}\n"
+      }
+    },
+    {
+      "namespace": "branch_on_score",
+      "type": "CodeCell",
+      "lang": "nodejs20.x",
+      "component": true,
+      "component_owner": "o_Fx1Own",
+      "props": {
+        "_controlFlow": {
+          "type": "ifelse",
+          "ifelse": {
+            "ifElses": [
+              { "id": "c_Fx1If", "n": "Case 1", "rules": { "t": "and", "r": [{ "a": "{{steps.normalize.$return_value.name}}", "op": "eq", "b": "x" }] }, "route": {} }
+            ],
+            "_else": { "shown": true, "n": "Else", "route": { "pipeline": { "id": "pl_Fx1Els", "deploymentId": "d_Fx1Else" } } }
+          }
+        }
+      },
+      "uses": { "registry": false, "code": "export default {}\n" }
+    },
+    {
+      "namespace": "return_response",
+      "type": "CodeCell",
+      "lang": "nodejs20.x",
+      "component": true,
+      "component_owner": "o_Fx1Own",
+      "component_key": "http-return-http-response",
+      "uses": { "registry": true, "key": "http-return-http-response", "version": "0.0.6" },
+      "props": { "resStatusCode": "200" }
+    },
+    {
+      "namespace": "old_note",
+      "type": "CodeCell",
+      "lang": "nodejs20.x",
+      "disabled": true,
+      "code_raw": "// an old step kept only as text\n"
+    }
+  ],
+  "deployments": {
+    "d_Fx1Else": {
+      "steps": [
+        {
+          "namespace": "wait_a_bit",
+          "type": "CodeCell",
+          "lang": "nodejs20.x",
+          "component": true,
+          "component_owner": "o_Fx1Own",
+          "component_key": "delay-workflow-delay",
+          "uses": { "registry": true, "key": "delay-workflow-delay", "version": "0.0.2" },
+          "props": { "delayDurationUnits": "seconds" }
+        }
+      ]
+    }
+  },
+  "settings": { "auto_retry": false }
+}

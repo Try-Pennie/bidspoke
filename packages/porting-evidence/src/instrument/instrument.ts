@@ -58,11 +58,11 @@
  * safe. A `$` handed to anything NOT defined in the step (`axios($, ...)`, an
  * import) is not followed and refuses nothing.
  */
-import { parse as babelParse } from '@babel/parser'
 import type { ExpressionKind, StatementKind } from 'ast-types/lib/gen/kinds'
 import type { NodePath } from 'ast-types/lib/node-path'
 import type { Scope } from 'ast-types/lib/scope'
-import { parse, print, types, visit } from 'recast'
+import { print, types, visit } from 'recast'
+import { isCodeStep, parseStepCode as parseModule } from './step-code.ts'
 import {
   CAPTURE_FUNCTION,
   DEFAULT_MAX_BYTES,
@@ -155,25 +155,6 @@ export interface InstrumentOptions {
   receiverBaseUrl: string
   timeoutMs?: number
   maxBytes?: number
-}
-
-const isControlFlow = (s: PipedreamStep) => !!s.props && '_controlFlow' in s.props
-const isCodeStep = (s: PipedreamStep) => typeof s.uses?.code === 'string' && s.uses.registry !== true && !isControlFlow(s)
-
-function parseModule(code: string) {
-  return parse(code, {
-    parser: {
-      parse: (source: string) =>
-        babelParse(source, {
-          sourceType: 'module',
-          tokens: true,
-          allowReturnOutsideFunction: true,
-          allowAwaitOutsideFunction: true,
-          errorRecovery: false,
-          plugins: ['jsx', 'topLevelAwait'],
-        }),
-    },
-  }) as types.namedTypes.File
 }
 
 const isFunction = (node: Node) =>

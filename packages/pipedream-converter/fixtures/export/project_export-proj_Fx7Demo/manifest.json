@@ -1,0 +1,14 @@
+{
+  "schema": "project-export/2026.01",
+  "workflow_schema": "workflow.json/2026.01",
+  "project_hashid": "proj_Fx7Demo",
+  "exported_at": "2026-09-30T19:26:13Z",
+  "truncated": false,
+  "truncated_reason": null,
+  "limits": { "workflows": 500, "bytes": 268435456 },
+  "workflows": [
+    { "hashid": "p_Fx1Lead", "name": "Demo lead intake", "status": "exported", "path": "p_fx1lead-p_Fx1Lead.json", "warnings": [] },
+    { "hashid": "p_Fx2Daily", "name": "Demo daily sheet sync", "status": "exported", "path": "p_fx2daily-p_Fx2Daily.json", "warnings": [] },
+    { "hashid": "p_Fx3Never", "name": "Demo never deployed", "status": "skipped_never_deployed" }
+  ]
+}

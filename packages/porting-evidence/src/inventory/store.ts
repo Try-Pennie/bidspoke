@@ -35,6 +35,24 @@ export async function readStoredRows(f: typeof fetch, url: string, key: string):
   }
 }
 
+/**
+ * The stored row of one workflow, or null when the inventory holds none (#1695).
+ * The converter reads it to decide whether the export it was given is the newest
+ * recorded snapshot. A failed read throws rather than answering null, which
+ * would read as a workflow never loaded.
+ */
+export async function readStoredRow(f: typeof fetch, url: string, key: string, hashid: string): Promise<StoredRow | null> {
+  // The same shape the table's CHECK holds every hashid to, so nothing else reaches the query string.
+  if (!/^p_[A-Za-z0-9]+$/.test(hashid)) throw new Error(`${hashid} is not a Pipedream workflow id`)
+  const q = `select=${INVENTORY_COLUMNS.join(',')}&pipedream_hashid=eq.${hashid}&limit=2`
+  const res = await f(`${url}/rest/v1/${TABLE}?${q}`, { headers: headers(key, { 'Accept-Profile': 'porting' }) })
+  if (!res.ok) throw await failure(res, `reading porting.${TABLE} for ${hashid}`)
+  const rows = (await res.json()) as unknown
+  if (!Array.isArray(rows)) throw new Error(`reading porting.${TABLE} for ${hashid}: the answer is not a list`)
+  if (rows.length > 1) throw new Error(`reading porting.${TABLE}: ${rows.length} rows for ${hashid}, where the hashid is the key`)
+  return rows.length === 0 ? null : (rows[0] as StoredRow)
+}
+
 /** Upserts the rows, stamping updated_at; returns the number written. */
 export async function writeRows(f: typeof fetch, url: string, key: string, rows: InventoryRow[], now: string): Promise<number> {
   let written = 0
