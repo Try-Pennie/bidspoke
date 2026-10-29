@@ -69,7 +69,7 @@ describe('classifyOutageCause reads the failing step marker first (#3069)', () =
 })
 
 describe('a gateway timeout is the upstream answering, never our deadline (#3069)', () => {
-  it('a 504 is never put in the timeout bucket, marked or by text', () => {
+  it('an unmarked 504 is never put in the timeout bucket by its text', () => {
     expect(classifyOutageCause('HTTP 504: <html>Gateway Timeout</html>')).toBeNull()
     expect(classifyOutageCause('HTTP 504 Gateway Timeout')).toBeNull()
     expect(classifyOutageCause('Code returned error response: HTTP 504')).toBeNull()
