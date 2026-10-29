@@ -170,8 +170,8 @@ export interface TimeoutColumns {
 }
 
 /**
- * Which of our deadlines stopped a recorded step, its own or its parallel
- * block's, read from the marker alone: null on a row with no marker or with a
+ * Which of our deadlines stopped a recorded step, any kind in TIMEOUT_KINDS,
+ * read from the marker alone: null on a row with no marker or with a
  * value the engine never writes. Unlike stepTimedOut it has no text fallback,
  * so a reader that keeps one (the outage check, #3069) keeps it beside this.
  */
