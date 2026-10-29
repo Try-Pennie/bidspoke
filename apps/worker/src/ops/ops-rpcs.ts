@@ -82,6 +82,12 @@ export const OPS_LANE_RPCS = [
   'purge_step_test_results',
   // And the records of run attempts started more than 7 days ago (#2703).
   'purge_ops_step_records',
+  // And a run's recorded variables once it has been terminal more than 7 days (#2998).
+  'purge_run_variables',
+  // The last good copy of each ops version's plain variables (#2999): the tick's
+  // one batched write spans organizations, and the nightly purge belongs to none.
+  'save_variable_copies',
+  'purge_variable_copies',
   // How long an ops key reseal has been switched on, and what its runs last
   // said (#2486): the lane's own state, which belongs to no organization.
   'observe_ops_reseal',
@@ -117,6 +123,8 @@ export const OPS_ORGANIZATION_READ_ONLY_RPCS = [
   'run_step_context',
   // The checkpoint a run names, answered to its holder alone (#1951).
   'run_checkpoint',
+  // One organization's kept copies of the versions asked about (#2999).
+  'variable_copies',
 ] as const
 export const OPS_READ_ONLY_RPCS = [...OPS_LANE_READ_ONLY_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS] as const
 

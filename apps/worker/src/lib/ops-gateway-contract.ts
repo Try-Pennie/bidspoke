@@ -43,7 +43,8 @@
  * And since #2997 (phase 1 of #2982), the current variables of the runs the
  * tick claims (opsRunVariables): each version's plain values and decrypted
  * secrets, the names derived by the bidding Worker from the version it holds.
- * Served ahead of any ops caller (OPS_GATEWAY_SERVED_AHEAD, below).
+ * The tick asks for them since #2998 (phase 2), and carries each run's in its
+ * signed dispatch (ops/run-variables.ts).
  */
 import { CURRENT_OPS_KID, KID_PATTERN } from '@bidspoke/connection-seal'
 import type { OpsSweep } from '../ops/run-vocabulary'
@@ -116,6 +117,8 @@ export interface OpsGatewayBinding {
   moneyIdentities(organizationId: string): Promise<unknown>
   /** An OpsDefinitionRequest in; a ServedOpsDefinitions out, for parseServedOpsDefinitions (#1950). */
   opsWorkflowDefinitions(request: unknown): Promise<unknown>
+  /** An OpsRunVariablesRequest in; a ServedOpsRunVariables out, for parseServedOpsRunVariables (#2997, called since #2998). */
+  opsRunVariables(request: unknown): Promise<unknown>
 }
 
 /**
@@ -125,7 +128,7 @@ export interface OpsGatewayBinding {
  */
 export const OPS_GATEWAY_METHODS = [
   'opsWorkflows', 'opsTickStarted', 'opsTickCompleted', 'opsJobStarted', 'opsJobCompleted', 'storeRotatedEnvelope', 'replaceConnectionEnvelope',
-  'opsConnections', 'moneyIdentities', 'opsWorkflowDefinitions',
+  'opsConnections', 'moneyIdentities', 'opsWorkflowDefinitions', 'opsRunVariables',
 ] as const
 export type OpsGatewayMethod = (typeof OPS_GATEWAY_METHODS)[number]
 
@@ -133,13 +136,15 @@ export type OpsGatewayMethod = (typeof OPS_GATEWAY_METHODS)[number]
  * Methods the bidding Worker serves ahead of the ops Worker calling them, kept
  * off OpsGatewayBinding so no ops code can call one (#2997): an ops deploy
  * that called a method its bidding Worker did not export yet would fail every
- * call. opsRunVariables (phase 1 of #2982) ships on bidding first; the ops
- * change that calls it (phase 2) moves it onto OPS_GATEWAY_METHODS and the
- * binding once the bidding deploy carries it. The entrypoint test requires
+ * call. A new method ships on bidding first, listed here; the ops change that
+ * calls it moves it onto OPS_GATEWAY_METHODS and the binding once the bidding
+ * deploy carries it, and CI reads the deployed bidding script before merging
+ * that change (.github/scripts/bidding-exports-gateway.mjs, #2998).
+ * opsRunVariables (#2997) went across with #2998. The entrypoint test requires
  * the entrypoint to serve exactly both lists, and fails on any ops source
  * naming a method on this one.
  */
-export const OPS_GATEWAY_SERVED_AHEAD = ['opsRunVariables'] as const
+export const OPS_GATEWAY_SERVED_AHEAD = [] as const
 
 type SameNames<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never
 /** Fails to compile when OpsGatewayBinding and OPS_GATEWAY_METHODS name different methods. */
@@ -1028,6 +1033,29 @@ function variableText(raw: unknown): Record<string, string> | null {
   return out
 }
 
+/**
+ * Current variables as the ops Worker reads them (#2997, #3002): the plain
+ * values, and the secret ones decrypted by the bidding Worker. Served on the
+ * wire as { values, secret_values }.
+ */
+export interface CurrentVariables {
+  values: Record<string, string>
+  secretValues: Record<string, string>
+}
+
+/**
+ * A served run's or a step test's current variables (values, secret_values),
+ * or why they cannot be read: every name a variable name, every value text,
+ * and no name both plain and secret. Never quotes a value.
+ */
+export function readCurrentVariables(rawValues: unknown, rawSecretValues: unknown): CurrentVariables | string {
+  const values = variableText(rawValues)
+  const secretValues = variableText(rawSecretValues)
+  if (values === null || secretValues === null) return 'its variables are not names and text'
+  if (Object.keys(secretValues).some((k) => Object.hasOwn(values, k))) return 'it names a variable both plain and secret'
+  return { values, secretValues }
+}
+
 const SERVED_RUN_FIELDS = ['secret_values', 'served_at', 'values', 'version_number', 'workflow_id'].join()
 const REFUSED_RUN_FIELDS = ['keys', 'refused', 'version_number', 'workflow_id'].join()
 
@@ -1036,12 +1064,10 @@ function readRunEntry(row: unknown): ReadRunVariables | string {
   if (!isRecord(row) || typeof row.workflow_id !== 'string' || !UUID.test(row.workflow_id) || !isVersionNumber(row.version_number)) return 'it does not name a workflow and version'
   const fields = Object.keys(row).sort().join()
   if (fields === SERVED_RUN_FIELDS) {
-    const values = variableText(row.values)
-    const secretValues = variableText(row.secret_values)
-    if (values === null || secretValues === null) return 'its variables are not names and text'
-    if (Object.keys(secretValues).some((k) => Object.hasOwn(values, k))) return 'it names a variable both plain and secret'
+    const current = readCurrentVariables(row.values, row.secret_values)
+    if (typeof current === 'string') return current
     if (!isTime(row.served_at)) return 'it has no served_at time'
-    return { kind: 'served', workflowId: row.workflow_id, versionNumber: row.version_number, values, secretValues, servedAt: row.served_at }
+    return { kind: 'served', workflowId: row.workflow_id, versionNumber: row.version_number, values: current.values, secretValues: current.secretValues, servedAt: row.served_at }
   }
   if (fields === REFUSED_RUN_FIELDS) {
     if (!(RUN_VARIABLES_REFUSALS as readonly unknown[]).includes(row.refused)) return 'it is refused for a reason the ops Worker does not know'

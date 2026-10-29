@@ -36,6 +36,13 @@
  * secrets before the action ever sees it), each request as connectionFetch
  * sanitised it before applying the login, the status, the error and the time
  * taken. An answer over STEP_TEST_OUTPUT_MAX_BYTES is kept by its size alone.
+ *
+ * ITS VARIABLES (#3002, phase 6 of #2982). The step is given the current value
+ * of each variable it reads, which the bidding Worker read and sent with the
+ * request, a secret decrypted among them (Dan, 2026-10-29: "Yes, ops reads
+ * secrets"). A secret's value is never kept or logged here: the answer, the
+ * error and each request have it replaced by the variable's name
+ * (mask-secrets.ts) before anything is measured, clipped, kept or answered.
  */
 import { readAppActionConfig } from '@bidspoke/service-catalogue/schema'
 import { buildContext } from '../engine/context'
@@ -53,6 +60,7 @@ import type { ClaimedRun, RunStepContext, StepTestRecord, StoredStepTest } from 
 import { RunStopped, StepNotSent, stepRequestId, type RunContext, type StepSend } from './run-invocation'
 import { StepEndsRun } from './run-walk'
 import { STEP_OUTPUT_MAX_BYTES, byteLength, clip, clipError, keepOutput } from './step-output'
+import { maskSecrets } from './mask-secrets'
 
 /** The largest answer kept: the one cap a run's step records share (step-output.ts, #2703). */
 export const STEP_TEST_OUTPUT_MAX_BYTES = STEP_OUTPUT_MAX_BYTES
@@ -77,13 +85,18 @@ export interface StepTestDeps {
   newRunId(): string
 }
 
-/** Collects each sanitised request, keeping what fits and counting what does not. */
-function requestCollector(): { record: (request: RecordedRequest) => Promise<void>; kept: () => unknown[] } {
+/**
+ * Collects each sanitised request, keeping what fits and counting what does not.
+ * Each secret variable's value is masked (#3002) before a body is clipped, so a
+ * value the clip would cut in two never leaves a part of itself behind.
+ */
+function requestCollector(secrets: Readonly<Record<string, string>>): { record: (request: RecordedRequest) => Promise<void>; kept: () => unknown[] } {
   const kept: unknown[] = []
   let bytes = 2
   let omitted = 0
   return {
-    record: (request) => {
+    record: (raw) => {
+      const request = maskSecrets(raw, secrets) as RecordedRequest
       const entry = { ...request, body: request.body === null ? null : clip(request.body, REQUEST_BODY_MAX) }
       const size = byteLength(entry) + 1
       // Room is left for the closing count of what was not kept.
@@ -236,15 +249,33 @@ async function contextFromRun(
 }
 
 /**
- * The variables a step test is given (#2702), as a run of the workflow's newest
- * saved version would be (run-walk.ts): the plain values that version kept that
- * the step reads, or why not, as the refusal's sentence.
+ * The variables a step test is given, or why not, as the refusal's sentence.
+ *
+ * From #3002 (phase 6 of #2982), the CURRENT values the bidding Worker read for
+ * the step, secrets decrypted (Dan, 2026-10-29: "Yes, ops reads secrets"),
+ * returned apart as secrets so that nothing kept or logged holds their values.
+ * A variable the step reads with no saved value is refused by name.
+ *
+ * From a bidding Worker before #3002 (variables null), the #2702 rule: the
+ * plain values the workflow's newest saved version kept, a secret refused.
+ * Removed with the version field (#3003).
  */
-function stepVariables(request: TestStepRequest): { env: Record<string, string> } | { refused: string } {
+function stepVariables(request: TestStepRequest): { env: Record<string, string>; secrets: Record<string, string> } | { refused: string } {
   const reads = envReferences({ nodes: [request.node], edges: [] })
+  const current = request.variables
+  if (current !== null) {
+    const missing = reads.filter((k) => !Object.hasOwn(current.values, k) && !Object.hasOwn(current.secretValues, k))
+    if (missing.length > 0) {
+      const one = missing.length === 1
+      return { refused: `this step reads ${named(missing)}, which ${one ? 'has' : 'have'} no saved value for this workflow, so nothing was sent; add ${one ? 'it' : 'them'} on the environment variables page and test again` }
+    }
+    const secrets = Object.fromEntries(reads.filter((k) => Object.hasOwn(current.secretValues, k)).map((k) => [k, current.secretValues[k]]))
+    const env = Object.fromEntries(reads.map((k) => [k, Object.hasOwn(secrets, k) ? secrets[k] : current.values[k]]))
+    return { env, secrets }
+  }
   const version = request.version
   const judged = judgeVariables(reads, version?.variables ?? null)
-  if (judged.kind === 'given') return { env: judged.env }
+  if (judged.kind === 'given') return { env: judged.env, secrets: {} }
   if (judged.kind === 'none_kept') {
     const kept = version === null
       ? 'no saved version of the workflow kept the values of its variables'
@@ -274,8 +305,8 @@ export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, 
     contextSteps = built.steps
   }
 
-  // The run's rule (#2702): the step is given the plain values the workflow's newest saved
-  // version kept, and refused by name, before anything is sent, a variable it cannot be given.
+  // The step is given the current values bidding read for it, secrets included (#3002), and
+  // refused by name, before anything is sent, a variable it cannot be given.
   const given = stepVariables(request)
   if ('refused' in given) return refuse('step_test_variable_unavailable', given.refused)
 
@@ -292,7 +323,7 @@ export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, 
     }
   }
 
-  const collector = requestCollector()
+  const collector = requestCollector(given.secrets)
   const handler = appActionHandler({ ...deps.appAction, record: collector.record })
   const started = deps.now()
   const run = testRun(request, organizationId, deps.newRunId(), started, triggerPayload)
@@ -312,6 +343,10 @@ export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, 
     else error = formatErr(err)
   }
 
+  // Each secret variable's value is replaced by its name in what is kept and answered (#3002),
+  // before anything is measured or clipped, so no part of one survives a cut.
+  output = maskSecrets(output, given.secrets)
+  if (error !== null) error = maskSecrets(error, given.secrets) as string
   // Only an answer over the cap is kept by its size; an action that answered nothing is kept
   // as null with no size, and answered so too, so it never reads as dropped (#2773).
   const kept = error === null ? keepOutput(output) : null

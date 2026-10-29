@@ -100,6 +100,7 @@
 import { DEFAULT_RETRY_POLICY, retryDelaySeconds, type RetryPolicy } from '@bidspoke/workflow-definition'
 import { formatErr } from '../lib/format-error'
 import type { RequeueCause } from './connections/refusals'
+import type { RunVariablesRecord } from './run-variables'
 import {
   OPS_RPC_DEADLINE_MS, OpsClaimLostError, chargedAttemptsWithThisStart,
   type CheckpointAck, type ClaimedRun, type CompleteOutcome, type CompletedRun, type NamedCheckpoint, type OpsStepRecord, type RunCheckpointRead,
@@ -217,6 +218,14 @@ export interface RunContext {
    * the run names (continuation.ts resumeFromCheckpoint), never from its first step.
    */
   readonly continuations: number
+  /**
+   * The variables the run recorded at its first start, as this start answered
+   * them (#2998): plain values and secret NAMES, never a secret's value. Null
+   * when the run has none. A retry and a continued slice see the first start's.
+   * Absent where a context is built for something other than a run (the step
+   * test, step-test.ts), which is read as no record.
+   */
+  readonly runVariables?: RunVariablesRecord | null
 }
 
 /** What a body names and reads of its run's checkpoint (#1951, checkpoint.ts writes the checkpoint itself). */
@@ -384,7 +393,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
     log('start_failed', { error })
     return { outcome: 'start_failed', error }
   }
-  const { stateVersion, attempt, continuations } = started.value
+  const { stateVersion, attempt, continuations, runVariables } = started.value
 
   // ── state ──
   /** Aborted when the claim is lost: a forward in flight is aborted with it. */
@@ -654,7 +663,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
   }
 
   // ── the body ──
-  const ctx: RunContext = { run, executionId, attempt, signal: halt.signal, send, now: () => clock.now(), recordStep, stateVersion, checkpoints, continuations }
+  const ctx: RunContext = { run, executionId, attempt, signal: halt.signal, send, now: () => clock.now(), recordStep, stateVersion, checkpoints, continuations, runVariables }
   type BodyResult = { kind: 'returned'; end: RunBodyEnd } | { kind: 'threw'; error: unknown } | { kind: 'halted' }
   const bodyDone: Promise<BodyResult> = (async () => {
     try {

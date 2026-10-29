@@ -66,9 +66,13 @@ function opsDatabase(extra: Record<string, unknown> = {}) {
   return { fetch: fakeFetch, called, bodies }
 }
 
-function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: number; jobStamps: string[]; jobReports: unknown[]; definitionRequests: unknown[] } {
+/** What the tick was served for a run (#2998). */
+const VARIABLES = { source: 'bidding' as const, servedAt: '2026-10-17T10:02:30.000Z', values: { API_BASE: 'https://api.example.test' }, secretValues: { API_TOKEN: 'fake-tick-live-secret' } }
+
+function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: number; jobStamps: string[]; jobReports: unknown[]; definitionRequests: unknown[]; variableRequests: unknown[] } {
   const g = {
     definitionRequests: [] as unknown[],
+    variableRequests: [] as unknown[],
     reports: [] as OpsTickReport[],
     started: 0,
     jobStamps: [] as string[],
@@ -101,6 +105,15 @@ function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: num
       g.definitionRequests.push(request)
       const versions = (request as { versions: Array<{ workflow_id: string; version_number: number }> }).versions
       return { definitions: versions.map((v) => ({ ...v, organization_id: ORG, definition: { nodes: [] } })), unserved: [] }
+    },
+    // A claimed run's current variables (#2998): each run asked about served one plain value and one secret.
+    opsRunVariables: async (request: unknown) => {
+      g.variableRequests.push(request)
+      const r = request as { organization_id: string; runs: Array<{ workflow_id: string; version_number: number }> }
+      return {
+        organization_id: r.organization_id,
+        runs: r.runs.map((x) => ({ ...x, values: { API_BASE: 'https://api.example.test' }, secret_values: { API_TOKEN: 'fake-tick-live-secret' }, served_at: '2026-10-17T10:02:30.000Z' })),
+      }
     },
   }
   return g
@@ -216,6 +229,29 @@ describe('OPS_TICK_MODE (#1950)', () => {
     expect(db.bodies.claim_run_requests).toMatchObject({ p_limit: 40, p_per_workflow: 5, p_lease_seconds: 60 })
     expect(s.ran).toEqual([claimedRow.run_request_id])
     expect(report.counts).toMatchObject({ runs_claimed: 1, runs_done: 1, fires_enqueued: 1 })
+  })
+
+  it('live: writes the claimed run\'s variable copy through save_variable_copies, names and plain values only, confirmed at most every 10 minutes (#2999)', async () => {
+    const reads = { nodes: [{ id: 'n', type: 'transform', config: { mappings: [{ source: 'env.API_BASE', target: 'a' }, { source: 'env.API_TOKEN', target: 't' }, { source: 'env.GONE', target: 'g' }] } }], edges: [] }
+    const db = opsDatabase({
+      record_schedule_fire: [{ outcome: 'enqueued', fire_id: '0192f4a0-0000-7000-a000-000000000001', run_request_id: claimedRow.run_request_id, run_status: 'queued' }],
+      claim_run_requests: [claimedRow],
+      variable_copies: [],
+      workflow_definition: [{ definition: reads, saved_at: '2026-10-17T09:00:00+00:00', variables: null }],
+      save_variable_copies: [{ versions_written: 1, versions_unchanged: 0, keys_written: 3, keys_deleted: 0, refused_no_copy: 0, refused_older: 0 }],
+    })
+    const { env, s } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_TICK_MODE: 'live' } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
+    expect(s.ran).toEqual([claimedRow.run_request_id])
+    expect(db.bodies.save_variable_copies).toEqual({
+      p_confirm_every_seconds: 600,
+      p_copies: [{
+        organization_id: ORG, workflow_id: WF, version_number: 3, served_at: '2026-10-17T10:02:30.000Z',
+        values: { API_BASE: 'https://api.example.test' }, secret_keys: ['API_TOKEN'], absent_keys: ['GONE'],
+      }],
+    })
+    expect(JSON.stringify(db.bodies)).not.toContain('fake-tick-live-secret')
+    expect(report.counts).toMatchObject({ variable_copies_versions_written: 1, variable_copies_keys_written: 3, runs_variables_live: 1 })
   })
 
   it('a value that names no mode runs observe, and is reported not configured by name', async () => {
@@ -496,12 +532,46 @@ describe('the bindings', () => {
       claimToken: '11111111-2222-4333-8444-555555555555', claimExpiresAt: '2026-10-17T10:06:30+00:00', stateVersion: 2, attempts: 0, unchargedAttempts: 0,
       maxAttempts: 3, resumeReason: null, executionChainId: '0192f4a0-0000-7000-9000-000000000001', resumedFromExecutionId: null, payload: null, payloadRef: null,
     } as unknown as Parameters<typeof ports.dispatchRun>[0]
-    await expect(ports.dispatchRun(run)).rejects.toThrow(/OpsInternal.run did not answer/)
+    await expect(ports.dispatchRun(run, VARIABLES)).rejects.toThrow(/OpsInternal.run did not answer/)
     expect(waited).toEqual([RUN_DISPATCH_DEADLINE_MS - 3 * 60_000])
     // With no time left it is not dispatched at all.
     clock = NOW + RUN_DISPATCH_DEADLINE_MS
-    await expect(ports.dispatchRun(run)).rejects.toThrow(/no time left/)
+    await expect(ports.dispatchRun(run, VARIABLES)).rejects.toThrow(/no time left/)
     expect(waited).toHaveLength(1)
+  })
+
+  // #2998: a run's variables are asked of the bidding Worker by the tick and travel in its signed dispatch.
+  it('asks the bidding Worker for run variables through opsRunVariables, bounded by the gateway deadline', async () => {
+    const g = gateway()
+    const { env } = configured(g)
+    const ports = liveTickPorts(env, null, { sealRegistry, now: () => NOW })
+    const request = { organization_id: ORG, runs: [{ workflow_id: WF, version_number: 3 }] }
+    expect(await ports.gateway.fetchRunVariables(request)).toMatchObject({ organization_id: ORG, runs: [{ workflow_id: WF, version_number: 3 }] })
+    expect(g.variableRequests).toEqual([request])
+    const waited: number[] = []
+    const silent = liveTickPorts({ ...env, OPS_GATEWAY: { ...g, opsRunVariables: () => new Promise<never>(() => {}) } }, null, {
+      sealRegistry, now: () => NOW, delay: async (ms) => { waited.push(ms) },
+    })
+    await expect(silent.gateway.fetchRunVariables(request)).rejects.toThrow(/run variables did not answer within 15 s/)
+    expect(waited).toEqual([GATEWAY_DEADLINE_MS])
+  })
+
+  it('signs a run\'s variables into its dispatch, which OpsInternal verifies whole', async () => {
+    const seen: unknown[] = []
+    const s = { ...self(), run: async (signed: unknown) => {
+      const verified = await verifyDispatch(await dispatchKey('master-secret'), signed, NOW)
+      if (verified.item.kind === 'run') seen.push(verified.item.variables)
+      return { outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' }
+    } }
+    const { env } = configured(gateway(), s)
+    const ports = liveTickPorts(env, null, { sealRegistry, now: () => NOW })
+    const run = {
+      runRequestId: '0192f4a0-0000-7000-8000-000000000001', organizationId: ORG, workflowId: WF, workflowVersion: 3, triggerKind: 'schedule',
+      claimToken: '11111111-2222-4333-8444-555555555555', claimExpiresAt: '2026-10-17T10:06:30+00:00', stateVersion: 2, attempts: 0, unchargedAttempts: 0,
+      maxAttempts: 3, resumeReason: null, executionChainId: '0192f4a0-0000-7000-9000-000000000001', resumedFromExecutionId: null, payload: null, payloadRef: null,
+    } as unknown as Parameters<typeof ports.dispatchRun>[0]
+    expect(await ports.dispatchRun(run, VARIABLES)).toMatchObject({ outcome: 'completed' })
+    expect(seen).toEqual([VARIABLES])
   })
 
   it('a connection list that never answers is given up on at its deadline, and no copy is saved (#2335)', async () => {

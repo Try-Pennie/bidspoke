@@ -162,6 +162,10 @@ BEGIN
     AND p.proname <> ALL (ARRAY['observe_ops_reseal', 'record_ops_reseal_run'])
     -- The measured identities of connections bidding never stored (#2573), held to the same rules by unserved_measured_identities.test.sql.
     AND p.proname <> ALL (ARRAY['remove_unserved_measured_identities'])
+    -- The purge of a run's recorded variables (#2998), held to the same rules by run_variables.test.sql.
+    AND p.proname <> ALL (ARRAY['purge_run_variables'])
+    -- The last good copy of each ops version's plain variables (#2999), held to the same rules by variable_copies.test.sql.
+    AND p.proname <> ALL (ARRAY['save_variable_copies', 'variable_copies', 'purge_variable_copies'])
     AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') IS FALSE
     AND p.proowner = 'postgres'::regrole;
   IF v_count <> 0 THEN RAISE EXCEPTION '% public function(s) executable by service_role are not on the run engine list', v_count; END IF;

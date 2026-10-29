@@ -24,9 +24,19 @@ export function createdFunctions(sql: string): string[] {
   return [...sql.matchAll(/CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+public\.([a-z_][a-z0-9_]*)\s*\(/gi)].map((m) => m[1])
 }
 
-const created = readdirSync(MIGRATIONS)
+const migrationSql = readdirSync(MIGRATIONS)
   .filter((f) => f.endsWith('.sql'))
-  .flatMap((f) => createdFunctions(readFileSync(path.join(MIGRATIONS, f), 'utf8')))
+  .map((f) => readFileSync(path.join(MIGRATIONS, f), 'utf8'))
+
+/**
+ * Functions a CHECK constraint calls and no caller does (#2998: the shape of a
+ * run's recorded variables). No role is granted them, which the SQL suite
+ * proves (run_variables.test.sql case 8), so they are not rpcs and sit on no
+ * list. Each must be named inside a CHECK, which the test below holds.
+ */
+const CHECK_HELPERS = ['run_variables_shape_ok']
+
+const created = migrationSql.flatMap(createdFunctions).filter((name) => !CHECK_HELPERS.includes(name))
 
 describe('ops rpc classification', () => {
   it('finds the run engine functions, so the comparison below is not vacuous (L98)', () => {
@@ -62,6 +72,14 @@ describe('ops rpc classification', () => {
     const wrapped = [...writes.matchAll(/const name = '([a-z_][a-z0-9_]*)'/g)].map((m) => m[1])
     expect(wrapped.length).toBeGreaterThanOrEqual(14)
     expect([...wrapped].sort()).toEqual([...OPS_MUTATING_RPCS, ...OPS_READ_ONLY_RPCS].sort())
+  })
+
+  it('exempts only a function a CHECK constraint calls, which is not an rpc', () => {
+    for (const helper of CHECK_HELPERS) {
+      expect(migrationSql.flatMap(createdFunctions), helper).toContain(helper)
+      expect(new RegExp(`CONSTRAINT [a-z_]+ CHECK \\([\\s\\S]{0,400}public\\.${helper}\\(`).test(migrationSql.join('\n')), helper).toBe(true)
+      expect([...OPS_MUTATING_RPCS, ...OPS_READ_ONLY_RPCS] as readonly string[], helper).not.toContain(helper)
+    }
   })
 
   it('sees a function the list omits (seen red)', () => {

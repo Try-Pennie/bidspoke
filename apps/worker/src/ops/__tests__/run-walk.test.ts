@@ -14,7 +14,7 @@ import { CheckpointStoreMissing, CONTINUATION_BUDGET, type Checkpoint, type Chec
 import { CheckpointNotNamed, RunStopped, StepUnrecorded, type RunCheckpoints, type RunContext, type StepSend } from '../run-invocation'
 import { OPS_WALK_MAX_STEPS, StepEndsRun, walkOpsDefinition, type OpsStepHandler } from '../run-walk'
 import { STEP_OUTPUT_MAX_BYTES } from '../step-output'
-import type { OpsVersionVariables } from '../../lib/ops-gateway-contract'
+import type { RunVariablesRecord } from '../run-variables'
 import type { ContinuationMode } from '../run-vocabulary'
 
 const RUN: ClaimedRun = {
@@ -33,6 +33,7 @@ const T0 = Date.parse('2026-10-24T14:00:00.000Z')
  */
 function runCtx(over: {
   recordStep?: (record: OpsStepRecord) => Promise<void>; checkpoints?: Partial<RunCheckpoints>; tick?: number; continuations?: number; stateVersion?: number
+  runVariables?: RunVariablesRecord | null
 } = {}) {
   const sent: Array<StepSend<unknown>> = []
   const records: OpsStepRecord[] = []
@@ -50,6 +51,7 @@ function runCtx(over: {
     recordStep: over.recordStep ?? (async (record) => { records.push(record) }),
     stateVersion: over.stateVersion ?? 4,
     continuations: over.continuations ?? 0,
+    runVariables: over.runVariables ?? null,
     checkpoints: {
       name: async (ack) => {
         named.push(ack)
@@ -140,20 +142,18 @@ describe('walkOpsDefinition', () => {
     expect(r.seen).toHaveLength(0)
   })
 
-  it('refuses a definition that reads env.* when its version was kept with no variables, rather than sending blanks', async () => {
+  it('refuses a definition that reads env.* when the run has no record of its variables, rather than sending blanks', async () => {
     const r = recorder()
     const def = { nodes: [node('shape', 'transform', { mappings: [{ source: 'env.API_BASE', target: 'base' }] }), node('act', 'action_a')], edges: [edge('trigger', 'shape'), edge('shape', 'act')] }
-    for (const variables of [undefined, null]) {
-      const end = await walkOpsDefinition(def, runCtx().ctx, { action_a: r.handler }, variables === undefined ? {} : { variables })
-      expect(end).toEqual({
-        outcome: 'failed',
-        error: 'the definition reads env.API_BASE, and version 3 was saved before ops kept the values of its variables with it, so nothing was run; save the workflow again',
-      })
-    }
+    const end = await walkOpsDefinition(def, runCtx().ctx, { action_a: r.handler })
+    expect(end).toEqual({
+      outcome: 'failed',
+      error: 'the definition reads env.API_BASE, and the run has no record of its variables from when it started, so nothing was run',
+    })
     expect(r.seen).toHaveLength(0)
   })
 
-  it('refuses an edge condition that reads env.* with no variables kept, which would compare against a blank', async () => {
+  it('refuses an edge condition that reads env.* with no variables recorded, which would compare against a blank', async () => {
     const r = recorder()
     const gated = { ...edge('trigger', 'act'), condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'env.REGION', operator: 'equals', value: 'us' }] }] } }
     const end = await walkOpsDefinition({ nodes: [node('act', 'action_a')], edges: [gated] }, runCtx().ctx, { action_a: r.handler })
@@ -681,85 +681,127 @@ describe('walkOpsDefinition: suspend and resume (#1951, on)', () => {
   })
 })
 
-describe('walkOpsDefinition: the plain variables kept with the version (#2702)', () => {
+describe('walkOpsDefinition: the variables a run started with (#2998)', () => {
   const gatedOn = (field: string) => ({ ...edge('shape', 'act'), condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field, operator: 'eq', value: 'us' }] }] } })
   // A path in a transform, a template in a handler's settings, and a path in an edge condition.
   const def = {
     nodes: [node('shape', 'transform', { mappings: [{ source: 'env.API_BASE', target: 'base' }] }), node('act', 'action_a', { list: '{{env.LIST_ID}}' })],
     edges: [edge('trigger', 'shape'), gatedOn('env.REGION')],
   }
+  const recorded = (values: Record<string, string>, secretKeys: string[] = []): RunVariablesRecord => ({ source: 'bidding', servedAt: '2026-10-29T14:00:00.000Z', values, secretKeys })
 
-  it('hands the run the values kept with its version, in steps, templates and edge conditions alike', async () => {
+  it('hands the run the values it recorded when it started, in steps, templates and edge conditions alike', async () => {
     const seenEnv: Array<Record<string, string>> = []
     const r = recorder((steps) => steps)
     const handler: OpsStepHandler = async (args) => {
       seenEnv.push({ ...args.ctx.env })
       return r.handler(args)
     }
-    const variables = { values: { API_BASE: 'https://api.example.test', LIST_ID: 'list-7', REGION: 'us' }, secretKeys: [] }
-    expect(await walkOpsDefinition(def, runCtx().ctx, { action_a: handler }, { variables })).toEqual({ outcome: 'done' })
+    const run = runCtx({ runVariables: recorded({ API_BASE: 'https://api.example.test', LIST_ID: 'list-7', REGION: 'us' }) })
+    expect(await walkOpsDefinition(def, run.ctx, { action_a: handler })).toEqual({ outcome: 'done' })
     expect(r.seen[0].steps).toEqual({ shape: { base: 'https://api.example.test' } })
     // The run is handed exactly the values its definition reads, nothing else.
     expect(seenEnv).toEqual([{ API_BASE: 'https://api.example.test', LIST_ID: 'list-7', REGION: 'us' }])
   })
 
-  it('hands a step only the variables the definition reads, even when more were kept', async () => {
+  it('hands a step only the variables the definition reads, even when more were recorded', async () => {
     const seenEnv: Array<Record<string, string>> = []
     const handler: OpsStepHandler = async ({ ctx }) => {
       seenEnv.push({ ...ctx.env })
       return { output: null }
     }
-    const variables = { values: { API_BASE: 'a', LIST_ID: 'b', REGION: 'us', UNREAD: 'c' }, secretKeys: [] }
-    expect(await walkOpsDefinition(def, runCtx().ctx, { action_a: handler }, { variables })).toEqual({ outcome: 'done' })
+    const run = runCtx({ runVariables: recorded({ API_BASE: 'a', LIST_ID: 'b', REGION: 'us', UNREAD: 'c' }) })
+    expect(await walkOpsDefinition(def, run.ctx, { action_a: handler })).toEqual({ outcome: 'done' })
     expect(seenEnv).toEqual([{ API_BASE: 'a', LIST_ID: 'b', REGION: 'us' }])
   })
 
-  it('a value kept with the version is what the run uses, whatever the variable holds now', async () => {
-    // The walk is handed only what was kept at the save; it has no way to read the variable as it is now.
-    const r = recorder()
-    const kept = { values: { API_BASE: 'kept-at-save', LIST_ID: 'l', REGION: 'us' }, secretKeys: [] }
-    await walkOpsDefinition(def, runCtx().ctx, { action_a: r.handler }, { variables: kept })
-    await walkOpsDefinition(def, runCtx().ctx, { action_a: r.handler }, { variables: { ...kept, values: { ...kept.values, API_BASE: 'saved-again' } } })
-    expect(r.seen.map((s) => (s.steps as { shape: { base: string } }).shape.base)).toEqual(['kept-at-save', 'saved-again'])
+  it('gives a step a secret variable served for this start: ops reads secrets (Dan, 2026-10-29)', async () => {
+    const seenEnv: Array<Record<string, string>> = []
+    const handler: OpsStepHandler = async ({ ctx }) => {
+      seenEnv.push({ ...ctx.env })
+      return { output: null }
+    }
+    const run = runCtx({ runVariables: recorded({ LIST_ID: 'l', REGION: 'us' }, ['API_BASE']) })
+    expect(await walkOpsDefinition(def, run.ctx, { action_a: handler }, { secretValues: { API_BASE: 'fake-walk-secret-value' } })).toEqual({ outcome: 'done' })
+    expect(seenEnv).toEqual([{ API_BASE: 'fake-walk-secret-value', LIST_ID: 'l', REGION: 'us' }])
   })
 
-  it('refuses, before any step runs, a definition that reads a secret variable, naming it and saying a credential belongs in a connection', async () => {
+  it('refuses, before any step runs, a variable that did not exist when the run started, naming it, never sending a blank', async () => {
     const r = recorder()
-    const variables = { values: { LIST_ID: 'l', REGION: 'us' }, secretKeys: ['API_BASE'] }
-    const run = runCtx()
-    expect(await walkOpsDefinition(def, run.ctx, { action_a: r.handler }, { variables })).toEqual({
+    const run = runCtx({ runVariables: recorded({ API_BASE: 'a', REGION: 'us' }) })
+    expect(await walkOpsDefinition(def, run.ctx, { action_a: r.handler })).toEqual({
       outcome: 'failed',
-      error: 'the definition reads the secret variable env.API_BASE, and an ops run is never given a secret: a credential an ops step uses belongs in a connection, so nothing was run',
+      error: 'the definition reads env.LIST_ID, which was not a variable of this workflow when the run started, so nothing was run; add it and run it again',
     })
     expect(r.seen).toHaveLength(0)
     expect(run.records).toEqual([])
   })
 
-  it('refuses, before any step runs, a variable that did not exist when the version was saved, naming it, never sending a blank', async () => {
+  it('refuses, before any step runs, a secret the run read when it started and was not served again', async () => {
     const r = recorder()
-    const variables = { values: { API_BASE: 'a', REGION: 'us' }, secretKeys: [] }
-    expect(await walkOpsDefinition(def, runCtx().ctx, { action_a: r.handler }, { variables })).toEqual({
-      outcome: 'failed',
-      error: 'the definition reads env.LIST_ID, which was not a variable of this workflow when version 3 was saved, so nothing was run; add it and save the workflow again',
+    const run = runCtx({ runVariables: recorded({ LIST_ID: 'l', REGION: 'us' }, ['API_BASE']) })
+    expect(await walkOpsDefinition(def, run.ctx, { action_a: r.handler }, { secretValues: {} })).toMatchObject({
+      outcome: 'failed', error: expect.stringMatching(/^the definition reads the secret variable env\.API_BASE, which the run read when it started/),
     })
     expect(r.seen).toHaveLength(0)
   })
 
-  it('names every secret and every missing variable at once, the secret first', async () => {
-    const variables = { values: { REGION: 'us' }, secretKeys: ['LIST_ID'] }
-    const end = await walkOpsDefinition(def, runCtx().ctx, { action_a: recorder().handler }, { variables })
-    expect(end).toEqual({
-      outcome: 'failed',
-      error: 'the definition reads the secret variable env.LIST_ID, and an ops run is never given a secret: a credential an ops step uses belongs in a connection; '
-        + 'and it reads env.API_BASE, which was not a variable of this workflow when version 3 was saved, so nothing was run',
-    })
+  it('a definition that reads no variable runs whether or not the run recorded any', async () => {
+    const plain = { nodes: [node('act', 'action_a')], edges: [edge('trigger', 'act')] }
+    for (const runVariables of [null, recorded({}), recorded({ X: '1' }, ['S'])]) {
+      expect(await walkOpsDefinition(plain, runCtx({ runVariables }).ctx, { action_a: recorder().handler })).toEqual({ outcome: 'done' })
+    }
+  })
+})
+
+// ── a secret is never stored (#2998) ─────────────────────────────────────────
+
+describe('walkOpsDefinition: a secret value is masked out of everything the run keeps (#2998)', () => {
+  const SECRET = 'fake-planted-walk-secret'
+  const withSecret = (): RunVariablesRecord => ({ source: 'bidding', servedAt: '2026-10-29T14:00:00.000Z', values: { API_BASE: 'https://api.example.test' }, secretKeys: ['API_TOKEN'] })
+  // A transform that copies the secret into its output, then a step that answers with it and one that fails quoting it.
+  const leaky = {
+    nodes: [
+      node('shape', 'transform', { mappings: [{ source: 'env.API_TOKEN', target: 'token' }, { source: 'env.API_BASE', target: 'base' }] }),
+      node('echo', 'action_a'), node('boom', 'action_b'),
+    ],
+    edges: [edge('trigger', 'shape'), edge('shape', 'echo'), edge('echo', 'boom')],
+  }
+  const echo: OpsStepHandler = async ({ ctx }) => ({ output: { sent: `Authorization: Bearer ${ctx.env.API_TOKEN}`, url: `https://x.test/?t=${encodeURIComponent(ctx.env.API_TOKEN)}` } })
+  const boom: OpsStepHandler = async ({ ctx }) => { throw new Error(`the service refused token ${ctx.env.API_TOKEN}`) }
+
+  it('masks the secret in every step record and in the run\'s error, while the steps themselves had it', async () => {
+    const run = runCtx({ runVariables: withSecret() })
+    const end = await walkOpsDefinition(leaky, run.ctx, { action_a: echo, action_b: boom }, { secretValues: { API_TOKEN: SECRET } })
+    expect(end).toEqual({ outcome: 'failed', error: 'step boom (action_b): the service refused token API_TOKEN' })
+    expect(run.records.map((r) => r.namespace)).toEqual(['shape', 'echo', 'boom'])
+    expect(run.records[0].output).toEqual({ token: 'API_TOKEN', base: 'https://api.example.test' })
+    expect(run.records[1].output).toEqual({ sent: 'Authorization: Bearer API_TOKEN', url: 'https://x.test/?t=API_TOKEN' })
+    expect(run.records[2].error).toBe('step boom (action_b): the service refused token API_TOKEN')
+    // The planted value is nowhere in anything kept.
+    expect(JSON.stringify({ end, records: run.records })).not.toContain(SECRET)
   })
 
-  it('a definition that reads no variable runs whether or not any were kept', async () => {
-    const plain = { nodes: [node('act', 'action_a')], edges: [edge('trigger', 'act')] }
-    const kept: Array<OpsVersionVariables | null> = [null, { values: {}, secretKeys: [] }, { values: { X: '1' }, secretKeys: ['S'] }]
-    for (const variables of kept) {
-      expect(await walkOpsDefinition(plain, runCtx().ctx, { action_a: recorder().handler }, { variables })).toEqual({ outcome: 'done' })
-    }
+  it('never writes a checkpoint holding a secret, and says so once, carrying on in the slice', async () => {
+    const m = memoryStore()
+    const o = slicing('on', () => m.store, stepsBudget(1))
+    const run = runCtx({ runVariables: withSecret() })
+    const end = await walkOpsDefinition(leaky, run.ctx, { action_a: echo, action_b: async () => ({ output: null }) }, { ...o, secretValues: { API_TOKEN: SECRET } })
+    // Every boundary falls after the transform holding the secret, so no slice ended and nothing was written.
+    expect(end).toEqual({ outcome: 'done' })
+    expect(m.objects.size).toBe(0)
+    expect(run.named).toEqual([])
+    expect(stepsOf(o.logs, 'checkpoint_skipped')).toEqual([expect.objectContaining({ reason: 'holds_secret' })])
+    expect(JSON.stringify(o.logs)).not.toContain(SECRET)
+  })
+
+  it('still writes a checkpoint when no step output holds a secret, the secret read only in a step\'s settings', async () => {
+    const m = memoryStore()
+    const o = slicing('on', () => m.store, stepsBudget(1))
+    const run = runCtx({ runVariables: withSecret() })
+    const reads = { nodes: [node('a', 'action_b', { token: '{{env.API_TOKEN}}' }), node('b', 'action_b')], edges: [edge('trigger', 'a'), edge('a', 'b')] }
+    expect(await walkOpsDefinition(reads, run.ctx, { action_b: async () => ({ output: { ok: true } }) }, { ...o, secretValues: { API_TOKEN: SECRET } })).toEqual({ outcome: 'continue' })
+    expect(m.objects.size).toBe(1)
+    expect([...m.objects.values()].join('')).not.toContain(SECRET)
   })
 })

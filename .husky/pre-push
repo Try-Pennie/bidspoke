@@ -32,7 +32,9 @@ fi
 # production (#1139). It refuses the push by name when Docker is not running
 # rather than passing on nothing (L98). Roughly two minutes on a cold database,
 # seconds when the container is already up. Skip with SKIP_SQL_SUITE=1 for ONE
-# push, after saying why.
+# push, after saying why. One run at a time uses each container (#3012): a push
+# whose suite finds another worktree's run in it waits up to 10 minutes, saying
+# so every 30 s, then refuses naming that run (scripts/sql-suite/lock.sh).
 #
 # Which suites run is decided from the branch's own changes since its merge base
 # with origin/main, not from the upstream (#2412): see the script for why, and

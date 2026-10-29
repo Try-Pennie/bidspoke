@@ -39,6 +39,7 @@ import {
   RESOURCE_WAIT_CAUSES,
   RESUME_REASONS,
   RUN_REQUEST_STATUSES,
+  RUN_VARIABLE_SOURCES,
   SEND_LEDGER_STATUSES,
   SF_BUDGET_SOURCES,
   SF_LEASE_OUTCOMES,
@@ -47,6 +48,7 @@ import {
   TERMINAL_RUN_REQUEST_STATUSES,
   TRIGGER_KINDS,
   UNCHARGED_RESUME_REASONS,
+  VARIABLE_COPY_KINDS,
 } from '../../../../worker/src/ops/run-vocabulary'
 import { PLANNED_TRIGGER_TYPES, TRIGGER_TYPES } from '@bidspoke/workflow-definition'
 
@@ -112,6 +114,10 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     ['step_test_results_status_check', STEP_TEST_STATUSES],
     // Each step of an ops run (#2703).
     ['ops_step_records_status_check', OPS_STEP_RECORD_STATUSES],
+    // Where a run's recorded variables came from (#2998).
+    ['run_requests_run_variables_check', RUN_VARIABLE_SOURCES],
+    // What the last good copy holds of each name a version reads (#2999).
+    ['ops_variable_copies_kind_check', VARIABLE_COPY_KINDS],
   ] as const)('%s', (name, values) => {
     expect(sorted(constraintValues(SQL, name))).toEqual(sorted(values))
   })
