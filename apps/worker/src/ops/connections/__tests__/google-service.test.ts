@@ -239,7 +239,7 @@ describe('a person\'s own Google account (#2338, R17: Sign in with Google)', () 
     const registry = () => opsServiceRegistry({ google: { checkDelegation: async () => 'allowed', serviceAccountKey: () => undefined, tokens }, supabase: { laneProjectRefs: () => [] } })
     const authorizeInput = (renew: { rejected: Authorization } | null) => ({
       organizationId: ORG, connectionId: '55555555-5555-4555-8555-000000002338', service: 'google', generation: 1, target: own, publicConfig: {}, envelope,
-      login: { plaintext: '{}' }, candidate: false, renew, noteMint: () => undefined, fetch: async (): Promise<Response> => { throw new Error('not asked') },
+      login: { plaintext: '{}' }, candidate: false, renew, noteMint: () => undefined, noteUnreadableRateLimitHeader: () => undefined, fetch: async (): Promise<Response> => { throw new Error('not asked') },
     })
     const first = await registry()('google')!.rules.authorize(authorizeInput(null))
     await registry()('google')!.rules.authorize(authorizeInput({ rejected: first }))

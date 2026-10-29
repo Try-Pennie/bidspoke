@@ -74,8 +74,9 @@ describe('wrangler.ops.toml (#1709)', () => {
    * The run checkpoints bucket (#1951): its own bucket, never the porting
    * captures' (whose 90 day rule and redacted Pipedream contents are another
    * thing), under the binding name the code reads (checkpoint.ts
-   * checkpointStoreFrom), and the continuation in observe mode, the only mode
-   * besides off this build runs.
+   * checkpointStoreFrom), and the continuation in observe mode: on, which
+   * suspends runs to continue, is turned on by its own change once observe has
+   * been watched (#1945 B4: the flip is its own change, with its failure path test).
    */
   it('binds the run checkpoints to their own bucket and runs the continuation in observe mode', () => {
     const checkpoints = tables(toml, 'r2_buckets').filter((t) => /^binding = "OPS_CHECKPOINTS"$/m.test(t))

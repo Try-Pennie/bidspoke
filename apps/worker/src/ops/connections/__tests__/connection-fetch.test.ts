@@ -1,8 +1,9 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { SealedEnvelope } from '@bidspoke/connection-seal'
 import {
-  CONNECTION_FETCH_DEADLINE_MS, RATE_LIMIT_DEFAULT_MS, RETRY_AFTER_MAX_MS, SF_INTERACTIVE_WAIT_MS, SF_LEASE_TTL_SECONDS, STEP_LEASE_REQUEUE_MS,
-  connectionFetch, type ConnectionCall,
+  CONNECTION_FETCH_DEADLINE_MS, RATE_LIMIT_DEFAULT_MS, RESET_EPOCH_MS_FROM, RESET_EPOCH_SECONDS_FROM, RETRY_AFTER_MAX_MS, RETRY_AFTER_MIN_MS,
+  SF_INTERACTIVE_WAIT_MS, SF_LEASE_TTL_SECONDS, STEP_LEASE_REQUEUE_MS,
+  connectionFetch, rateLimitResetAt, type ConnectionCall,
 } from '../connection-fetch'
 import { SF_BUDGET_READING_DEADLINE_MS } from '../sf-budget-reading'
 import { ConnectionRefusal, LoginMintError, RequeueAt } from '../refusals'
@@ -323,6 +324,71 @@ describe('a 429 or Retry-After is a RequeueAt, never a sleep', () => {
     d.respond(new Response('no_credit', { status: 503, headers: { 'retry-after': '30' } }))
     expect(await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')).toBeInstanceOf(RequeueAt)
     expect(checked).toEqual([])
+  })
+})
+
+describe('a rate limit reset header counts as Retry-After (#1693 7.4)', () => {
+  /** The time a 429 carrying these headers is requeued at, and what was reported. */
+  async function waitFor(headers: Record<string, string>, status = 429): Promise<{ at: number | null; reports: unknown[] }> {
+    const d = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec)])
+    d.respond(new Response('slow down', { status, headers }))
+    const res = await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')
+    return { at: res instanceof RequeueAt ? res.notBefore.getTime() : null, reports: d.rec.reports }
+  }
+  const unparseable = (header: string) => ({ event: 'rate_limit_header_unparseable', connection_id: CONN, purpose: 'lookup', cause: header })
+
+  it('reads each format by its named rule: epoch seconds, epoch milliseconds, seconds from now', () => {
+    expect(rateLimitResetAt(String((T0 + 90_000) / 1000), T0)).toEqual({ at: T0 + 90_000, rule: 'epoch_seconds' })
+    expect(rateLimitResetAt(String(T0 + 90_000), T0)).toEqual({ at: T0 + 90_000, rule: 'epoch_ms' })
+    expect(rateLimitResetAt('45', T0)).toEqual({ at: T0 + 45_000, rule: 'seconds_from_now' })
+    expect(rateLimitResetAt(' 1.5 ', T0)).toEqual({ at: T0 + 1_500, rule: 'seconds_from_now' })
+    expect(rateLimitResetAt(`${(T0 + 90_500) / 1000}`, T0)).toEqual({ at: T0 + 90_500, rule: 'epoch_seconds' })
+    // The boundaries between the rules are the stated ones.
+    expect(rateLimitResetAt(String(RESET_EPOCH_SECONDS_FROM - 1), T0)?.rule).toBe('seconds_from_now')
+    expect(rateLimitResetAt(String(RESET_EPOCH_SECONDS_FROM), T0)?.rule).toBe('epoch_seconds')
+    expect(rateLimitResetAt(String(RESET_EPOCH_MS_FROM - 1), T0)?.rule).toBe('epoch_seconds')
+    expect(rateLimitResetAt(String(RESET_EPOCH_MS_FROM), T0)?.rule).toBe('epoch_ms')
+  })
+
+  it('anything else is unparseable, never a time and never now', () => {
+    for (const value of ['', ' ', 'soon', '-5', '+5', '1e3', '0x10', '30s', '1.', '.5', 'NaN', 'Infinity', new Date(T0 + 60_000).toUTCString(), '9'.repeat(400)]) {
+      expect(rateLimitResetAt(value, T0), value).toBeNull()
+    }
+  })
+
+  it('a 429 carrying only x-ratelimit-reset requeues at that instant, one per format', async () => {
+    expect(await waitFor({ 'x-ratelimit-reset': String((T0 + 90_000) / 1000) })).toEqual({ at: T0 + 90_000, reports: [] })
+    expect(await waitFor({ 'x-ratelimit-reset': String(T0 + 90_000) })).toEqual({ at: T0 + 90_000, reports: [] })
+    expect(await waitFor({ 'x-ratelimit-reset': '45' })).toEqual({ at: T0 + 45_000, reports: [] })
+  })
+
+  it('reads the other spellings of the header too', async () => {
+    expect(await waitFor({ 'x-rate-limit-reset': String((T0 + 90_000) / 1000) })).toEqual({ at: T0 + 90_000, reports: [] })
+    expect(await waitFor({ 'ratelimit-reset': '45' })).toEqual({ at: T0 + 45_000, reports: [] })
+    expect(await waitFor({ 'X-RateLimit-Reset': '45' })).toEqual({ at: T0 + 45_000, reports: [] })
+  })
+
+  it('an unparseable reset header is counted by its name, and the 429 waits the stated default', async () => {
+    expect(await waitFor({ 'x-ratelimit-reset': 'soon' })).toEqual({ at: T0 + RATE_LIMIT_DEFAULT_MS, reports: [unparseable('x-ratelimit-reset')] })
+    expect(await waitFor({ 'x-ratelimit-reset': new Date(T0 + 60_000).toUTCString() })).toEqual({ at: T0 + RATE_LIMIT_DEFAULT_MS, reports: [unparseable('x-ratelimit-reset')] })
+  })
+
+  it('an unparseable one is passed over for a later spelling that parses, and still counted', async () => {
+    expect(await waitFor({ 'x-ratelimit-reset': 'soon', 'ratelimit-reset': '45' })).toEqual({ at: T0 + 45_000, reports: [unparseable('x-ratelimit-reset')] })
+  })
+
+  it('with both headers Retry-After wins; an unparseable Retry-After is counted and the reset header used', async () => {
+    expect(await waitFor({ 'retry-after': '30', 'x-ratelimit-reset': String((T0 + 300_000) / 1000) })).toEqual({ at: T0 + 30_000, reports: [] })
+    expect(await waitFor({ 'retry-after': 'later', 'x-ratelimit-reset': '45' })).toEqual({ at: T0 + 45_000, reports: [unparseable('retry-after')] })
+  })
+
+  it('a reset is held between the same bounds as a Retry-After: past the ceiling waits the ceiling, a past instant the floor', async () => {
+    expect(await waitFor({ 'x-ratelimit-reset': String((T0 + 10 * 3600_000) / 1000) })).toEqual({ at: T0 + RETRY_AFTER_MAX_MS, reports: [] })
+    expect(await waitFor({ 'x-ratelimit-reset': String((T0 - 3600_000) / 1000) })).toEqual({ at: T0 + RETRY_AFTER_MIN_MS, reports: [] })
+  })
+
+  it('a 503 with only a reset header is still the caller\'s to judge: only Retry-After makes a 503 a wait', async () => {
+    expect(await waitFor({ 'x-ratelimit-reset': '45' }, 503)).toEqual({ at: null, reports: [] })
   })
 })
 

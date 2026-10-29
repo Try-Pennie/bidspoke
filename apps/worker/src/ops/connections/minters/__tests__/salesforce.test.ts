@@ -144,6 +144,15 @@ describe('the Salesforce minter: client_credentials against the declared instanc
     expect(d.rec.needsReauth).toEqual([])
   })
 
+  it('a token endpoint 429 with only a reset header waits until it, and an unreadable header is counted as connectionFetch counts one (#1693 7.4)', async () => {
+    const { d } = setup(tokenEndpoint(new Response('REQUEST_LIMIT_EXCEEDED', { status: 429, headers: { 'retry-after': 'later', 'x-ratelimit-reset': '90' } })))
+    const res = await connectionFetch(d.deps, call(d.rec), URL_)
+    expect(res).toBeInstanceOf(RequeueAt)
+    expect((res as RequeueAt).notBefore.getTime()).toBe(T0 + 90_000)
+    expect(d.rec.reports).toEqual([{ event: 'rate_limit_header_unparseable', connection_id: CONN, purpose: 'lookup', cause: 'retry-after' }])
+    expect(d.rec.refreshes).toEqual([])
+  })
+
   it('a 429 on the request itself is a RequeueAt, with the token still held', async () => {
     const endpoint = tokenEndpoint(Response.json({ access_token: 'sf-token-one-0001' }))
     const { d } = setup(endpoint)
@@ -178,7 +187,7 @@ describe('the Salesforce minter: client_credentials against the declared instanc
     for (const target of [{ ...TARGET, instance_url: 'https://collector.example.test' }, { ...TARGET, instance_url: 'http://trypennie.my.salesforce.com' }]) {
       await expect(auth.authorize({
         organizationId: ORG, connectionId: CONN, service: 'salesforce', generation: 1, target, publicConfig: {},
-        envelope: null, login: { plaintext: JSON.stringify(LOGIN) }, candidate: false, renew: null, noteMint: () => {}, fetch: endpoint.fetch,
+        envelope: null, login: { plaintext: JSON.stringify(LOGIN) }, candidate: false, renew: null, noteMint: () => {}, noteUnreadableRateLimitHeader: () => {}, fetch: endpoint.fetch,
       })).rejects.toMatchObject({ kind: 'not_allowed', reason: 'target_invalid' })
     }
     expect(endpoint.calls).toEqual([])

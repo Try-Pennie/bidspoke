@@ -7,7 +7,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
-import { definitionShapeProblems, findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems, unfinishedAppActionSteps } from '@bidspoke/workflow-definition'
+import { definitionShapeProblems, findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems, scheduleFromTrigger, unfinishedAppActionSteps, validateSchedule } from '@bidspoke/workflow-definition'
 import { reportDefinition } from '../../lib/definition-report'
 import { writeAuditLog } from '../../lib/audit'
 import { copyCleared, copyWarning } from '../../lib/stored-copy'
@@ -119,6 +119,32 @@ function salesforceOptionRefusal(definition: unknown): string | null {
   if (!Array.isArray(nodes)) return null
   const problem = findSalesforceConfigProblems(nodes as WorkflowDefinition['nodes'])[0]
   return problem ? `${problem.namespace}: ${problem.message}` : null
+}
+
+/**
+ * The named 400 for a schedule trigger the ops tick could not fire (#1952: "an
+ * unparseable cron is refused at save, never dropped"), or null. Its settings
+ * are judged by validateSchedule, the rule the tick itself refuses a schedule
+ * by (ops/tick.ts, schedule_refused), so what saves is what fires. Asked on
+ * every route that writes a definition or makes one live (create, save,
+ * duplicate, restore, the switch on), live or not: a switched off draft holding
+ * one would page on every tick once switched on. When it shipped no workflow
+ * and no saved version in production held a schedule trigger (measured
+ * 2026-10-28), but the stored ones are judged too rather than resting on that.
+ * A switch off is never refused, so an invalid schedule can always be stopped.
+ * A schedule on a money workflow is valid settings nothing fires; that is the
+ * trigger lane rule, reported only until #2716.
+ */
+function scheduleRefusal(c: Context<{ Bindings: Env; Variables: Variables }>, definition: unknown): Response | null {
+  const trigger = definition !== null && typeof definition === 'object' ? (definition as { trigger?: unknown }).trigger : undefined
+  const schedule = scheduleFromTrigger(trigger)
+  if (schedule.kind === 'none') return null
+  const problems = validateSchedule(schedule.config)
+  if (problems.length === 0) return null
+  return c.json(
+    { error: `Nothing was saved. The workflow's schedule is not valid: ${problems.map((p) => p.message).join('; ')}.`, reason: 'schedule_invalid', problems },
+    400,
+  )
 }
 
 /**
@@ -387,6 +413,8 @@ workflows.post('/', async (c) => {
   // A created workflow is switched off (below), so only the placement rule applies.
   const validationProblem = leadValidationRefusal(body.definition, false)
   if (validationProblem) return c.json({ error: validationProblem }, 400)
+  const invalidSchedule = scheduleRefusal(c, body.definition)
+  if (invalidSchedule) return invalidSchedule
 
   if (body.folder_id) {
     const { data: folder, error: folderError } = await supabase
@@ -463,6 +491,8 @@ workflows.post('/:id/duplicate', async (c) => {
   // was saved stops it here, before anything is written (#2338). Older snapshots
   // copied into its history below are history only and are not judged.
   const cloneDefinition = sanitizeDefinition(source.definition)
+  const invalidSchedule = scheduleRefusal(c, cloneDefinition)
+  if (invalidSchedule) return invalidSchedule
   const missing = await connectionRefusal(c, supabase, orgId, cloneDefinition)
   if (missing) return missing
 
@@ -661,6 +691,8 @@ workflows.put('/:id', async (c) => {
     if (sfProblem) return c.json({ error: sfProblem }, 400)
     const validationProblem = leadValidationRefusal(def, existing.is_active === true)
     if (validationProblem) return c.json({ error: validationProblem }, 400)
+    const invalidSchedule = scheduleRefusal(c, def)
+    if (invalidSchedule) return invalidSchedule
     if (existing.is_active === true) {
       const unfinished = unfinishedStepRefusal(c, def, existing.lane, writtenDefinitionStamp())
       if (unfinished) return unfinished
@@ -882,6 +914,8 @@ workflows.patch('/:id', async (c) => {
     // since a switched off draft may have been saved half built.
     const validationProblem = leadValidationRefusal(owner.definition, true)
     if (validationProblem) return c.json({ error: validationProblem }, 400)
+    const invalidSchedule = scheduleRefusal(c, owner.definition)
+    if (invalidSchedule) return invalidSchedule
     const unfinished = unfinishedStepRefusal(c, owner.definition, owner.lane, owner.definition_schema_version)
     if (unfinished) return unfinished
     const variables = await opsVariableRefusal(c, supabase, orgId, { id, lane: owner.lane, definition: owner.definition })
@@ -1144,6 +1178,8 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // always, the configuration when the restore makes it live at once.
   const restoreProblem = leadValidationRefusal(version.definition, owner.is_active === true)
   if (restoreProblem) return c.json({ error: restoreProblem }, 400)
+  const invalidSchedule = scheduleRefusal(c, version.definition)
+  if (invalidSchedule) return invalidSchedule
   if (owner.is_active === true) {
     const unfinished = unfinishedStepRefusal(c, version.definition, owner.lane, writtenDefinitionStamp())
     if (unfinished) return unfinished

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { InventoryRow } from '../plan-load.ts'
-import { PAGE, differencesAfterWrite, readStoredRows, writeRows } from '../store.ts'
+import { PAGE, differencesAfterWrite, readStoredRow, readStoredRows, writeRows } from '../store.ts'
 import { fakeFetch } from './fake-fetch.ts'
 
 const URL_ = 'https://example.supabase.co'
@@ -88,5 +88,39 @@ describe('differencesAfterWrite (#1710)', () => {
       'p_1.trigger_types: planned [], stored ["timer"]',
       'p_2 missing',
     ])
+  })
+})
+
+describe('readStoredRow (#1695)', () => {
+  it('reads one workflow by its hashid from the porting schema, with the loader columns', async () => {
+    const { f, calls } = fakeFetch(() => Response.json([row('p_Abc1')]))
+    expect(await readStoredRow(f, URL_, KEY, 'p_Abc1')).toEqual(row('p_Abc1'))
+    expect(calls).toHaveLength(1)
+    expect(calls[0].method).toBe('GET')
+    expect(calls[0].url).toContain('/rest/v1/pipedream_inventory?')
+    expect(calls[0].url).toContain('pipedream_hashid=eq.p_Abc1')
+    expect(calls[0].url).toContain('limit=2')
+    expect(calls[0].headers['accept-profile']).toBe('porting')
+  })
+
+  it('answers null when the inventory holds no row for the workflow', async () => {
+    const { f } = fakeFetch(() => Response.json([]))
+    expect(await readStoredRow(f, URL_, KEY, 'p_Abc1')).toBeNull()
+  })
+
+  it('refuses a hashid that is not one, before asking anything', async () => {
+    const { f, calls } = fakeFetch(() => Response.json([]))
+    await expect(readStoredRow(f, URL_, KEY, 'p_1&select=*')).rejects.toThrow(/p_1&select=\* is not a Pipedream workflow id/)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('throws with the status and body when the read fails, rather than reading as no row', async () => {
+    const { f } = fakeFetch(() => new Response('{"code":"PGRST106"}', { status: 406 }))
+    await expect(readStoredRow(f, URL_, KEY, 'p_Abc1')).rejects.toThrow(/406.*PGRST106/)
+  })
+
+  it('refuses more than one row for one hashid (L521)', async () => {
+    const { f } = fakeFetch(() => Response.json([row('p_Abc1'), row('p_Abc1')]))
+    await expect(readStoredRow(f, URL_, KEY, 'p_Abc1')).rejects.toThrow(/2 rows for p_Abc1/)
   })
 })

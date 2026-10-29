@@ -42,7 +42,7 @@
 import type { ConnectionTokenObject } from '../../connection-token-object'
 import { organizationIdFrom, type OrganizationId } from '../../ops-db'
 import { TokenMemo } from '../../../lib/token-memo'
-import { checkCandidate, type CandidateConnection, type ConnectionFetchDeps } from '../connection-fetch'
+import { checkCandidate, reportUnreadableRateLimitHeader, type CandidateConnection, type ConnectionFetchDeps } from '../connection-fetch'
 import { ConnectionRefusal, LoginMintError, type ConnectionRefusalCode, type LoginMintKind } from '../refusals'
 import type { Authorization, AuthorizeInput, MinterRules } from '../service-rules'
 import {
@@ -163,7 +163,11 @@ export function oauthUserAuth(deps: OAuthUserDeps, service: OAuthUserService): M
         } catch {
           throw new LoginMintError('token_object_unavailable', 'token_object_unavailable')
         }
-        if (!answer.ok) throw mintErrorOf(answer)
+        if (!answer.ok) {
+          // The object has no console, so a rate limit header it could not read is counted here, by connectionFetch (#1693 7.4).
+          for (const header of answer.unreadableHeaders ?? []) input.noteUnreadableRateLimitHeader(header)
+          throw mintErrorOf(answer)
+        }
         // Only a token the endpoint was asked for ends a refresh streak (decision 2).
         if (answer.minted) input.noteMint()
         const value: Authorization = { headers: { authorization: `Bearer ${answer.token}` }, secrets: [answer.token] }
@@ -189,6 +193,8 @@ export interface ExchangeOAuthCodeCall {
 export interface ExchangeOAuthCodeDeps {
   tokens: TokenObjects
   readCopy: ConnectionFetchDeps['readCopy']
+  /** Where a rate limit header the object could not read is counted, as verify (a consent is a person bound login's Reconnect), #1693 7.4. */
+  report: ConnectionFetchDeps['report']
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -266,6 +272,7 @@ export async function exchangeOAuthCode(
     throw new ConnectionRefusal('connection_token_object_unavailable', `the ${call.candidate.service} login's token object answered in a shape this code does not read`)
   }
   if (!answer.ok) {
+    for (const header of answer.unreadableHeaders ?? []) reportUnreadableRateLimitHeader(deps, call.connectionId, 'verify', header)
     throw new ConnectionRefusal(
       EXCHANGE_REFUSALS[answer.kind],
       `the ${call.candidate.service} authorization code exchange failed: ${answer.kind}: ${answer.reason}`,

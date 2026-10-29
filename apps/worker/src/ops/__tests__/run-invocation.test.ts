@@ -98,6 +98,8 @@ class FakeRunDb implements RunDb {
   token = 'token-1'
   stateVersion = 3
   status: 'claimed' | 'running' | 'ended' = 'claimed'
+  /** How many times the run has been suspended to continue (#1951), as start answers it. */
+  continuations = 0
   readonly calls: string[] = []
   readonly intents: Array<Omit<SendIntent, 'runRequestId' | 'claimToken'> & { claimToken: string }> = []
   readonly results: Array<{ ledgerId: string; status: string; responseStatus?: number }> = []
@@ -111,7 +113,7 @@ class FakeRunDb implements RunDb {
     if (run.claimToken !== this.token || this.status !== 'claimed') throw new OpsClaimLostError('start_run_execution: lost')
     this.status = 'running'
     this.stateVersion += 1
-    return { outcome: 'started' as const, stateVersion: this.stateVersion, attempt: run.attempts + 1 }
+    return { outcome: 'started' as const, stateVersion: this.stateVersion, attempt: run.attempts + 1, continuations: this.continuations }
   }
 
   async extend(run: ClaimedRun, leaseSeconds: number) {
@@ -553,6 +555,49 @@ describe('invokeRun: what a requeue answers', () => {
       return { outcome: 'done' }
     })
     expect(report).toMatchObject({ end: { outcome: 'failed' } })
+  })
+})
+
+describe('invokeRun: a slice that ends to continue (#1951)', () => {
+  it('hands the body the continuations its start answered', async () => {
+    const h = harness()
+    h.db.continuations = 2
+    let seen = -1
+    await h.run(async (ctx) => {
+      seen = ctx.continuations
+      return { outcome: 'done' }
+    })
+    expect(seen).toBe(2)
+  })
+
+  it('a body that ends to continue completes its claim suspended to continue, at once', async () => {
+    const h = harness()
+    const report = await h.run(async () => ({ outcome: 'continue' }))
+    expect(report).toEqual({ outcome: 'completed', end: { outcome: 'suspend', reason: 'continue', notBefore: new Date(h.clock.now()) }, runStatus: 'suspend' })
+  })
+
+  // A continuation resumes after its checkpoint, so a send made before it is
+  // never made again: unlike a retry, it is not turned into failed.
+  it('continues after a send that cannot be repeated, since the continuation resumes after it', async () => {
+    const h = harness()
+    const report = await h.run(async (ctx) => {
+      await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: h.forwardWith('post', async () => answered(200, 1)) })
+      return { outcome: 'continue' }
+    })
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'suspend', reason: 'continue' } })
+  })
+
+  it('an end a send decided still wins over a continue', async () => {
+    const h = harness()
+    const report = await h.run(async (ctx) => {
+      try {
+        await ctx.send({ nodeId: 'post', seq: 0, method: 'POST', url: 'https://x.example.com/', idempotent: false, forward: h.forwardWith('post', async () => { throw new Error('reset') }) })
+      } catch {
+        // A body that swallows the stop and asks to continue.
+      }
+      return { outcome: 'continue' }
+    })
+    expect(report).toMatchObject({ end: { outcome: 'needs_human', reason: 'send_outcome_unknown' } })
   })
 })
 

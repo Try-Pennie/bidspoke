@@ -134,7 +134,7 @@ async function mint(serviceKey: string, login: unknown, target: unknown): Promis
     login: { plaintext: JSON.stringify(login) },
     candidate: true,
     renew: null,
-    noteMint: () => undefined,
+    noteMint: () => undefined, noteUnreadableRateLimitHeader: () => undefined,
     fetch: async (url, init) => {
       tokenRequests.push({ url, body: new URLSearchParams(String(init?.body ?? '')) })
       return Response.json({ access_token: 'canary-access-token-2338', instance_url: 'https://trypennie.my.salesforce.com' })

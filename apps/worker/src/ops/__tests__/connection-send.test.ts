@@ -16,6 +16,7 @@ import { connectionAnswer, NOTHING_SENT_REFUSALS } from '../connection-send'
 import { organizationIdFrom } from '../ops-db'
 import type { ClaimedRun, CompleteOutcome, SendIntentResult } from '../ops-writes'
 import { invokeRun, type RunDb } from '../run-invocation'
+import { UNCHARGED_RESUME_REASONS } from '../run-vocabulary'
 
 let keys: TestKeys
 let envelope: SealedEnvelope
@@ -113,7 +114,7 @@ describe('connectionAnswer: what the run judges a send by', () => {
 class LedgerDb implements RunDb {
   readonly results: Array<{ status: string; responseStatus?: number }> = []
   readonly completes: CompleteOutcome[] = []
-  async start() { return { outcome: 'started' as const, stateVersion: 4, attempt: 1 } }
+  async start() { return { outcome: 'started' as const, stateVersion: 4, attempt: 1, continuations: 0 } }
   async extend() { return true }
   async recordIntent(): Promise<SendIntentResult> { return { outcome: 'recorded', ledgerId: 'ledger-1', ledgerStatus: 'intent' } }
   async recordResult(_run: ClaimedRun, _id: string, result: { status: 'forwarded' | 'failed'; responseStatus?: number }) {
@@ -166,5 +167,11 @@ describe('a non idempotent action through connectionFetch (#2337 comment, 2026-1
     const { report, db } = await runOnePost(new Response('slow', { status: 429, headers: { 'retry-after': '30' } }))
     expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'suspend', reason: 'rate_limit_wait', status: 429, notBefore: new Date(T0 + 30_000) } })
     expect(db.results).toEqual([{ status: 'failed', responseStatus: 429 }])
+  })
+
+  it('answered 429 carrying only x-ratelimit-reset waits until that instant, spending no attempt (#1693 7.4)', async () => {
+    const { report } = await runOnePost(new Response('slow', { status: 429, headers: { 'x-ratelimit-reset': String((T0 + 90_000) / 1000) } }))
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'suspend', reason: 'rate_limit_wait', status: 429, notBefore: new Date(T0 + 90_000) } })
+    expect(UNCHARGED_RESUME_REASONS).toContain('rate_limit_wait')
   })
 })

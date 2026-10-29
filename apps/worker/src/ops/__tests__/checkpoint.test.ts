@@ -175,12 +175,13 @@ describe('replayCheckpoint (#1698 1.8: follow the recorded route, never evaluate
 })
 
 describe('continuationModeFrom', () => {
-  it('reads off and observe, and treats anything else as off, named, since a mode this build does not run must never run half', () => {
+  it('reads off, observe and on, and treats anything else as off, named, since a mode this build does not run must never run half', () => {
     expect(continuationModeFrom(undefined)).toEqual({ mode: 'off', unknown: null })
     expect(continuationModeFrom(' ')).toEqual({ mode: 'off', unknown: null })
     expect(continuationModeFrom('off')).toEqual({ mode: 'off', unknown: null })
     expect(continuationModeFrom('observe')).toEqual({ mode: 'observe', unknown: null })
-    expect(continuationModeFrom('on')).toEqual({ mode: 'off', unknown: 'on' })
+    expect(continuationModeFrom('on')).toEqual({ mode: 'on', unknown: null })
+    expect(continuationModeFrom('On')).toEqual({ mode: 'off', unknown: 'On' })
     expect(continuationModeFrom('Observe')).toEqual({ mode: 'off', unknown: 'Observe' })
   })
 })

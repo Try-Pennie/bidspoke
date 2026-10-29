@@ -72,7 +72,8 @@ import { CURRENT_OPS_KID, open, OPS_CONNECTION_PUBLIC_KEYS, privateKeyRing, seal
 import { parseStoreRotatedEnvelopeAnswer, type OpsGatewayBinding, type StoreRotatedEnvelopeAnswer } from '../lib/ops-gateway-contract'
 import type { OpsEnv } from './index'
 import { LoginMintError, type LoginMintKind, type MintFailureReason } from './connections/refusals'
-import { readAccessToken, requestToken, TOKEN_ENDPOINT_TIMEOUT_MS } from './connections/minters/token-endpoint'
+import { readAccessToken, requestToken, TOKEN_ENDPOINT_TIMEOUT_MS, type TokenEndpointDeps } from './connections/minters/token-endpoint'
+import type { RateLimitHeader } from './connections/rate-limit-headers'
 import { clientFor, oauthAppOf, type OAuthAppRead } from './connections/oauth-apps'
 import { idTokenAccount } from './connections/id-token-account'
 import {
@@ -219,8 +220,15 @@ function failure(kind: LoginMintKind, reason: MintFailureReason, retryAtMs: numb
   return { ok: false, kind, reason, retryAtMs }
 }
 
-function failureOf(err: LoginMintError): TokenObjectFailure {
-  return failure(err.kind, err.reason, err.retryAt === null ? null : err.retryAt.getTime())
+/**
+ * A thrown LoginMintError as the object's answer. unreadable is the names of the
+ * rate limit headers the token endpoint could not read (#1693 7.4), handed back
+ * for the caller to count, since this object has no console; carried only when
+ * there is one, so every other failure keeps its shape.
+ */
+function failureOf(err: LoginMintError, unreadable: readonly RateLimitHeader[] = []): TokenObjectFailure {
+  const answer = failure(err.kind, err.reason, err.retryAt === null ? null : err.retryAt.getTime())
+  return unreadable.length === 0 ? answer : { ...answer, unreadableHeaders: [...unreadable] }
 }
 
 function ivOf(envelope: unknown): string {
@@ -608,8 +616,9 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     })
   }
 
-  private tokenDeps() {
-    return { fetch: this.fetchToken, now: () => this.clock(), tokenTimeoutMs: this.tokenTimeoutMs }
+  /** unreadable collects the names of rate limit headers the endpoint could not read, for failureOf to hand back (#1693 7.4). */
+  private tokenDeps(unreadable: RateLimitHeader[]): TokenEndpointDeps {
+    return { fetch: this.fetchToken, now: () => this.clock(), tokenTimeoutMs: this.tokenTimeoutMs, unreadableRateLimitHeader: (header) => { unreadable.push(header) } }
   }
 
   /**
@@ -647,11 +656,12 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     let json: Readonly<Record<string, unknown>>
     let token: string
     const asked = this.clock()
+    const unreadable: RateLimitHeader[] = []
     try {
-      json = await requestToken(this.tokenDeps(), request.tokenUrl, withClient(new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }), client))
+      json = await requestToken(this.tokenDeps(unreadable), request.tokenUrl, withClient(new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }), client))
       token = readAccessToken(json)
     } catch (err) {
-      if (err instanceof LoginMintError) return failureOf(err as LoginMintError)
+      if (err instanceof LoginMintError) return failureOf(err as LoginMintError, unreadable)
       return failure('unavailable', 'token_endpoint_unreachable')
     }
 
@@ -701,11 +711,12 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     let json: Readonly<Record<string, unknown>>
     let token: string
     const asked = this.clock()
+    const unreadable: RateLimitHeader[] = []
     try {
-      json = await requestToken(this.tokenDeps(), request.tokenUrl, body)
+      json = await requestToken(this.tokenDeps(unreadable), request.tokenUrl, body)
       token = readAccessToken(json)
     } catch (err) {
-      if (err instanceof LoginMintError) return failureOf(err as LoginMintError)
+      if (err instanceof LoginMintError) return failureOf(err as LoginMintError, unreadable)
       return failure('unavailable', 'token_endpoint_unreachable')
     }
     // Whom the person signed in as, from the id_token the endpoint answered directly (id-token-account.ts): never a token.

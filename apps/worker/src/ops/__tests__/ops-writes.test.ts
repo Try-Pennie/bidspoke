@@ -273,6 +273,21 @@ describe('the typed wrappers', () => {
     expect(last).toBe(true)
   })
 
+  it('start: answers the run\'s continuations (#1951), and refuses a start answered without them, never reading it as none', async () => {
+    const started = await startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 1 }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1')
+    expect(started).toEqual({ outcome: 'started', stateVersion: 5, attempt: 2, continuations: 1 })
+    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2 }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1'))
+      .rejects.toThrow(/continuations/)
+    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: -1 }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1'))
+      .rejects.toThrow(/continuations/)
+  })
+
+  it('a continuation\'s start is not charged either (#1951)', () => {
+    // One charged start of two: the continuation's start spends nothing, so a retry after it is still allowed; a retry's start would be the last.
+    expect(lastChargedAttempt({ attempts: 1, unchargedAttempts: 0, maxAttempts: 2, resumeReason: 'continue' })).toBe(false)
+    expect(lastChargedAttempt({ attempts: 1, unchargedAttempts: 0, maxAttempts: 2, resumeReason: 'retry' })).toBe(true)
+  })
+
   it('start: a lost claim is an error, never a start', async () => {
     const { client } = rpcFetch([{ outcome: 'claim_lost', state_version: null, attempt: null }])
     await expect(startRunExecution(client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1')).rejects.toBeInstanceOf(OpsClaimLostError)

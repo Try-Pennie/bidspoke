@@ -76,7 +76,10 @@
  * made a non idempotent send is never retried or requeued, since a new attempt
  * starts the graph again and would send it twice (#1698 D5): it ends failed.
  * Before any such send, a body that throws is retried; the database ends it
- * dead at max_attempts.
+ * dead at max_attempts. A body that ends to continue (#1951) is suspended to
+ * continue even after such a send: it has named a checkpoint after every send
+ * it made, and the next holder resumes after it (complete_run_request refuses
+ * a continuation whose attempt named none).
  *
  * DEADLINES. Every wait here is bounded on the injected clock (L524): each
  * database call by RUN_DB_DEADLINE_MS, each forward by SEND_DEADLINE_MS, which
@@ -180,6 +183,12 @@ export interface RunContext {
   readonly stateVersion: number
   /** The run's checkpoint on its row (#1951), fenced like every run write. */
   readonly checkpoints: RunCheckpoints
+  /**
+   * How many times the run was suspended to continue before this attempt, as
+   * its start answered (#1951). Above 0, the body resumes from the checkpoint
+   * the run names (continuation.ts resumeFromCheckpoint), never from its first step.
+   */
+  readonly continuations: number
 }
 
 /** What a body names and reads of its run's checkpoint (#1951, checkpoint.ts writes the checkpoint itself). */
@@ -202,6 +211,11 @@ export interface RunCheckpoints {
  */
 export type RunBodyEnd =
   | { outcome: 'done' }
+  /**
+   * The slice spent its budget and its checkpoint is named on the run (#1951):
+   * suspended to continue, at once, and resumed after that checkpoint.
+   */
+  | { outcome: 'continue' }
   | { outcome: 'failed'; reason?: HolderFailedReason; error?: string }
   | { outcome: 'retry'; error?: string; notBefore?: Date }
   | { outcome: 'needs_human'; reason: 'send_outcome_unknown'; error?: string }
@@ -341,7 +355,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
     log('start_failed', { error })
     return { outcome: 'start_failed', error }
   }
-  const { stateVersion, attempt } = started.value
+  const { stateVersion, attempt, continuations } = started.value
 
   // ── state ──
   /** Aborted when the claim is lost: a forward in flight is aborted with it. */
@@ -604,7 +618,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
   }
 
   // ── the body ──
-  const ctx: RunContext = { run, executionId, attempt, signal: halt.signal, send, now: () => clock.now(), recordStep, stateVersion, checkpoints }
+  const ctx: RunContext = { run, executionId, attempt, signal: halt.signal, send, now: () => clock.now(), recordStep, stateVersion, checkpoints, continuations }
   type BodyResult = { kind: 'returned'; end: RunBodyEnd } | { kind: 'threw'; error: unknown } | { kind: 'halted' }
   const bodyDone: Promise<BodyResult> = (async () => {
     try {
@@ -631,6 +645,8 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
   } else if (result.kind === 'returned') {
     const b = result.end
     if (b.outcome === 'done') end = { outcome: 'done' }
+    // Not a retry: its checkpoint follows every send this attempt made, so none is repeated.
+    else if (b.outcome === 'continue') end = { outcome: 'suspend', reason: 'continue', notBefore: new Date(clock.now()) }
     else if (b.outcome === 'failed' || b.outcome === 'needs_human') end = b
     else end = retryOr(b.error ?? 'the run asked to be retried', b.notBefore)
   } else if (result.kind === 'threw') {

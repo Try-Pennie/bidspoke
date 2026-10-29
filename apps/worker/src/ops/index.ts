@@ -100,8 +100,11 @@ export interface OpsEnv extends OpsDbEnv {
   /**
    * Time sliced continuation (#1951), in wrangler.ops.toml [vars]: "observe"
    * writes, names and reads back a checkpoint at each slice boundary of a run
-   * and carries on; unset or "off" writes nothing. Any other value is off, and
-   * reported not configured by name (checkpoint.ts continuationModeFrom).
+   * and carries on; "on" does the same and then suspends the run to continue
+   * in a later invocation (continuation.ts); unset or "off" writes nothing. A
+   * run that has continued is resumed from its checkpoint whatever the mode.
+   * Any other value is off, and reported not configured by name
+   * (checkpoint.ts continuationModeFrom).
    */
   OPS_CONTINUATION?: string
   /**
