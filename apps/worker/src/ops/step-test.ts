@@ -249,45 +249,26 @@ async function contextFromRun(
 }
 
 /**
- * The variables a step test is given, or why not, as the refusal's sentence.
- *
- * From #3002 (phase 6 of #2982), the CURRENT values the bidding Worker read for
- * the step, secrets decrypted (Dan, 2026-10-29: "Yes, ops reads secrets"),
+ * The variables a step test is given, or why not, as the refusal's sentence:
+ * the CURRENT values the bidding Worker read for the step (#3002, phase 6 of
+ * #2982), secrets decrypted (Dan, 2026-10-29: "Yes, ops reads secrets"),
  * returned apart as secrets so that nothing kept or logged holds their values.
- * A variable the step reads with no saved value is refused by name.
- *
- * From a bidding Worker before #3002 (variables null), the #2702 rule: the
- * plain values the workflow's newest saved version kept, a secret refused.
- * Removed with the version field (#3003).
+ * A variable the step reads with no value sent for it is refused by name, the
+ * same judgement a live save makes (judgeVariables); a bidding Worker from
+ * before #3002 sends none, so every variable a step reads is refused there.
  */
 function stepVariables(request: TestStepRequest): { env: Record<string, string>; secrets: Record<string, string> } | { refused: string } {
   const reads = envReferences({ nodes: [request.node], edges: [] })
-  const current = request.variables
-  if (current !== null) {
-    const missing = reads.filter((k) => !Object.hasOwn(current.values, k) && !Object.hasOwn(current.secretValues, k))
-    if (missing.length > 0) {
-      const one = missing.length === 1
-      return { refused: `this step reads ${named(missing)}, which ${one ? 'has' : 'have'} no saved value for this workflow, so nothing was sent; add ${one ? 'it' : 'them'} on the environment variables page and test again` }
-    }
-    const secrets = Object.fromEntries(reads.filter((k) => Object.hasOwn(current.secretValues, k)).map((k) => [k, current.secretValues[k]]))
-    const env = Object.fromEntries(reads.map((k) => [k, Object.hasOwn(secrets, k) ? secrets[k] : current.values[k]]))
-    return { env, secrets }
+  const current = request.variables ?? { values: {}, secretValues: {} }
+  const judged = judgeVariables(reads, [...Object.keys(current.values), ...Object.keys(current.secretValues)])
+  if (judged.kind === 'refused') {
+    const { missing } = judged
+    const one = missing.length === 1
+    return { refused: `this step reads ${named(missing)}, which ${one ? 'has' : 'have'} no saved value for this workflow, so nothing was sent; add ${one ? 'it' : 'them'} on the environment variables page and test again` }
   }
-  const version = request.version
-  const judged = judgeVariables(reads, version?.variables ?? null)
-  if (judged.kind === 'given') return { env: judged.env, secrets: {} }
-  if (judged.kind === 'none_kept') {
-    const kept = version === null
-      ? 'no saved version of the workflow kept the values of its variables'
-      : `version ${version.number} of the workflow was saved before ops kept the values of its variables with it`
-    return { refused: `this step reads ${named(reads)}, and ${kept}, so nothing was sent; save the workflow and test again` }
-  }
-  const { secret, missing } = judged
-  const secretSaid = `this step reads the secret ${secret.length === 1 ? 'variable' : 'variables'} ${named(secret)}, and an ops step is never given a secret: a credential belongs in a connection`
-  const missingSaid = `${named(missing)}, which ${missing.length === 1 ? 'was not a variable' : 'were not variables'} of this workflow when version ${version?.number ?? 0} was saved, so nothing was sent`
-  if (secret.length > 0 && missing.length > 0) return { refused: `${secretSaid}; and it reads ${missingSaid}` }
-  if (secret.length > 0) return { refused: `${secretSaid}, so nothing was sent` }
-  return { refused: `this step reads ${missingSaid}; add ${missing.length === 1 ? 'it' : 'them'}, save the workflow and test again` }
+  const secrets = Object.fromEntries(reads.filter((k) => Object.hasOwn(current.secretValues, k)).map((k) => [k, current.secretValues[k]]))
+  const env = Object.fromEntries(reads.map((k) => [k, Object.hasOwn(secrets, k) ? secrets[k] : current.values[k]]))
+  return { env, secrets }
 }
 
 /** Runs one step for real and keeps its result. Every answer is a value. */

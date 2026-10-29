@@ -85,7 +85,7 @@ function refusedAnswer(c: Ctx, answer: OpsConnectionsRefused): Response {
       return c.json({ error: answer.refused, message: 'That run\'s payload is not held where a test can read it. Nothing was sent. Give a payload to test with.' }, 409)
     case 'step_test_run_unavailable':
       return c.json({ error: answer.refused, message: 'That run\'s step records could not be read. Nothing was sent. Try again in a moment.' }, 503)
-    // A variable the step cannot be given (#2702): ops names each in the sentence it gives.
+    // A variable with no saved value (#3002): ops names each in the sentence it gives.
     case 'step_test_variable_unavailable':
       return c.json({ error: answer.refused, message: `${answer.detail.charAt(0).toUpperCase()}${answer.detail.slice(1)}.` }, 409)
     default:
