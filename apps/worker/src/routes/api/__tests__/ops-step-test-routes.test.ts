@@ -33,6 +33,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { executeNode } from '../../../engine/nodes/index'
 import { makeSupabase } from './_supabase-mock'
+import { encryptSecret } from '../../../lib/secret-crypto'
 import api from '../index'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
@@ -245,70 +246,124 @@ describe('GET test-results for an ops workflow\'s step', () => {
   })
 })
 
-// #2702: a step test is given the plain values the workflow's newest saved
-// version kept, as a run of it would be, and ops refuses by name a step reading
-// a secret variable or one that version did not keep.
-describe('POST test-node: the variables an ops step test is given (#2702)', () => {
-  const readsEnv = { ...appStep, config: { ...appStep.config, args: { text: 'to {{env.API_BASE}}' } } }
+// #3002 (phase 6 of #2982; Dan, 2026-10-28: "It should always read the current
+// version of the variable", and 2026-10-29: "Yes, ops reads secrets"): a step
+// test is given the CURRENT value of each variable the step reads, resolved over
+// the organization's saved rows by the one resolver, each secret decrypted here.
+// Never the newest saved version's kept copy, and no fallback copy: a failed
+// read refuses the test (503), and a secret that will not decrypt refuses it by
+// name, never sent blank.
+describe('POST test-node: the current variables an ops step test is given (#3002)', () => {
+  const KEY = btoa('0'.repeat(32))
+  const WRONG_KEY = btoa('1'.repeat(32))
+  const OTHER_ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f61'
+  const readsEnv = { ...appStep, config: { ...appStep.config, args: { text: 'to {{env.API_BASE}} as {{env.TOKEN}}' } } }
   const envDefinition = { ...definition, nodes: [readsEnv] }
-  const capture = [
-    { key: 'API_BASE', value: 'https://hooks.example.test', is_secret: false, scope: 'global', workflow_id: null },
-    { key: 'UNREAD', value: 'kept but not read by this step', is_secret: false, scope: 'global', workflow_id: null },
-  ]
-  const withVersions = (versions: { list?: Record<string, unknown>[]; listError?: { message: string; code?: string } }) => {
-    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { id: WF, lane: 'ops' } }, workflow_versions: versions })
+  let seq = 0
+  const row = (key: string, value: string, over: Record<string, unknown> = {}) => ({
+    id: `00000000-0000-4000-9000-${String(++seq).padStart(12, '0')}`, organization_id: ORG, key, value, is_secret: false, scope: 'global', workflow_id: null, ...over,
+  })
+  /** The organization's saved rows, in saved order, and a saved version whose kept copy is OLD, which must never be read. */
+  const withRows = (variables: { list?: Record<string, unknown>[]; listError?: { message: string; code?: string } }) => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { single: { id: WF, lane: 'ops' } },
+      environment_variables: variables,
+      workflow_versions: { list: [{ version_number: 7, env_capture: [{ key: 'API_BASE', value: 'https://old.example.test', is_secret: false, scope: 'global', workflow_id: null }] }] },
+    })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     return sb
   }
+  const test = (ops: ReturnType<typeof opsBinding>, body: Record<string, unknown> = { namespace: 'notify', definition: envDefinition, confirm_send: true }) =>
+    call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding, SECRET_ENCRYPTION_KEY: KEY } as never, body)
 
-  it('sends the values the newest saved version kept that the step reads, with that version\'s number', async () => {
-    const sb = withVersions({ list: [{ version_number: 7, env_capture: capture }] })
+  it('gives the step the current value of each variable it reads after a change, never the saved version\'s kept copy', async () => {
+    const token = await encryptSecret('tok-live-value', KEY)
+    const sb = withRows({ list: [
+      row('API_BASE', 'https://changed-once.example.test'),
+      // The later saved row at one level wins: the value as it is now.
+      row('API_BASE', 'https://current.example.test'),
+      row('TOKEN', token, { is_secret: true }),
+      row('UNREAD', 'not read by this step'),
+    ] })
     const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
-    const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition: envDefinition, confirm_send: true })
+    const res = await test(ops)
     expect(res.status).toBe(200)
-    expect((ops.calls[0].request as { version: unknown }).version).toEqual({ number: 7, variables: { values: { API_BASE: 'https://hooks.example.test' }, secret_keys: [] } })
-    const calls = sb.calls.workflow_versions ?? []
-    expect(calls).toContainEqual(['eq', ['workflow_id', WF]])
-    expect(calls).toContainEqual(['order', ['version_number', { ascending: false }]])
-  })
-
-  it('names no version when the workflow has none, or one saved before its variables were kept', async () => {
-    for (const [list, sent] of [[[], null], [[{ version_number: 3, env_capture: null }], { number: 3, variables: null }]] as const) {
-      withVersions({ list: [...list] })
-      const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
-      await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition: envDefinition, confirm_send: true })
-      expect((ops.calls[0].request as { version: unknown }).version).toEqual(sent)
-    }
-  })
-
-  it('a step reading no variable never reads the versions', async () => {
-    const sb = withVersions({ listError: { message: 'must not be read' } })
-    const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
-    const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition, confirm_send: true })
-    expect(res.status).toBe(200)
+    const sent = ops.calls[0].request as Record<string, unknown>
+    expect(sent.variables).toEqual({ values: { API_BASE: 'https://current.example.test' }, secret_values: { TOKEN: 'tok-live-value' } })
+    expect(Object.keys(sent)).not.toContain('version')
     expect(sb.calls.workflow_versions).toBeUndefined()
-    expect(Object.keys(ops.calls[0].request as object)).not.toContain('version')
+    // Read for the caller's organization alone, the names the step reads, in saved order.
+    const calls = sb.calls.environment_variables ?? []
+    expect(calls).toContainEqual(['eq', ['organization_id', ORG]])
+    expect(calls).toContainEqual(['in', ['key', ['API_BASE', 'TOKEN']]])
+    expect(calls).toContainEqual(['order', ['created_at', { ascending: true }]])
   })
 
-  it('sends nothing when the saved variables cannot be read, saying so', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    withVersions({ listError: { message: 'the database is not answering', code: 'PGRST000' } })
+  it('decrypts a secret the step reads and gives it to the step; the ciphertext never leaves, nor a row of another organization', async () => {
+    const token = await encryptSecret('tok-live-value', KEY)
+    withRows({ list: [row('API_BASE', 'https://current.example.test'), row('TOKEN', token, { is_secret: true }), row('TOKEN', 'theirs', { organization_id: OTHER_ORG })] })
     const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
-    const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition: envDefinition, confirm_send: true })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await test(ops)
+    expect((ops.calls[0].request as { variables: unknown }).variables).toEqual({ values: { API_BASE: 'https://current.example.test' }, secret_values: { TOKEN: 'tok-live-value' } })
+    expect(JSON.stringify(ops.calls[0].request)).not.toContain(token)
+    expect(JSON.stringify(ops.calls[0].request)).not.toContain('theirs')
+  })
+
+  it('leaves out a variable with no saved value, so ops names it missing', async () => {
+    withRows({ list: [row('API_BASE', 'https://current.example.test')] })
+    const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
+    await test(ops)
+    expect((ops.calls[0].request as { variables: unknown }).variables).toEqual({ values: { API_BASE: 'https://current.example.test' }, secret_values: {} })
+  })
+
+  it('a step reading no variable never reads them', async () => {
+    const sb = withRows({ listError: { message: 'must not be read' } })
+    const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
+    const res = await test(ops, { namespace: 'notify', definition, confirm_send: true })
+    expect(res.status).toBe(200)
+    expect(sb.calls.environment_variables).toBeUndefined()
+    expect(Object.keys(ops.calls[0].request as object)).not.toContain('variables')
+  })
+
+  it('sends nothing when the variables cannot be read, saying so', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    withRows({ listError: { message: 'the database is not answering', code: 'PGRST000' } })
+    const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
+    const res = await test(ops)
     expect(res.status).toBe(503)
     expect(await res.json()).toMatchObject({ error: 'step_test_variables_unavailable', message: expect.stringContaining('Nothing was sent') })
     expect(ops.calls).toEqual([])
   })
 
-  it('words ops\'s refusal of a step reading a secret or missing variable as the sentence ops gave', async () => {
-    withVersions({ list: [{ version_number: 7, env_capture: capture }] })
-    const detail = 'this step reads the secret variable env.TOKEN, and an ops step is never given a secret: a credential belongs in a connection, so nothing was sent'
+  it('refuses by name a secret that will not decrypt, never sending it blank, and logs no value', async () => {
+    const token = await encryptSecret('tok-live-value', WRONG_KEY)
+    withRows({ list: [row('API_BASE', 'https://current.example.test'), row('TOKEN', token, { is_secret: true })] })
+    const ops = opsBinding({ testStep: { ok: true, recorded: true, result: view } })
+    const lines: unknown[] = []
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { lines.push(args) })
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => { lines.push(args) })
+    const res = await test(ops)
+    expect(res.status).toBe(409)
+    const body = await res.json() as { error: string; message: string }
+    expect(body.error).toBe('step_test_secret_unreadable')
+    expect(body.message).toContain('env.TOKEN')
+    expect(body.message).toContain('Nothing was sent')
+    expect(ops.calls).toEqual([])
+    expect(JSON.stringify(lines)).not.toContain(token)
+    expect(JSON.stringify(body)).not.toContain(token)
+  })
+
+  it('words ops\'s refusal of a step reading a missing variable as the sentence ops gave', async () => {
+    withRows({ list: [row('API_BASE', 'https://current.example.test')] })
+    const detail = 'this step reads env.TOKEN, which has no saved value for this workflow, so nothing was sent; add it on the environment variables page and test again'
     const ops = opsBinding({ testStep: { ok: false, refused: 'step_test_variable_unavailable', detail, retry_at: null } })
-    const res = await call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding } as never, { namespace: 'notify', definition: envDefinition, confirm_send: true })
+    const res = await test(ops)
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({
       error: 'step_test_variable_unavailable',
-      message: 'This step reads the secret variable env.TOKEN, and an ops step is never given a secret: a credential belongs in a connection, so nothing was sent.',
+      message: 'This step reads env.TOKEN, which has no saved value for this workflow, so nothing was sent; add it on the environment variables page and test again.',
     })
   })
 })
