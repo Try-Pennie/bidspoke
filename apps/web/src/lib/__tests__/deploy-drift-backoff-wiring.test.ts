@@ -85,7 +85,7 @@ describe('the record is read first and written last (#1761)', () => {
   it('writes the next record whatever happened earlier in the run', () => {
     const finish = stepWithId('drift_finish')
     expect(finish).toMatch(/if:\s*always\(\)/)
-    expect(finish).toContain('drift-alert-state.sh finish')
+    expect(finish).toContain('bash head/.github/scripts/drift-alert-state.sh finish')
     for (const step of ['worker_alert', 'worker_probe_alert', 'pages_alert', 'tail_alert']) {
       expect(finish).toContain(`steps.${step}.outcome`)
     }
@@ -117,6 +117,16 @@ describe('one Slack message per drift run (#3152)', () => {
       expect(indexOfId('drift_send')).toBeGreaterThan(indexOfId(step))
     }
     expect(indexOfId('drift_send')).toBeLessThan(indexOfId('drift_finish'))
+  })
+
+  it('runs its scripts from the first checkout, which every run has, so an alert queued before a later step failed still posts', () => {
+    // The root checkout comes partway through the job and does not run once a
+    // step has failed hard, so a script read from there would be missing and
+    // the worker alert queued earlier would never reach Slack.
+    const send = stepWithId('drift_send')
+    expect(send).toContain('bash head/.github/scripts/drift-alert-state.sh send')
+    expect(send).toContain('bash head/.github/scripts/deploy-latest-outcome.sh')
+    expect(send).not.toMatch(/bash \.github\/scripts\//)
   })
 
   it('quotes the newest Deploy run only when a queued alert carries the deploy remedy', () => {
