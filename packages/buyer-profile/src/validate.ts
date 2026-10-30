@@ -2,7 +2,7 @@ import { isHttpsUrl, successPatternOf, type ClickDelivery } from './click-delive
 import { CLICK_URL_NO_PROSPECT_ID_MESSAGE, clickUrlCarriesProspectId, isCap } from './click-send'
 import { DISPLAY_TIME_ZONE_LABELS, DISPLAY_TIME_ZONES, isDisplayTimeZone } from './clock'
 import type { BuyerProfile } from './eligibility'
-import type { Signal } from './outcome'
+import { matchSignal, type Signal } from './outcome'
 import type { PricingTier } from './tiers'
 import { MULTIPLIER_CEILING, US_STATES, WIRED_POPULATIONS, type SoldOn } from './vocab'
 
@@ -26,6 +26,8 @@ export type ProfileErrorCode =
   | 'enabled_without_windows'
   | 'enabled_without_tiers'
   | 'enabled_without_accept_rules'
+  | 'accept_rule_reads_no_field'
+  | 'accept_rules_met_by_empty_answer'
   | 'enabled_without_click_url'
   | 'click_url_has_no_prospect_id'
   | 'enabled_without_routing_code'
@@ -80,6 +82,49 @@ export interface StoredKind {
 /** True when a stored profile's kind cannot be switched now: the one predicate the validator and the form's disabled choice share. */
 export function soldOnSwitchBlocked(stored: StoredKind): boolean {
   return stored.tierCount > 0 || stored.acceptRuleCount > 0
+}
+
+/** Rule numbers count from 1, as the accept rules editor names its rows ("Accept rule 2"). */
+export const ACCEPT_RULE_READS_NO_FIELD_MESSAGE = (ruleNumber: number): string =>
+  `Accept rule ${ruleNumber} has no field. Name the field of the buyer's answer that it checks.`
+
+export const ACCEPT_RULES_MET_BY_EMPTY_ANSWER_MESSAGE =
+  'An empty answer from the buyer meets every accept rule, so it would be recorded as a sale. Add a rule that checks a field the buyer sends back.'
+
+/**
+ * What a complete answer with nothing in it reaches the accept rules as:
+ * postToPartner parses an empty body (a 204, an empty 200) or text that is not
+ * JSON to null, and {} is the empty object a buyer might send instead. Since
+ * #3091 such an answer is judged by the rules, so rules it meets would record a
+ * sale on the status alone (#3093).
+ */
+const EMPTY_ANSWERS: readonly unknown[] = [null, {}]
+
+/** True when a signal's field names some field of the answer: not blank, and not only dots or a bare list mark, which read the whole answer or nothing. */
+function namesAField(field: unknown): boolean {
+  if (typeof field !== 'string') return false
+  return field.split('.').some((segment) => segment.replace(/\[\]$/, '').trim() !== '')
+}
+
+/**
+ * The accept rules a save may store (#3093): every rule reads a named field of
+ * the buyer's answer, and an empty answer does not meet them all. Judged with
+ * the engine's own matcher, so what it refuses is exactly what evaluateSaleOutcome
+ * would accept. validateProfile runs it for an offer buyer, and the page save
+ * runs it alone when a save changes the rules without the profile.
+ */
+export function acceptRuleErrors(acceptSignals: readonly Signal[]): ProfileError[] {
+  const errors: ProfileError[] = []
+  acceptSignals.forEach((sig, i) => {
+    if (!namesAField(sig?.field)) {
+      errors.push({ code: 'accept_rule_reads_no_field', path: 'acceptSignals', message: ACCEPT_RULE_READS_NO_FIELD_MESSAGE(i + 1) })
+    }
+  })
+  if (errors.length > 0) return errors
+  if (acceptSignals.length > 0 && EMPTY_ANSWERS.some((empty) => acceptSignals.every((sig) => matchSignal(sig, empty)))) {
+    errors.push({ code: 'accept_rules_met_by_empty_answer', path: 'acceptSignals', message: ACCEPT_RULES_MET_BY_EMPTY_ANSWER_MESSAGE })
+  }
+  return errors
 }
 
 const STATE_SET: ReadonlySet<string> = new Set(US_STATES)
@@ -174,6 +219,11 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
   }
 
   checkTiers(profile, err)
+
+  // The partner's accept rules are stored by this save whether or not the
+  // profile is enabled, so a rule an empty answer could meet is refused on a
+  // draft too (#3093). A click buyer is never judged by them (#1541).
+  if (!click) errors.push(...acceptRuleErrors(partner.acceptSignals))
 
   if (profile.isEnabled) {
     // A click buyer is never ranked, priced or judged by accept rules (#1541).
