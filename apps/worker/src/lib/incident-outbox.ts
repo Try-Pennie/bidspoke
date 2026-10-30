@@ -69,8 +69,8 @@ export type IncidentEvent =
   | (EventBase & { type: 'opened'; previousStartedAt?: string })
   | (EventBase & { type: 'paged' })
   /**
-   * A page that was due and did not reach Slack (#3056): Slack refused it, or
-   * no request went out. `unannounced` when no incident was open, so no page
+   * A page that was sent and refused everywhere it went (#3056). A page never
+   * tried, or whose every send threw, records no event. `unannounced` when no incident was open, so no page
    * about it had reached anybody: the record keeps that incident closed, since
    * no all-clear is owed for it (alert-recovery.ts, recordPageOutcomeOn).
    */

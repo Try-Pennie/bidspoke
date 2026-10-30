@@ -200,6 +200,23 @@ describe('opening and paging', () => {
   })
 })
 
+describe('a page nobody was asked to take (#3056)', () => {
+  it('records nothing when there is no organization to tell, since no page was tried', async () => {
+    const kv = staleKv()
+    await run(kv, NOW, [])
+    expect(sendCronHeartbeatAlert).not.toHaveBeenCalled()
+    expect(transitions(kv.store)).toEqual([])
+  })
+
+  it('records nothing when the send threw, since it may have landed', async () => {
+    vi.mocked(sendCronHeartbeatAlert).mockRejectedValue(new Error('Network connection lost.'))
+    const kv = staleKv()
+    await run(kv, NOW).catch(() => {})
+    expect(sendCronHeartbeatAlert).toHaveBeenCalled()
+    expect(transitions(kv.store)).toEqual([])
+  })
+})
+
 describe('ending', () => {
   it('ends a never finished incident as an all-clear once it delivers, with the completion the all-clear reported', async () => {
     const { kv, started } = vanishedKv()

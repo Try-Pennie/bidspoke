@@ -1179,11 +1179,11 @@ interface DarkPage {
   inCooldown: () => Promise<boolean>
   /** The standing condition when this page is a reminder, and whether it is word for word the last. */
   reminder: () => { standing: StandingCondition; unchanged: boolean } | null
-  /** After the post: on a delivery arm the next interval and record the incident, otherwise keep it open. */
   /**
-   * `answered` is whether any organization's send answered at all (#3056): with
-   * none to tell no page was tried, so nothing is recorded. A send that throws
-   * never reaches here.
+   * After the post: on a delivery arm the next interval and record the page,
+   * otherwise keep the incident open and record the refusal (#3056). `answered`
+   * is whether any organization's send answered at all: with none to tell no
+   * page was tried, so nothing is recorded. A send that throws never reaches here.
    */
   settle: (alerted: boolean, group: DarkGroup | null, answered: boolean) => Promise<void>
 }
