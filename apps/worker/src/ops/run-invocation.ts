@@ -101,7 +101,7 @@
 import { DEFAULT_RETRY_POLICY, retryDelaySeconds, type RetryPolicy } from '@bidspoke/workflow-definition'
 import { formatErr } from '../lib/format-error'
 import type { RequeueCause } from './connections/refusals'
-import type { RunVariablesRecord } from './run-variables'
+import { variablesUsed, type RunVariablesRecord, type RunVariablesUsed } from './run-variables'
 import {
   OPS_RPC_DEADLINE_MS, OpsClaimLostError, chargedAttemptsWithThisStart,
   type CheckpointAck, type ClaimedRun, type CompleteOutcome, type CompletedRun, type NamedCheckpoint, type OpsStepRecord, type RunCheckpointRead,
@@ -260,14 +260,19 @@ export type RunBodyEnd =
 
 export type RunBody = (ctx: RunContext) => Promise<RunBodyEnd>
 
+/**
+ * variables (#3000): where the variables the run ran on came from and how old
+ * they were at its start (run-variables.ts variablesUsed), which the tick
+ * tallies per workflow; absent when the run recorded none.
+ */
 export type RunInvocationReport =
-  | { outcome: 'completed'; end: CompleteOutcome; runStatus: string | null }
+  | { outcome: 'completed'; end: CompleteOutcome; runStatus: string | null; variables?: RunVariablesUsed }
   /** Not this holder's any more: nothing was completed, and the lease sweep owns the run. */
   | { outcome: 'claim_lost'; during: 'start' | 'heartbeat' | 'send' | 'record' | 'checkpoint' | 'complete' }
   /** The start failed or passed its deadline, so nothing ran; if it landed, the lease lapses and is swept. */
   | { outcome: 'start_failed'; error: string }
   /** Every complete failed; the lease lapses and the sweep ends the run by its ledger rows. */
-  | { outcome: 'complete_failed'; end: CompleteOutcome; error: string }
+  | { outcome: 'complete_failed'; end: CompleteOutcome; error: string; variables?: RunVariablesUsed }
 
 /** The run stopped (see RunContext.signal). Thrown by send; a body should let it go. */
 export class RunStopped extends Error {
@@ -395,6 +400,9 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
     return { outcome: 'start_failed', error }
   }
   const { stateVersion, attempt, continuations, runVariables } = started.value
+  // What the tick is told of the variables this run runs on (#3000): never a value.
+  const used = variablesUsed(runVariables ?? null, clock.now())
+  const usedField = used === null ? {} : { variables: used }
 
   // ── state ──
   /** Aborted when the claim is lost: a forward in flight is aborted with it. */
@@ -713,7 +721,7 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
       if (end.outcome === 'suspend' && end.reason === 'rate_limit_wait' && r.value.runStatus === 'failed') {
         log('requeue_cap_reached', { node_id: end.step, host: waitHosts.get(end.step) ?? null, status: end.status })
       }
-      return { outcome: 'completed', end, runStatus: r.value.runStatus }
+      return { outcome: 'completed', end, runStatus: r.value.runStatus, ...usedField }
     }
     if (r.kind === 'threw' && r.error instanceof OpsClaimLostError) {
       log('claim_lost', { during: 'complete' })
@@ -722,5 +730,5 @@ export async function invokeRun(deps: RunInvocationDeps, run: ClaimedRun, body: 
     lastError = r.kind === 'threw' ? formatErr(r.error) : `complete_run_request passed its ${RUN_DB_DEADLINE_MS} ms deadline and may still have committed`
   }
   log('complete_failed', { outcome: end.outcome, error: lastError })
-  return { outcome: 'complete_failed', end, error: lastError }
+  return { outcome: 'complete_failed', end, error: lastError, ...usedField }
 }

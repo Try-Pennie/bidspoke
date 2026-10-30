@@ -760,6 +760,13 @@ export const OPS_TICK_PROBLEM_RULES = {
   /** The runs waiting to start could not be read (#3039); they are read again next tick. */
   runs_unstarted_unread: 'three_in_a_row',
   /**
+   * The refresh of the kept variables copy failed (#3000, phase 4 of #2982):
+   * the plan's "the refresh failing three ticks running". Every tick asks
+   * again, so one failed refresh is held, and three in a row page, on a page of
+   * its own (VARIABLE_COPY_REFRESH_PAGE).
+   */
+  variable_copy_refresh_failing: 'three_in_a_row',
+  /**
    * Lost and requeued runs of one workflow reached the rate in a tick (L77,
    * #1950): held for three ticks, so three ticks in a row of the rate pages.
    */
@@ -825,6 +832,27 @@ export const OPS_TICK_PROBLEM_RULES = {
   runs_unstarted: 'at_once',
   /** More workflows have runs waiting to start than one read lists, so a workflow past them is not paged. */
   runs_unstarted_limit: 'at_once',
+  /**
+   * A switched on workflow's runs started on the kept copy of their variables
+   * while bidding answered the copy's refresh in the same tick (#3000): the
+   * request for their own current values failed although bidding was up. Each
+   * such start happens once and no later tick reports it again, so it pages at
+   * once, per workflow, on a page of its own (RUNS_ON_VARIABLE_COPY_PAGE).
+   */
+  runs_on_variable_copy: 'at_once',
+  /**
+   * Bidding answered a request for run variables in a shape ops cannot read
+   * (#3000): the plan's "an unreadable gateway answer (version skew) pages at
+   * once", on a page of its own (RUN_VARIABLES_UNREADABLE_PAGE).
+   */
+  run_variables_unreadable: 'at_once',
+  /**
+   * A switched on workflow's runs failed on a variable they were not given
+   * (variable_unavailable, #3000): a setup break a person must fix (the plan's
+   * audit 1). Each failed run is reported once, so it pages at once, per
+   * workflow, on a page of its own (MISSING_VARIABLE_PAGE).
+   */
+  runs_variable_missing: 'at_once',
   // Reported once, never again by a later tick.
   /** The agreement check failed after its claim; it is not tried again for 14 minutes. */
   agreement_check_failed: 'at_once',
@@ -897,6 +925,33 @@ export type OpsTickProblemKind = keyof typeof OPS_TICK_PROBLEM_RULES
  * the title naming the workflow and the fix below, never on the shared page of
  * the minute cron.
  */
+/**
+ * A kind of tick problem that pages on a page of its own (#3039, #3000), never
+ * on the minute cron's shared page: its own alert job, title and fix. The
+ * bidding Worker pages each due problem of the kind (ops-gateway.ts
+ * settleOwnPages), keyed by its subject, a workflow's id for a page per
+ * workflow and none for one page, and stands each page down on the first
+ * report that judged the kind (judgedCount) and no longer names it.
+ */
+export interface OpsOwnPage {
+  kind: OpsTickProblemKind
+  /** The bidding Worker's alert job for one page: its own incident, stood down by its own all clear. */
+  job: (subject: string) => string
+  /** The page's title; a page per workflow carries the workflow's name. */
+  title: (workflowName: string) => string
+  fix: string
+  /**
+   * The count a tick's report carries, as 1, when the tick judged this kind
+   * whole, so that a page it does not name has nothing left to report. Only
+   * such a report, with no problem left out, stands a page down.
+   */
+  judgedCount: string
+  /** Whether the key's subject is a workflow, whose name the title carries. */
+  perWorkflow: boolean
+  /** What the page is about, in the bidding Worker's own error lines. */
+  about: string
+}
+
 export const UNSTARTED_RUNS_PAGE = {
   kind: 'runs_unstarted',
   /** The bidding Worker's alert job for one workflow's page: its own incident, stood down by its own all clear. */
@@ -911,7 +966,134 @@ export const UNSTARTED_RUNS_PAGE = {
    * workflow it does not name.
    */
   judgedCount: 'unstarted_waits_judged',
-} as const
+  perWorkflow: true,
+  about: 'runs that cannot start',
+} as const satisfies OpsOwnPage
+
+// ── the pages about a run's variables (#3000, phase 4 of #2982) ──
+// Each one's words are a DRAFT for Dan to approve (Alert copy is Dan's to approve, #3000).
+
+/**
+ * Runs of a switched on workflow that started on the kept copy of their
+ * variables while bidding answered the copy's refresh in the same tick
+ * (runs_on_variable_copy). judgedCount: every live tick that dispatched its
+ * claimed runs. DRAFT wording.
+ */
+export const RUNS_ON_VARIABLE_COPY_PAGE = {
+  kind: 'runs_on_variable_copy',
+  job: (workflowId: string) => `ops-runs-on-variable-copy:${workflowId}`,
+  title: (workflowName: string) => `Ops runs used old variables: ${workflowName}`,
+  fix: 'Search the bidding Worker\'s logs for opsRunVariables around the time of this alert. If a variable this workflow reads was changed in the last 6 hours, check what these runs sent.',
+  judgedCount: 'variable_copy_use_judged',
+  perWorkflow: true,
+  about: 'runs that used old variables',
+} as const satisfies OpsOwnPage
+
+/**
+ * The refresh of the kept variables copy failing three ticks in a row
+ * (variable_copy_refresh_failing), one page. judgedCount: every live tick
+ * whose refresh ran or had nothing to ask. DRAFT wording.
+ */
+export const VARIABLE_COPY_REFRESH_PAGE = {
+  kind: 'variable_copy_refresh_failing',
+  job: () => 'ops-variable-copy-refresh',
+  title: () => 'Ops can\'t refresh its copy of the variables',
+  fix: 'Check that the bidding Worker is up and answering the ops gateway. Its logs for opsRunVariables say why the requests failed.',
+  judgedCount: 'variable_copy_refresh_judged',
+  perWorkflow: false,
+  about: 'the variables copy refresh',
+} as const satisfies OpsOwnPage
+
+/**
+ * An answer to a run variables request that ops cannot read
+ * (run_variables_unreadable), one page. judgedCount: every tick in which at
+ * least one such request was answered. DRAFT wording.
+ */
+export const RUN_VARIABLES_UNREADABLE_PAGE = {
+  kind: 'run_variables_unreadable',
+  job: () => 'ops-run-variables-unreadable',
+  title: () => 'Ops can\'t read the variables bidding sent',
+  fix: 'The ops and bidding Workers are probably running different releases. Deploy both from the same commit of main.',
+  judgedCount: 'run_variables_answers_judged',
+  perWorkflow: false,
+  about: 'variables answers ops cannot read',
+} as const satisfies OpsOwnPage
+
+/**
+ * A switched on workflow's runs failing on a variable they were not given
+ * (runs_variable_missing, the run's reason variable_unavailable).
+ * judgedCount: every live tick that dispatched its claimed runs. DRAFT wording.
+ */
+export const MISSING_VARIABLE_PAGE = {
+  kind: 'runs_variable_missing',
+  job: (workflowId: string) => `ops-runs-variable-missing:${workflowId}`,
+  title: (workflowName: string) => `Ops runs failed on a missing variable: ${workflowName}`,
+  fix: 'Add the missing variable on the Environment Variables page, or remove it from the workflow and save it. Runs that already failed are not run again.',
+  judgedCount: 'variable_missing_judged',
+  perWorkflow: true,
+  about: 'runs that failed on a missing variable',
+} as const satisfies OpsOwnPage
+
+/** Every kind that pages on a page of its own, in the order the bidding Worker settles them. */
+export const OPS_OWN_PAGES: readonly OpsOwnPage[] = [
+  UNSTARTED_RUNS_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, MISSING_VARIABLE_PAGE,
+]
+
+/** The own page a problem's key belongs to, read from its kind, or null for the minute cron's shared page. */
+export function ownPageOf(key: string): OpsOwnPage | null {
+  const kind = key.split(':')[0]
+  return OPS_OWN_PAGES.find((p) => p.kind === kind) ?? null
+}
+
+/**
+ * A page's body with one part of it (an error's own words) cut so the whole
+ * fits MAX_PROBLEM_LENGTH, keeping the sentences around it, which carry the
+ * counts and the consequence, whole.
+ */
+function fitted(make: (part: string) => string, part: string): string {
+  const room = MAX_PROBLEM_LENGTH - make('').length
+  if (part.length <= room) return make(part)
+  return make(`${part.slice(0, Math.max(0, room - 3))}...`)
+}
+
+/** How long before a run started its copy was last confirmed, in words. */
+function copyAgeWords(seconds: number): string {
+  if (seconds < 60) return 'less than a minute'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 120) return minutes === 1 ? '1 minute' : `${minutes} minutes`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return `${hours} hours${rest === 0 ? '' : rest === 1 ? ' 1 minute' : ` ${rest} minutes`}`
+}
+
+/**
+ * The body of runs_on_variable_copy: how many runs, how old their copy was
+ * when they started (the oldest a run reported), and why their own request
+ * failed. DRAFT wording.
+ */
+export function runsOnVariableCopyText(r: { runs: number; ageSeconds: number; why: string }): string {
+  const one = r.runs === 1
+  const age = copyAgeWords(r.ageSeconds)
+  return fitted((why) => `${one ? '1 run' : `${r.runs} runs`} started on the copy of ${one ? 'its' : 'their'} environment variables that ops keeps, last confirmed by bidding ${age} before ${one ? 'it' : 'they'} started, because bidding did not answer the request for ${one ? 'its' : 'their'} current values (${why}). In the same minute bidding answered the refresh of that copy, so ${one ? 'this run' : 'these runs'} should have had current values.`, r.why)
+}
+
+/** The body of variable_copy_refresh_failing: how many switched on workflows it refreshes, and why it failed. DRAFT wording. */
+export function refreshFailingText(r: { workflows: number; error: string }): string {
+  const workflows = r.workflows === 1 ? '1 switched on workflow' : `${r.workflows} switched on workflows`
+  return fitted((detail) => `Ops could not refresh its copy of the environment variables of ${workflows} from bidding: ${detail}. Runs still start whenever bidding answers their own request, but a run that has to fall back to the copy can use it only while it is under 6 hours old.`, r.error)
+}
+
+/** The body of run_variables_unreadable: how many answers could not be read, and the first one's reason. DRAFT wording. */
+export function runVariablesUnreadableText(r: { answers: readonly string[] }): string {
+  const first = (r.answers[0] ?? '').replace(/\.$/, '')
+  return fitted((said) => `Bidding answered ${r.answers.length} of ops's requests for environment variables in a shape ops cannot read. The first: ${said}. Runs fall back to the copy ops keeps where they can, and the rest wait to start.`, first)
+}
+
+/** The body of runs_variable_missing: how many runs failed, and the first one's error, which names the variables. DRAFT wording. */
+export function missingVariableText(r: { runs: number; error: string }): string {
+  const lead = r.runs === 1 ? '1 run failed before sending anything. It said' : `${r.runs} runs failed before sending anything. The first said`
+  return fitted((detail) => `${lead}: ${detail}.`, r.error.replace(/\.$/, ''))
+}
 
 /**
  * The cause each return names, in Dan's words. A return from an ops release

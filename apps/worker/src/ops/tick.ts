@@ -93,9 +93,15 @@
  *     (runs_variables_live, runs_variables_copy, runs_variables_none). Beside
  *     the runs, the copy's one write: what this tick was served, and a refresh
  *     of every switched on workflow that may start, asked by secret NAME only
- *     (#3034) and concurrently under one deadline, skipped when the bidding
- *     Worker already failed this tick. Its counts ride the report; nothing about
- *     it pages yet (phase 4, #3000).
+ *     (#3034) and concurrently under one deadline, skipped only when the tick's
+ *     own workflow fetch failed. Each run reports where the variables it ran on
+ *     came from and how old they were (RunInvocationReport.variables), and the
+ *     tick pages, each on a page of its own (#3000, phase 4, judgeVariables):
+ *     runs that started on the copy while bidding answered the refresh in the
+ *     same tick (runs_on_variable_copy), the refresh failing three ticks in a
+ *     row (variable_copy_refresh_failing), an answer it cannot read
+ *     (run_variables_unreadable), and a run that failed on a variable it was
+ *     not given (runs_variable_missing, the run's reason variable_unavailable).
  *  7. Dispatch, each item inside its own boundary: every newly recorded fire is
  *     handed to OpsInternal.observe through the SELF binding, signed (dispatch-
  *     auth.ts), and awaited, because a dispatched call dies with the tick that
@@ -119,6 +125,8 @@ import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type
 import {
   CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, MAX_RUN_VARIABLES_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsRunVariables,
   parseServedOpsWorkflows, tickProblem, unstartedRunsText, UNSTARTED_RUNS_PAGE,
+  MISSING_VARIABLE_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, missingVariableText, refreshFailingText,
+  runVariablesUnreadableText, runsOnVariableCopyText,
   type ConnectionLoginsReport, type OpsDefinitionRequest, type OpsRunVariablesRequest, type RunVariablesRefusal, type OpsGatewayJob, type OpsJobReport,
   type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem, type WriteBacksReport,
 } from '../lib/ops-gateway-contract'
@@ -137,9 +145,11 @@ import {
   type OpsResealMode, type OpsResealState, type SweepResult, type WorkflowCopy, type WorkflowCopyInput, type UnstartedRunWait,
 } from './ops-writes'
 import { resealSwitchFrom, watchReseal } from './reseal-watch'
-import { dispatchedFrom, refusedRunEnd, type DispatchedRunVariables } from './run-variables'
-import { OBSERVATION_REASONS, type OpsSweep, type OverlapRule } from './run-vocabulary'
-import { copySourceOf, variablesFromCopies, writeVariableCopies, type CopyTarget, type VariableCopyDb } from './variable-copies'
+import { dispatchedFrom, refusedRunEnd, type DispatchedRunVariables, type RunVariablesUsed } from './run-variables'
+import { OBSERVATION_REASONS, type OpsSweep, type OverlapRule, type RunVariableSource } from './run-vocabulary'
+import {
+  copySourceOf, variablesFromCopies, writeVariableCopies, type CopyTarget, type VariableCopiesWritten, type VariableCopyDb, type VariableCopyRefresh,
+} from './variable-copies'
 
 
 /** k, the most runs of one workflow a claim takes (#1698 D1): the fair claim measured at k 5 (spike P9). */
@@ -1046,7 +1056,8 @@ function mayStartRun(copies: readonly WorkflowCopy[], run: ClaimedRun): boolean 
  * not.
  */
 type RunVariablesAnswer =
-  | { kind: 'served'; variables: DispatchedRunVariables }
+  /** fellBack (#3000): why its own request failed, when it is served from the kept copy instead. */
+  | { kind: 'served'; variables: DispatchedRunVariables; fellBack?: string }
   | { kind: 'refused'; reason: RunVariablesRefusal; keys: string[] }
   | { kind: 'unavailable'; why: string; whole: boolean }
 
@@ -1054,6 +1065,10 @@ type RunVariablesAnswer =
 interface AskedRunVariables {
   answers: Map<string, RunVariablesAnswer>
   served: Array<{ organizationId: OrganizationId; read: Extract<ReturnType<typeof parseServedOpsRunVariables>['runs'][number], { kind: 'served' }> }>
+  /** The requests bidding answered at all, readable or not (#3000). */
+  answered: number
+  /** Why each answer that could not be read, whole or in part, could not be (#3000), one per request: never a value. */
+  unreadable: string[]
 }
 
 /**
@@ -1066,6 +1081,7 @@ interface AskedRunVariables {
 async function askRunVariables(ports: OpsTickPorts, runs: readonly ClaimedRun[]): Promise<AskedRunVariables> {
   const answers = new Map<string, RunVariablesAnswer>()
   const servedVersions: AskedRunVariables['served'] = []
+  const heard = { answered: 0, unreadable: [] as string[] }
   const byOrganization = new Map<OrganizationId, ClaimedRun[]>()
   for (const run of runs) byOrganization.set(run.organizationId, [...(byOrganization.get(run.organizationId) ?? []), run])
   const key = (workflowId: string, version: number) => `${workflowId}:${version}`
@@ -1079,12 +1095,24 @@ async function askRunVariables(ports: OpsTickPorts, runs: readonly ClaimedRun[])
     return requests.map(async (request) => {
       const asked = orgRuns.filter((r) => request.runs.some((v) => v.workflow_id === r.workflowId && v.version_number === r.workflowVersion))
       let read: ReturnType<typeof parseServedOpsRunVariables>
+      let raw: unknown
       try {
-        read = parseServedOpsRunVariables(await ports.gateway.fetchRunVariables(request), request)
+        raw = await ports.gateway.fetchRunVariables(request)
       } catch (err) {
         for (const run of asked) answers.set(run.runRequestId, { kind: 'unavailable', why: formatErr(err), whole: true })
         return
       }
+      // Answered: whatever follows is about the answer's shape, which pages at once (#3000), never about reaching bidding.
+      heard.answered++
+      try {
+        read = parseServedOpsRunVariables(raw, request)
+      } catch (err) {
+        heard.unreadable.push(formatErr(err))
+        for (const run of asked) answers.set(run.runRequestId, { kind: 'unavailable', why: formatErr(err), whole: true })
+        return
+      }
+      // One reason per request answered (#3000): the page counts requests, and names the first reason of each.
+      if (read.unreadable.length > 0) heard.unreadable.push(read.unreadable[0])
       try {
         const byVersion = new Map(read.runs.map((r) => [key(r.workflowId, r.versionNumber), r]))
         for (const r of read.runs) if (r.kind === 'served') servedVersions.push({ organizationId, read: r })
@@ -1105,7 +1133,7 @@ async function askRunVariables(ports: OpsTickPorts, runs: readonly ClaimedRun[])
       }
     })
   }))
-  return { answers, served: servedVersions }
+  return { answers, served: servedVersions, answered: heard.answered, unreadable: heard.unreadable }
 }
 
 /**
@@ -1117,10 +1145,26 @@ async function askRunVariables(ports: OpsTickPorts, runs: readonly ClaimedRun[])
  * variables could not be had goes back to the queue unstarted at retryAt, and
  * one served is handed to OpsInternal.run with them and awaited.
  */
+/** One claimed run as the tick judges it. */
+interface RunResult {
+  workflowId: string
+  tally: RunTally
+  error?: string
+  /** Where the variables this tick dispatched it with came from, and their served_at, once dispatched (#3000). */
+  dispatched?: RunVariableSource
+  servedAt?: string
+  /** Why it was dispatched on the kept copy: its own request's failure (#3000). */
+  fellBack?: string
+  /** What the run reported of the variables it ran on (#3000); absent when its report said nothing of them or was lost. */
+  ran?: RunVariablesUsed
+  /** Its error, when it failed on a variable it was not given (variable_unavailable, #3000). */
+  missing?: string
+}
+
 async function dispatchOneRun(
   ports: OpsTickPorts, db: OpsTickDb | null, copies: readonly WorkflowCopy[], run: ClaimedRun, answer: RunVariablesAnswer | undefined, retryAt: Date,
   counts: Record<string, number>,
-): Promise<{ workflowId: string; tally: RunTally; error?: string }> {
+): Promise<RunResult> {
   const copy = copies.find((c) => c.workflowId === run.workflowId)
   try {
     if (!mayStartRun(copies, run)) {
@@ -1152,13 +1196,27 @@ async function dispatchOneRun(
       }
       return { workflowId: run.workflowId, tally: 'returned_unstarted', error }
     }
-    const report = await ports.dispatchRun(run, given.variables)
+    const sent = { dispatched: given.variables.source, servedAt: given.variables.servedAt, ...(given.fellBack === undefined ? {} : { fellBack: given.fellBack }) }
+    let report: RunInvocationReport
+    try {
+      report = await ports.dispatchRun(run, given.variables)
+    } catch (err) {
+      return { workflowId: run.workflowId, tally: 'lost', error: formatErr(err), ...sent }
+    }
     const tally = tallyOf(report)
+    // What the run says it ran on (#3000): its first start's record, which a retry or continued slice keeps.
+    const ran = (report.outcome === 'completed' || report.outcome === 'complete_failed') ? report.variables : undefined
+    if (ran !== undefined) bump(counts, `runs_ran_on_${ran.source}`)
+    const result: RunResult = { workflowId: run.workflowId, tally, ...sent, ...(ran === undefined ? {} : { ran }) }
+    if (report.outcome === 'completed' && report.end.outcome === 'failed' && report.end.reason === 'variable_unavailable') {
+      bump(counts, 'runs_variable_unavailable')
+      return { ...result, missing: report.end.error ?? 'the run named no variable' }
+    }
     // A run stopped at the requeue cap names its step, host and status, so the page says which host kept refusing.
     if (tally === 'requeue_capped' && report.outcome === 'completed' && 'error' in report.end && report.end.error !== undefined) {
-      return { workflowId: run.workflowId, tally, error: report.end.error }
+      return { ...result, error: report.end.error }
     }
-    return { workflowId: run.workflowId, tally }
+    return result
   } catch (err) {
     return { workflowId: run.workflowId, tally: 'lost', error: formatErr(err) }
   }
@@ -1174,7 +1232,7 @@ async function dispatchOneRun(
  * and a run that never started says nothing about whether the workflow's runs fail.
  */
 function judgeRunOutcomes(
-  results: ReadonlyArray<{ workflowId: string; tally: RunTally; error?: string }>,
+  results: readonly RunResult[],
   problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void,
   counts: Record<string, number>,
 ): void {
@@ -1202,6 +1260,66 @@ function judgeRunOutcomes(
       problem('runs_failing', `${failing} of the ${w.runs} runs of workflow ${workflowId} this tick were lost (${w.lost}) or requeued (${w.requeued})${capped}.${first}${unstarted}`, workflowId)
     }
   }
+}
+
+/**
+ * The pages about a run's variables (#3000, phase 4 of #2982), each on a page
+ * of its own (OPS_OWN_PAGES in lib/ops-gateway-contract.ts), each with the
+ * count saying this tick judged its kind whole, so a page it no longer names
+ * stands down:
+ *  - runs_on_variable_copy, per workflow, at once: runs this tick dispatched
+ *    on the kept copy because their own request failed, in a tick whose
+ *    refresh bidding answered, so bidding was up. The age is the oldest the
+ *    runs reported (RunInvocationReport.variables), or, for one whose report
+ *    was lost, its dispatch's served_at on this Worker's clock. A retry that
+ *    runs on the copy its first start was given is counted, never paged: its
+ *    values are fixed at that start by design (#2982 phase 2).
+ *  - variable_copy_refresh_failing, three ticks in a row: the refresh failed.
+ *    refresh is null when it was skipped (the tick's workflow fetch failed,
+ *    which workflows_fetch_failed pages), which judges nothing.
+ *  - run_variables_unreadable, at once: an answer, or part of one, to the
+ *    claimed runs' request or the refresh that could not be read. Judged by a
+ *    tick in which bidding answered at least one request.
+ *  - runs_variable_missing, per workflow, at once: runs that failed with
+ *    variable_unavailable. The tick dispatches only runs of a workflow that
+ *    may start, so each is a switched on workflow's.
+ * judged is whether this tick dispatched its claimed runs (live, with the
+ * database), which judges the two per workflow kinds.
+ */
+function judgeVariables(
+  judged: boolean, results: readonly RunResult[], asked: { answered: number; unreadable: readonly string[] }, refresh: VariableCopyRefresh | null, nowMs: number,
+  problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void, counts: Record<string, number>,
+): void {
+  const byWorkflow = <T>(pick: (r: RunResult) => T | undefined) => {
+    const m = new Map<string, T[]>()
+    for (const r of results) {
+      const v = pick(r)
+      if (v !== undefined) m.set(r.workflowId, [...(m.get(r.workflowId) ?? []), v])
+    }
+    return m
+  }
+  if (judged) {
+    bump(counts, RUNS_ON_VARIABLE_COPY_PAGE.judgedCount)
+    bump(counts, MISSING_VARIABLE_PAGE.judgedCount)
+    if (refresh?.kind === 'answered') {
+      const fellBack = byWorkflow((r) => (r.dispatched === 'copy' ? r : undefined))
+      for (const [workflowId, runs] of fellBack) {
+        const ages = runs.map((r) => (r.ran?.source === 'copy' ? r.ran.ageSeconds : Math.max(0, Math.floor((nowMs - Date.parse(r.servedAt ?? '')) / 1000))))
+        const ageSeconds = Math.max(0, ...ages.filter((a) => Number.isFinite(a)))
+        problem(RUNS_ON_VARIABLE_COPY_PAGE.kind, runsOnVariableCopyText({ runs: runs.length, ageSeconds, why: runs[0].fellBack ?? 'no reason was recorded' }), workflowId)
+      }
+    }
+    for (const [workflowId, errors] of byWorkflow((r) => r.missing)) {
+      problem(MISSING_VARIABLE_PAGE.kind, missingVariableText({ runs: errors.length, error: errors[0] }), workflowId)
+    }
+  }
+  if (refresh !== null) {
+    bump(counts, VARIABLE_COPY_REFRESH_PAGE.judgedCount)
+    if (refresh.kind === 'failed') problem(VARIABLE_COPY_REFRESH_PAGE.kind, refreshFailingText({ workflows: refresh.workflows, error: refresh.error }))
+  }
+  const unreadable = [...asked.unreadable, ...(refresh?.unreadable ?? [])]
+  if (asked.answered + (refresh?.answeredRequests ?? 0) > 0) bump(counts, RUN_VARIABLES_UNREADABLE_PAGE.judgedCount)
+  if (unreadable.length > 0) problem(RUN_VARIABLES_UNREADABLE_PAGE.kind, runVariablesUnreadableText({ answers: unreadable }))
 }
 
 export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
@@ -1609,11 +1727,11 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   // the variables asked for it first (#2998), the observed fires, and with
   // neither, one probe so the path is proven every minute.
   const retryAt = new Date((dbNow === null ? ports.now() : Date.parse(dbNow)) + RUN_VARIABLES_RETRY_MS)
-  let copiesWritten: Promise<Record<string, number>> = Promise.resolve({})
+  let copiesWritten: Promise<VariableCopiesWritten | null> = Promise.resolve(null)
+  let asked: AskedRunVariables = { answers: new Map(), served: [], answered: 0, unreadable: [] }
   const runsDone = (async () => {
     // Never a throw past here (L73): if asking fails outright, every run's variables are unavailable and each is returned unstarted.
     const startable = claimed.filter((run) => mayStartRun(copies, run))
-    let asked: AskedRunVariables = { answers: new Map(), served: [] }
     let askFailed: string | null = null
     try {
       asked = await askRunVariables(ports, startable)
@@ -1632,7 +1750,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
         for (const run of unanswered) {
           const was = answers.get(run.runRequestId) as Extract<RunVariablesAnswer, { kind: 'unavailable' }>
           const j = judged.get(run.runRequestId) ?? { kind: 'refuse' as const, why: 'it was not judged against the copy' }
-          answers.set(run.runRequestId, j.kind === 'use' ? { kind: 'served', variables: j.variables } : { ...was, why: `${was.why}; and the kept copy could not be used: ${j.why}` })
+          answers.set(run.runRequestId, j.kind === 'use' ? { kind: 'served', variables: j.variables, fellBack: was.why } : { ...was, why: `${was.why}; and the kept copy could not be used: ${j.why}` })
         }
       } catch (err) {
         for (const run of unanswered) {
@@ -1641,9 +1759,13 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
         }
       }
     }
-    // The copy's one write (#2999), beside the runs: what this tick was served, and, unless bidding already failed this tick, a refresh.
+    // The copy's one write (#2999), beside the runs: what this tick was served,
+    // and, unless the tick's own workflow fetch failed, a refresh (#3000: the
+    // plan's "skips when its workflow fetch already failed this tick"; run
+    // beside a claimed ask that failed, it tells a fallback while bidding was up
+    // from an outage).
     if (live && db !== null) {
-      const biddingFailed = fetchError !== null || unanswered.length > 0
+      const biddingFailed = fetchError !== null
       copiesWritten = writeVariableCopies({
         db,
         fetchRunVariables: (request) => ports.gateway.fetchRunVariables(request),
@@ -1652,18 +1774,23 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
         served: asked.served.map((s) => ({ organizationId: s.organizationId, read: copySourceOf(s.read) })),
         refresh: biddingFailed ? [] : refreshTargets(copies),
         log: (step, fields) => log(step, { tick_id: ports.tickId, ...fields }),
-      }).catch((err: unknown) => {
+      }).catch((err: unknown): VariableCopiesWritten => {
         log('variable_copies_failed', { tick_id: ports.tickId, error: formatErr(err) })
-        return { variable_copies_failed: 1 }
+        return { counts: { variable_copies_failed: 1 }, refresh: { kind: 'failed', workflows: 0, error: formatErr(err), answeredRequests: 0, unreadable: [] } }
       })
     }
     return Promise.all(claimed.map((run) => dispatchOneRun(ports, db, copies, run, answers.get(run.runRequestId), retryAt, counts)))
   })()
   const toSend: DispatchItem[] = items.length > 0 ? items : claimed.length > 0 ? [] : [{ kind: 'probe' }]
   const sent = await Promise.allSettled(toSend.map((item) => ports.dispatch(item)))
-  judgeRunOutcomes(await runsDone, problem, counts)
-  // Counted only, never paged here: the copy's detection is phase 4 (#3000).
-  for (const [key, n] of Object.entries(await copiesWritten)) bump(counts, key, n)
+  const results = await runsDone
+  judgeRunOutcomes(results, problem, counts)
+  const written = await copiesWritten
+  for (const [key, n] of Object.entries(written?.counts ?? {})) bump(counts, key, n)
+  // The pages about the runs' variables (#3000), in live mode with the database only.
+  if (live && db !== null) {
+    judgeVariables(true, results, asked, fetchError !== null ? null : (written?.refresh ?? null), ports.now(), problem, counts)
+  }
   sent.forEach((r, i) => {
     if (r.status === 'fulfilled') {
       bump(counts, 'dispatched')

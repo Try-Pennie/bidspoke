@@ -73,6 +73,24 @@ export function isDispatchedRunVariables(v: unknown): v is DispatchedRunVariable
   return !Object.keys(v.secretValues).some((k) => Object.hasOwn(values, k))
 }
 
+/**
+ * What a run reports to the tick of the variables it ran on (#3000, phase 4 of
+ * #2982): where its recorded variables came from, and how old they were, in
+ * whole seconds from their served_at to this start, on the run's own clock (a
+ * served_at ahead of it is no age). Never a value. A retry or continued slice
+ * reports its first start's source, since that record is what it runs on.
+ */
+export interface RunVariablesUsed {
+  source: RunVariableSource
+  ageSeconds: number
+}
+
+/** The report of a run's variables from its start's record, or null when it has none. */
+export function variablesUsed(recorded: RunVariablesRecord | null, nowMs: number): RunVariablesUsed | null {
+  if (recorded === null) return null
+  return { source: recorded.source, ageSeconds: Math.max(0, Math.floor((nowMs - Date.parse(recorded.servedAt)) / 1000)) }
+}
+
 /** The record a start sends: the secret names, never their values. */
 export function recordOf(d: DispatchedRunVariables): RunVariablesRecord {
   return { source: d.source, servedAt: d.servedAt, values: { ...d.values }, secretKeys: Object.keys(d.secretValues).sort() }

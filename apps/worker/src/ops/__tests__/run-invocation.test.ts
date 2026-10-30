@@ -16,6 +16,7 @@ import {
   OpsClaimLostError, OpsWriteError, type CheckpointAck, type ClaimedRun, type CompleteOutcome, type OpsStepRecord, type RunCheckpointRead, type SendIntent, type SendIntentResult,
 } from '../ops-writes'
 import type { CheckpointAckOutcome, OpsStepRecordOutcome } from '../run-vocabulary'
+import type { RunVariablesRecord } from '../run-variables'
 import {
   CheckpointNotNamed,
   HEARTBEAT_EVERY_MS,
@@ -101,6 +102,8 @@ class FakeRunDb implements RunDb {
   status: 'claimed' | 'running' | 'ended' = 'claimed'
   /** How many times the run has been suspended to continue (#1951), as start answers it. */
   continuations = 0
+  /** The variables the run recorded at its first start (#2998), as start answers them; none by default. */
+  runVariables: RunVariablesRecord | null = null
   readonly calls: string[] = []
   readonly intents: Array<Omit<SendIntent, 'runRequestId' | 'claimToken'> & { claimToken: string }> = []
   readonly results: Array<{ ledgerId: string; status: string; responseStatus?: number }> = []
@@ -114,7 +117,7 @@ class FakeRunDb implements RunDb {
     if (run.claimToken !== this.token || this.status !== 'claimed') throw new OpsClaimLostError('start_run_execution: lost')
     this.status = 'running'
     this.stateVersion += 1
-    return { outcome: 'started' as const, stateVersion: this.stateVersion, attempt: run.attempts + 1, continuations: this.continuations, runVariables: null }
+    return { outcome: 'started' as const, stateVersion: this.stateVersion, attempt: run.attempts + 1, continuations: this.continuations, runVariables: this.runVariables }
   }
 
   async extend(run: ClaimedRun, leaseSeconds: number) {
@@ -1001,5 +1004,32 @@ describe('invokeRun: the retry setting (#1693)', () => {
     expect(sent).toHaveLength(3)
     expect(new Set(sent.map((e) => (e.outcome === 'retry' ? e.notBefore?.toISOString() : null))).size).toBe(1)
     expect(h.events).toContainEqual(expect.objectContaining({ step: 'complete_failed', outcome: 'retry' }))
+  })
+})
+
+// #3000 (phase 4 of #2982): a run tells the tick where the variables it ran on
+// came from and how old they were when it started, so the tick can page runs
+// that ran on the kept copy while bidding answered. Never a value.
+describe('invokeRun: the variables a run ran on, reported to the tick (#3000)', () => {
+  it('reports the source of its recorded variables and their age at its start, and no value', async () => {
+    const h = harness()
+    h.db.runVariables = { source: 'copy', servedAt: new Date(h.clock.now() - 14 * 60_000 - 30_000).toISOString(), values: { API_BASE: 'fake-kept-value' }, secretKeys: ['API_TOKEN'] }
+    const report = await h.run(async () => ({ outcome: 'done' }))
+    expect(report).toEqual({ outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done', variables: { source: 'copy', ageSeconds: 14 * 60 + 30 } })
+    expect(JSON.stringify(report)).not.toContain('fake-kept-value')
+  })
+
+  it('reports them on a run whose every complete failed too, and a served_at ahead of this clock as no age', async () => {
+    const h = harness()
+    h.db.runVariables = { source: 'bidding', servedAt: new Date(h.clock.now() + 5_000).toISOString(), values: {}, secretKeys: [] }
+    h.db.completeAnswers = [1, 2, 3].map(() => async () => { throw new Error('statement timeout') })
+    const report = await h.run(async () => ({ outcome: 'done' }))
+    expect(report).toMatchObject({ outcome: 'complete_failed', variables: { source: 'bidding', ageSeconds: 0 } })
+  })
+
+  it('says nothing of variables for a run that recorded none', async () => {
+    const h = harness()
+    const report = await h.run(async () => ({ outcome: 'done' }))
+    expect(report).not.toHaveProperty('variables')
   })
 })
