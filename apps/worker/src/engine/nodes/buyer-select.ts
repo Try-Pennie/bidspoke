@@ -65,7 +65,7 @@ import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from 
 import { ClaimTally, runBuyerSaleAttempt, type AttemptResult, type AttemptStep, type BuyerCall, type LedgerApi, type MirrorOutcome, type SaleApi } from '../../lib/buyer-sale-attempt'
 import { buildBuyerSaleRow, mirrorBuyerSale, type BuyerSaleRow } from '../../lib/buyer-sale-mirror'
 import type { AttemptTiming } from '../../lib/attempt-timing'
-import { postToPartner, type PartnerCallResult, type PartnerCallTarget } from '../../lib/post-to-partner'
+import { noAnswerOf, postToPartner, type PartnerCallResult, type PartnerCallTarget } from '../../lib/post-to-partner'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import { applyOutboundMapping } from '../../lib/field-mapper'
 import { log as structuredLog } from '../../lib/logger'
@@ -738,7 +738,11 @@ class Run {
         lastCall = { status: null, thrown: true }
         callTimeout = stepTimeoutMarkerOf(err)
         await this.breakerOutcome(breaker, 'error', partner.slug)
-        return { outcome: 'outcome_unknown', record: { buyer_reference: null, result_code: err instanceof Error ? err.name : 'thrown', http_status: null, payout_cents: c.payoutCents } }
+        // Why no answer arrived, from the marks the call left on the error, never its text (#3080):
+        // only the recorded words use it.
+        const noAnswer = noAnswerOf(err)
+        const record: SaleOutcomeRecord = { buyer_reference: null, result_code: err instanceof Error ? err.name : 'thrown', http_status: null, payout_cents: c.payoutCents }
+        return noAnswer ? { outcome: 'outcome_unknown', record, noAnswer } : { outcome: 'outcome_unknown', record }
       }
       // Stopped before the breaker is told, so our own bookkeeping never counts as the buyer's time.
       callWindow = { startMs: callStartMs, endMs: this.deps.clock() }

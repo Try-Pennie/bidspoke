@@ -43,6 +43,7 @@ import { DeadlineError, type OutReason, type SaleOutcome } from '@bidspoke/buyer
 import type { ClaimBody, ClaimResult, SaleState } from '../durable-objects/lead-sale'
 import type { CapLimits, CapReason, Counts, EntryKey, EntryResult, LedgerEntry, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../durable-objects/buyer-ledger'
 import type { LedgerKind, Population } from '@bidspoke/buyer-profile'
+import type { NoAnswer } from './post-to-partner'
 
 // ── The two object surfaces the attempt speaks to ──────────────────────────────
 
@@ -97,6 +98,32 @@ export interface AttemptInput {
 export interface BuyerCall {
   outcome: SaleOutcome
   record: SaleOutcomeRecord
+  /**
+   * Why no answer arrived, on a call that threw after the lead may have left
+   * (#3080), where the call knows it. Present only then; such a call has no
+   * `http_status`, since every answer has one.
+   */
+  noAnswer?: NoAnswer
+}
+
+/**
+ * The detail of an unknown outcome (#3080). A call with no status got no
+ * answer, so it says that, and why where the call knows it, never that the
+ * buyer answered: the sentence points whoever investigates at the connection,
+ * not at the buyer's response rules. An answer no rule matched keeps its words.
+ */
+export function outcomeUnknownDetail(call: BuyerCall): string {
+  if (call.record.http_status !== null) return `buyer answered http ${call.record.http_status} and no rule matched`
+  const noAnswer = call.noAnswer
+  if (!noAnswer) return 'no answer arrived from the buyer'
+  switch (noAnswer.cause) {
+    case 'our_timer':
+      return `no answer arrived from the buyer within our ${noAnswer.after_ms === null ? 'time' : `${noAnswer.after_ms} ms`} limit, so we stopped the call`
+    case 'connection':
+      return 'no answer arrived from the buyer: the connection to it failed'
+    case 'cancelled':
+      return 'no answer arrived from the buyer: the call was cancelled, not by our time limit'
+  }
 }
 
 /** `released` follows an answered decline once the entry is released and the claim freed, and its copy then reports `mirrored` too (#1804). */
@@ -283,7 +310,7 @@ async function attemptSale(input: AttemptInput, deps: AttemptDeps, contention: C
     case 'outcome_unknown':
       // The buyer may have taken the lead: hold the reservation (the alarm makes
       // it unresolved) and the claim (it becomes in_doubt), and page.
-      return { result: 'no_sale', reason: 'outcome_unknown', page: true, detail: `buyer answered http ${call.record.http_status} and no rule matched` }
+      return { result: 'no_sale', reason: 'outcome_unknown', page: true, detail: outcomeUnknownDetail(call) }
     case 'accepted':
       break
   }

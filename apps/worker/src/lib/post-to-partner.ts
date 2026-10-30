@@ -14,13 +14,61 @@
  * (#3075), never by its text, so the buyer select attempt row it cut short can
  * say our deadline stopped it. The error thrown is the platform's abort,
  * unchanged, so every caller's handling of it is what it was.
+ *
+ * A fetch that throws for any other reason is marked too (#3080), with what
+ * this function saw happen: the call was cancelled (our signal was aborted
+ * from elsewhere, or the platform's abort arrived anyway), or the fetch itself
+ * failed with nothing aborted, which is the connection. noAnswerOf reads all
+ * three back, so the buyer select attempt can say no answer arrived and why,
+ * rather than that the buyer answered. Nothing reads the error's message.
  */
 import type { Env } from '../index'
 import { PartnerApiError } from '../engine/partner-bid-error'
 import { partnerCredentialValue } from './partner-credential'
 import { containsHtmlDocument } from './html-error-summary'
 import { linkAbort } from '../engine/retry'
-import { abortAfter, BUYER_CALL_DEADLINE } from '../engine/step-timeout'
+import { abortAfter, stepTimeoutMarkerOf, BUYER_CALL_DEADLINE } from '../engine/step-timeout'
+
+/**
+ * Why a partner call that threw got no answer, where the call knows it (#3080).
+ * `our_timer`: the call's own timer stopped it, after `after_ms` (null when the
+ * length is not one a step row can hold). `cancelled`: it was aborted, not by
+ * that timer. `connection`: the fetch failed with nothing aborted.
+ */
+export type NoAnswer =
+  | { cause: 'our_timer'; after_ms: number | null }
+  | { cause: 'connection' }
+  | { cause: 'cancelled' }
+
+/** The causes postToPartner marks itself; our timer is marked by its own timer (step-timeout.ts). */
+type MarkedCause = 'connection' | 'cancelled'
+
+/** Kept beside the error, as the deadline marks are, so the error itself is exactly what was thrown. */
+const NO_ANSWER_MARKS = new WeakMap<object, MarkedCause>()
+
+/** Records why a call that threw `err` got no answer. Returns `err` unchanged; a value that is not an object is left unmarked. */
+export function markNoAnswer<T>(err: T, cause: MarkedCause): T {
+  if (typeof err === 'object' && err !== null) NO_ANSWER_MARKS.set(err, cause)
+  return err
+}
+
+/**
+ * Why a call that threw `err` got no answer, read from the marks alone, never
+ * the text: null when postToPartner did not see it happen, so a caller says
+ * only that no answer arrived.
+ */
+export function noAnswerOf(err: unknown): NoAnswer | null {
+  const deadline = stepTimeoutMarkerOf(err)
+  if (deadline?.timeout_kind === BUYER_CALL_DEADLINE) return { cause: 'our_timer', after_ms: deadline.timed_out_after_ms }
+  if (typeof err !== 'object' || err === null) return null
+  const cause = NO_ANSWER_MARKS.get(err)
+  return cause ? { cause } : null
+}
+
+/** The platform's abort, by its type and the name the platform gives every abort, never its message. */
+function isPlatformAbort(err: unknown): boolean {
+  return typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError'
+}
 
 export interface PartnerCallTarget {
   slug: string
@@ -74,6 +122,9 @@ export async function postToPartner(target: PartnerCallTarget, body: unknown, en
     throw new PartnerApiError(`Partner ${target.slug} has no api_endpoint configured`, 'permanent', false, true)
   }
   const headers = partnerRequestHeaders(target, env, opts.traceId)
+  // Written before the call starts, so a body that cannot be written is never
+  // taken for a failure of the call (#3080). The same string is sent.
+  const payload = JSON.stringify(body)
   const controller = new AbortController()
   // Knows whether it was the one that aborted the call, so only its own abort is
   // marked as the buyer call's deadline; one from the step's signal is not (#3075).
@@ -82,8 +133,11 @@ export async function postToPartner(target: PartnerCallTarget, body: unknown, en
   const doFetch = opts.fetchImpl ?? fetch
   let res: Response
   try {
-    res = await doFetch(target.api_endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
+    res = await doFetch(target.api_endpoint, { method: 'POST', headers, body: payload, signal: controller.signal })
   } catch (err) {
+    // Why no answer arrived (#3080): our timer marks its own abort below; any
+    // other abort was a cancel; a fetch that failed with nothing aborted is the connection.
+    if (!timer.fired()) markNoAnswer(err, controller.signal.aborted || isPlatformAbort(err) ? 'cancelled' : 'connection')
     throw timer.mark(err)
   } finally {
     timer.clear()

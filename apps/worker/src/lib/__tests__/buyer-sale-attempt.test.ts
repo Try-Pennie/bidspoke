@@ -442,13 +442,36 @@ describe('runBuyerSaleAttempt buyer outcomes', () => {
     expect(h.steps).toEqual(['claimed', 'reserved', 'buyer_called', 'released'])
   })
 
-  it('outcome_unknown: reservation and claim are both HELD, and the result pages', async () => {
+  it('outcome_unknown: reservation and claim are both HELD, and the result pages; an answer no rule matched keeps its words (#3080)', async () => {
     const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
     const ledger = new FakeLedger()
     const h = harness({ sale, ledger, buyer: { outcome: 'outcome_unknown', record: { ...OUTCOME, result_code: null, http_status: 200 } } })
     expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'outcome_unknown', page: true, detail: 'buyer answered http 200 and no rule matched' })
     expect(ledger.calls).toEqual(['reserve:lead-1'])
     expect(sale.calls).toEqual(['claim:exec-1'])
+  })
+
+  /**
+   * #3080: a call that threw after the lead may have left (our timer, a reset,
+   * an abort) comes back as outcome_unknown with no status. No answer arrived,
+   * so the detail says that, and why where the call knows it, never "buyer
+   * answered http null". The hold and the page are exactly the answered case's.
+   */
+  it.each([
+    ['our timer', { cause: 'our_timer', after_ms: 20_000 }, 'no answer arrived from the buyer within our 20000 ms limit, so we stopped the call'],
+    ['our timer, length unrecorded', { cause: 'our_timer', after_ms: null }, 'no answer arrived from the buyer within our time limit, so we stopped the call'],
+    ['a connection reset', { cause: 'connection' }, 'no answer arrived from the buyer: the connection to it failed'],
+    ['an abort from elsewhere', { cause: 'cancelled' }, 'no answer arrived from the buyer: the call was cancelled, not by our time limit'],
+    ['a cause the call did not record', undefined, 'no answer arrived from the buyer'],
+  ] as const)('outcome_unknown with no answer (%s): says no answer arrived, holds both, and pages', async (_label, noAnswer, detail) => {
+    const sale = new FakeSale([{ state: 'claimed', generation: 1 }])
+    const ledger = new FakeLedger()
+    const call: BuyerCall = { outcome: 'outcome_unknown', record: { ...OUTCOME, buyer_reference: null, result_code: 'AbortError', http_status: null }, ...(noAnswer ? { noAnswer } : {}) }
+    const h = harness({ sale, ledger, buyer: call })
+    expect(await runBuyerSaleAttempt(INPUT, h.deps)).toEqual({ result: 'no_sale', reason: 'outcome_unknown', page: true, detail })
+    expect(ledger.calls).toEqual(['reserve:lead-1'])
+    expect(sale.calls).toEqual(['claim:exec-1'])
+    expect(h.steps).toEqual(['claimed', 'reserved', 'buyer_called'])
   })
 
   it('a buyer call that throws is buyer_error when it never reached the buyer', async () => {

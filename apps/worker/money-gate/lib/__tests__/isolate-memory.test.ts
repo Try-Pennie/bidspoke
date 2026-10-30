@@ -27,6 +27,7 @@ const KEPT: Record<string, string> = {
   'src/lib/jwt.ts:lastUnknownKidRefetchMs': 'a refetch throttle for those keys; no run reads it',
   'src/lib/lead-read-budget.ts:leads': 'keyed by each lead\'s own client object, which no other run holds',
   'src/engine/step-timeout.ts:DEADLINE_MARKS': 'keyed by each error object one of our deadlines caused, which only the run that caught it holds; it decides only the step row\'s timeout marker, never a retry or a send (#3068)',
+  'src/lib/post-to-partner.ts:NO_ANSWER_MARKS': 'keyed by each error object a partner call threw, which only the run that caught it holds; it decides only the words saying why no answer arrived, never a route, a retry or a send (#3080)',
   'src/lib/scheduled-slack.ts:registered': 'keyed by the scheduled handler\'s client object, built per tick; no run holds that client (#1303)',
   'src/lib/slack-key-ring.ts:rings': 'keyed by each Supabase client object, holding that client\'s key ring read from its own env; one run cannot reach another run\'s client, and the ring decides only which key opens the Slack token (#2331)',
   'src/engine/response-contracts.ts:undeclaredReported': 'only stops a log line repeating',

@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
 import { PartnerApiError } from '../../engine/partner-bid-error'
-import { postToPartner } from '../post-to-partner'
+import { noAnswerOf, postToPartner } from '../post-to-partner'
 import { stepTimeoutMarkerOf } from '../../engine/step-timeout'
 
 const TARGET = { slug: 'tripoint', api_endpoint: 'https://tripoint-proxy.trypennie.dev/leads/create', cf_secret_key: 'TRIPOINT_PROXY_SECRET' }
@@ -134,5 +134,89 @@ describe('postToPartner marks the abort its own timer caused (#3075)', () => {
     const err = await postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, fetchImpl }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(TypeError)
     expect(stepTimeoutMarkerOf(err)).toBeNull()
+  })
+})
+
+/**
+ * #3080: a call that threw got no answer, and the buyer select attempt says
+ * why where the call knows it. Decided from what happened here (our timer
+ * fired, our signal was aborted, the fetch itself failed), never from the
+ * error's message. The error thrown is the same one, so every caller's
+ * handling of it is unchanged.
+ */
+describe('postToPartner records why a call that threw got no answer (#3080)', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  const platformAbort = () => new DOMException('The operation was aborted.', 'AbortError')
+  const hanging = () => vi.fn((_url: string | URL | Request, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      if (init?.signal?.aborted) return reject(platformAbort())
+      init?.signal?.addEventListener('abort', () => reject(platformAbort()), { once: true })
+    })
+  ) as unknown as typeof fetch
+
+  it('its own timer firing: our timer, at the call\'s length', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const run = postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, fetchImpl: hanging() }).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(noAnswerOf(await run)).toEqual({ cause: 'our_timer', after_ms: 20_000 })
+  })
+
+  it('an abort from the step signal: cancelled, not our timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const step = new AbortController()
+    const run = postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, signal: step.signal, fetchImpl: hanging() }).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(1)
+    step.abort()
+    const err = await run
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(noAnswerOf(err)).toEqual({ cause: 'cancelled' })
+  })
+
+  it('an abort from the step signal is a cancel however the fetch reports it, never the connection', async () => {
+    const step = new AbortController()
+    const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new TypeError('fetch failed')), { once: true })
+    })) as unknown as typeof fetch
+    const run = postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, signal: step.signal, fetchImpl }).catch((e: unknown) => e)
+    step.abort()
+    expect(noAnswerOf(await run)).toEqual({ cause: 'cancelled' })
+  })
+
+  it('an abort nobody here caused: cancelled, never a connection failure', async () => {
+    const abort = platformAbort()
+    const fetchImpl = vi.fn(async () => { throw abort }) as unknown as typeof fetch
+    const err = await postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, fetchImpl }).catch((e: unknown) => e)
+    expect(err).toBe(abort)
+    expect(noAnswerOf(err)).toEqual({ cause: 'cancelled' })
+  })
+
+  it('a connection reset: the fetch failed with nothing aborted, so the connection, and the same error is thrown', async () => {
+    const reset = new TypeError('fetch failed')
+    const fetchImpl = vi.fn(async () => { throw reset }) as unknown as typeof fetch
+    const err = await postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, fetchImpl }).catch((e: unknown) => e)
+    expect(err).toBe(reset)
+    expect(noAnswerOf(err)).toEqual({ cause: 'connection' })
+  })
+
+  it('a reset whose message reads like a timeout is still the connection: the words decide nothing', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('The operation timed out') }) as unknown as typeof fetch
+    const err = await postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, fetchImpl }).catch((e: unknown) => e)
+    expect(noAnswerOf(err)).toEqual({ cause: 'connection' })
+  })
+
+  it('a body that cannot be written never reaches the fetch and claims no cause', async () => {
+    const { fetchImpl, calls } = fetchReturning(200, '{}')
+    const err = await postToPartner(TARGET, { amount: BigInt(1) }, env, { traceId: 't', timeoutMs: 20_000, fetchImpl }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(TypeError)
+    expect(calls).toHaveLength(0)
+    expect(noAnswerOf(err)).toBeNull()
+  })
+
+  it('an error postToPartner never saw, or a thrown value that is not an object, has no cause', () => {
+    expect(noAnswerOf(new Error('connection reset by peer'))).toBeNull()
+    expect(noAnswerOf(platformAbort())).toBeNull()
+    expect(noAnswerOf('reset')).toBeNull()
+    expect(noAnswerOf(null)).toBeNull()
   })
 })
