@@ -169,6 +169,8 @@ function fake(opts: {
   fetchConnections?: () => Promise<unknown>
   sweepOwned?: boolean
   leases?: SweepResult
+  /** The copies read stopped at its limit, so a workflow past it has no copy in the list. */
+  copiesFull?: boolean
   /** What each page of the tombstone_expiry sweep answers (#2334). */
   tombstones?: { purged: number; more: boolean }
   /** What each page of the Salesforce lease sweep answers (#2334). */
@@ -350,7 +352,7 @@ function fake(opts: {
     async saveCopies(_servedAt: string, _complete: boolean, list: readonly WorkflowCopyInput[]): Promise<SaveCopiesResult> {
       fail('saveCopies'); saved.push([...list]); return { inserted: list.length, updated: 0, confirmed: 0, refusedOlder: 0, withdrawn: 0 }
     },
-    async readCopies() { fail('readCopies'); return { copies: opts.copies ?? [copy()], reachedLimit: false } },
+    async readCopies() { fail('readCopies'); return { copies: opts.copies ?? [copy()], reachedLimit: opts.copiesFull ?? false } },
     async recordObservation(_org: unknown, o: ScheduleObservation) { fail('recordObservation'); observations.push(o); return opts.observed?.(o) ?? 'recorded' },
     async dueQueueDepth() { fail('dueQueueDepth'); return { dueRuns: opts.dueRuns ?? 0, dueWorkflows: opts.dueRuns ? 1 : 0, oldestDue: null } },
     async saveConnectionCopies(_servedAt: string, _complete: boolean, list: readonly ConnectionCopyInput[]): Promise<SaveConnectionCopiesResult> {
@@ -1142,6 +1144,16 @@ describe('run outcomes counted against a rate (L77, #1950)', () => {
   it('says nothing of a send when no no-retry run made one that cannot be repeated (#3046)', async () => {
     const report = await runOpsTick(fake({ leases: noRetry([WF_A]) }).ports)
     expect(report.problems.find((p) => p.includes(WF_A))).not.toMatch(/may have landed/)
+  })
+
+  it('pages a no-retry lapse of a workflow past the copies read limit, saying whether it is live is not known (#3046)', async () => {
+    const WF_C = '00000000-0000-4000-8000-0000000019a3'
+    const f = fake({ leases: noRetry([WF_C, WF_B]), copiesFull: true, copies: [copy(), copy({ workflowId: WF_B, isActive: false, mayStart: false, trigger: { type: 'http_webhook', config: {} } })] })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toContain(`runs_lapsed_no_retry:${WF_C}`)
+    expect(report.problems.find((p) => p.includes(WF_C))).toMatch(/whether the workflow is switched on is not known/)
+    // One the read did hold is judged by its copy as usual.
+    expect(report.problem_keys).not.toContain(`runs_lapsed_no_retry:${WF_B}`)
   })
 
   it('pages nothing for a lease sweep that ended no run of a no-retry workflow (#3046)', async () => {

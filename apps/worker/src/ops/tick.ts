@@ -892,9 +892,10 @@ function refreshTargets(copies: readonly WorkflowCopy[]): CopyTarget[] {
  * workflow's pages at once, keyed by the workflow: nothing reruns such a run,
  * and no later tick reports it again. Live is the rule a run starts by
  * (copyMayStart), so a workflow switched off, deleted, withdrawn or named by no
- * copy is counted, not paged. With no copies read, whether a workflow is live
- * is not known, so it pages and says so: a run nothing reruns and nobody hears
- * of is the failure this exists to stop.
+ * copy is counted, not paged. With no copies read, or none for a workflow when
+ * the read stopped at its limit, whether it is live is not known, so it pages
+ * and says so: a run nothing reruns and nobody hears of is the failure this
+ * exists to stop.
  *
  * A run that had made a send that cannot be repeated ends failed too (Dan,
  * 2026-10-30), where any other run would wait for a person
@@ -905,7 +906,7 @@ function refreshTargets(copies: readonly WorkflowCopy[]): CopyTarget[] {
 function judgeNoRetryLapses(
   workflowIds: readonly string[],
   afterSendIds: readonly string[],
-  copies: readonly WorkflowCopy[] | null,
+  read: { copies: readonly WorkflowCopy[]; complete: boolean } | null,
   problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void,
   counts: Record<string, number>,
 ): void {
@@ -921,14 +922,18 @@ function judgeNoRetryLapses(
   const sentBy = tally(afterSendIds)
   for (const [workflowId, n] of byWorkflow) {
     const sent = sentBy.get(workflowId) ?? 0
-    const copy = copies?.find((c) => c.workflowId === workflowId)
-    if (sent === 0 && copies !== null && (copy === undefined || !copyMayStart(copy))) {
+    const copy = read?.copies.find((c) => c.workflowId === workflowId)
+    // Known only from a copy, or from a complete read that holds none for it.
+    const known = read !== null && (copy !== undefined || read.complete)
+    if (sent === 0 && known && (copy === undefined || !copyMayStart(copy))) {
       bump(counts, 'leases_lapsed_no_retry_not_live', n)
       continue
     }
     const runs = n === 1 ? '1 run' : `${n} runs`
     const landed = sent === 0 ? '' : n === 1 ? ' It made a send that may have landed. Check it.' : ` ${sent} of them made a send that may have landed. Check ${sent === 1 ? 'it' : 'them'}.`
-    const live = copies === null ? ' The saved workflow copies could not be read, so whether the workflow is switched on is not known.' : ''
+    const live = read === null
+      ? ' The saved workflow copies could not be read, so whether the workflow is switched on is not known.'
+      : !known ? ' Its saved copy was past the limit one read carries, so whether the workflow is switched on is not known.' : ''
     problem('runs_lapsed_no_retry', `${runs} of workflow ${workflowId} lost ${n === 1 ? 'its' : 'their'} lease mid run and ended failed, because the workflow is set not to retry, so nothing runs ${n === 1 ? 'it' : 'them'} again (lease_lapsed_no_retry).${landed}${live}`, workflowId)
   }
 }
@@ -1299,17 +1304,20 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   let copies: WorkflowCopy[] = []
   /** The copies were read: a claimed run is judged against them, so with none read nothing is claimed. */
   let copiesRead = false
+  /** The read stopped at its limit, so a workflow with no copy in it may still have one. */
+  let copiesFull = false
   if (db) {
     try {
       const read = await db.readCopies(COPIES_READ_LIMIT)
       copies = read.copies
       copiesRead = true
+      copiesFull = read.reachedLimit
       if (read.reachedLimit) problem('copies_read_limit', `The ops tick read ${COPIES_READ_LIMIT} workflow copies, its limit, so any past it were not planned.`)
     } catch (err) {
       problem('copies_read_failed', `The ops tick could not read the saved workflow copies (${formatErr(err)}), so it planned no fires.`)
     }
   }
-  judgeNoRetryLapses(lapsedNoRetry, lapsedNoRetryAfterSend, copiesRead ? copies : null, problem, counts)
+  judgeNoRetryLapses(lapsedNoRetry, lapsedNoRetryAfterSend, copiesRead ? { copies, complete: !copiesFull } : null, problem, counts)
   if (fetchError !== null) {
     if (copies.length > 0) {
       bump(counts, 'copies_used_saved')
