@@ -189,13 +189,31 @@ describe('opening and paging', () => {
     expect(eventsFor(kv, daily().id)[2]).toMatchObject({ startedAt: iso(NOW), at: iso(NOW + 30 * MIN) })
   })
 
-  it('records nothing for a page Slack refused, since nobody was paged', async () => {
+  it('records a page Slack refused as not delivered, keeping the incident that was due without opening one an all-clear is owed for (#3056)', async () => {
     vi.mocked(sendCronHeartbeatAlert).mockResolvedValue(false)
     const kv = staleKv()
     await run(kv, NOW, ['org-1', 'org-2'])
     expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(2)
-    expect(transitions(kv.store)).toEqual([])
+    expect(transitions(kv.store)).toEqual([`undelivered ${daily().id}`])
+    expect(outboxEvents(kv.store)[0]).toMatchObject({ unannounced: true })
     expect(kv.store.has(alertedStatusKey(daily().id))).toBe(false)
+  })
+})
+
+describe('a page nobody was asked to take (#3056)', () => {
+  it('records nothing when there is no organization to tell, since no page was tried', async () => {
+    const kv = staleKv()
+    await run(kv, NOW, [])
+    expect(sendCronHeartbeatAlert).not.toHaveBeenCalled()
+    expect(transitions(kv.store)).toEqual([])
+  })
+
+  it('records nothing when the send threw, since it may have landed', async () => {
+    vi.mocked(sendCronHeartbeatAlert).mockRejectedValue(new Error('Network connection lost.'))
+    const kv = staleKv()
+    await run(kv, NOW).catch(() => {})
+    expect(sendCronHeartbeatAlert).toHaveBeenCalled()
+    expect(transitions(kv.store)).toEqual([])
   })
 })
 

@@ -68,12 +68,20 @@ interface EventBase {
 export type IncidentEvent =
   | (EventBase & { type: 'opened'; previousStartedAt?: string })
   | (EventBase & { type: 'paged' })
+  /**
+   * A page that was sent and refused everywhere it went (#3056). A page never
+   * tried, or whose every send threw, records no event. `unannounced` when no incident was open, so no page
+   * about it had reached anybody: the record keeps that incident closed, since
+   * no all-clear is owed for it (alert-recovery.ts, recordPageOutcomeOn).
+   */
+  | (EventBase & { type: 'undelivered'; unannounced: boolean })
   | (EventBase & { type: 'ended'; endedAt: string | null; reason: IncidentEndReason; successor?: IncidentSignal })
 
 /** What a caller supplies; the rest is filled in from the context and the registry. */
 export type IncidentEventInput =
   | { type: 'opened'; signal: IncidentSignal; subject: string; startedAt: string; previousStartedAt?: string }
   | { type: 'paged'; signal: IncidentSignal; subject: string; startedAt: string }
+  | { type: 'undelivered'; signal: IncidentSignal; subject: string; startedAt: string; unannounced: boolean }
   | { type: 'ended'; signal: IncidentSignal; subject: string; startedAt: string; endedAt: string | null; reason: IncidentEndReason; successor?: IncidentSignal }
 
 export interface OutboxKv {
@@ -197,6 +205,8 @@ export function parseIncidentEvent(raw: string): IncidentEvent | { error: string
     if (!(e.endedAt === null || isIso(e.endedAt))) return { error: 'end does not parse' }
     if (!(INCIDENT_END_REASONS as readonly unknown[]).includes(e.reason)) return { error: `unknown end reason ${JSON.stringify(e.reason)}` }
     if ((e.reason === 'handed_over') !== isIncidentSignal(e.successor)) return { error: 'a hand over must name its successor, and only a hand over may' }
+  } else if (e.type === 'undelivered') {
+    if (typeof e.unannounced !== 'boolean') return { error: 'an undelivered page must say whether an incident was open' }
   } else if (e.type !== 'paged') return { error: `unknown type ${JSON.stringify(e.type)}` }
   return e as unknown as IncidentEvent
 }

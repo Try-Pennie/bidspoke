@@ -13,6 +13,7 @@ import { incidentSignal } from '../incident-signals'
 import { cronJob } from '../cron-heartbeat'
 import { salesforceBulkheadLimitMessage } from '../slack'
 import type { Env } from '../../index'
+import { transitions } from './_incident-events'
 
 /**
  * #2336 phase 6 item 5: the daily check that the Salesforce bulkhead limit
@@ -105,6 +106,21 @@ describe('runSalesforceBulkheadCheck', () => {
     const s = await runSalesforceBulkheadCheck(d)
     expect(s.paged).toBe(0)
     expect(marker(kv)).toBeUndefined()
+  })
+
+  it('records a round every organization refused as not delivered, and nothing when every send threw or there was nobody to tell (#3056)', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const refused = deps({ limit: 24, sendAlert: vi.fn(async () => false) })
+    await runSalesforceBulkheadCheck(refused.d)
+    expect(transitions(refused.kv.store)).toEqual([`undelivered ${SALESFORCE_BULKHEAD_SUBJECT}`])
+    const threw = deps({ limit: 24, sendAlert: vi.fn(async () => { throw new Error('slack is down') }) })
+    await runSalesforceBulkheadCheck(threw.d)
+    expect(transitions(threw.kv.store)).toEqual([])
+    const nobody = deps({ limit: 24, orgsToTell: async () => [] })
+    await runSalesforceBulkheadCheck(nobody.d)
+    expect(nobody.sendAlert).not.toHaveBeenCalled()
+    expect(transitions(nobody.kv.store)).toEqual([])
+    error.mockRestore()
   })
 
   it('says nobody could be told when the organization list cannot be read, never reading it as quiet', async () => {

@@ -34,7 +34,7 @@
  * Never throws to the minute cron: every fault is in the summary's errors.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, noteSend, pageTried, recordPageOutcome, recoveryKey, refreshAlerted, roundAttempt, type IncidentContext, type RecoveryKv, type SendAnswer } from './alert-recovery'
 import { backoffCooldownKey, clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
 import { minuteAllClearClaim, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
 import type { AlertClaims } from './alert-claim'
@@ -112,22 +112,21 @@ const incident = (errors: string[]): IncidentContext => ({
 
 const isPaged = (report: OpsResealReport) => (OPS_RESEAL_PAGED_VERDICTS as readonly string[]).includes(report.verdict)
 
-/** Sends to every organization to tell, each its own boundary. True when any was told. */
-async function fanOut(deps: OpsKeyResealDeps, what: string, send: (orgId: string) => Promise<boolean>, errors: string[]): Promise<boolean> {
+/**
+ * Sends to every organization to tell, each its own boundary. True when any was
+ * told. Each send's answer goes into `answers` (#3056), so a round nobody
+ * refused (none to tell, or every send threw) is not taken for a refused page.
+ */
+async function fanOut(deps: OpsKeyResealDeps, what: string, send: (orgId: string) => Promise<boolean>, errors: string[], answers: SendAnswer[] = []): Promise<boolean> {
   const orgs = await deps.orgsToTell()
   if (orgs === null) {
     errors.push(`the ${what} told nobody: the Slack organizations could not be read`)
     return false
   }
-  let any = false
   for (const orgId of orgs) {
-    try {
-      if (await send(orgId)) any = true
-    } catch (err) {
-      errors.push(`the ${what} to org ${orgId} failed, the others go on: ${formatErr(err)}`)
-    }
+    await noteSend(answers, () => send(orgId), (err) => errors.push(`the ${what} to org ${orgId} failed, the others go on: ${formatErr(err)}`))
   }
-  return any
+  return roundAttempt(answers) === 'sent'
 }
 
 async function page(deps: OpsKeyResealDeps, report: OpsResealReport, nowMs: number, errors: string[]): Promise<boolean> {
@@ -141,20 +140,27 @@ async function page(deps: OpsKeyResealDeps, report: OpsResealReport, nowMs: numb
   const different = recurrence.kind === 'new' && standing !== null
   const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
   const repeat = reminderOf ? describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged) ?? undefined : undefined
+  const answers: SendAnswer[] = []
   const posted = await postMinutePage({
     claims: deps.claims,
     key: CONDITION_KEY,
     inCooldown: async () => !different && (await inCooldown(kv, CONDITION_KEY)),
-    send: () => fanOut(deps, 'page', (orgId) => deps.sendAlert(orgId, { report, ...(repeat ? { repeat } : {}) }), errors),
+    send: () => fanOut(deps, 'page', (orgId) => deps.sendAlert(orgId, { report, ...(repeat ? { repeat } : {}) }), errors, answers),
   })
-  if (posted !== 'sent') {
+  const delivered = posted === 'sent'
+  // A round nobody refused (none to tell, or every send threw) was not a refused page.
+  const attempt = posted === 'not_sent' ? roundAttempt(answers) : posted
+  if (delivered) {
+    await recordAlert(kv, CONDITION_KEY, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
+    await markAlerted(kv, OPS_KEY_RESEAL_SIGNAL, OPS_KEY_RESEAL_SUBJECT, incident(errors), nowMs)
+  }
+  // Delivered or not, a page this run tried is recorded (#3056).
+  if (pageTried(attempt)) await recordPageOutcome(kv, OPS_KEY_RESEAL_SIGNAL, OPS_KEY_RESEAL_SUBJECT, incident(errors), nowMs, delivered)
+  if (!delivered) {
     // Armed only on delivery, so a Slack outage does not buy silence, and an all clear never follows an unseen page.
     if (marker !== null) await refreshAlerted(kv, OPS_KEY_RESEAL_SIGNAL, OPS_KEY_RESEAL_SUBJECT)
     return false
   }
-  await recordAlert(kv, CONDITION_KEY, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
-  await markAlerted(kv, OPS_KEY_RESEAL_SIGNAL, OPS_KEY_RESEAL_SUBJECT, incident(errors), nowMs)
-  await recordPaged(kv, OPS_KEY_RESEAL_SIGNAL, OPS_KEY_RESEAL_SUBJECT, incident(errors), nowMs)
   return true
 }
 

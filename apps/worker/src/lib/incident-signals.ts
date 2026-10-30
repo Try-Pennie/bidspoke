@@ -19,7 +19,8 @@
  *    are shared across organizations, and the probe reports as the literal org
  *    'probe', which is not an organization.
  *  - `startMeans`: what the incident's start time is, since the checks arm their
- *    marker at different moments.
+ *    marker at different moments. An incident no page about ever reached
+ *    (closed as unannounced, #3056) starts at its first refused page instead.
  *  - `windowMinutes`: the trailing window the check judges, when its all-clear
  *    reports one (a one tick incident there is the window, not a zero span).
  *    `per_call` when each instance carries its own (failure-rate), null when the

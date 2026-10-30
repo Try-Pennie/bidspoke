@@ -52,7 +52,7 @@
 import { describeGithubRefusal, readGithubRefusal } from './github-refusal'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { orgIdsToTell, slackOrgIds } from './alert-fanout'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, recoveryKey, type IncidentContext } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, noteSend, pageTried, recordPageOutcome, recoveryKey, roundAttempt, type IncidentContext, type SendAnswer } from './alert-recovery'
 import { formatErr } from './format-error'
 import { sendWorkflowScheduleAlert, sendWorkflowScheduleRecoveryAlert } from './slack'
 
@@ -984,16 +984,14 @@ export async function runWorkflowScheduleWatch(
     workflows: problems,
   }
 
-  let alerted = false
+  // Failing to DELIVER a verdict must not destroy the verdict: the returned
+  // results and the run log are the other half of this check's output.
+  const answers: SendAnswer[] = []
   for (const orgId of orgIds) {
-    try {
-      if (await sendWorkflowScheduleAlert(supabase, orgId, payload)) alerted = true
-    } catch (e) {
-      // Failing to DELIVER a verdict must not destroy the verdict: the returned
-      // results and the run log are the other half of this check's output.
-      console.error(`[workflow-schedule] alert to ${orgId} failed:`, formatErr(e))
-    }
+    await noteSend(answers, () => sendWorkflowScheduleAlert(supabase, orgId, payload), (e) => console.error(`[workflow-schedule] alert to ${orgId} failed:`, formatErr(e)))
   }
+  const attempt = roundAttempt(answers)
+  const alerted = attempt === 'sent'
   if (alerted) {
     try {
       await kv.put(cooldownKey(signature), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
@@ -1003,20 +1001,22 @@ export async function runWorkflowScheduleWatch(
     for (const r of results) {
       if (r.status !== 'healthy') r.alerted = true
     }
-    // Record each per-workflow fault's first-alert time now that the message has
-    // delivered, so the eventual all-clear can report how long it lasted and
-    // nothing is owed for an alert nobody received (#851). Only the per-workflow
-    // incident states, never the shared blindness, for the same reason the
-    // running end above skips it.
-    for (const { workflow, verdict } of problems) {
-      if (!INCIDENT_STATUSES.has(verdict.status)) continue
-      try {
-        await markAlerted(kv, RECOVERY_PREFIX, workflow.file, scheduleIncident(workflow.label), nowMs)
-        await recordPaged(kv, RECOVERY_PREFIX, workflow.file, scheduleIncident(workflow.label), nowMs)
-      } catch (e) {
-        console.error(`[workflow-schedule] recovery start marker for ${workflow.file} failed:`, formatErr(e))
-      }
+  }
+  // Record each per-workflow fault's first-alert time once the message has
+  // delivered, so the eventual all-clear can report how long it lasted and
+  // nothing is owed for an alert nobody received (#851). Delivered or not, the
+  // page is recorded (#3056): one nobody received keeps the incident that was
+  // due. Only the per-workflow incident states, never the shared blindness, for
+  // the same reason the running end above skips it. The watch runs hourly.
+  for (const { workflow, verdict } of problems) {
+    if (!INCIDENT_STATUSES.has(verdict.status)) continue
+    try {
+      if (alerted) await markAlerted(kv, RECOVERY_PREFIX, workflow.file, scheduleIncident(workflow.label), nowMs)
+    } catch (e) {
+      console.error(`[workflow-schedule] recovery start marker for ${workflow.file} failed:`, formatErr(e))
     }
+    // Only a page that went out or was refused: none tried, or every send threw, records nothing.
+    if (pageTried(attempt)) await recordPageOutcome(kv, RECOVERY_PREFIX, workflow.file, scheduleIncident(workflow.label), nowMs, alerted, { sameIncidentWithinMinutes: 2 * 60 })
   }
   return results
 }

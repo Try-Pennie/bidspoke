@@ -20,7 +20,7 @@
  */
 import type { SlackConnection, SlackTokenProblem } from './slack-connection'
 import { sendSlackTokenReadableAlert, sendSlackTokenUnreadableAlert } from './slack'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, pageTried, recordPageOutcome, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { BACKOFF_STEPS_SECONDS, backoffCooldownKey, clearCondition, describeRepeat, inCooldown, readCondition, recordAlert } from './alert-backoff'
 import { minuteAllClearClaim, postMinutePage } from './alert-fanout'
 import type { AlertClaims } from './alert-claim'
@@ -80,11 +80,10 @@ export async function judgeSlackTokens(
           repeat: describeRepeat(standing, nowMs, true, BACKOFF_STEPS_SECONDS) ?? undefined,
         }),
       })
-      if (posted === 'sent') {
-        await markAlerted(deps.kv, SLACK_TOKEN_SIGNAL, s.orgId, incident(s.orgId), nowMs)
-        await recordPaged(deps.kv, SLACK_TOKEN_SIGNAL, s.orgId, incident(s.orgId), nowMs)
-        await recordAlert(deps.kv, backoff, standing, nowMs, { conditionTtlSeconds: RECOVERY_TTL_SECONDS })
-      }
+      if (posted === 'sent') await markAlerted(deps.kv, SLACK_TOKEN_SIGNAL, s.orgId, incident(s.orgId), nowMs)
+      // Delivered or not, a page this tick tried is recorded (#3056).
+      if (pageTried(posted)) await recordPageOutcome(deps.kv, SLACK_TOKEN_SIGNAL, s.orgId, incident(s.orgId), nowMs, posted === 'sent')
+      if (posted === 'sent') await recordAlert(deps.kv, backoff, standing, nowMs, { conditionTtlSeconds: RECOVERY_TTL_SECONDS })
     } catch (e) {
       console.error(`[slack-token-health] page for org=${s.orgId} failed, the other organizations go on: ${formatErr(e)}`)
     }

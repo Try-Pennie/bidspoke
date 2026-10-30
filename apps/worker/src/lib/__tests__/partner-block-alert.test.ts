@@ -281,10 +281,10 @@ describe('the incident record (#2099)', () => {
     for (const e of outboxEvents(kv.store)) expect(e).toMatchObject({ scope: 'platform', organizationId: null })
   })
 
-  it('records no page when the post failed, and nothing at all for a silent run', async () => {
+  it('records a post that failed as not delivered (#3056), and nothing at all for a silent run', async () => {
     const failed = makeDeps({ send: async () => null })
     await reportPartnerBlock(failed.deps, run, sighting)
-    expect(transitions(failed.kv.store)).toEqual([])
+    expect(transitions(failed.kv.store)).toEqual(['undelivered oauth.prd.ffngcp.com'])
     const silent = makeDeps({ silent: true })
     await reportPartnerBlock(silent.deps, run, sighting)
     expect(transitions(silent.kv.store)).toEqual([])

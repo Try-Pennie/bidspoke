@@ -74,6 +74,12 @@ function incidentTable() {
   const client = {
     rpc: async (fn: string, a: Record<string, unknown>) => {
       if (fn === 'record_alert_incident_opened' || fn === 'record_alert_incident_paged') return { data: upsert(a).id, error: null }
+      if (fn === 'record_alert_incident_undelivered') {
+        // A page nobody received with no incident open is kept closed (#3056).
+        const row = upsert(a)
+        if (a.p_unannounced === true && row.ended_reason === null) row.ended_reason = 'unannounced'
+        return { data: row.id, error: null }
+      }
       if (fn === 'record_alert_incident_ended') {
         const row = upsert(a)
         if (row.ended_reason === null || row.ended_reason === 'lapsed') { row.ended_reason = String(a.p_reason); row.marker_missing_at = null }

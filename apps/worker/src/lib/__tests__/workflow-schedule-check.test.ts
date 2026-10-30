@@ -238,9 +238,58 @@ describe('runWorkflowScheduleWatch: a workflow that has gone dark', () => {
     // incident nobody was told about (#851). The running-end markers
     // (`workflow-schedule-active:`) are written on every dark tick by design, so
     // the all-clear can later say how long the fault lasted; alone they owe nothing.
+    // The page nobody received is recorded as not delivered (#3056): an outbox
+    // event and the start of its stretch per workflow, which owe nothing either.
     const keys = [...kv.store.keys()]
-    expect(keys.filter((k) => !k.startsWith('workflow-schedule-active:'))).toEqual([])
-    expect(keys.length, 'the running end of each dark workflow was not recorded').toBeGreaterThan(0)
+    const recorded = (k: string) => k.startsWith('workflow-schedule-active:') || k.startsWith('incident-outbox:') || k.startsWith('workflow-schedule-due:')
+    expect(keys.filter((k) => !recorded(k))).toEqual([])
+    expect(keys.filter((k) => k.startsWith('workflow-schedule-active:')).length, 'the running end of each dark workflow was not recorded').toBeGreaterThan(0)
+    expect(keys.filter((k) => k.startsWith('incident-outbox:')).length).toBe(keys.filter((k) => k.startsWith('workflow-schedule-due:')).length)
+  })
+})
+
+/** The incident outbox's event types, in the order written. */
+function outboxTypes(kv: ReturnType<typeof fakeKv>): string[] {
+  return [...kv.store.entries()]
+    .filter(([k]) => k.startsWith('incident-outbox:'))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, v]) => (JSON.parse(v) as { type: string }).type)
+}
+
+describe('runWorkflowScheduleWatch: what a page that did not deliver records (#3056)', () => {
+  const dark = (kv: ReturnType<typeof fakeKv>, orgs: { organization_id: string }[]) =>
+    runWorkflowScheduleWatch(fakeSupabase(orgs), kv, ENV, NOW, fetchAll(iso(NOW - DARK_FOR_EVERY_WORKFLOW_MS)))
+
+  it('records a page Slack refused as not delivered, once per dark workflow', async () => {
+    vi.mocked(sendWorkflowScheduleAlert).mockResolvedValue(false)
+    const kv = fakeKv()
+    await dark(kv, [{ organization_id: 'org-1' }])
+    const types = outboxTypes(kv)
+    expect(types.length).toBeGreaterThan(0)
+    expect(new Set(types)).toEqual(new Set(['undelivered']))
+  })
+
+  it('records nothing when every send threw, since a throw may have landed', async () => {
+    vi.mocked(sendWorkflowScheduleAlert).mockRejectedValue(new Error('Network connection lost.'))
+    const kv = fakeKv()
+    await dark(kv, [{ organization_id: 'org-1' }, { organization_id: 'org-2' }])
+    expect(sendWorkflowScheduleAlert).toHaveBeenCalled()
+    expect(outboxTypes(kv)).toEqual([])
+  })
+
+  it('records nothing when there is no organization to send to, since no page was tried', async () => {
+    const kv = fakeKv()
+    await dark(kv, [])
+    expect(sendWorkflowScheduleAlert).not.toHaveBeenCalled()
+    expect(outboxTypes(kv)).toEqual([])
+  })
+
+  it('records the page as delivered when one organization took it and another refused', async () => {
+    vi.mocked(sendWorkflowScheduleAlert).mockResolvedValueOnce(false).mockResolvedValue(true)
+    const kv = fakeKv()
+    await dark(kv, [{ organization_id: 'org-1' }, { organization_id: 'org-2' }])
+    expect(outboxTypes(kv).filter((t) => t === 'undelivered')).toEqual([])
+    expect(outboxTypes(kv)).toContain('paged')
   })
 })
 
