@@ -1605,11 +1605,9 @@ export async function purgeScheduleObservations(client: OpsSupabaseClient, limit
  * One workflow version's definition, as the bidding Worker served it.
  * conflict: a different definition is held for the version and is kept, which
  * is the bidding side breaking its own rule, so the caller pages. no_copy: no
- * saved copy names the workflow yet. Never sends p_variables (#3003): a run
- * reads its variables when it starts, so none are kept beside a version any
- * more. A version held with variables an earlier deploy kept (#2702 to before
- * #3003) answers conflict to a second save of it, since the database still
- * compares them; nothing saves a version it already holds.
+ * saved copy names the workflow yet. A run reads its variables when it
+ * starts, so none are kept beside a version (#3003, ops migration
+ * 20261030230000 dropped the column and p_variables).
  */
 export async function saveWorkflowDefinition(
   client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, versionNumber: number, definition: Record<string, unknown>,
@@ -1623,11 +1621,7 @@ export async function saveWorkflowDefinition(
   return data
 }
 
-/**
- * One version of one organization's workflow, or null when it is not held.
- * The variables column an earlier deploy kept beside it (#2702) is not read
- * (#3003): no run reads it, so it can never stop one.
- */
+/** One version of one organization's workflow, or null when it is not held. */
 export async function readWorkflowDefinition(
   client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, versionNumber: number, options?: OpsRpcOptions,
 ): Promise<{ definition: Record<string, unknown>; savedAt: string } | null> {

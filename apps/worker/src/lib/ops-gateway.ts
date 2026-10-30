@@ -276,10 +276,9 @@ interface VersionRow {
  * read per version, each over the (workflow_id, version_number) key. Throws on
  * a failed read, never serving it as unserved.
  *
- * Served without variables (#3003): a run is given each variable's current
- * value when it starts (readOpsRunVariables below), so what a version kept at
- * its save (workflow_versions.env_capture) is not read here, and can never
- * stop a version being served.
+ * Served without variables: a run is given each variable's current value when
+ * it starts (readOpsRunVariables below). A version keeps none of its own; the
+ * copy #2702 kept at a save was dropped in #3003.
  */
 export async function readOpsWorkflowDefinitions(supabase: SupabaseClient, request: OpsDefinitionRequest): Promise<ServedOpsDefinitions> {
   const served: ServedOpsDefinitions = { definitions: [], unserved: [] }
