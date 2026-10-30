@@ -3019,9 +3019,10 @@ describe('the pages about a run\'s variables (#3000, phase 4 of #2982)', () => {
 // fails by name (variables_refused), and its workflow is paged on a page of
 // its own, naming each refused variable and why, from the refusal's typed
 // fields, never from the run's error text. A refusal because the workflow is
-// off the ops lane is its own kind, held for three ticks in a row (Dan,
-// 2026-10-30), so a workflow mid move does not page; every other reason pages
-// at once.
+// off the ops lane is its own kind, reported at once and paged by bidding only
+// once a refused run comes 3 minutes or more after the workflow's first, with
+// no successful run between (Dan, 2026-10-30), so a workflow mid move does not
+// page; every other reason pages at once.
 describe('runs whose variables bidding refused (#3131)', () => {
   const keysOf = (report: { problem_keys: string[] | null }, kind: string) => (report.problem_keys ?? []).filter((k) => k.startsWith(`${kind}:`))
   const problemOf = (report: { problems: string[]; problem_keys: string[] | null }, key: string) => report.problems[(report.problem_keys ?? []).indexOf(key)]
