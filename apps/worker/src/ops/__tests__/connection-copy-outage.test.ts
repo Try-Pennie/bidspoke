@@ -71,6 +71,9 @@ function opsDb() {
     purgeRunVariables: async () => { throw new Error('not claimed') },
     purgeFinishedRuns: async () => { throw new Error('not claimed') },
     purgeVariableCopies: async () => { throw new Error('not claimed') },
+    purgeSendLedger: async () => { throw new Error('not claimed') },
+    purgeScheduleFires: async () => { throw new Error('not claimed') },
+    purgeDedupTombstones: async () => { throw new Error('not claimed') },
     // Observe mode, as deployed: the variable copy is written only in live mode (#2999).
     readVariableCopies: async () => { throw new Error('observe mode keeps no variable copy') },
     saveVariableCopies: async () => { throw new Error('observe mode keeps no variable copy') },

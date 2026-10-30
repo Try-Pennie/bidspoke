@@ -51,7 +51,15 @@ fi
 # Without this, a container built before a bootstrap change kept the old shape
 # for ever, and the first migration needing the new part (the realtime stub)
 # failed on every machine that already had one, while a fresh one passed.
-bootstrap_sha="$(shasum -a 256 "$SUITE_BOOTSTRAP" | awk '{print $1}')"
+# The default grants cutover (#3097) is hashed with it: it reshapes the database
+# mid replay, so a container built under a different one is rebuilt the same way.
+CUTOVER_FILE="$HERE/default-grants-cutover.sql"
+cutover_version="$(sed -n 's/^-- cutover-before-migration: \([0-9]\{14\}\)$/\1/p' "$CUTOVER_FILE" 2>/dev/null)"
+if [ -z "$cutover_version" ]; then
+  echo "REPLAY DID NOT RUN: ${CUTOVER_FILE#"$ROOT"/} names no '-- cutover-before-migration: <14 digit version>' line" >&2
+  exit 2
+fi
+bootstrap_sha="$(cat "$SUITE_BOOTSTRAP" "$CUTOVER_FILE" | shasum -a 256 | awk '{print $1}')"
 if ! replayed_any="$(psql_as postgres -Atc "SELECT to_regclass('sql_suite.replayed') IS NOT NULL" 2>&1)"; then
   echo "REPLAY FAILED: could not read whether this container was bootstrapped: $replayed_any" >&2
   exit 1
@@ -97,6 +105,31 @@ if [ "$total" -eq 0 ]; then
   exit 2
 fi
 
+# The platform's default grants cutover (#3097): applied once, before the first
+# migration at or after its version, or after the last migration when none is,
+# so the database the tests meet always has today's defaults. Recorded by the
+# cutover file itself in sql_suite.default_grants_cutover.
+if ! cutover_done="$(psql_as postgres -Atc "SELECT to_regclass('sql_suite.default_grants_cutover') IS NOT NULL" 2>&1)"; then
+  echo "REPLAY FAILED: could not read whether the default grants cutover was applied: $cutover_done" >&2
+  exit 1
+fi
+apply_cutover() {
+  local next="$1"
+  [ "$cutover_done" = "t" ] && return 0
+  local out
+  if ! out="$(psql_as postgres -v before_version="$cutover_version" -v next_migration="$next" -f - < "$CUTOVER_FILE" 2>&1)"; then
+    echo "REPLAY FAILED in ${CUTOVER_FILE#"$ROOT"/}:" >&2
+    printf '%s\n' "$out" | grep -v '^$' | tail -8 >&2
+    exit 1
+  fi
+  cutover_done="t"
+  if [ -n "$next" ]; then
+    echo "default grants cutover ($cutover_version) applied before $next"
+  else
+    echo "default grants cutover ($cutover_version) applied after the last migration"
+  fi
+}
+
 n=0
 skipped=0
 for f in "${files[@]}"; do
@@ -104,6 +137,7 @@ for f in "${files[@]}"; do
   name="$(basename "$f")"
   done_already="$(psql_as postgres -Atc "SELECT 1 FROM sql_suite.replayed WHERE version = '$name'")"
   if [ "$done_already" = "1" ]; then skipped=$((skipped + 1)); continue; fi
+  if [[ ! "$name" < "$cutover_version" ]]; then apply_cutover "$name"; fi
   if ! out="$(psql_as postgres -f - < "$f" 2>&1)"; then
     echo "REPLAY FAILED at $n of $total: $MIGRATIONS_LABEL/$name" >&2
     printf '%s\n' "$out" | grep -v '^$' | tail -8 >&2
@@ -111,4 +145,5 @@ for f in "${files[@]}"; do
   fi
   psql_as postgres -Atc "INSERT INTO sql_suite.replayed(version) VALUES ('$name')" >/dev/null
 done
+apply_cutover ""
 echo "REPLAY OK ($SQL_SUITE_PROJECT): $total migrations present, $((total - skipped)) applied now, $skipped already applied, in container $CONTAINER"

@@ -19,7 +19,7 @@ import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partne
 import { partnerCredentialMissing } from '../../lib/partner-credential'
 import { dailyCapObjectName } from '../../lib/daily-cap-name'
 import { clickCountIfClickSold, refuseClickUrlWithoutProspectId, refuseSwitchAwayFromClick, refuseUnreadRules } from './buyer-profiles'
-import { documentToProfile, parseProfileDocument, partnerNumberErrors, registryPathOf, validateProfile, type PartnerNumberError, type Signal } from '@bidspoke/buyer-profile'
+import { acceptRuleErrors, documentToProfile, parseProfileDocument, partnerNumberErrors, registryPathOf, validateProfile, type PartnerNumberError, type Signal } from '@bidspoke/buyer-profile'
 import { parseLiveMissReport, type PartnerPageChange, type PartnerPageVersions } from '@bidspoke/partner-page-live'
 
 type Variables = AuthVariables
@@ -386,6 +386,13 @@ partners.put('/:id/page', async (c) => {
   }
   const pageNumbers = numberRefusal(patch)
   if (pageNumbers) return c.json(pageNumbers, 422)
+  // #3093: accept rules changed without the profile are judged by the same rule
+  // validateProfile applies when the profile is sent, so no save stores a rule an
+  // empty answer could meet. Nothing is read first: the rules sent are the rules stored.
+  if (!profileSent && Array.isArray(patch.accept_signals)) {
+    const refused = acceptRuleErrors(patch.accept_signals as Signal[])
+    if (refused.length > 0) return c.json({ error: 'accept_rules_invalid', errors: refused.map((e) => ({ ...e, field: registryPathOf(e.path) })) }, 422)
+  }
 
   const { data: stored, error: fetchError } = await supabase
     .from('partner_configs')

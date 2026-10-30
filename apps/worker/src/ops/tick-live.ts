@@ -30,7 +30,7 @@ import {
   purgeRunVariables, purgeTerminalRunRequests, readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
   removeUnservedMeasuredIdentities, saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions, observeOpsReseal,
-  purgeVariableCopies, readVariableCopies, readWorkflowDefinition, saveVariableCopies,
+  purgeVariableCopies, readVariableCopies, readWorkflowDefinition, saveVariableCopies, purgeSendLedger, purgeScheduleFires, purgeExpiredDedupTombstones,
 } from './ops-writes'
 import { VARIABLE_COPY_CONFIRM_EVERY_SECONDS } from './variable-copies'
 import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps } from './connections/connection-fetch'
@@ -110,6 +110,10 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     purgeFinishedRuns: (terminalBefore, limit) => purgeTerminalRunRequests(client, terminalBefore, limit, rpc),
     // The last good copy of each version's plain variables (#2999): its reads, its one write, its purge.
     purgeVariableCopies: (limit) => purgeVariableCopies(client, limit, rpc),
+    // The send ledger past a year, the slots fired past 6 months and the expired dedup tombstones (#3052).
+    purgeSendLedger: (limit) => purgeSendLedger(client, limit, rpc),
+    purgeScheduleFires: (limit) => purgeScheduleFires(client, limit, rpc),
+    purgeDedupTombstones: (limit) => purgeExpiredDedupTombstones(client, limit, rpc),
     readVariableCopies: (org, versions) => readVariableCopies(client, org, versions, rpc),
     saveVariableCopies: (copies) => saveVariableCopies(client, copies, VARIABLE_COPY_CONFIRM_EVERY_SECONDS, rpc),
     readDefinition: async (org, workflowId, versionNumber) => (await readWorkflowDefinition(client, org, workflowId, versionNumber, rpc))?.definition ?? null,

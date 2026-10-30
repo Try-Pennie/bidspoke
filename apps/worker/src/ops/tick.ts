@@ -217,8 +217,12 @@ export type TickSweep = OpsSweep
  * copies (#2999, purge_variable_copies): those confirmed more than
  * COPIES_STALE_AFTER_MS ago, which a fallback refuses anyway, and those of a
  * workflow switched off, deleted or gone from the lane. And the finished runs
- * themselves, 90 days after they end (#3018, FINISHED_RUN_KEPT_DAYS). All six
- * run beside the rest of the tick on one time budget (NIGHTLY_PURGE says why).
+ * themselves, 90 days after they end (#3018, FINISHED_RUN_KEPT_DAYS). And the
+ * record of each schedule slot fired, 6 months after its slot, the record of
+ * what each run sent, a year after its intent, and the dedup tombstones whose
+ * window has ended (#3052, SCHEDULE_FIRES_KEPT_MONTHS, SEND_LEDGER_KEPT_MONTHS).
+ * All nine run beside the rest of the tick on one time budget (NIGHTLY_PURGE
+ * says why).
  *
  * Each purge's failure is its own problem, purge_failed keyed by what it
  * purges, and each stopping with rows left is purge_behind, keyed the same way,
@@ -244,6 +248,26 @@ export const OBSERVATION_PURGE_EASTERN_HOUR = 3
 export const FINISHED_RUN_KEPT_DAYS = 90
 const DAY_MS = 24 * 3600 * 1000
 
+/**
+ * How long the record of each schedule slot fired is kept: 6 months after its
+ * slot (Dan, 2026-10-30, recorded on #3052). purge_schedule_fires holds the
+ * window on the database clock (ops migration 20261030210000), and never
+ * deletes a workflow's latest slot, which the tick plans the schedule from
+ * (last_served, replaced_last_slot). So every slot it deletes is before one its
+ * workflow fired later, which planFires never fires again, and 6 months is
+ * also some 60 times MAX_FIRE_AGE_MS (72 hours), the furthest back any plan
+ * fires a slot: the slot's unique key is never asked about it again.
+ */
+export const SCHEDULE_FIRES_KEPT_MONTHS = 6
+
+/**
+ * How long the record of what each run sent is kept: a year after its intent
+ * (Dan, 2026-10-30, recorded on #3052). purge_send_ledger holds the window on
+ * the database clock, and never deletes a send of a run a person kept, of a run
+ * not ended (one waiting for a person reads it), or of a chain still going.
+ */
+export const SEND_LEDGER_KEPT_MONTHS = 12
+
 /** What each nightly purge removes: its purge_failed and purge_behind subject, and the words its problems use. */
 const PURGE_SUBJECTS = {
   finished_runs: `ops runs that ended more than ${FINISHED_RUN_KEPT_DAYS} days ago`,
@@ -252,6 +276,9 @@ const PURGE_SUBJECTS = {
   schedule_observations: 'schedule observations older than 30 days',
   step_test_results: 'step test results older than 7 days',
   variable_copies: 'variable copies past their age limit or of workflows gone from the lane',
+  send_ledger: 'sends recorded more than a year ago',
+  schedule_fires: `schedule slots fired more than ${SCHEDULE_FIRES_KEPT_MONTHS} months ago`,
+  dedup_tombstones: 'dedup tombstones past their window',
 } as const
 type PurgeSubject = keyof typeof PURGE_SUBJECTS
 
@@ -277,6 +304,20 @@ type PurgeSubject = keyof typeof PURGE_SUBJECTS
  *  - variable_copies: one row a workflow version whose copy went stale, assumed
  *    five saved versions a day for each of 320 workflows. Not measured: ops
  *    holds no copies yet.
+ *  - sendsPerRun (#3052): 10, ASSUMED, not measured: ops has sent nothing yet,
+ *    and the inventory counts steps, not requests. Every request that is not a
+ *    GET writes one send_ledger row (run-invocation.ts), so a send is a step
+ *    that writes (a Salesforce update, a Slack post) or reads by POST (a
+ *    Snowflake statement, an AI call). Taken as half the steps of the 20 step
+ *    run above: the rest are the trigger, code, filters and GET reads. The
+ *    ledger's purge says purge_behind if sends outgrow it.
+ *  - send_ledger: sendsPerRun a run, purged a year after its intent.
+ *  - schedule_fires: one a fired slot, the same as schedule_observations.
+ *  - dedup_tombstones: none. The only writer is the finished run purge, for a
+ *    run whose dedup window is still open when it is deleted. A run's window
+ *    is 30 days from its creation and a run is deleted FINISHED_RUN_KEPT_DAYS
+ *    (90) after it ends, so every window has closed (retention_purges.test.sql
+ *    case C). Its cap drains what a shorter retention would leave.
  *  - assumedPageMs: 200 ms a page of 1,000 from the Worker, NOT measured on the
  *    ops database. Measured on the throwaway ops SQL suite container
  *    (2026-10-29, three purges, 30 pages each in one session): about 15 ms a
@@ -291,6 +332,7 @@ type PurgeSubject = keyof typeof PURGE_SUBJECTS
 export const NIGHTLY_PURGE_DESIGN = {
   runsPerDay: 50_000,
   stepRecordsPerRun: 20,
+  sendsPerRun: 10,
   assumedPageMs: 200,
   rowsPerDay: {
     finished_runs: 50_000,
@@ -299,28 +341,41 @@ export const NIGHTLY_PURGE_DESIGN = {
     schedule_observations: 68 * 1440,
     step_test_results: 320 * 20,
     variable_copies: 320 * 5,
+    send_ledger: 50_000 * 10,
+    schedule_fires: 68 * 1440,
+    dedup_tombstones: 0,
   },
-} as const satisfies { runsPerDay: number; stepRecordsPerRun: number; assumedPageMs: number; rowsPerDay: Record<PurgeSubject, number> }
+} as const satisfies { runsPerDay: number; stepRecordsPerRun: number; sendsPerRun: number; assumedPageMs: number; rowsPerDay: Record<PurgeSubject, number> }
 
 /**
  * The nightly purges (#3053, after #3018's purge of finished runs), one
- * mechanism for all six. Pages of 1,000, each function's ceiling.
+ * mechanism for all nine (#3052 added the send ledger, the schedule fires and
+ * the dedup tombstones). Pages of 1,000, each function's ceiling.
  *
  * maxPages: each purge's own cap, at least twice its designed rows a day
  * (NIGHTLY_PURGE_DESIGN), so a night lost to a failure drains on the nights
  * after: finished runs 100 pages for 50,000 a day, step records 2,000 for
  * 1,000,000, run variables 100 for 50,000, schedule observations 200 for
- * 97,920, step test results 15 for 6,400, variable copies 10 for 1,600.
+ * 97,920, step test results 15 for 6,400, variable copies 10 for 1,600, send
+ * ledger 1,000 for 500,000, schedule fires 200 for 97,920, dedup tombstones 10
+ * for none.
  *
- * budgetMs: ONE budget for all of them, 10 minutes on the Worker clock, past
- * which no page starts. They share it rather than each having its own because
+ * budgetMs: ONE budget for all of them, 13 minutes on the Worker clock, past
+ * which no page starts (10 until #3052, when the send ledger and schedule fires
+ * took a designed night past half of 10). They share it rather than each having its own because
  * the limit that matters is the tick's, not a purge's: a minute cron has 15
  * minutes of wall clock and 10,000 subrequests (docs/ops-ceilings-spike.md P1,
  * P3), and a run the tick dispatched is cut off at RUN_DISPATCH_DEADLINE_MS
- * (14 minutes 30 seconds). At assumedPageMs a designed night is 1,207 pages,
- * about 4 minutes, half the budget; every cap at once is 2,425 pages, about 8
- * minutes, under a quarter of the subrequests. A night on a database slower
- * than assumed stops at the budget and says so, rather than at the wall.
+ * (14 minutes 30 seconds), which 13 minutes and a page leaves room inside. At
+ * assumedPageMs a designed night is 1,805 pages, about 6 minutes, under half
+ * the budget; every cap at once is 3,635 pages, about 12 minutes, under half
+ * the subrequests. The other half is far more than the rest of a tick asks:
+ * at most TICK_CLAIM_LIMIT (40) dispatches and their variables, a slot a
+ * schedule, DEFINITIONS_PER_TICK (30) definitions, and the sf_limits and
+ * connection_check sweeps' 10 and 50 reads, a few hundred in all (until #3052
+ * the bound was a quarter, which the schedule fires alone took the caps past).
+ * A night on a database slower than assumed stops at the budget and says so,
+ * rather than at the wall.
  *
  * They run BESIDE the rest of the tick, awaited before the report, as sf_limits
  * does, so a night of pages never holds that minute's schedules, claims and
@@ -335,11 +390,13 @@ export const NIGHTLY_PURGE_DESIGN = {
  * Not pulled: a page larger than 1,000 rows. The round trip is most of the
  * assumed 200 ms, so pages of 5,000 would cut the time and the subrequests
  * about fivefold, but every purge function refuses a limit over 1,000, so it
- * needs an ops migration replacing six functions and longer row locks each page.
+ * needs an ops migration replacing nine functions and longer row locks each
+ * page. It is the lever to pull when the measured page time (nightly_purge_ms
+ * over nightly_purge_pages) leaves a designed night past half the budget.
  */
 export const NIGHTLY_PURGE = {
   pageLimit: 1000,
-  budgetMs: 10 * 60_000,
+  budgetMs: 13 * 60_000,
   maxPages: {
     finished_runs: 100,
     step_records: 2000,
@@ -347,6 +404,9 @@ export const NIGHTLY_PURGE = {
     schedule_observations: 200,
     step_test_results: 15,
     variable_copies: 10,
+    send_ledger: 1000,
+    schedule_fires: 200,
+    dedup_tombstones: 10,
   },
 } as const satisfies { pageLimit: number; budgetMs: number; maxPages: Record<PurgeSubject, number> }
 
@@ -438,6 +498,12 @@ export interface OpsTickDb extends ConnectionServeDb, VariableCopyDb {
   purgeStepRecords(limit: number): Promise<{ purged: number; more: boolean }>
   /** Also the observation_purge sweep: the recorded variables of runs ended more than 7 days ago (purge_run_variables, #2998). */
   purgeRunVariables(limit: number): Promise<{ purged: number; more: boolean }>
+  /** Also the observation_purge sweep: sends recorded more than a year ago (purge_send_ledger, #3052). */
+  purgeSendLedger(limit: number): Promise<{ purged: number; more: boolean }>
+  /** Also the observation_purge sweep: slots fired more than 6 months ago, never a workflow's latest (purge_schedule_fires, #3052). */
+  purgeScheduleFires(limit: number): Promise<{ purged: number; more: boolean }>
+  /** Also the observation_purge sweep: dedup tombstones whose window has ended (purge_expired_dedup_tombstones, #3052). */
+  purgeDedupTombstones(limit: number): Promise<{ purged: number; more: boolean }>
   /** Also the observation_purge sweep: finished runs that ended before terminalBefore, with their executions (purge_terminal_run_requests, #3018). */
   purgeFinishedRuns(terminalBefore: Date, limit: number): Promise<{ purged: number; tombstoned: number; more: boolean }>
   /** The saved copies whose current version has no frozen definition yet (missing_workflow_definitions, #1950). */
@@ -646,6 +712,9 @@ function nightlyPurges(db: OpsTickDb, dbNowMs: number): Record<PurgeSubject, { c
     schedule_observations: { count: 'observations_purged', page: () => db.purgeObservations(limit) },
     step_test_results: { count: 'step_tests_purged', page: () => db.purgeStepTests(limit) },
     variable_copies: { count: 'variable_copies_purged', page: () => db.purgeVariableCopies(limit) },
+    send_ledger: { count: 'send_ledger_purged', page: () => db.purgeSendLedger(limit) },
+    schedule_fires: { count: 'schedule_fires_purged', page: () => db.purgeScheduleFires(limit) },
+    dedup_tombstones: { count: 'dedup_tombstones_purged', page: () => db.purgeDedupTombstones(limit) },
   }
 }
 

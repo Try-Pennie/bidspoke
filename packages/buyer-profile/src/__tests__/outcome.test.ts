@@ -111,6 +111,12 @@ describe('the accept rule is positive (L181, L72)', () => {
     const other = { ok: false, data: { createLead: { resultCode: 1001 } } }
     expect(outcomeOf(200, other)).toBe('outcome_unknown')
   })
+  // #3093: a complete answer with no body (a 204, an empty 200, or text that is
+  // not JSON) reaches the rules as null since #3091, and is judged, never a sale.
+  it.each([204, 200])('never accepts a %s with an empty answer, because the rules read fields it does not carry', (status) => {
+    expect(outcomeOf(status, null)).toBe('outcome_unknown')
+    expect(outcomeOf(status, {})).toBe('outcome_unknown')
+  })
   it('names which accept rules failed when it does not accept', () => {
     const r = evaluateSaleOutcome(tripointAccept, [], 200, { ok: false, data: { createLead: { resultCode: 1001 } } }, false, true)
     expect(r.outcome).toBe('outcome_unknown')
