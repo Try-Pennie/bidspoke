@@ -480,7 +480,7 @@ export interface SweepResult {
   dead: number
   /**
    * Ended failed: a fourth lapse with no send, lease_lapsed_repeatedly (#2334),
-   * or a lapse of a run set not to retry, lease_lapsed_no_retry (#3046).
+   * or a lapse of a run set not to retry, sent or not, lease_lapsed_no_retry (#3046).
    */
   failed: number
   /** A full page was taken: call again until false. */
@@ -492,6 +492,13 @@ export interface SweepResult {
    * none, which would let such a run end without a page.
    */
   noRetryWorkflowIds: string[]
+  /**
+   * The workflow of each of those runs that had made a send that cannot be
+   * repeated (#3046, Dan, 2026-10-30): such a run ends failed too, so this is
+   * the only record that a send may have landed. Required and refused by name
+   * when absent, as noRetryWorkflowIds is.
+   */
+  noRetryAfterSendWorkflowIds: string[]
 }
 
 const isUuidList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string' && UUID_SHAPE.test(x))
@@ -507,6 +514,7 @@ export async function sweepExpiredLeases(client: OpsSupabaseClient, limit: numbe
     failed: field(name, row, 'failed', isInt, 'a count'),
     more: field(name, row, 'more', isBool, 'true or false'),
     noRetryWorkflowIds: field(name, row, 'no_retry_workflow_ids', isUuidList, 'a list of workflow ids'),
+    noRetryAfterSendWorkflowIds: field(name, row, 'no_retry_after_send_workflow_ids', isUuidList, 'a list of workflow ids'),
   }
 }
 

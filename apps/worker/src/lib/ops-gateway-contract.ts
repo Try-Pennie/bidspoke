@@ -807,7 +807,9 @@ export const OPS_TICK_PROBLEM_RULES = {
   /**
    * Runs of a live workflow set not to retry lost their lease and the sweep
    * ended them failed, lease_lapsed_no_retry (#3046, Dan, 2026-10-30): nothing
-   * runs them again, and no later tick reports them again.
+   * runs them again, and no later tick reports them again. One that had made a
+   * send that cannot be repeated pages whatever the workflow's state, saying
+   * the send may have landed.
    */
   runs_lapsed_no_retry: 'at_once',
   // Reported once, never again by a later tick.

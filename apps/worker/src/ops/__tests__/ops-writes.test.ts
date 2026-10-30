@@ -118,7 +118,7 @@ afterEach(() => {
 
 describe('callOpsRpc', () => {
   it('calls the named function with its arguments', async () => {
-    const { client, calls } = rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 0, more: false, no_retry_workflow_ids: [] }])
+    const { client, calls } = rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 0, more: false, no_retry_workflow_ids: [], no_retry_after_send_workflow_ids: [] }])
     await sweepExpiredLeases(client, 500)
     expect(calls).toEqual([{ path: '/rest/v1/rpc/sweep_expired_leases', body: { p_limit: 500 } }])
   })
@@ -405,20 +405,23 @@ describe('the typed wrappers', () => {
   })
 
   it('the lease sweep reads the runs it ended failed, and refuses an answer without that count', async () => {
-    expect(await sweepExpiredLeases(rpcFetch([{ requeued: 1, retried: 2, needs_human: 0, dead: 0, failed: 1, more: false, no_retry_workflow_ids: [] }]).client, 100))
-      .toEqual({ requeued: 1, retried: 2, needsHuman: 0, dead: 0, failed: 1, more: false, noRetryWorkflowIds: [] })
-    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, more: false, no_retry_workflow_ids: [] }]).client, 100))
+    expect(await sweepExpiredLeases(rpcFetch([{ requeued: 1, retried: 2, needs_human: 0, dead: 0, failed: 1, more: false, no_retry_workflow_ids: [], no_retry_after_send_workflow_ids: [] }]).client, 100))
+      .toEqual({ requeued: 1, retried: 2, needsHuman: 0, dead: 0, failed: 1, more: false, noRetryWorkflowIds: [], noRetryAfterSendWorkflowIds: [] })
+    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, more: false, no_retry_workflow_ids: [], no_retry_after_send_workflow_ids: [] }]).client, 100))
       .rejects.toThrow(/sweep_expired_leases returned failed that is not a count/)
   })
 
   // #3046: the workflow of each run the sweep ended failed because it is set not to retry.
   it('the lease sweep reads the workflows of the no-retry runs it ended, and refuses an answer without them, never reading it as none', async () => {
-    expect(await sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 2, more: false, no_retry_workflow_ids: [WF, WF] }]).client, 100))
-      .toEqual({ requeued: 0, retried: 0, needsHuman: 0, dead: 0, failed: 2, more: false, noRetryWorkflowIds: [WF, WF] })
-    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 0, more: false }]).client, 100))
+    expect(await sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 2, more: false, no_retry_workflow_ids: [WF, WF], no_retry_after_send_workflow_ids: [WF] }]).client, 100))
+      .toEqual({ requeued: 0, retried: 0, needsHuman: 0, dead: 0, failed: 2, more: false, noRetryWorkflowIds: [WF, WF], noRetryAfterSendWorkflowIds: [WF] })
+    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 0, more: false, no_retry_after_send_workflow_ids: [] }]).client, 100))
       .rejects.toThrow(/sweep_expired_leases returned no_retry_workflow_ids that is not a list of workflow ids/)
-    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 1, more: false, no_retry_workflow_ids: ['not-a-uuid'] }]).client, 100))
+    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 1, more: false, no_retry_workflow_ids: ['not-a-uuid'], no_retry_after_send_workflow_ids: [] }]).client, 100))
       .rejects.toThrow(/no_retry_workflow_ids that is not a list of workflow ids/)
+    // The runs among them that may have landed a send that cannot be repeated: absent is refused, never read as none.
+    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 1, more: false, no_retry_workflow_ids: [WF] }]).client, 100))
+      .rejects.toThrow(/sweep_expired_leases returned no_retry_after_send_workflow_ids that is not a list of workflow ids/)
   })
 
   it('send intent: stale comes back as stale, so the caller can refuse to send', async () => {
