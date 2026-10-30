@@ -90,8 +90,8 @@ jobs:
     # they must be able to fail separately.
     #
     # They still DO fail separately, which is the part that had to be built
-    # rather than assumed. Each target's `Decide and alert` step posts its own
-    # Slack message and then exits 1. In one job that would end the run, and the
+    # rather than assumed. Each target's `Decide and alert` step queues its
+    # alert and then exits 1 (one step posts them all as one message, #3152). In one job that would end the run, and the
     # targets after it would go unchecked on precisely the hours something is
     # wrong: the first stranded worker would hide a stranded site behind it
     # (L73). So each alert step carries `continue-on-error: true` and its own id,
@@ -245,8 +245,8 @@ jobs:
 
           echo "::error::worker drift: $VERDICT"
           # Posts once, then reminds on the backoff schedule (#1761).
-          POSTED=$(bash head/.github/scripts/drift-alert-state.sh alert worker "$VERDICT" '' "$TEXT")
-          echo "slack: $POSTED"
+          QUEUED=$(bash head/.github/scripts/drift-alert-state.sh alert worker "$VERDICT" '' "$TEXT")
+          echo "slack: $QUEUED, posted by the send step"
           exit 1
 
       - name: Report the settled state
@@ -367,6 +367,7 @@ jobs:
             exit 0
           fi
 
+          REMEDY=''
           if [ "$DECISION" = "alert-inflight-unknown" ]; then
             echo "::error::Deploy Drift could not tell whether a deploy is running: the worker is behind $LAST_WORKER_COMMIT and the in-flight query failed."
             TEXT=$(printf '*Deploy Drift cannot tell whether a deploy is running*\n\nThe live worker (`%s`) is behind `apps/worker` commit `%s`, and the query that asks whether a Deploy is still in flight could not be answered. So a worker that is merely mid deploy cannot be told apart from one that is genuinely unshipped, and this check cannot report either while that is true.\n\n*How to fix:* open the run and read the `deploy-inflight` line, which says why the query failed. The job needs `actions: read` to ask GitHub for in-flight runs, and this repository grants the workflow token only contents and packages by default.\n\n<%s/%s/actions/runs/%s|Open this check>' \
@@ -377,14 +378,17 @@ jobs:
               "${LIVE_SHA:0:7}" "${LAST_WORKER_COMMIT:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
           else
             echo "::error::Stranded worker: apps/worker changed in $LAST_WORKER_COMMIT, the built artifact differs from what is live, and the live worker is $LIVE_SHA."
-            TEXT=$(printf '*Worker code is committed but not deployed*\n\nThe live worker is running `%s`, and building `apps/worker` at commit `%s` produces a different bundle, so shipping code is sitting on main unshipped. This happens when a deploy failed at Verify, or when a merge started no Deploy.\n\n*How to fix:* apply any pending migration first with `supabase db push`, then %s Pushing an empty worker change will not help: the deploy compares the built bundle, so a change that does not move it is skipped.\n\n<%s/%s/actions/runs/%s|Open this check>' \
-              "${LIVE_SHA:0:7}" "${LAST_WORKER_COMMIT:0:7}" "$DEPLOY_REMEDY" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+            # The deploy remedy goes separately (#3152), so a message that
+            # also carries the site or tail strand states it once.
+            TEXT=$(printf '*Worker code is committed but not deployed*\n\nThe live worker is running `%s`, and building `apps/worker` at commit `%s` produces a different bundle, so shipping code is sitting on main unshipped. This happens when a deploy failed at Verify, or when a merge started no Deploy. Apply any pending migration with `supabase db push` before deploying. Pushing an empty worker change will not help: the deploy compares the built bundle, so a change that does not move it is skipped.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+              "${LIVE_SHA:0:7}" "${LAST_WORKER_COMMIT:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+            REMEDY="$DEPLOY_REMEDY"
           fi
 
           # Keyed on every fact the message states, so a new live commit or a new
           # worker commit is news and posts at once (L641).
-          POSTED=$(bash head/.github/scripts/drift-alert-state.sh alert worker "$DECISION" "$LIVE_SHA|$LAST_WORKER_COMMIT" "$TEXT")
-          echo "slack: $POSTED"
+          QUEUED=$(bash head/.github/scripts/drift-alert-state.sh alert worker "$DECISION" "$LIVE_SHA|$LAST_WORKER_COMMIT" "$TEXT" "$REMEDY")
+          echo "slack: $QUEUED, posted by the send step"
           exit 1
 
       # ---- SITE -------------------------------------------------------
@@ -515,8 +519,8 @@ jobs:
             TEXT=$(printf '*The site drift check has no address to check*\n\nThe `SITE_URL` repository variable is empty, so the site is not being checked at all.\n\n*How to fix:* set it again under Settings, Secrets and variables, Actions, Variables.\n\n<%s/%s/actions/runs/%s|Open this check>' \
               "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
             echo "::error::site drift: SITE_URL is unset"
-            POSTED=$(bash .github/scripts/drift-alert-state.sh alert site unconfigured '' "$TEXT")
-            echo "slack: $POSTED"
+            QUEUED=$(bash .github/scripts/drift-alert-state.sh alert site unconfigured '' "$TEXT")
+            echo "slack: $QUEUED, posted by the send step"
             exit 1
           fi
 
@@ -528,6 +532,7 @@ jobs:
             '--last-success-age=${{ steps.sample.outputs.last_success_age }}' $OBSERVATIONS)
           echo "decision=$DECISION observations=$OBSERVATIONS"
 
+          REMEDY=''
           case "$DECISION" in
             ok)
               echo "::notice::Every sampled route is serving the latest apps/web commit."
@@ -541,7 +546,8 @@ jobs:
               exit 0 ;;
             alert-behind|alert-stuck-deploy)
               HEADLINE='*The site is serving an older build*'
-              DETAIL=$(printf 'These routes are not yet serving `%s`, the latest commit touching the site: `%s`.\n\n*How to fix:* %s A Pages deploy propagates per route, so a partial state can also settle on its own within a few minutes, which the next hourly run will confirm.' "${LAST_WEB_COMMIT:0:7}" "$OBSERVATIONS" "$DEPLOY_REMEDY") ;;
+              DETAIL=$(printf 'These routes are not yet serving `%s`, the latest commit touching the site: `%s`. A Pages deploy propagates per route, so a partial state can also settle on its own within a few minutes, which the next hourly run will confirm.' "${LAST_WEB_COMMIT:0:7}" "$OBSERVATIONS")
+              REMEDY="$DEPLOY_REMEDY" ;;
             alert-inflight-unknown)
               # Distinct from alert-behind on purpose. Telling the reader to
               # re-run a deploy would send them after a deploy that was never
@@ -581,8 +587,8 @@ jobs:
           # the route list: routes flip between runs while a deploy propagates, and
           # keying on them would post every hour again, which is the defect this
           # record exists to end. The message gives the routes at this check.
-          POSTED=$(bash .github/scripts/drift-alert-state.sh alert site "$DECISION" "$LAST_WEB_COMMIT" "$TEXT")
-          echo "slack: $POSTED"
+          QUEUED=$(bash .github/scripts/drift-alert-state.sh alert site "$DECISION" "$LAST_WEB_COMMIT" "$TEXT" "$REMEDY")
+          echo "slack: $QUEUED, posted by the send step"
           exit 1
 
       # ---- TAIL WORKER ------------------------------------------------
@@ -695,6 +701,7 @@ jobs:
           LAST='${{ steps.tail_compare.outputs.last_tail_commit }}'
           TAIL_SHA='${{ steps.tail_compare.outputs.tail_sha }}'
 
+          REMEDY=''
           case "$VERDICT" in
             ok)
               echo "::notice::The tail worker is up to date."
@@ -719,14 +726,39 @@ jobs:
               TEXT=$(printf '*The cost tail worker is running a commit this repository does not have*\n\nWhat is live cannot be placed against main, so it cannot be told apart from a stranded deploy. This usually means it went out from a branch or a local build.\n\n*How to fix:* to put a known commit back on it, %s\n\n<%s/%s/actions/runs/%s|Open this check>' \
                 "$DEPLOY_REMEDY" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
             *)
-              TEXT=$(printf '*Cost tail worker code is committed but not deployed*\n\nThe live tail worker is behind `apps/worker-tail` commit `%s`. It is not failing, which is the problem: it writes per-execution cost, so a stranded copy under-reports what executions cost while the dashboard keeps showing numbers that look fine.\n\n*How to fix:* %s\n\n<%s/%s/actions/runs/%s|Open this check>' \
-                "${LAST:0:7}" "$DEPLOY_REMEDY" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+              TEXT=$(printf '*Cost tail worker code is committed but not deployed*\n\nThe live tail worker is behind `apps/worker-tail` commit `%s`. It is not failing, which is the problem: it writes per-execution cost, so a stranded copy under-reports what executions cost while the dashboard keeps showing numbers that look fine.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "${LAST:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+              REMEDY="$DEPLOY_REMEDY" ;;
           esac
 
           echo "::error::tail worker drift: $VERDICT (latest tail commit $LAST)"
-          POSTED=$(bash .github/scripts/drift-alert-state.sh alert tail "$VERDICT" "$TAIL_SHA|$LAST" "$TEXT")
-          echo "slack: $POSTED"
+          QUEUED=$(bash .github/scripts/drift-alert-state.sh alert tail "$VERDICT" "$TAIL_SHA|$LAST" "$TEXT" "$REMEDY")
+          echo "slack: $QUEUED, posted by the send step"
           exit 1
+
+      # ONE Slack message for the whole run (#3152). Each alert step above only
+      # queued its text. On 2026-10-30 one failed Deploy posted a worker and a
+      # site message a second apart, each ending in the same "start Deploy on
+      # main"; a Deploy run ships every target, so it is one fact. When a queued
+      # alert is fixed by a deploy, the message also says what happened to the
+      # newest Deploy run on main (the step that failed, or that none ran since),
+      # which the strand text alone could only guess at.
+      - name: Post the drift alerts
+        id: drift_send
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          CAUSE=''
+          if grep -qs . "$DRIFT_STATE_DIR"/outbox/*.remedy; then
+            CAUSE=$(bash .github/scripts/deploy-latest-outcome.sh)
+          fi
+          SENT=$(DRIFT_CAUSE="$CAUSE" \
+            DRIFT_RUN_LINK="<$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID|Open this check>" \
+            bash .github/scripts/drift-alert-state.sh send)
+          echo "slack: $SENT"
 
       # Write the reminder record for the next run, whatever happened above
       # (#1761): a posted condition advances, a held one is carried, a healthy

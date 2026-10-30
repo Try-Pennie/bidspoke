@@ -107,3 +107,31 @@ describe('the record is read first and written last (#1761)', () => {
     expect(top).toMatch(/\nconcurrency:\n {2}group: deploy-drift\n {2}cancel-in-progress: false\n/)
   })
 })
+
+describe('one Slack message per drift run (#3152)', () => {
+  it('posts once, after every alert step and before the record is written, whatever happened earlier', () => {
+    const send = stepWithId('drift_send')
+    expect(send).toMatch(/if:\s*always\(\)/)
+    expect(send).toContain('drift-alert-state.sh send')
+    for (const step of ['worker_probe_alert', 'worker_alert', 'pages_alert', 'tail_alert']) {
+      expect(indexOfId('drift_send')).toBeGreaterThan(indexOfId(step))
+    }
+    expect(indexOfId('drift_send')).toBeLessThan(indexOfId('drift_finish'))
+  })
+
+  it('quotes the newest Deploy run only when a queued alert carries the deploy remedy', () => {
+    const send = stepWithId('drift_send')
+    expect(send).toContain('deploy-latest-outcome.sh')
+    expect(send).toMatch(/\.remedy/)
+    expect(send).toContain('DRIFT_CAUSE')
+    expect(send).toMatch(/actions\/runs\/\$GITHUB_RUN_ID\|Open this check>/)
+  })
+
+  it.each([
+    ['worker_alert', 'worker'],
+    ['pages_alert', 'site'],
+    ['tail_alert', 'tail'],
+  ])('%s hands the %s strand its deploy remedy separately, so one message states it once', (id, target) => {
+    expect(stepWithId(id)).toMatch(new RegExp(`drift-alert-state\\.sh alert ${target} [^\\n]*"\\$TEXT" "\\$REMEDY"`))
+  })
+})

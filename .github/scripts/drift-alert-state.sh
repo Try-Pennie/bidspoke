@@ -22,11 +22,21 @@
 #             confirmed there is none) or `unavailable` (it could not find out),
 #             three words because folding the last two together is the #899 bug.
 #             env: GH_BIN, GITHUB_REPOSITORY, GITHUB_RUN_ID, DRIFT_SCHEDULE_SRC
-#   alert <target> <kind> <facts> <text>
-#             Decide, post to Slack when due, record only after Slack accepted it.
-#             Prints post-first, post-reminder, held, post-failed or no-webhook.
-#             env: SLACK_WEBHOOK_URL, DRIFT_NOW (epoch seconds, the clock seam,
-#             L524), CURL_BIN
+#   alert <target> <kind> <facts> <text> [<remedy>]
+#             Decide whether this target is due, and when it is, queue its text
+#             for `send` rather than posting it. Prints post-first, post-reminder
+#             or held. A remedy given separately is the deploy remedy: `send`
+#             states it once for every target that shares it, after the cause.
+#             env: DRIFT_NOW (epoch seconds, the clock seam, L524)
+#   send      Post every queued target as ONE Slack message (#3152), and record
+#             each only after Slack accepted it. On 2026-10-30 one failed Deploy
+#             posted a worker and a site message a second apart with the same
+#             remedy; a Deploy run ships every target, so it is one fact.
+#             Prints posted, nothing, post-failed or no-webhook.
+#             env: SLACK_WEBHOOK_URL, CURL_BIN, DRIFT_CAUSE (a sentence on the
+#             newest Deploy run, from deploy-latest-outcome.sh, given only to a
+#             message carrying the deploy remedy), DRIFT_RUN_LINK (the check's
+#             link, which every text ends with: taken off each and given once)
 #   clear <target>
 #             The target was measured healthy, so its next occurrence starts the
 #             schedule again (alert-backoff's clearCondition).
@@ -70,7 +80,7 @@ CURL_BIN="${CURL_BIN:-curl}"
 TARGETS="worker site tail"
 EARLY_GRACE_SECONDS=1800
 
-mkdir -p "$DIR/next" "$DIR/run"
+mkdir -p "$DIR/next" "$DIR/run" "$DIR/outbox" "$DIR/pending"
 
 log() { printf 'drift-alert-state: %s\n' "$*" >&2; }
 
@@ -161,9 +171,9 @@ cmd_read() {
 }
 
 cmd_alert() {
-  local target="${1-}" kind="${2-}" facts="${3-}" text="${4-}"
+  local target="${1-}" kind="${2-}" facts="${3-}" text="${4-}" remedy="${5-}"
   local key="${target}|${kind}|${facts}"
-  local class slot now now_iso status steps entry note decision body
+  local class slot now now_iso status steps entry note decision
   class=$(classify "$target" "$kind")
   slot="$target"
   if [ "$class" = "finding" ]; then
@@ -214,17 +224,79 @@ cmd_alert() {
     return
   fi
 
-  body="$text"
+  # Queued, not posted: `send` posts every target of this run as one message.
+  # The record is written beside it and only becomes the next run's once Slack
+  # has accepted that message, so a refused post buys no silence.
+  printf '%s' "$text" >"$DIR/outbox/$target.text"
+  printf '%s' "$remedy" >"$DIR/outbox/$target.remedy"
+  printf '%s\n%s\n' "$slot" "$class" >"$DIR/outbox/$target.meta"
+  rm -f "$DIR/outbox/$target.reminder"
   if [ "$decision" = "post-reminder" ]; then
-    body="${body}"$'\n\n'"$(jq -nr --argjson steps "$steps" --argjson entry "$entry" --argjson now "$now" "$JQ_DEFS"'describe($entry.since; $entry.alerts; $now)')"
+    jq -nr --argjson steps "$steps" --argjson entry "$entry" --argjson now "$now" "$JQ_DEFS"'describe($entry.since; $entry.alerts; $now)' \
+      >"$DIR/outbox/$target.reminder"
   fi
   if [ -n "$note" ]; then
-    body="${body}"$'\n\n'"${note}"
+    printf '%s' "$note" >"$DIR/outbox/note"
   fi
 
+  jq -n --argjson entry "${entry:-null}" --arg key "$key" --arg now "$now_iso" --arg class "$class" \
+    --arg decision "$decision" '{
+      key: $key,
+      since: (if $decision == "post-reminder" then $entry.since else $now end),
+      alerts: (if $decision == "post-reminder" then $entry.alerts + 1 else 1 end),
+      last_alert: $now,
+      class: $class
+    }' >"$DIR/pending/$slot.json"
+  log "alert: $target $decision, queued ($key)"
+  echo "$decision"
+}
+
+cmd_send() {
+  local t text remedy reminder section body="" remedies=() r seen queued="" slot class meta
+  local link="${DRIFT_RUN_LINK:-}" cause="${DRIFT_CAUSE:-}"
+  for t in $TARGETS; do
+    [ -f "$DIR/outbox/$t.text" ] || continue
+    queued="$queued $t"
+    text=$(cat "$DIR/outbox/$t.text")
+    # Every text ends with the link to this check; the message gives it once.
+    if [ -n "$link" ]; then
+      text="${text%$'\n\n'"$link"}"
+      text="${text%"$link"}"
+    fi
+    section="$text"
+    if [ -s "$DIR/outbox/$t.reminder" ]; then
+      reminder=$(cat "$DIR/outbox/$t.reminder")
+      section="${section}"$'\n\n'"${reminder}"
+    fi
+    body="${body:+$body$'\n\n'}${section}"
+    remedy=$(cat "$DIR/outbox/$t.remedy" 2>/dev/null) || remedy=""
+    if [ -n "$remedy" ]; then
+      seen=""
+      for r in "${remedies[@]+"${remedies[@]}"}"; do [ "$r" = "$remedy" ] && seen=1; done
+      [ -z "$seen" ] && remedies+=("$remedy")
+    fi
+  done
+
+  if [ -z "$queued" ]; then
+    log "send: nothing queued, nothing posted"
+    echo nothing
+    return
+  fi
+
+  if [ "${#remedies[@]}" -gt 0 ]; then
+    [ -n "$cause" ] && body="${body}"$'\n\n'"*What happened:* ${cause}"
+    for r in "${remedies[@]}"; do body="${body}"$'\n\n'"*How to fix:* ${r}"; done
+  fi
+  [ -n "$link" ] && body="${body}"$'\n\n'"${link}"
+  [ -s "$DIR/outbox/note" ] && body="${body}"$'\n\n'"$(cat "$DIR/outbox/note")"
+
+  mark() {
+    for t in $queued; do printf '%s\n' "$1" >"$DIR/run/$t"; done
+  }
+
   if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
-    printf 'unreported\n' >"$DIR/run/$target"
-    log "alert: $target NOT posted ($key): SLACK_WEBHOOK_URL is empty"
+    mark unreported
+    log "send:$queued NOT posted: SLACK_WEBHOOK_URL is empty"
     echo no-webhook
     return
   fi
@@ -235,24 +307,22 @@ cmd_alert() {
       -H 'Content-Type: application/json' \
       --data "$(jq -nc --arg text "$body" '{text: $text}')"; then
     # Nothing recorded: a post Slack refused must not buy hours of silence.
-    printf 'unreported\n' >"$DIR/run/$target"
-    echo "::warning::Deploy Drift could not post the $target alert to Slack; the next run will try again." >&2
+    mark unreported
+    echo "::warning::Deploy Drift could not post its alert to Slack; the next run will try again." >&2
     echo post-failed
     return
   fi
 
-  jq -n --argjson entry "${entry:-null}" --arg key "$key" --arg now "$now_iso" --arg class "$class" \
-    --arg decision "$decision" '{
-      key: $key,
-      since: (if $decision == "post-reminder" then $entry.since else $now end),
-      alerts: (if $decision == "post-reminder" then $entry.alerts + 1 else 1 end),
-      last_alert: $now,
-      class: $class
-    }' >"$DIR/next/$slot.json"
-  rm -f "$DIR/next/$slot.cleared"
-  printf '%s\n' "$class" >"$DIR/run/$target"
-  log "alert: $target $decision ($key)"
-  echo "$decision"
+  for t in $queued; do
+    meta=$(cat "$DIR/outbox/$t.meta")
+    slot=$(sed -n 1p <<<"$meta")
+    class=$(sed -n 2p <<<"$meta")
+    mv "$DIR/pending/$slot.json" "$DIR/next/$slot.json"
+    rm -f "$DIR/next/$slot.cleared"
+    printf '%s\n' "$class" >"$DIR/run/$t"
+  done
+  log "send: posted one message for:$queued"
+  echo posted
 }
 
 cmd_clear() {
@@ -304,6 +374,7 @@ cmd_finish() {
 case "$CMD" in
   read) cmd_read ;;
   alert) cmd_alert "$@" ;;
+  send) cmd_send ;;
   clear) cmd_clear "$@" ;;
   finish) cmd_finish ;;
   interval)
