@@ -344,7 +344,8 @@ export async function recordFixture(e: GateEnv, def: DefinitionFile, who: Fixtur
   const stepRows = writes
     .filter((w) => w.table === 'execution_steps' && (w.op === 'insert' || w.op === 'upsert'))
     .flatMap((w) => w.values as Array<Record<string, unknown>>)
-    // Parallel children share a step order; the namespace breaks the tie the same way every run.
+    // An engine before #3084 gave a parallel slot's later steps the next slot's orders; when a
+    // base engine still does, the namespace breaks the tie the same way every run.
     .sort((a, b) => Number(a.step_order) - Number(b.step_order) || String(a.step_namespace).localeCompare(String(b.step_namespace)))
   const routes: RouteRecord[] = stepRows
     .filter((r) => r.output && typeof r.output === 'object' && typeof (r.output as Record<string, unknown>)._route === 'string')

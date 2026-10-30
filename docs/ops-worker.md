@@ -135,7 +135,8 @@ included ("Any secret, no exceptions").
   plain values (`ops_variable_copies`, `src/ops/variable-copies.ts`, written
   only by the tick); a run reading a secret cannot, and waits.
 - **A missing variable.** A variable missing when a run starts fails it by name
-  before anything sends (`runVariablesFor`). The step test is sent the current
+  before anything sends (`runVariablesFor`), with the status reason
+  `variable_unavailable` (#3000). The step test is sent the current
   values the same way (`routes/api/ops-step-test.ts`) and refuses a missing one
   (`step_test_variable_unavailable`).
 - **At save.** Saving a switched on ops workflow, switching one on, or restoring
@@ -143,6 +144,16 @@ included ("Any secret, no exceptions").
   variable that does not exist for it; a secret is a variable like any other
   (#3003). `judgeVariables` in `lib/definition-env-references.ts` is that one
   judgement, for the live save and the step test.
+- **What pages** (#3000, phase 4 of #2982). Each run reports where the
+  variables it ran on came from and how old they were at its start
+  (`RunInvocationReport.variables`), and the tick pages, each on a page of its
+  own (`OPS_OWN_PAGES` in `lib/ops-gateway-contract.ts`, `judgeVariables` in
+  `src/ops/tick.ts`): runs that started on the copy while bidding answered the
+  copy's refresh in the same tick; the refresh failing three ticks in a row;
+  an answer from bidding ops cannot read; and a switched on workflow's runs
+  failing with `variable_unavailable`. The refresh is skipped only when the
+  tick's own workflow fetch failed, so it runs beside a claimed ask that failed.
+  Each page is in reference/observability.md.
 - **Retired.** The version capture #2702 added (`capture_version_env_variables`,
   `workflow_versions.env_capture`, `ops_workflow_definitions.variables`,
   `save_workflow_definition`'s `p_variables`) is dropped (#3003: bidding
