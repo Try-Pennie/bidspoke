@@ -2708,7 +2708,18 @@ describe('runs returned to the queue unstarted (#3039, Dan\'s decision of 2026-1
       const report = await runOpsTick(f.ports)
       expect(report.counts).toMatchObject({ runs_returned_unstarted: 3, runs_requeued: 2, runs_lost: 1, runs_done: 1 })
       expect(problemOf(report, `runs_failing:${WF_A}`)).toBe(
-        `3 of the 4 runs of workflow ${WF_A} this tick were lost (1) or requeued (2). 3 more were returned to the queue unstarted and not counted here.`,
+        `3 of the 4 runs of workflow ${WF_A} this tick were lost (1) or requeued (2). 3 more could not start; the Ops runs can't start page reports them once they have waited 15 minutes.`,
+      )
+      expect(UNSTARTED_ALERT_AFTER_SECONDS).toBe(15 * 60)
+
+      // One left out is named in the singular.
+      const one = [unstartedDefinition, lost, lost, lost]
+      const single = fake({
+        mode: 'live', claimed: one.map((_, i) => claimedRun(WF_A, i + 1)),
+        runReport: async (run) => one[Number(run.runRequestId.slice(-1)) - 1],
+      })
+      expect(problemOf(await runOpsTick(single.ports), `runs_failing:${WF_A}`)).toBe(
+        `3 of the 3 runs of workflow ${WF_A} this tick were lost (3) or requeued (0). 1 more could not start; the Ops runs can't start page reports it once it has waited 15 minutes.`,
       )
 
       // Unstarted returns never make up the minimum count: two other requeues beside them are too few to judge (L716).

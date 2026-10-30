@@ -1125,7 +1125,9 @@ function judgeRunOutcomes(
     if (w.runs >= RUN_OUTCOME_MIN_RUNS && failing / w.runs >= RUN_OUTCOME_FAILING_RATE) {
       const first = w.errors[0] ? ` The first error: ${w.errors[0]}.` : ''
       const capped = w.requeue_capped > 0 ? `, or ${w.requeue_capped} stopped at the requeue cap, a service that kept asking them to wait` : ''
-      const unstarted = w.returned_unstarted > 0 ? ` ${w.returned_unstarted} more ${w.returned_unstarted === 1 ? 'was' : 'were'} returned to the queue unstarted and not counted here.` : ''
+      // Named, never counted (#3105): the Ops runs can't start page is theirs, from UNSTARTED_ALERT_AFTER_SECONDS.
+      const u = w.returned_unstarted
+      const unstarted = u > 0 ? ` ${u} more could not start; the Ops runs can't start page reports ${u === 1 ? 'it once it has' : 'them once they have'} waited ${UNSTARTED_ALERT_AFTER_SECONDS / 60} minutes.` : ''
       problem('runs_failing', `${failing} of the ${w.runs} runs of workflow ${workflowId} this tick were lost (${w.lost}) or requeued (${w.requeued})${capped}.${first}${unstarted}`, workflowId)
     }
   }
