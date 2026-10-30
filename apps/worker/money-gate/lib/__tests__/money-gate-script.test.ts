@@ -61,24 +61,39 @@ describe('only a pull request asks the live worker about leftover entries (#1836
   })
 })
 
-describe('a shipped leftover entry is a warning annotation, never a failure (#1836, #3151)', () => {
-  it('money-gate.sh warns with the line the verdict prints for it, and its failure annotation does not pick that line', () => {
-    const text = readFileSync(script, 'utf8')
-    const failurePattern = /reason="\$\(grep -m1 -E '([^']+)'/.exec(text)?.[1]
+describe('a shipped leftover entry: a warning, or a failure on a change that edits the file (#1836, #3151)', () => {
+  const text = readFileSync(script, 'utf8')
+  const failurePattern = /reason="\$\(grep -m1 -E '([^']+)'/.exec(text)?.[1]
+  const warningPattern = /SHIPPED_NOTE='([^']+)'/.exec(text)?.[1]
+  const entry = { workflow: 'W', check: 'route', node: 'b', field: 'route', reason: 'An older change' }
+  const file = JSON.stringify({ entries: [entry] })
+  const fixture = { id: 'W/x', workflow_id: 'w', workflow_name: 'W', variant: 'x', run_kind: 'live' as const, trigger: {}, routes: [], nodes_executed: ['a'], final_node: 'a', response: { status: 200, body: {} }, outbound: [], code_dispatch: [], supabase_writes: [], do_state: {}, kv_state: {} }
+  const kinds = (['live', 'test', 'shadow_dry_run'] as const).map((k) => ({ ...fixture, id: `W/x ${k}`, run_kind: k }))
+  const t = (side: 'base' | 'head') => ({ version: 1 as const, side, fixtures: kinds, workflows: [{ workflow_id: 'w', workflow_name: 'W', nodes: ['a'], arms: [] }], unstubbed_hosts: [], unknown_tables: [] })
+  const run = (expectedHead: string) => gateVerdict({ base: t('base'), head: t('head'), shapesExportedAt: '2026-10-01T00:00:00Z', now: new Date('2026-10-02T00:00:00Z'), committedDefinitionIds: ['w'], expectedHead, expectedBase: file, expectedLive: { commit: 'a'.repeat(40), text: file } })
+  const liveLines = (out: string) => out.split('\n').filter((l) => l.includes('live worker'))
+
+  it('money-gate.sh picks both annotations with grep -m1 -E, and warns with SHIPPED_NOTE', () => {
     expect(failurePattern, 'money-gate.sh no longer picks its failure annotation with grep -m1 -E').toBeDefined()
-    const pattern = /SHIPPED_NOTE='([^']+)'/.exec(text)?.[1]
-    expect(pattern, 'money-gate.sh no longer names the shipped entry note as SHIPPED_NOTE').toBeDefined()
+    expect(warningPattern, 'money-gate.sh no longer names the shipped entry note as SHIPPED_NOTE').toBeDefined()
     expect(text).toContain('echo "::warning::$(grep -m1 -E "$SHIPPED_NOTE" "$WORK/verdict.txt")"')
-    const entry = { workflow: 'W', check: 'route', node: 'b', field: 'route', reason: 'An older change' }
-    const file = JSON.stringify({ entries: [entry] })
-    const fixture = { id: 'W/x', workflow_id: 'w', workflow_name: 'W', variant: 'x', run_kind: 'live' as const, trigger: {}, routes: [], nodes_executed: ['a'], final_node: 'a', response: { status: 200, body: {} }, outbound: [], code_dispatch: [], supabase_writes: [], do_state: {}, kv_state: {} }
-    const kinds = (['live', 'test', 'shadow_dry_run'] as const).map((k) => ({ ...fixture, id: `W/x ${k}`, run_kind: k }))
-    const t = (side: 'base' | 'head') => ({ version: 1 as const, side, fixtures: kinds, workflows: [{ workflow_id: 'w', workflow_name: 'W', nodes: ['a'], arms: [] }], unstubbed_hosts: [], unknown_tables: [] })
-    const v = gateVerdict({ base: t('base'), head: t('head'), shapesExportedAt: '2026-10-01T00:00:00Z', now: new Date('2026-10-02T00:00:00Z'), committedDefinitionIds: ['w'], expectedHead: file, expectedBase: file, expectedLive: { commit: 'a'.repeat(40), text: file } })
+  })
+
+  it('a change that leaves the file alone gets the warning, and the failure annotation does not pick that line', () => {
+    const v = run(file)
     expect(v.exitCode).toBe(0)
-    const noteLines = v.output.split('\n').filter((l) => l.includes('live worker'))
-    expect(noteLines).toHaveLength(1)
-    expect(new RegExp(pattern!).test(noteLines[0]), `warning pattern misses: ${noteLines[0]}`).toBe(true)
+    expect(liveLines(v.output)).toHaveLength(1)
+    expect(new RegExp(warningPattern!).test(liveLines(v.output)[0]), `warning pattern misses: ${liveLines(v.output)[0]}`).toBe(true)
     expect(v.output.split('\n').filter((l) => new RegExp(failurePattern!).test(l))).toEqual([])
+  })
+
+  it('a change that edits the file fails, and the failure annotation names the shipped entry', () => {
+    // Reformatted only: the file differs from the merge base's, its entries do not.
+    const v = run(JSON.stringify({ entries: [entry] }, null, 2))
+    expect(v.exitCode).toBe(1)
+    expect(liveLines(v.output)).toHaveLength(1)
+    const picked = v.output.split('\n').find((l) => new RegExp(failurePattern!).test(l))
+    expect(picked, 'the failure annotation picks no line').toBe(liveLines(v.output)[0])
+    expect(new RegExp(warningPattern!).test(picked!)).toBe(false)
   })
 })

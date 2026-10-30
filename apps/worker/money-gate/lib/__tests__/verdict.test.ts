@@ -151,6 +151,37 @@ describe('gateVerdict leftover expected changes (#1836)', () => {
     expect(noteLines(v.output)).toEqual(['note: 2 expected change(s) carried over from the merge base, excusing nothing; delete them (Main Flow, W)'])
   })
 
+  // Dan's rule (#3151): a pull request that itself edits expected-changes.json is the
+  // one to clear what has shipped, so it fails until it deletes them in that change.
+  describe('fails only a pull request that edits expected-changes.json (#3151)', () => {
+    const shipped = entry('Main Flow', 'd')
+    const own = { workflow: 'W', check: 'route', node: 'b', field: 'route', reason: 'The branch now routes else for this lead, as agreed in #1' }
+    const changed = () => [t('base', [fx('yes')]), t('head', [fx('else')])] as const
+    const live = { commit: LIVE, text: file(shipped) }
+
+    it('fails by name when it adds its own entry while a shipped one is still there', () => {
+      const v = verdict(...changed(), { expectedHead: JSON.stringify({ entries: [shipped, own] }), expectedBase: file(shipped), expectedLive: live })
+      expect(v.exitCode).toBe(1)
+      expect(v.output).toContain('money gate: 1 expected-changes.json entr(ies) already in the live worker\'s copy (abcdef1), and this change edits expected-changes.json, so delete them in it: Main Flow route node d field "route"')
+      // Its own entry still excuses its own difference: the only failure is the shipped one.
+      expect(v.output).toContain('money gate: 1 difference(s) excused by expected-changes.json, 0 not excused')
+      expect(v.output.split('\n').filter((l) => l.startsWith('money gate: ') && l.includes('live worker'))).toHaveLength(1)
+      expect(v.output).not.toMatch(/^note: .*live worker/m)
+    })
+
+    it('passes once that same change deletes the shipped entry', () => {
+      const v = verdict(...changed(), { expectedHead: JSON.stringify({ entries: [own] }), expectedBase: file(shipped), expectedLive: live })
+      expect(v.exitCode).toBe(0)
+      expect(v.output).not.toContain('live worker')
+    })
+
+    it('an unrelated pull request, which leaves the file as it was, stays green with the note', () => {
+      const v = verdict(...same(), { expectedHead: file(shipped), expectedBase: file(shipped), expectedLive: live })
+      expect(v.exitCode).toBe(0)
+      expect(v.output).toContain('note: 1 expected-changes.json entr(ies) already in the live worker\'s copy (abcdef1)')
+    })
+  })
+
   it('a shipped entry still excuses nothing: the difference it names fails as unexcused (#3151)', () => {
     const v = verdict(t('base', [fx('yes')]), t('head', [fx('else')]), { expectedHead: EXCUSE, expectedBase: EXCUSE, expectedLive: { commit: LIVE, text: EXCUSE } })
     expect(v.exitCode).toBe(1)

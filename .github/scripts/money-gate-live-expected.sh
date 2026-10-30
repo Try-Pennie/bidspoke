@@ -2,9 +2,9 @@
 #
 # The live worker's expected-changes.json, for the money gate's verdict (#1836).
 # An entry the live worker already carries has shipped and can never excuse a
-# difference again, so the verdict names it for deletion, as a note and never a
-# failure (#3151). Split out of money-gate.sh so each outcome is tested by
-# running it (#1921).
+# difference again, so the verdict names it for deletion: a failure on a change
+# that edits expected-changes.json, a note on any other (#3151). Split out of
+# money-gate.sh so each outcome is tested by running it (#1921).
 #
 # Usage: money-gate-live-expected.sh <work dir>, from the repository root.
 #   env: MONEY_GATE_LIVE_WORKER_URL  the live worker; only the pull request job
