@@ -144,25 +144,6 @@ describe('OpsInternal.run', () => {
     expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'first' } })
   })
 
-  // #3003: the variables an earlier deploy kept beside a version are read by nothing, so they can never stop a run.
-  it('saves a version it fetches with no variables, even ones an older bidding Worker served beside it, and runs on its dispatch\'s (#3003)', async () => {
-    const kept = { values: { API_BASE: 'served' }, secret_keys: [] }
-    const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: readsBase, variables: kept }], unserved: [] }) }
-    const db = opsDb({ ...LIFECYCLE, workflow_definition: [], record_ops_step: 'recorded' })
-    const variables = { ...VARS, values: { API_BASE: 'current' } }
-    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
-    expect(Object.keys(db.calls.find((c) => c.name === 'save_workflow_definition')?.body ?? {})).not.toContain('p_variables')
-    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'current' } })
-  })
-
-  it('runs a fetched version whose served variables are in a shape ops does not read, on its dispatch\'s (#3003)', async () => {
-    const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: readsBase, variables: { values: 7 } }], unserved: [] }) }
-    const db = opsDb({ ...LIFECYCLE, workflow_definition: [], record_ops_step: 'recorded' })
-    const variables = { ...VARS, values: { API_BASE: 'current' } }
-    expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
-    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'current' } })
-  })
-
   it('gives a run the secret its dispatch carried, records the secret\'s name only, and masks its value from every record and log line (#2998)', async () => {
     const PLANTED = 'fake-run-live-secret-value'
     const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'env.TOKEN', target: 't' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }
@@ -182,12 +163,20 @@ describe('OpsInternal.run', () => {
     expect(lines.join('\n')).not.toContain(PLANTED)
   })
 
-  it('a version an older bidding Worker refused to serve returns the run to the queue, naming why (#2702)', async () => {
-    const gateway = { opsWorkflowDefinitions: async () => ({ definitions: [], unserved: [], refused: [{ workflow_id: WF, version_number: 3, reason: 'its kept variables cannot be read' }] }) }
+  // A run whose version was not served says which of the three it was (#3122): a version
+  // bidding holds no row of, one served in a shape ops does not read, or one not answered at all.
+  it.each([
+    ['named as one it holds no row of', { definitions: [], unserved: [{ workflow_id: WF, version_number: 3 }] }, /holds no ops lane version 3 of workflow/],
+    ['served in a shape ops does not read', { definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: [1] }], unserved: [] }, /in a shape the ops Worker does not read/],
+    ['neither served nor named, even beside a refused list ops no longer reads', { definitions: [], unserved: [], refused: [{ workflow_id: WF, version_number: 3, reason: 'a reason' }] }, /neither served it nor said it holds none/],
+  ])('a version the bidding Worker did not serve returns the run to the queue, saying why: %s', async (_, answer, why) => {
+    const gateway = { opsWorkflowDefinitions: async () => answer }
     const db = opsDb({ ...LIFECYCLE, workflow_definition: [], complete_run_request: [{ outcome: 'completed', run_status: 'queued', state_version: 3 }] })
     expect(await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables: VARS }), deps(db.fetch))).toMatchObject({ outcome: 'definition_unavailable' })
     expect(db.names()).not.toContain('start_run_execution')
-    expect(String(db.calls.find((c) => c.name === 'complete_run_request')?.body.p_error)).toMatch(/its kept variables cannot be read/)
+    const error = String(db.calls.find((c) => c.name === 'complete_run_request')?.body.p_error)
+    expect(error).toMatch(why)
+    expect(error).not.toMatch(/a reason/)
   })
 
   it('a definition it cannot have returns the run to the queue a minute on, without starting it', async () => {
