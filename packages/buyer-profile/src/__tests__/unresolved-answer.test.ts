@@ -1,12 +1,14 @@
 /**
- * An unresolved buyer call, worded by whether an answer arrived (#3087). Dan,
- * 2026-10-30: a live buyer call that got no answer (our timer, a connection
- * failure, a cancelled call) reads "No answer from the buyer" and "No answer";
- * an answer that arrived but no rule matched keeps "Buyer response could not be
- * classified" and "Answer not classified". Both are one list here, and the
- * outcome_unknown labels of the two code lists are read from it, so a third
- * wording cannot appear on one surface only (L605, L611). The plain words check
- * of every reason label (vocab.test.ts) covers these too, through those lists.
+ * An unresolved buyer call, worded by what the buyer answered (#3087, #3129).
+ * Dan, 2026-10-30: a live buyer call that got no answer (our timer, a
+ * connection failure, a cancelled call) reads "No answer from the buyer" and
+ * "No answer"; an answer that arrived but no rule matched keeps "Buyer response
+ * could not be classified" and "Answer not classified"; an accepted answer whose
+ * sale Bidspoke could not record afterwards reads "Buyer accepted, but the sale
+ * could not be recorded" and "Sale not recorded". All three are one list here,
+ * and the outcome_unknown labels of the two code lists are read from it, so no
+ * surface can word an unknown outcome in words of its own (L605, L611). The
+ * plain words check below covers every one of them.
  */
 import { describe, expect, it } from 'vitest'
 import { CONSIDERED_OUTCOME_LABELS, OUT_REASON_LABELS, UNRESOLVED_ANSWERS, UNRESOLVED_ANSWER_LABELS } from '../vocab'
