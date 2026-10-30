@@ -66,18 +66,25 @@ describe('the OpsConnections contract', () => {
       expect(parseTestStepRequest(bare)).toEqual({ ...bare, execution_id: null, trigger_payload: {}, steps: {}, confirm_send: false, variables: null })
     })
 
-    it('ignores a saved version an older bidding Worker sends beside the step, whatever its shape, and keeps none of it (#3003)', () => {
-      for (const version of [{ number: 7, variables: { values: { API_BASE: 'https://api.example.test' }, secret_keys: ['TOKEN'] } }, { number: 0 }, 'v7']) {
-        const read = parseTestStepRequest({ ...ok, version })
+    // The two Workers deploy from one commit, but either can be rolled back alone,
+    // so a field this release does not read is ignored, never a reason to refuse
+    // the test: whatever its shape, beside the request, its node or an earlier step.
+    it('ignores a field it does not read, beside the request, its node or an earlier step, whatever its shape, and keeps none of it (#3136)', () => {
+      for (const extra of [{ number: 7, values: { K: 1 } }, 'x', [1], null]) {
+        const read = parseTestStepRequest({
+          ...ok, unread: extra,
+          node: { ...node, unread: extra },
+          steps: { earlier: { output: { b: 2 }, status: 'completed', unread: extra } },
+        })
         expect(read).toEqual({ ...ok, execution_id: null, variables: null })
-        expect(Object.keys(read)).not.toContain('version')
       }
     })
 
     // #3002: bidding sends the current values of the variables the step reads,
-    // secrets decrypted. A bidding Worker from before it sends none (null), and
-    // ops then refuses a step reading a variable; one malformed is refused, never quoting a value.
-    it('reads the current variables the step is given, secrets included (#3002), none from a bidding Worker that sends none', () => {
+    // secrets decrypted, and sends none (null) for a step reading none; ops
+    // refuses a step reading a variable it was given no value for, and one
+    // malformed is refused, never quoting a value.
+    it('reads the current variables the step is given, secrets included (#3002), and none when none are sent', () => {
       const variables = { values: { API_BASE: 'https://api.example.test' }, secret_values: { TOKEN: 'tok-live-value' } }
       expect(parseTestStepRequest({ ...ok, variables }).variables).toEqual({ values: { API_BASE: 'https://api.example.test' }, secretValues: { TOKEN: 'tok-live-value' } })
       expect(parseTestStepRequest({ ...ok, variables: null }).variables).toBeNull()
