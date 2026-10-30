@@ -27,7 +27,7 @@ import { dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { OutboundRecord } from '../lib/compare'
 import { parseBody, redactBody, redactHeaders, redactPathAndQuery } from '../lib/redact'
-import { noRuleAnswer, readBodyText, stubAnswer, toResponse, type Arms } from '../lib/stub-rules'
+import { codeBundleRefusal, noRuleAnswer, readBodyText, stubAnswer, toResponse, type Arms } from '../lib/stub-rules'
 import { determinismPrelude, GATE_ENTRY } from './determinism-prelude'
 import compareOutbound from '../../../compare-outbound/src/index'
 import type { HostedBundle } from '../lib/hosted-bundle'
@@ -92,6 +92,8 @@ export function createGateIo(opts: GateIoOptions) {
   let dispatchNode = ''
   let outbound: OutboundRecord[] = []
   const unstubbed = new Set<string>()
+  /** Answers a bundle asked for and could not be given (codeBundleRefusal), drained with the outbound. */
+  let refused: string[] = []
 
   async function codeOutbound(request: Request): Promise<Response> {
     const url = new URL(request.url)
@@ -110,9 +112,15 @@ export function createGateIo(opts: GateIoOptions) {
     })
     const stubReq = { method: request.method, url, headers, body }
     const hit = stubAnswer(stubReq, arms)
-    const answer = hit?.answer ?? noRuleAnswer(stubReq)
     if (!hit) unstubbed.add(`${url.host}${url.pathname} (${fixture})`)
-    return toResponse(answer)
+    // An answer that does not arrive whole cannot reach a bundle as one (#3086):
+    // named, and the replay refuses the run when it drains.
+    const refusal = hit ? codeBundleRefusal(hit, fixture) : null
+    if (refusal) {
+      refused.push(refusal)
+      return toResponse(noRuleAnswer(stubReq))
+    }
+    return toResponse(hit?.answer ?? noRuleAnswer(stubReq))
   }
 
   /** How a bundle's outbound requests are answered: its namespace's outbound Worker, or the stub rules. */
@@ -163,6 +171,7 @@ export function createGateIo(opts: GateIoOptions) {
         fixture = body.fixture
         arms = body.arms ?? {}
         outbound = []
+        refused = []
         return Response.json({ ok: true })
       }
       case '/dispatch': {
@@ -184,8 +193,10 @@ export function createGateIo(opts: GateIoOptions) {
       }
       case '/drain': {
         const out = outbound
+        const refusals = refused
         outbound = []
-        return Response.json({ outbound: out, unstubbed: [...unstubbed].sort() })
+        refused = []
+        return Response.json({ outbound: out, unstubbed: [...unstubbed].sort(), refused: refusals })
       }
       case '/transcript': {
         const text = await request.text()

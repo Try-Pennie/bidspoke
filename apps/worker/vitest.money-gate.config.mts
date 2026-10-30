@@ -7,6 +7,7 @@ import { createGateIo, refuseRunnerOutbound } from './money-gate/harness/gate-io
 import { FIXED_TIME_MS } from './money-gate/harness/replay-env'
 import { parseDispatchDelay } from './money-gate/lib/dispatch-delay'
 import { refusingServiceStubs } from './money-gate/lib/service-stubs'
+import { isReplayedNoAnswerRejection } from './money-gate/lib/stub-rules'
 
 /**
  * The money gate replay (#1704). Runs the harness in this checkout against the
@@ -85,6 +86,10 @@ export default defineConfig({
   test: {
     // The gate's replay only; the outage drill has its own config and job (#1305).
     include: ['money-gate/harness/replay.workers.test.ts'],
+    // Only a no answer the replay played out (#3086), which workerd reports even
+    // when the buyer call awaited it (money-gate/lib/stub-rules.ts); any other
+    // unhandled error fails.
+    onUnhandledError: (err) => (isReplayedNoAnswerRejection(err) ? false : undefined),
     testTimeout: 900_000,
     hookTimeout: 120_000,
     env: { TZ: 'UTC', LANG: 'en_US.UTF-8' },

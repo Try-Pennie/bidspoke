@@ -1,7 +1,9 @@
 /**
- * postToPartner (#1411): the one outbound POST to a partner, shared by the bid
- * resolver's API call and the buyer_select node's sale attempt, so the
+ * postToPartner (#1411): the one outbound POST to a buyer, shared by the
+ * buyer_select node's sale attempt and buyer_click_send's post, so the
  * credential rule, the trace header and the body handling live once (L613).
+ * The bid resolver's API call does not post through it: it imports only
+ * partnerRequestHeaders, so its headers follow the same credential rule (#3094).
  *
  * The credential rule is #411 and #417: a partner configured to require a
  * credential whose value is unset or blank is OUR fault, so it is a permanent
