@@ -81,15 +81,19 @@ describe('runVariablesFor: what a run is given', () => {
   it('refuses by name a variable that did not exist when the run started', () => {
     expect(runVariablesFor(['API_BASE', 'LIST_ID', 'GONE'], recorded, DISPATCHED.secretValues)).toEqual({
       refused: 'the definition reads env.LIST_ID, env.GONE, which were not variables of this workflow when the run started, so nothing was run; add them and run it again',
+      // By name, as a field (#3000): the page names them from here, never from the sentence.
+      missing: ['LIST_ID', 'GONE'],
     })
     expect(runVariablesFor(['LIST_ID'], recorded, {})).toEqual({
       refused: 'the definition reads env.LIST_ID, which was not a variable of this workflow when the run started, so nothing was run; add it and run it again',
+      missing: ['LIST_ID'],
     })
   })
 
   it('refuses by name a secret the run read when it started that this start was not served', () => {
     expect(runVariablesFor(['API_TOKEN'], recorded, {})).toEqual({
       refused: 'the definition reads the secret variable env.API_TOKEN, which the run read when it started and the bidding Worker did not serve when it started again, so nothing was run',
+      missing: ['API_TOKEN'],
     })
   })
 

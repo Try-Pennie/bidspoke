@@ -236,6 +236,19 @@ describe('the run engine vocabularies match the ops database constraints', () =>
   })
 
   /**
+   * A run whose definition reads a variable it was not given when it started
+   * fails before it sends anything, and names it (#3000): the holder sends
+   * variable_unavailable, which the minute tick pages for a switched on
+   * workflow, so the database must take it from a holder and hold it in the
+   * status reason CHECK.
+   */
+  it('variable_unavailable is a reason a holder fails a run for, in the code and the database (#3000)', () => {
+    expect(HOLDER_FAILED_REASONS).toContain('variable_unavailable')
+    expect(constraintValues(SQL, 'run_requests_status_reason_check')).toContain('variable_unavailable')
+    expect(guardIn(functionBody(SQL, 'complete_run_request'), 'failed', 'p_reason')).toContain('variable_unavailable')
+  })
+
+  /**
    * A no-retry run whose lease lapses ends failed by name (#3046, Dan's decision
    * of 2026-10-30). Only the lease sweep writes the reason, so it is an engine
    * reason: in the CHECK and STATUS_REASONS.failed, refused from a holder, and
