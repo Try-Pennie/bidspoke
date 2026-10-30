@@ -138,6 +138,24 @@ export const OUT_REASONS = [
 ] as const
 export type OutReason = (typeof OUT_REASONS)[number]
 
+/**
+ * The two kinds of outcome_unknown a live buyer call can leave (#3087), worded
+ * by whether an answer arrived (Dan, 2026-10-30). `no_answer`: the request left
+ * and no answer came back (our timer, a connection failure, a cancelled call).
+ * `not_classified`: an answer arrived and no rule matched it, which is also the
+ * wording of every other outcome_unknown. The node records both as
+ * outcome_unknown; the run page tells them apart with `unresolvedAnswerOf`
+ * (unresolved-answer.ts), and the outcome_unknown labels of OUT_REASON_LABELS
+ * and CONSIDERED_OUTCOME_LABELS are read from here, so there is one list.
+ */
+export const UNRESOLVED_ANSWERS = ['no_answer', 'not_classified'] as const
+export type UnresolvedAnswer = (typeof UNRESOLVED_ANSWERS)[number]
+
+export const UNRESOLVED_ANSWER_LABELS: Record<UnresolvedAnswer, { reason: string; outcome: string }> = {
+  no_answer: { reason: 'No answer from the buyer', outcome: 'No answer' },
+  not_classified: { reason: 'Buyer response could not be classified', outcome: 'Answer not classified' },
+}
+
 /** Plain words for the execution view. The Record type makes a missing label a compile error (L113). */
 export const OUT_REASON_LABELS: Record<OutReason, string> = {
   inactive: 'Partner is switched off',
@@ -162,7 +180,7 @@ export const OUT_REASON_LABELS: Record<OutReason, string> = {
   live_percent_unset: 'Live share variable is not set',
   declined_by_buyer: 'Declined by the buyer',
   buyer_error: 'Buyer call failed before the lead was processed',
-  outcome_unknown: 'Buyer response could not be classified',
+  outcome_unknown: UNRESOLVED_ANSWER_LABELS.not_classified.reason,
   not_reached: 'An earlier buyer took the lead',
   object_deadline: 'An internal call did not answer in time, so the buyer was not called',
   breaker_unreadable: 'Circuit breaker could not be read, so the buyer was skipped',
@@ -238,7 +256,7 @@ export const CONSIDERED_OUTCOME_LABELS: Record<ConsideredOutcome, string> = {
   rehearsed: 'Would have been offered the lead',
   declined_by_buyer: 'Declined',
   buyer_error: 'Buyer call failed',
-  outcome_unknown: 'Answer not classified',
+  outcome_unknown: UNRESOLVED_ANSWER_LABELS.not_classified.outcome,
   skipped: 'Skipped',
   ineligible: 'Not eligible',
   eligible: 'Eligible',
