@@ -88,6 +88,7 @@ import { assertDefinitionRunsInLane, assertTriggerStartsRunsInLane, assertWorkfl
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
 import { startAtRiskWatch, heldUntilOf } from './at-risk-writes'
 import { runWatchedStep } from './step-watch'
+import { SlotSteps, type SlotStep } from './parallel-cut-off'
 import { AtRiskLedger } from './at-risk-gap'
 import { stepRetries } from './inquiry-post'
 import { readRecoveryOrigin, type RecoveryOrigin } from './recovery-origin'
@@ -1829,11 +1830,12 @@ export async function walkGraph(
       // block (#2832), and the step each failed child failed on.
       const runningChildSteps = new Set<string>()
       const childFailures = new Map<number, StepFailureError>()
-      // The request each child noted last, and the step that noted it (#3064),
-      // for the row the block writes when it stops waiting for that child. That
-      // row is written at once when the block settles, so a note the child makes
-      // after that (a late retry) reaches only this map, never the row.
-      const childNotedInputs = new Map<number, { namespace: string; input: ResolvedStepInput }>()
+      // The step each child is on, whether it has written its row, and the
+      // request it noted last (#3064, #3071), for the row the block writes when
+      // it stops waiting for that child. That row is written at once when the
+      // block settles, so a note the child makes after that (a late retry)
+      // reaches only this record, never the row.
+      const slotSteps = new SlotSteps()
       // Set once the block stops waiting: a slot still running after that (one the
       // block did not wait for, or one cut off at its timeout) must not rename what
       // the walk is on, which by then has moved on.
@@ -1846,7 +1848,9 @@ export async function walkGraph(
           ctx.runningNamespaces = runningChildSteps.size > 0 ? [...runningChildSteps] : [node.namespace]
         },
         onFailure: (failure) => { childFailures.set(childIndex, failure) },
-        onInput: (namespace, input) => { childNotedInputs.set(childIndex, { namespace, input }) },
+        onInput: (namespace, input) => { slotSteps.note(childIndex, namespace, input) },
+        onStepStart: (step) => { slotSteps.start(childIndex, step) },
+        onStepRecorded: (namespace) => { slotSteps.record(childIndex, namespace) },
       })
       const continuing = continuingSlots(execNode.config)
       const isContinuing = (childIndex: number) => continuing.has(slotHandleIds[childIndex] ?? '')
@@ -1880,16 +1884,19 @@ export async function walkGraph(
             if (childIndex < 0) continue
             const child = resolvedChildren[childIndex]
             const errMsg = `Parallel group timed out after ${timeoutMs}ms before this child completed`
+            // What later steps read of the slot stays keyed on its first step, as
+            // it always was: moving it would change what they resolve, and so
+            // what the run sends. Only the row below moves (#3071).
             recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
-            // The request the child noted last (#3064), the same masked object its
-            // own row would have stored, and only when the step that noted it is
-            // the one this row names: a slot past its first step was cut off on a
-            // later step, whose request is not this step's.
-            const noted = childNotedInputs.get(childIndex)
-            const cutOffInput = noted && noted.namespace === child.namespace ? noted.input : null
+            // Under the step the slot was running (#3071), with that step's own
+            // start and order and the request it noted last (#3064), the same
+            // masked object its own row would have stored. None when that step
+            // already wrote its own row: never a second row (#63).
+            const cutOff = slotSteps.cutOff(childIndex, { node: child, stepOrder: childOrderBase + childIndex, startedAt: stepStartedAt })
+            if (!cutOff) continue
             // Marked as the block's deadline, not the child's own (#3047), so a
             // reader of step timeouts tells the two apart without the text.
-            logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', cutOffInput, null, errMsg, 'transient', 0, stepStartedAt, childOrderBase + childIndex, node.id, undefined, timeoutMarker(PARALLEL_BLOCK_DEADLINE, timeoutMs))
+            logStep(stepLogQueue, executionId, executionStartedAt, cutOff.node, 'failed', cutOff.input, null, errMsg, 'transient', 0, cutOff.startedAt, cutOff.stepOrder, node.id, undefined, timeoutMarker(PARALLEL_BLOCK_DEADLINE, timeoutMs))
           }
         }
       } catch (err) {
@@ -2812,6 +2819,10 @@ export interface ParallelChildTracking {
   onFailure(failure: StepFailureError): void
   /** A step of a child noted the request it resolved (#3064), the object its own row would store. */
   onInput?(namespace: string, input: ResolvedStepInput): void
+  /** A step of a child started, placed as its own row would be (#3071). */
+  onStepStart?(step: SlotStep): void
+  /** A step of a child wrote its own row (#3071). */
+  onStepRecorded?(namespace: string): void
 }
 
 // Execute a single child node within a parallel group — simplified version of
@@ -2888,6 +2899,7 @@ export async function runParallelChild(
 
     let caught: unknown = null
     tracking?.onStep(node.namespace, true)
+    tracking?.onStepStart?.({ node, stepOrder: baseStepOrder + chainIndex, startedAt: stepStartedAt })
     try {
       // Watched with its own hooks, as in the walk (engine/step-watch.ts, #2832),
       // so a Salesforce write here keeps its at-risk record and write marker
@@ -2973,6 +2985,7 @@ export async function runParallelChild(
     }
     recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
     logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retryStats.retries, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs, stepTimeout)
+    tracking?.onStepRecorded?.(node.namespace)
 
     if (stepStatus === 'failed') {
       tracking?.onFailure(new StepFailureError(errorMessage ?? 'the step failed', node.namespace, errorType, suppressAlert, resolvedInput, heldUntilOf(caught), salesforceAnswerOf(caught), null, ctx.afterAnswer === true))

@@ -185,17 +185,43 @@ describe('a parallel child the block cut off records the request it sent (#3064)
     await lateStepEnded('tripoint_sf_post', 'step_error')
   })
 
-  it('a step the slot reached before the cut-off keeps its own row, and the cut-off row is not given a later step\'s request', async () => {
+})
+
+describe('a slot cut off on a later step of its chain: the row is that step\'s (#3071)', () => {
+  const gate: NodeDefinition = { id: 'gate', namespace: 'gate', type: 'filter', config: { operation: 'continue_if', condition: { field: 'trigger.payload.score', operator: 'gt', value: '600' } } }
+
+  it('the step it was running gets the cut-off row with its request, and the step it finished keeps its one row', async () => {
     const held = holdFetch(fetchMock)
-    const gate: NodeDefinition = { id: 'gate', namespace: 'gate', type: 'filter', config: { operation: 'continue_if', condition: { field: 'trigger.payload.score', operator: 'gt', value: '600' } } }
-    const queue = await walk(ctx(), inParallel(gate, relayPost('tripoint_sf_post')))
-    // The block names the slot by its first step, which had already finished:
-    // the request noted by the step after it is not that step's request.
-    const row = cutOffRow(queue, 'gate')
-    expect(row.input).toBeNull()
+    const queue = await walk(ctx(), inParallel(gate, relayPost('tripoint_sf_post'), relayPost('follow_up_post')))
     expect(held).toHaveLength(1)
+    // The step it finished: one row, completed, never a second one failed by the block.
+    const gateRows = rowsOf(queue, 'gate')
+    expect(gateRows).toHaveLength(1)
+    expect(gateRows[0].status).toBe('completed')
+    expect(gateRows[0]).not.toHaveProperty('timeout_kind')
+    // The step it was on: the block's row, with what it sent, in its own place in the slot.
+    const row = cutOffRow(queue, 'tripoint_sf_post')
+    expect(row).toMatchObject({ status: 'failed', error_message: CUT_OFF_MESSAGE, error_type: 'transient', timeout_kind: 'parallel_block', timed_out_after_ms: BLOCK_TIMEOUT_MS, parallel_group_id: 'fan', step_order: gateRows[0].step_order + 1 })
+    expectTheRequestSent(row)
+    expectNoSecret(row)
+    // It started when that step did, not when the block did.
+    expect(Date.parse(row.started_at)).toBeGreaterThanOrEqual(Date.parse(gateRows[0].started_at))
+    // The step after it never started, so it has no row.
+    expect(rowsOf(queue, 'follow_up_post')).toHaveLength(0)
     held[0].fail(new TypeError('Network connection lost.'))
     await lateStepEnded('tripoint_sf_post', 'step_error')
+  })
+
+  it('a late success of that step writes no second row and starts no further step', async () => {
+    const held = holdFetch(fetchMock)
+    const queue = await walk(ctx(), inParallel(gate, relayPost('tripoint_sf_post'), relayPost('follow_up_post')))
+    held[0].answer(new Response('{"ok":true}', { status: 200 }))
+    await lateStepEnded('tripoint_sf_post', 'step_complete')
+    expect(rowsOf(queue, 'gate')).toHaveLength(1)
+    expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(1)
+    expectTheRequestSent(cutOffRow(queue, 'tripoint_sf_post'))
+    expect(rowsOf(queue, 'follow_up_post')).toHaveLength(0)
+    expect(held).toHaveLength(1)
   })
 })
 
