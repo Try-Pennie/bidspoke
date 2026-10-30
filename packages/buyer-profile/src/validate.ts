@@ -110,8 +110,8 @@ function namesAField(field: unknown): boolean {
  * The accept rules a save may store (#3093): every rule reads a named field of
  * the buyer's answer, and an empty answer does not meet them all. Judged with
  * the engine's own matcher, so what it refuses is exactly what evaluateSaleOutcome
- * would accept. validateProfile runs it for an offer buyer, and the page save
- * runs it alone when a save changes the rules without the profile.
+ * would accept. validateProfile runs it for every buyer, click buyers included,
+ * and the page save runs it alone when a save changes the rules without the profile.
  */
 export function acceptRuleErrors(acceptSignals: readonly Signal[]): ProfileError[] {
   const errors: ProfileError[] = []
