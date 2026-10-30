@@ -403,19 +403,157 @@ describe('the rows a failed block now writes leave the run in the outage bucket 
     await lateStepEnded('tripoint_sf_post', 'step_error')
   })
 
-  it('failing on a slot that was refused while another was still running: no cut-off row, so not read as a timeout', async () => {
+  it('failing on a slot that was refused while another was still running: no failed cut-off row, so not read as a timeout', async () => {
     const held: HeldCall[] = []
     fetchMock.mockImplementation((url: unknown) => String(url).includes('refused')
       ? Promise.resolve(new Response('{"error":"bad lead"}', { status: 400 }))
       : new Promise((resolve, reject) => { held.push({ answer: resolve, fail: reject }) }))
-    const refused = { ...relayPost('lendswift_post'), config: { ...relayPost('lendswift_post').config, url: 'https://refused.example.test/hook' } }
-    const { queue, failure } = await walkFailing(ctx(), inBlock({}, [refused], [relayPost('tripoint_sf_post')]))
+    const { queue, failure } = await walkFailing(ctx(), inBlock({}, [refusedPost('lendswift_post')], [relayPost('tripoint_sf_post')]))
     expect(failure.message).toMatch(/^Parallel failed: child "lendswift_post" failed/)
-    // The block failed on the refusal, not its deadline: the late slot gets no row,
-    // as before, so the run is not bound to a deadline it did not fail on.
-    expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(0)
+    // The block failed on the refusal, not its deadline: the late slot's row
+    // (#3083) is skipped, never failed, so the run is not bound to a deadline it
+    // did not fail on.
+    expect(rowsOf(queue, 'tripoint_sf_post')).toMatchObject([{ status: 'skipped' }])
+    expect(markedFailedRows(queue)).toEqual([])
     expect(bucketsOf(queue, failure)).toEqual({ withRows: null, withoutRows: null })
     held[0].fail(new TypeError('Network connection lost.'))
+    await lateStepEnded('tripoint_sf_post', 'step_error')
+  })
+})
+
+/** A relay post the partner refuses at once (400). */
+function refusedPost(namespace: string): NodeDefinition {
+  const node = relayPost(namespace)
+  return { ...node, config: { ...node.config, url: 'https://refused.example.test/hook' } }
+}
+
+/** A relay post the partner answers at once (200). */
+function answeredPost(namespace: string): NodeDefinition {
+  const node = relayPost(namespace)
+  return { ...node, config: { ...node.config, url: 'https://answered.example.test/hook' } }
+}
+
+/**
+ * Refused and answered posts are answered, once `heldFirst` other fetches are
+ * held (so the slot left running has sent, and noted, its request before the
+ * block decides); every other fetch is held.
+ */
+function answerSomeHoldTheRest(heldFirst = 0): HeldCall[] {
+  const held: HeldCall[] = []
+  const once = (response: () => Response) => vi.waitFor(() => { if (held.length < heldFirst) throw new Error('not yet held') }, { interval: 1 }).then(response)
+  fetchMock.mockImplementation((url: unknown) => String(url).includes('refused')
+    ? once(() => new Response('{"error":"bad lead"}', { status: 400 }))
+    : String(url).includes('answered')
+      ? once(() => new Response('{"ok":true}', { status: 200 }))
+      : new Promise((resolve, reject) => { held.push({ answer: resolve, fail: reject }) }))
+  return held
+}
+
+/** Ends every held call, so nothing outlives the test. */
+function failAll(held: HeldCall[]): void {
+  for (const call of held) call.fail(new TypeError('Network connection lost.'))
+}
+
+/** The one row of `ns` the block wrote as skipped (#3083). */
+function leftRow(queue: StepLogEntry[], ns: string): StepLogEntry & Record<string, unknown> {
+  const rows = rowsOf(queue, ns)
+  if (rows.length !== 1 || rows[0].status !== 'skipped') throw new Error(`expected one skipped row for ${ns}, found ${rows.map((r) => r.status).join(', ') || 'none'}`)
+  return rows[0] as StepLogEntry & Record<string, unknown>
+}
+
+/** Long enough that only the slots, never the block's timer, decide a wait_for first or specific block. */
+const NO_DEADLINE_MS = 60_000
+
+describe('a slot still running when its block returns first or fails on another slot gets a row (#3083)', () => {
+  it('wait_for first: the slot still running when the winner returned is recorded as skipped, with its request', async () => {
+    const held = answerSomeHoldTheRest(1)
+    const c = ctx()
+    const queue = await walk(c, inBlock({ wait_for: 'first', timeout_ms: NO_DEADLINE_MS }, [answeredPost('amone_post')], [relayPost('tripoint_sf_post')]))
+    expect(rowsOf(queue, 'amone_post')).toMatchObject([{ status: 'completed' }])
+    expect(rowsOf(queue, 'fan')).toMatchObject([{ status: 'completed' }])
+    const row = leftRow(queue, 'tripoint_sf_post')
+    expect(row).toMatchObject({ status: 'skipped', error_message: 'Stopped waiting: branch amone_post finished first.', error_type: null, output: null, parallel_group_id: 'fan' })
+    // No deadline stopped it, so it carries no deadline marker.
+    expect(row).not.toHaveProperty('timeout_kind')
+    expectTheRequestSent(row)
+    expectNoSecret(row)
+    // Only the row is written: what later steps read of the slot is untouched.
+    expect(c.steps.tripoint_sf_post).toBeUndefined()
+    held[0].answer(new Response('{"ok":true}', { status: 200 }))
+    await lateStepEnded('tripoint_sf_post', 'step_complete')
+    // Its late finish writes no second row (#63).
+    expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(1)
+  })
+
+  it('wait_for specific: a slot still running when the named slot failed is recorded as skipped, and the run is not read as a timeout', async () => {
+    const held = answerSomeHoldTheRest(1)
+    const c = ctx()
+    const { queue, failure } = await walkFailing(c, inBlock({ wait_for: 'specific', wait_for_slot: 'child-0', timeout_ms: NO_DEADLINE_MS }, [refusedPost('lendswift_post')], [relayPost('tripoint_sf_post')]))
+    // The run's failure is the block's, unchanged.
+    expect(failure.message).toMatch(/^Parallel failed: slot "lendswift_post" failed/)
+    expect(failure).toMatchObject({ stepNamespace: 'fan', afterAnswer: false })
+    expect(rowsOf(queue, 'lendswift_post')).toMatchObject([{ status: 'failed' }])
+    const row = leftRow(queue, 'tripoint_sf_post')
+    expect(row).toMatchObject({ status: 'skipped', error_message: 'Stopped waiting: branch lendswift_post failed.', error_type: null, parallel_group_id: 'fan' })
+    expect(row).not.toHaveProperty('timeout_kind')
+    expectTheRequestSent(row)
+    expect(c.steps.tripoint_sf_post).toBeUndefined()
+    expect(markedFailedRows(queue)).toEqual([])
+    expect(bucketsOf(queue, failure)).toEqual({ withRows: null, withoutRows: null })
+    held[0].fail(new TypeError('Network connection lost.'))
+    await lateStepEnded('tripoint_sf_post', 'step_error')
+    expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(1)
+  })
+
+  it('wait_for all, on_child_error fail: a slot still running at the deadline when the block fails on a refused slot is skipped, marked as the block\'s deadline', async () => {
+    const held = answerSomeHoldTheRest()
+    const c = ctx()
+    const { queue, failure } = await walkFailing(c, inBlock({}, [refusedPost('lendswift_post')], [relayPost('tripoint_sf_post')]))
+    expect(failure.message).toMatch(/^Parallel failed: child "lendswift_post" failed/)
+    expect(failure).toMatchObject({ stepNamespace: 'fan', afterAnswer: false })
+    const row = leftRow(queue, 'tripoint_sf_post')
+    expect(row).toMatchObject({
+      status: 'skipped',
+      // The block's 5 ms limit, in seconds with one decimal (limitInSeconds).
+      error_message: 'Stopped waiting at the 0.0 second limit, then branch lendswift_post failed.',
+      error_type: null,
+      timeout_kind: 'parallel_block',
+      timed_out_after_ms: BLOCK_TIMEOUT_MS,
+      parallel_group_id: 'fan',
+    })
+    expectTheRequestSent(row)
+    expect(c.steps.tripoint_sf_post).toBeUndefined()
+    expect(bucketsOf(queue, failure)).toEqual({ withRows: null, withoutRows: null })
+    held[0].answer(new Response('{"ok":true}', { status: 200 }))
+    await lateStepEnded('tripoint_sf_post', 'step_complete')
+    expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(1)
+  })
+
+  it('the outage rule still reads the slot the block failed on: its own step deadline, not the block\'s', async () => {
+    const held = answerSomeHoldTheRest()
+    const c = ctx()
+    // The refused slot is stopped by its own step deadline at once; the other is held past the block's.
+    const OWN_DEADLINE_MS = 1234
+    c.stepDeadline = (ms, signal) => ms === OWN_DEADLINE_MS ? Promise.resolve() : never(ms, signal)
+    const ownTimer = { ...relayPost('lendswift_post'), config: { ...relayPost('lendswift_post').config, timeout_ms: OWN_DEADLINE_MS } }
+    const { queue, failure } = await walkFailing(c, inBlock({}, [ownTimer], [relayPost('tripoint_sf_post')]))
+    expect(failure.message).toMatch(/^Parallel failed: child "lendswift_post" failed: Step timed out after 1234ms/)
+    expect(rowsOf(queue, 'lendswift_post')).toMatchObject([{ status: 'failed', timeout_kind: 'step' }])
+    expect(leftRow(queue, 'tripoint_sf_post')).toMatchObject({ status: 'skipped', timeout_kind: 'parallel_block' })
+    // The only marked failed row is the slot the block failed on, so its own deadline names the run.
+    expect(markedFailedRows(queue).map((r) => [r.step_type, r.timeout_kind])).toEqual([['webhook', 'step']])
+    expect(failingStepDeadline({ id: EXEC, failed_step_type: 'parallel' }, markedFailedRows(queue))).toBe('step')
+    failAll(held)
+    await lateStepEnded('tripoint_sf_post', 'step_error')
+  })
+
+  it('a slot that finished before the block stopped waiting keeps its own row and gets no second one', async () => {
+    const held = answerSomeHoldTheRest(1)
+    const queue = await walk(ctx(), inBlock({ wait_for: 'first', timeout_ms: NO_DEADLINE_MS }, [refusedPost('lendswift_post')], [answeredPost('amone_post')], [relayPost('tripoint_sf_post')]))
+    expect(rowsOf(queue, 'lendswift_post')).toMatchObject([{ status: 'failed' }])
+    expect(rowsOf(queue, 'amone_post')).toMatchObject([{ status: 'completed' }])
+    expect(leftRow(queue, 'tripoint_sf_post').error_message).toBe('Stopped waiting: branch amone_post finished first.')
+    failAll(held)
     await lateStepEnded('tripoint_sf_post', 'step_error')
   })
 })
