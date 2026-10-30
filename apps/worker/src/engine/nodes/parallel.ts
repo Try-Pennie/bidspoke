@@ -135,15 +135,18 @@ export async function executeParallelNode(
           : `slot "${named.namespace}" failed: ${named.error ?? 'unknown error'}`
         // Only the named slot decides this group's fate, so only it is consulted.
         const err = withFailureCause(new Error(`Parallel failed: ${reason}`), classifyParallelFailure([named]))
-        throw named.status === 'timeout' ? withDeadlineResults(err, output) : err
+        // The named slot failed before any deadline, so a sibling still running was left by that failure (#3083).
+        throw named.status === 'timeout' ? withDeadlineResults(err, output) : withLeftRunning(err, output, named.namespace, 'failed', null)
       }
       return { output }
     }
 
-    const output: ParallelOutput =
-      waitFor === 'first'
-        ? await runFirst(childNodes, runChild, timeoutMs, abandon.signal)
-        : await runAll(childNodes, runChild, timeoutMs, onTimeout, abandon.signal)
+    if (waitFor === 'first') {
+      const { winner, leftAs } = await runFirst(childNodes, runChild, timeoutMs, abandon.signal)
+      return withLeftRunning({ output: [winner] as ParallelOutput }, leftAs, winner.namespace, 'succeeded_first', null)
+    }
+
+    const output: ParallelOutput = await runAll(childNodes, runChild, timeoutMs, onTimeout, abandon.signal)
 
     // wait_for:'all' with on_child_error:'fail' — bail if any child failed
     if (waitFor === 'all' && onChildError === 'fail') {
@@ -156,7 +159,12 @@ export async function executeParallelNode(
         // Every child ran, so every failure is consulted: the group is only a
         // business rejection if all of them were.
         const err = withFailureCause(new Error(`Parallel failed: ${reason}`), classifyParallelFailure(output))
-        throw failed.status === 'timeout' ? withDeadlineResults(err, output) : err
+        // Failing on a slot that failed (#3083): wait_for all waits for every slot
+        // until its timeout, so a slot still running now was still running when the
+        // timeout passed, and the block then failed on the other slot.
+        throw failed.status === 'timeout'
+          ? withDeadlineResults(err, output)
+          : withLeftRunning(err, output, failed.namespace, 'failed', timeoutMs)
       }
     }
 
@@ -253,7 +261,7 @@ async function runFirst(
   runChild: (child: NodeDefinition, i: number, abandonSignal: AbortSignal) => Promise<ParallelChildResult>,
   timeoutMs: number,
   abandonSignal: AbortSignal
-): Promise<ParallelOutput> {
+): Promise<{ winner: ParallelChildResult; leftAs: ParallelOutput }> {
   // Each child is started; Promise.any resolves with the first fulfilled (status='fulfilled') result.
   // Rejected / timeout children are logged by runChild internally and discarded here.
   // What each child settled as, for a block that fails at its deadline to say
@@ -278,7 +286,8 @@ async function runFirst(
 
   try {
     const winner = await Promise.race([Promise.any(racePromises), timeoutPromise])
-    return [winner]
+    // The others as the block left them when the winner returned (#3083).
+    return { winner, leftAs: asTheBlockLeftThem(childNodes, settled) }
   } catch (err) {
     if (err instanceof Error && (err as { isParallelTimeout?: boolean }).isParallelTimeout) {
       throw withDeadlineResults(new Error(`Parallel node timed out \u2014 no child succeeded within ${timeoutMs}ms`), asTheBlockLeftThem(childNodes, settled))
@@ -314,7 +323,8 @@ function asTheBlockLeftThem(childNodes: NodeDefinition[], settled: Array<Paralle
  * as it left them on the error it throws, so the engine can write the row of
  * each slot it stopped waiting for, as it does when such a block carries on
  * (#3047, #3064). Only a failure the deadline decided carries them: a block that
- * failed on a slot that failed says nothing about the ones still running.
+ * failed on a slot that failed carries the ones still running as LeftRunning
+ * instead (#3083), so they are not recorded as the deadline the run failed on.
  */
 function withDeadlineResults(err: Error, results: ParallelOutput): Error {
   return Object.assign(err, { parallelDeadlineResults: results })
@@ -325,4 +335,51 @@ export function deadlineResultsOf(err: unknown): ParallelOutput | null {
   if (!err || typeof err !== 'object') return null
   const results = (err as { parallelDeadlineResults?: unknown }).parallelDeadlineResults
   return Array.isArray(results) ? (results as ParallelOutput) : null
+}
+
+/**
+ * Slots a block stopped waiting for while they still ran, for a reason other
+ * than a deadline it failed on (#3083): a winner returned under wait_for
+ * first, or the block failed on another slot that failed. Nothing else records
+ * them: the slot's own late finish writes no row (#63), and the rows of a
+ * deadline (withDeadlineResults, or a block carrying on past its timeout) are
+ * not written for them. The engine writes them as skipped, never failed, so
+ * the upstream outage rule, which reads a marked failed row inside a block as
+ * the reason a parallel run failed (failingStepDeadline), still reads the slot
+ * the block failed on.
+ */
+export interface LeftRunning {
+  /** Each slot as the block left it: `timeout` is one still running. */
+  results: ParallelOutput
+  /** The slot whose answer made the block stop waiting. */
+  decidedBy: string
+  /** That slot succeeded first (wait_for first), or failed and failed the block. */
+  how: 'succeeded_first' | 'failed'
+  /**
+   * The block's timeout, when it had passed by the time the block stopped
+   * waiting (wait_for all, which waits for every slot until then), so the slots
+   * still running were cut short by it; null when it had not.
+   */
+  afterTimeoutMs: number | null
+}
+
+/** Attaches the slots still running (LeftRunning) to a block's result or error, only when there are any. */
+function withLeftRunning<T extends object>(target: T, results: ParallelOutput, decidedBy: string, how: LeftRunning['how'], afterTimeoutMs: number | null): T {
+  if (!results.some((c) => c.status === 'timeout')) return target
+  const left: LeftRunning = { results, decidedBy, how, afterTimeoutMs }
+  return Object.assign(target, { parallelLeftRunning: left })
+}
+
+/** The slots a block's result or error says it left running (withLeftRunning), or null. */
+export function leftRunningOf(resultOrErr: unknown): LeftRunning | null {
+  if (!resultOrErr || typeof resultOrErr !== 'object') return null
+  const left = (resultOrErr as { parallelLeftRunning?: unknown }).parallelLeftRunning
+  return left && typeof left === 'object' && Array.isArray((left as LeftRunning).results) ? (left as LeftRunning) : null
+}
+
+/** What the row of a slot the block left running says (#3083). */
+export function leftRunningMessage(left: LeftRunning): string {
+  if (left.how === 'succeeded_first') return `Parallel block stopped waiting for this slot when slot "${left.decidedBy}" succeeded first`
+  if (left.afterTimeoutMs !== null) return `Parallel block stopped waiting for this slot at its ${left.afterTimeoutMs}ms timeout, then failed on slot "${left.decidedBy}"`
+  return `Parallel block stopped waiting for this slot when slot "${left.decidedBy}" failed`
 }

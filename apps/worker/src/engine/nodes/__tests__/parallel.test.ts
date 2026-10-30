@@ -7,7 +7,7 @@
  * alone (L290, L524). Each test now advances time itself.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { continuingSlots, deadlineResultsOf, executeParallelNode } from '../parallel'
+import { continuingSlots, deadlineResultsOf, executeParallelNode, leftRunningOf } from '../parallel'
 import type { ParallelChildResult } from '../parallel'
 import type { NodeDefinition } from '../../../types'
 
@@ -360,5 +360,73 @@ describe('a block that fails on its own deadline says which slots it stopped wai
     expect(deadlineResultsOf(new Error('Parallel node timed out'))).toBeNull()
     expect(deadlineResultsOf(null)).toBeNull()
     expect(deadlineResultsOf('a string')).toBeNull()
+  })
+})
+
+describe('a block that stops waiting for slots still running, for a reason other than a deadline it failed on, says which (#3083)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const children = [makeChild('inquiry'), makeChild('collections'), makeChild('offers')]
+  const slots = ['child-0', 'child-1', 'child-2']
+  const hangs = () => new Promise<ParallelChildResult>(() => {})
+
+  async function settle<T>(pending: Promise<T>, ms = 50): Promise<T> {
+    await vi.advanceTimersByTimeAsync(ms)
+    return pending
+  }
+
+  it('wait_for first: the winner returned while the others still ran', async () => {
+    const runChild = vi.fn().mockImplementation(async (child: NodeDefinition) => child.namespace === 'inquiry' ? fulfilled('inquiry') : hangs())
+    const result = await settle(executeParallelNode(makeNode({ wait_for: 'first', timeout_ms: 50 }), children, runChild, slots), 0)
+    expect((result.output as ParallelChildResult[]).map((c) => c.namespace)).toEqual(['inquiry'])
+    const left = leftRunningOf(result)
+    expect(left?.results.map((c) => [c.namespace, c.status])).toEqual([['inquiry', 'fulfilled'], ['collections', 'timeout'], ['offers', 'timeout']])
+    expect(left).toMatchObject({ decidedBy: 'inquiry', how: 'succeeded_first', afterTimeoutMs: null })
+  })
+
+  it('wait_for first: a winner with nothing still running says nothing', async () => {
+    const all = makeRunChild([rejected('inquiry'), fulfilled('collections'), rejected('offers')])
+    const result = await executeParallelNode(makeNode({ wait_for: 'first', timeout_ms: 50 }), children, all, slots)
+    expect(leftRunningOf(result)).toBeNull()
+  })
+
+  it('wait_for all, on_child_error fail: failing on a refused slot while another still ran at the deadline', async () => {
+    const runChild = vi.fn().mockImplementation(async (child: NodeDefinition) =>
+      child.namespace === 'offers' ? hangs() : child.namespace === 'collections' ? rejected('collections', 'Salesforce API error (500)') : fulfilled('inquiry'))
+    const err = await settle(executeParallelNode(makeNode({ wait_for: 'all', on_timeout: 'partial', on_child_error: 'fail', timeout_ms: 50 }), children, runChild, slots).then(() => null, (e: unknown) => e))
+    expect(String(err)).toMatch(/child "collections" failed/)
+    // Not a deadline failure: the outage rule must not read it as one (#3072).
+    expect(deadlineResultsOf(err)).toBeNull()
+    const left = leftRunningOf(err)
+    expect(left?.results.map((c) => c.status)).toEqual(['fulfilled', 'rejected', 'timeout'])
+    expect(left).toMatchObject({ decidedBy: 'collections', how: 'failed', afterTimeoutMs: 50 })
+  })
+
+  it('wait_for specific: the named slot failed while a sibling still ran, before any deadline', async () => {
+    const runChild = vi.fn().mockImplementation(async (child: NodeDefinition) =>
+      child.namespace === 'offers' ? hangs() : child.namespace === 'collections' ? rejected('collections', 'Salesforce API error (500)') : fulfilled('inquiry'))
+    const err = await settle(executeParallelNode(makeNode({ wait_for: 'specific', wait_for_slot: 'child-1', timeout_ms: 50 }), children, runChild, slots).then(() => null, (e: unknown) => e), 0)
+    expect(String(err)).toMatch(/slot "collections" failed/)
+    expect(deadlineResultsOf(err)).toBeNull()
+    const left = leftRunningOf(err)
+    expect(left?.results.map((c) => c.status)).toEqual(['fulfilled', 'rejected', 'timeout'])
+    expect(left).toMatchObject({ decidedBy: 'collections', how: 'failed', afterTimeoutMs: null })
+  })
+
+  it('a block its own deadline failed says it only through deadlineResultsOf', async () => {
+    const runChild = vi.fn().mockImplementation(async (child: NodeDefinition) => child.namespace === 'offers' ? hangs() : fulfilled(child.namespace))
+    const err = await settle(executeParallelNode(makeNode({ wait_for: 'all', on_timeout: 'fail', timeout_ms: 50 }), children, runChild, slots).then(() => null, (e: unknown) => e))
+    expect(deadlineResultsOf(err)).not.toBeNull()
+    expect(leftRunningOf(err)).toBeNull()
+  })
+
+  it('a failure with no slot still running says nothing', async () => {
+    const all = makeRunChild([fulfilled('inquiry'), rejected('collections'), fulfilled('offers')])
+    const err = await executeParallelNode(makeNode({ wait_for: 'all', on_child_error: 'fail', timeout_ms: 50 }), children, all, slots).then(() => null, (e: unknown) => e)
+    expect(String(err)).toMatch(/child "collections" failed/)
+    expect(leftRunningOf(err)).toBeNull()
+    expect(leftRunningOf(null)).toBeNull()
+    expect(leftRunningOf('a string')).toBeNull()
   })
 })
