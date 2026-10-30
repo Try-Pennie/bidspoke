@@ -85,6 +85,41 @@ describe('buyer_click_send in the walker', () => {
     expect(queue.find((r) => r.step_namespace === 'after_sent')).toBeUndefined()
   })
 
+  // #3079: a post one of our own timers stopped routes unknown, and the node's row
+  // is the step whose work the timer cut short, so it carries the marker.
+  it('a post our own timer stopped marks the completed row, and the walk routes as before', async () => {
+    for (const marker of [{ timeout_kind: 'buyer_call', timed_out_after_ms: 20_000 }, { timeout_kind: 'click_post', timed_out_after_ms: 21_000 }] as const) {
+      vi.mocked(executeBuyerClickSendNode).mockResolvedValue({ output: output('unknown'), deadline: marker })
+      const queue: StepLogEntry[] = []
+      const result = await walk(definition(BUYER_CLICK_SEND_ROUTES), queue)
+      expect(result.body).toEqual({ reached: 'after_unknown' })
+      const rows = queue.filter((r) => r.step_node_id === NODE_ID)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ status: 'completed', error_type: null, ...marker })
+      expect(rows[0].output).toEqual(output('unknown'))
+    }
+  })
+
+  it('a row no timer stopped names neither marker column', async () => {
+    vi.mocked(executeBuyerClickSendNode).mockResolvedValue({ output: output('unknown') })
+    const queue: StepLogEntry[] = []
+    await walk(definition(BUYER_CLICK_SEND_ROUTES), queue)
+    const row = queue.find((r) => r.step_node_id === NODE_ID)
+    expect(row).not.toHaveProperty('timeout_kind')
+    expect(row).not.toHaveProperty('timed_out_after_ms')
+  })
+
+  // The run fails on the wiring, which no deadline caused: marking this row would
+  // put the run in the outage check's Upstream timeout bucket, which it never was.
+  it('an unwired handle after a timed out post fails unmarked, so the outage check reads the run as before', async () => {
+    vi.mocked(executeBuyerClickSendNode).mockResolvedValue({ output: output('unknown'), deadline: { timeout_kind: 'buyer_call', timed_out_after_ms: 20_000 } })
+    const queue: StepLogEntry[] = []
+    await expect(walk(definition(['sent']), queue)).rejects.toThrow(/buyer_click_send_handle_unwired.*unknown/)
+    const row = queue.find((r) => r.step_type === 'buyer_click_send')
+    expect(row).toMatchObject({ status: 'failed', error_type: 'permanent' })
+    expect(row).not.toHaveProperty('timeout_kind')
+  })
+
   it('the executor failure fails the step with its message and type', async () => {
     const failed: BuyerClickSendResult = { output: output('not_sent'), failure: { message: 'buyer_click_send claim_unavailable: nothing was sent', errorType: 'transient', reason: 'claim_unavailable' } }
     vi.mocked(executeBuyerClickSendNode).mockResolvedValue(failed)

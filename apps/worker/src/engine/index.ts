@@ -2318,7 +2318,11 @@ export async function walkGraph(
       const clickOutput = clickResult.output
       const clickEdge = outgoingEdges(node.id, definition.edges).find((e) => e.source_handle === clickOutput._route)
       let clickFailure = clickResult.failure
+      // One of our own timers stopped the post (#3079): this row is the step it cut
+      // short. Not on a row failed below for an unwired handle, which no deadline caused.
+      let clickTimeout = clickResult.deadline ?? null
       if (!clickFailure && !clickEdge) {
+        clickTimeout = null
         clickFailure = {
           message: `buyer_click_send buyer_click_send_handle_unwired: the node routed ${clickOutput._route} and that handle is not wired`,
           errorType: 'permanent',
@@ -2335,7 +2339,7 @@ export async function walkGraph(
         template: { partner_id: clickConfig.partner_id, prospect_id: clickConfig.prospect_id, state: clickConfig.state },
         resolved: { partner_id: clickOutput.partner_id, partner_slug: clickOutput.partner_slug, prospect_id: clickOutput.prospect_id, mode_effective: clickOutput.mode_effective },
       }
-      logStep(stepLogQueue, executionId, executionStartedAt, node, clickStatus, clickInput, clickOutput, clickFailure?.message, clickErrorType, 0, clickStartedAt, stepOrder)
+      logStep(stepLogQueue, executionId, executionStartedAt, node, clickStatus, clickInput, clickOutput, clickFailure?.message, clickErrorType, 0, clickStartedAt, stepOrder, undefined, undefined, clickTimeout)
       lastOutput = clickOutput
 
       const clickDurationMs = Date.now() - clickStartMs

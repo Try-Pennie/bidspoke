@@ -13,7 +13,9 @@ import { DeadlineError, type ClickDelivery, type Timers } from '@bidspoke/buyer-
 import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { ClaimResult } from '../../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
-import type { PartnerCallResult } from '../../../lib/post-to-partner'
+import { postToPartner, type PartnerCallResult } from '../../../lib/post-to-partner'
+import type { Env } from '../../../index'
+import { BUYER_CALL_DEADLINE, CLICK_POST_DEADLINE } from '../../step-timeout'
 import { clickAlertMessage, type ClickAlert, type ClickAlertOutcome } from '../../../lib/buyer-click-alert'
 import { NODE_TRAITS } from '@bidspoke/node-types'
 import { LEAD_READ_DEADLINE_MS } from '../../../lib/lead-read-budget'
@@ -25,6 +27,7 @@ import {
   CLICK_CLAIM_MARGIN_MS,
   CLICK_COUNT_RETRY_COST_MS,
   CLICK_HOLD_RECORD_DEADLINE_MS,
+  CLICK_POST_DEADLINE_MS,
   CLICK_POST_TIMEOUT_MS,
   CLICK_RUN_BUDGET_MS,
   classifyClickAnswer,
@@ -869,6 +872,89 @@ describe('an unknown send keeps the claim held, pages and routes unknown', () =>
     expect(postBound[0].ms).toBeLessThan(CLICK_CLAIM_DEADLINE_MS)
     postBound[0].fn()
     expect((await p).output).toMatchObject({ _route: 'unknown', reason: 'outcome_unknown' })
+  })
+})
+
+// #3079: two of our own timers stop the post, and the step row says which.
+// postToPartner's own timer aborts the call (buyer_call, since #3075), and the
+// node's own bound stops waiting for a post that did not end at its abort
+// (click_post). The result carries the marker the walk writes on the node's row;
+// the output, the route, the hold and the page are exactly an unmarked unknown's.
+describe('a post our own timer stopped carries the marker for the step row (#3079)', () => {
+  const realPost = (fetchImpl: (url: string, init: { signal?: AbortSignal }) => Promise<Response>) => () =>
+    postToPartner({ slug: 'liberty1', api_endpoint: BUYER_URL, cf_secret_key: null }, { prospect: 'a0B000000000001AAA' }, {} as Env, { traceId: 'trace-1', timeoutMs: CLICK_POST_TIMEOUT_MS, fetchImpl: fetchImpl as typeof fetch })
+  const platformAbort = () => new DOMException('The operation was aborted.', 'AbortError')
+  /** A fetch that never answers, and rejects the way the platform's does when its signal aborts. */
+  const hangUntilAborted = (_url: string, init: { signal?: AbortSignal }) => new Promise<Response>((_, reject) => {
+    init.signal?.addEventListener('abort', () => reject(platformAbort()), { once: true })
+  })
+
+  /** The same run with the post answered by a bare abort nobody marked, for comparing everything but the marker. */
+  async function unmarked() {
+    const h = harness({ post: () => Promise.reject(platformAbort()) })
+    return { h, r: await run(h) }
+  }
+
+  it('the post\'s own timer: marked buyer_call at the post timeout, and nothing else differs', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const h = harness({ post: realPost(hangUntilAborted) })
+      const p = run(h)
+      await vi.advanceTimersByTimeAsync(CLICK_POST_TIMEOUT_MS)
+      const r = await p
+      expect(r.deadline).toEqual({ timeout_kind: BUYER_CALL_DEADLINE, timed_out_after_ms: CLICK_POST_TIMEOUT_MS })
+      expect(r.failure).toBeUndefined()
+      const control = await unmarked()
+      expect(control.r.deadline).toBeUndefined()
+      expect(r.output).toEqual(control.r.output)
+      expect(h.holds).toEqual(control.h.holds)
+      expect(h.alerts).toEqual(control.h.alerts)
+      expect(h.posts).toHaveLength(1)
+      expect(h.sold).toEqual([])
+      expect(h.freed).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the node\'s own bound: marked click_post at its length when the post does not end at its abort', async () => {
+    const pending: Array<{ fn: () => void; ms: number }> = []
+    const timers: Timers = { setTimeout: (fn, ms) => { pending.push({ fn, ms }); return pending.length }, clearTimeout: () => undefined }
+    const h = harness({ post: () => new Promise<PartnerCallResult>(() => undefined), timers })
+    const p = run(h)
+    await vi.waitFor(() => expect(pending.some((t) => t.ms === CLICK_POST_DEADLINE_MS)).toBe(true))
+    pending.filter((t) => t.ms === CLICK_POST_DEADLINE_MS)[0].fn()
+    const r = await p
+    expect(r.deadline).toEqual({ timeout_kind: CLICK_POST_DEADLINE, timed_out_after_ms: CLICK_POST_DEADLINE_MS })
+    expect(r.failure).toBeUndefined()
+    expect(r.output).toMatchObject({ _route: 'unknown', reason: 'outcome_unknown', detail: `no answer from the buyer: click post did not answer within ${CLICK_POST_DEADLINE_MS} ms` })
+    expect(h.holds.map((x) => x.reason)).toEqual(['outcome_unknown'])
+  })
+
+  it('an abort neither timer caused carries no marker, though it says the same words', async () => {
+    const { r } = await unmarked()
+    expect(r.output).toMatchObject({ _route: 'unknown', reason: 'outcome_unknown' })
+    expect(r.deadline).toBeUndefined()
+    // Through the real post too: the fetch aborts before the post's timer fires.
+    const h = harness({ post: realPost(() => Promise.reject(platformAbort())) })
+    const real = await run(h)
+    expect(real.output).toMatchObject({ _route: 'unknown', reason: 'outcome_unknown' })
+    expect(real.deadline).toBeUndefined()
+  })
+
+  it('a deadline error the post threw itself is not the node\'s bound, though it has the same class and words', async () => {
+    const h = harness({ post: () => Promise.reject(new DeadlineError('click post', CLICK_POST_DEADLINE_MS)) })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'unknown', reason: 'outcome_unknown' })
+    expect(r.deadline).toBeUndefined()
+  })
+
+  it('every other ending carries no marker', async () => {
+    for (const post of [answer(200, `Records created successfully : ${SF_ID}`), answer(503, 'Service Unavailable'), answer(422, 'Missing field: Email')]) {
+      const r = await run(harness({ post }))
+      expect(r.deadline, String(post.status)).toBeUndefined()
+    }
+    expect((await run(harness({ post: () => Promise.reject(new Error('Network connection lost.')) }))).deadline).toBeUndefined()
   })
 })
 

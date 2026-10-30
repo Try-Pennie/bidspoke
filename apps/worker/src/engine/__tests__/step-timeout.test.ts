@@ -21,6 +21,7 @@ import {
   BUYER_SELECT_DEADLINE,
   BUYER_CALL_DEADLINE,
   ACHIEVE_OFFERS_DEADLINE,
+  CLICK_POST_DEADLINE,
   TIMEOUT_KINDS,
   abortAfter,
   carryDeadline,
@@ -67,7 +68,7 @@ describe('the step deadline error carries its own classification', () => {
   })
 
   it('names each of our deadlines as its own kind (#3068)', () => {
-    expect([...TIMEOUT_KINDS]).toEqual([STEP_DEADLINE, PARALLEL_BLOCK_DEADLINE, CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE, BUYER_CALL_DEADLINE, ACHIEVE_OFFERS_DEADLINE])
+    expect([...TIMEOUT_KINDS]).toEqual([STEP_DEADLINE, PARALLEL_BLOCK_DEADLINE, CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE, BUYER_CALL_DEADLINE, ACHIEVE_OFFERS_DEADLINE, CLICK_POST_DEADLINE])
     expect(STEP_DEADLINE).toBe('step')
     expect(PARALLEL_BLOCK_DEADLINE).toBe('parallel_block')
     expect(CODE_CHAIN_DEADLINE).toBe('code_chain')
@@ -78,6 +79,8 @@ describe('the step deadline error carries its own classification', () => {
     // #3075: the buyer select live buyer call's timer and the achieve_offers node's own wait.
     expect(BUYER_CALL_DEADLINE).toBe('buyer_call')
     expect(ACHIEVE_OFFERS_DEADLINE).toBe('achieve_offers')
+    // #3079: buyer_click_send stopped waiting for its post, which had not ended at its own abort.
+    expect(CLICK_POST_DEADLINE).toBe('click_post')
     // Only the step's own deadline is what the audit and the daily report count.
     expect(TIMEOUT_KINDS.filter((k) => k === 'step')).toEqual([STEP_DEADLINE])
   })
@@ -233,8 +236,11 @@ describe('which deadline stopped a step, from the marker alone (#3069)', () => {
 
   // #3068: the outage check counts a run as an upstream timeout by this read, so
   // each of our other deadlines must be named by it too, not only the first two.
+  // Read from the one list, so a kind added later (click_post, #3079) cannot be
+  // left out here; the list itself is pinned by the test that names each kind.
   it('names every one of our deadlines, the ones #3068 added included', () => {
-    for (const kind of [CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE, BUYER_CALL_DEADLINE, ACHIEVE_OFFERS_DEADLINE]) {
+    expect(TIMEOUT_KINDS).toContain(CLICK_POST_DEADLINE)
+    for (const kind of TIMEOUT_KINDS) {
       expect(deadlineKindOf({ timeout_kind: kind })).toBe(kind)
     }
   })
