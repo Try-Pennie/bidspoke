@@ -23,6 +23,11 @@
  * failed with nothing aborted, which is the connection. noAnswerOf reads all
  * three back, so the buyer select attempt can say no answer arrived and why,
  * rather than that the buyer answered. Nothing reads the error's message.
+ *
+ * A body read that fails is no complete answer either, whatever cut it off
+ * (#3091): it throws, marked by the same rule as a failure before the headers,
+ * and is never judged on its status. A body that is empty because the buyer
+ * sent none (a 204) reads to its end, so it is an answer with empty text.
  */
 import type { Env } from '../index'
 import { PartnerApiError } from '../engine/partner-bid-error'
@@ -133,28 +138,32 @@ export async function postToPartner(target: PartnerCallTarget, body: unknown, en
   const timer = abortAfter(controller, opts.timeoutMs, BUYER_CALL_DEADLINE)
   linkAbort(controller, opts.signal)
   const doFetch = opts.fetchImpl ?? fetch
+  // The one rule for a call that ended without a complete answer, before the
+  // headers or during the body: the error, marked with why. Why no answer
+  // arrived (#3080): our timer marks its own abort; any other abort was a
+  // cancel; a failure with nothing aborted is the connection.
+  const noCompleteAnswer = (err: unknown): unknown => {
+    timer.clear()
+    if (!timer.fired()) markNoAnswer(err, controller.signal.aborted || isPlatformAbort(err) ? 'cancelled' : 'connection')
+    return timer.mark(err)
+  }
   let res: Response
   try {
     res = await doFetch(target.api_endpoint, { method: 'POST', headers, body: payload, signal: controller.signal })
   } catch (err) {
-    timer.clear()
-    // Why no answer arrived (#3080): our timer marks its own abort below; any
-    // other abort was a cancel; a fetch that failed with nothing aborted is the connection.
-    if (!timer.fired()) markNoAnswer(err, controller.signal.aborted || isPlatformAbort(err) ? 'cancelled' : 'connection')
-    throw timer.mark(err)
+    throw noCompleteAnswer(err)
   }
   // The timer runs on through the body (#3089), so its limit is the whole
   // answer, connect to last byte: headers followed by a trickling body end at
-  // it too. A body our timer cut off is no complete answer, since the rules
-  // judge the body, so the call throws as a timeout before the headers does,
-  // marked buyer_call, and every caller handles it exactly as that. A body read
-  // that ends any other way leaves the text empty, as it always has.
+  // it too. A body read that fails is no complete answer, since the rules judge
+  // the body: cut off by our timer (#3089), a reset or an abort from elsewhere
+  // (#3091), the call throws exactly as that failure before the headers does,
+  // and every caller handles it as that. Its status is never judged.
   let text: string
   try {
     text = await readText(res, controller.signal)
   } catch (err) {
-    if (timer.fired()) throw timer.mark(err)
-    text = ''
+    throw noCompleteAnswer(err)
   } finally {
     timer.clear()
   }
