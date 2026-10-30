@@ -156,9 +156,9 @@ describe('executeAchieveOffersNode', () => {
       vi.useFakeTimers({ now: 0 })
       try {
         hangUntilAborted()
-        const pending = executeAchieveOffersNode(makeNode(), Object.assign(makeCtx(), { continuationMsLeft: () => 2_500 }), {} as Env)
+        const pending = executeAchieveOffersNode(makeNode(), Object.assign(makeCtx(), { continuationMsLeft: () => 5_500 }), {} as Env)
         await vi.runAllTimersAsync()
-        expect((await pending).deadline).toEqual({ timeout_kind: 'achieve_offers', timed_out_after_ms: 2_000 })
+        expect((await pending).deadline).toEqual({ timeout_kind: 'achieve_offers', timed_out_after_ms: 5_000 })
       } finally {
         vi.useRealTimers()
       }
@@ -258,10 +258,10 @@ describe('executeAchieveOffersNode', () => {
       expect(await waitEndsAt(ctxWithLeft(Number.POSITIVE_INFINITY))).toEqual({ abortedAtMs: 9_000, reason: 'Achieve API timed out after 9000ms', fetched: 1 })
     })
 
-    it('a run starting 9.5 s after the answer waits the 2.5 s left less the 500 ms margin, and says why it stopped', async () => {
-      expect(await waitEndsAt(ctxWithLeft(2_500))).toEqual({
-        abortedAtMs: 2_000,
-        reason: 'Achieve API timed out after 2000ms, all that was left of the 12 s a run waits after the answer',
+    it('a run starting 6.5 s after the answer waits the 5.5 s left less the 500 ms margin, and says why it stopped', async () => {
+      expect(await waitEndsAt(ctxWithLeft(5_500))).toEqual({
+        abortedAtMs: 5_000,
+        reason: 'Achieve API timed out after 5000ms, all that was left of the 12 s a run waits after the answer',
         fetched: 1,
       })
     })
@@ -270,14 +270,14 @@ describe('executeAchieveOffersNode', () => {
       vi.useFakeTimers({ now: 0 })
       try {
         mockFetchOnce(200, acceptedResponse(2))
-        const { output } = await executeAchieveOffersNode(makeNode(), ctxWithLeft(2_500), {} as Env)
+        const { output } = await executeAchieveOffersNode(makeNode(), ctxWithLeft(5_500), {} as Env)
         expect(output).toMatchObject({ _achieve_evaluation: true, ok: true, response_status: 'accepted', offer_count: 2 })
       } finally {
         vi.useRealTimers()
       }
     })
 
-    it('sends with the shortest wait it allows (1 s), and skips at a millisecond less, sending nothing', async () => {
+    it('sends with the shortest wait it allows (4 s), and skips at a millisecond less, sending nothing', async () => {
       expect(await waitEndsAt(ctxWithLeft(ACHIEVE_WINDOW_MARGIN_MS + ACHIEVE_MIN_WAIT_MS))).toMatchObject({ abortedAtMs: ACHIEVE_MIN_WAIT_MS, fetched: 1 })
       const fetchMock = hangingFetch()
       const { output } = await executeAchieveOffersNode(makeNode(), ctxWithLeft(ACHIEVE_WINDOW_MARGIN_MS + ACHIEVE_MIN_WAIT_MS - 1), {} as Env)
@@ -304,15 +304,28 @@ describe('executeAchieveOffersNode', () => {
   })
 
   describe('achieveWait, the rule the node applies (#2834)', () => {
-    it('is the full 9 s while at least 9.5 s is left, the time left less 500 ms below that, and a skip under 1 s', () => {
+    it('is the full 9 s while at least 9.5 s is left, the time left less 500 ms below that, and a skip under 4 s', () => {
       expect(achieveWait(undefined)).toEqual({ send: true, waitMs: ACHIEVE_FETCH_TIMEOUT_MS, shortened: false })
       expect(achieveWait(Number.POSITIVE_INFINITY)).toEqual({ send: true, waitMs: 9_000, shortened: false })
       expect(achieveWait(12_000)).toEqual({ send: true, waitMs: 9_000, shortened: false })
       expect(achieveWait(9_500)).toEqual({ send: true, waitMs: 9_000, shortened: false })
       expect(achieveWait(9_499)).toEqual({ send: true, waitMs: 8_999, shortened: true })
-      expect(achieveWait(1_500)).toEqual({ send: true, waitMs: 1_000, shortened: true })
-      expect(achieveWait(1_499)).toEqual({ send: false, waitMs: 999 })
+      expect(achieveWait(4_500)).toEqual({ send: true, waitMs: 4_000, shortened: true })
+      expect(achieveWait(4_499)).toEqual({ send: false, waitMs: 3_999 })
       expect(achieveWait(0)).toEqual({ send: false, waitMs: -500 })
+    })
+
+    // #2862: the floor is the fastest accept (Dan, 2026-10-30). Of 638 accepts from
+    // 2026-07-13 to 2026-10-23 none came back inside 4.1 s, so a shorter wait can
+    // record no offer, and of 6,204 evaluated declines about 1 in 8 came back inside
+    // 4 s. Only a DuplicateLead decline (a lead Achieve already holds) answers in
+    // under a second.
+    it('sends nothing for a wait under 4 s, inside which no accept has ever come back (#2862)', () => {
+      expect(ACHIEVE_MIN_WAIT_MS).toBe(4_000)
+      expect(achieveWait(ACHIEVE_WINDOW_MARGIN_MS + 1_000)).toEqual({ send: false, waitMs: 1_000 })
+      expect(achieveWait(ACHIEVE_WINDOW_MARGIN_MS + 2_500)).toEqual({ send: false, waitMs: 2_500 })
+      expect(achieveWait(ACHIEVE_WINDOW_MARGIN_MS + 3_999)).toEqual({ send: false, waitMs: 3_999 })
+      expect(achieveWait(ACHIEVE_WINDOW_MARGIN_MS + 4_000)).toEqual({ send: true, waitMs: 4_000, shortened: true })
     })
 
     it('treats a time left it cannot read as no window, the behaviour before #2834', () => {

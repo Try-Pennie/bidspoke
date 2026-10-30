@@ -64,6 +64,7 @@ import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { PARTNER_ERROR_RATE_JOB, runPartnerErrorRateCheck } from './lib/partner-error-rate'
 import { runSlackRefusalWatchForEnv, slackRefusalWatchRunFailure, SLACK_REFUSAL_WATCH_JOB } from './lib/slack-refusal-watch'
 import { LEAD_VALIDATION_REJECTION_JOB, runLeadValidationRejectionWatchForEnv } from './lib/lead-validation-rejection-watch'
+import { ACHIEVE_WINDOW_SKIPS_JOB, runAchieveWindowSkipsForEnv } from './lib/achieve-window-skips'
 import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
 import { runDeadLetterBuildTriggerCheck } from './lib/deadletter-volume'
 import { runAtRiskGapReportForEnv } from './lib/at-risk-gap-report'
@@ -861,6 +862,23 @@ const scheduledJobs = {
             }),
           LEAD_VALIDATION_REJECTION_JOB,
           `[${LEAD_VALIDATION_REJECTION_JOB}] check failed:`,
+        ),
+      )
+      // Achieve leads skipped for lack of time, the last Eastern day against its
+      // measured rate (#2862). Judged once a day; a run that could not count or
+      // hand over the day throws, is counted, and the next hour tries again.
+      // Under a job run record (L557); both heartbeat stamps (L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, ACHIEVE_WINDOW_SKIPS_JOB)
+            .catch((e) => console.error(`[${ACHIEVE_WINDOW_SKIPS_JOB}] heartbeat write failed:`, e))
+            .then(() => runAchieveWindowSkipsForEnv(supabase, env))
+            .then((s) => {
+              if (s.skipped) return
+              console.log(`[${ACHIEVE_WINDOW_SKIPS_JOB}] day=${s.day} sent=${s.counts?.sent ?? 'unread'} skipped=${s.counts?.skipped ?? 'unread'} verdict=${s.verdict?.verdict ?? 'none'} observing=${s.observing_until ?? 'no'} paged=${s.observing_until ? 0 : s.lines.length}`)
+            }),
+          ACHIEVE_WINDOW_SKIPS_JOB,
+          `[${ACHIEVE_WINDOW_SKIPS_JOB}] check failed:`,
         ),
       )
       // The kept Engine scripts against the canvas mirror (#1472): pages when a

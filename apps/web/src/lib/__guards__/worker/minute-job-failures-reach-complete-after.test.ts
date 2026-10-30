@@ -151,6 +151,8 @@ describe('a counted job stamped through completeAfter hands its failures to it (
       // #2592: the rejection rate watch after a lead validation swap.
       'lead-validation-rejection-watch',
       'engine-script-drift',
+      // #2862: Achieve leads skipped for lack of time, a day against its rate.
+      'achieve-window-skips',
     ].sort())
   })
 
