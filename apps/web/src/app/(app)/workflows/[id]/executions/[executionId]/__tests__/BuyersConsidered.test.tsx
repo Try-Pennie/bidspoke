@@ -127,7 +127,7 @@ describe('an unknown outcome, by whether an answer arrived (#3087)', () => {
     render(<BuyersConsidered step={step(unresolved(timerDetail), { status: 'failed' })} attempts={[attempt({ outcome: 'outcome_unknown', detail: timerDetail, http_status: null, held: true, timing })]} />)
     const row = screen.getAllByRole('row')[2]
     expect(within(row).getByText('No answer')).toBeInTheDocument()
-    expect(row).toHaveTextContent('No answer from the buyer')
+    expect(row).toHaveTextContent('No answer arrived from the buyer within our 20000 ms limit')
     expect(screen.getByText(/^No sale: No answer from the buyer/)).toBeInTheDocument()
     expect(document.body).not.toHaveTextContent(/could not be classified|Answer not classified/)
   })
@@ -140,6 +140,30 @@ describe('an unknown outcome, by whether an answer arrived (#3087)', () => {
     expect(row).toHaveTextContent('Buyer response could not be classified')
     expect(screen.getByText(/^No sale: Buyer response could not be classified/)).toBeInTheDocument()
     expect(document.body).not.toHaveTextContent(/No answer from the buyer/)
+  })
+
+  // Dan, 2026-10-30: the label sentence before the recorded detail said "no
+  // answer" twice, so a no answer row's Why is the detail alone, begun with a
+  // capital. Chosen by the row's reader, never by matching the words.
+  it('a call that got no answer says why once: the recorded detail alone, begun with a capital', () => {
+    render(<BuyersConsidered step={step(unresolved(timerDetail), { status: 'failed' })} attempts={[attempt({ outcome: 'outcome_unknown', detail: timerDetail, http_status: null, held: true, timing })]} />)
+    const why = within(screen.getAllByRole('row')[2]).getAllByRole('cell').at(-1)!
+    expect(why.textContent).toBe('No answer arrived from the buyer within our 20000 ms limit, so we stopped the call')
+  })
+
+  it('an answer no rule matched keeps the label before its detail', () => {
+    const detail = 'buyer answered http 200 and no rule matched'
+    render(<BuyersConsidered step={step(unresolved(detail))} attempts={[attempt({ outcome: 'outcome_unknown', detail, http_status: 200, held: true, timing })]} />)
+    const why = within(screen.getAllByRole('row')[2]).getAllByRole('cell').at(-1)!
+    expect(why.textContent).toBe('Buyer response could not be classified. buyer answered http 200 and no rule matched')
+  })
+
+  it('a call that got no answer with no detail recorded still says no answer arrived', () => {
+    const run = unresolved(timerDetail)
+    const bare = { ...run, considered: [run.considered[0], { partner: 'tripoint', priority: 2, payout_cents: 2190, outcome: 'outcome_unknown', reason: 'outcome_unknown' }] }
+    render(<BuyersConsidered step={step(bare, { status: 'failed' })} attempts={[attempt({ outcome: 'outcome_unknown', http_status: null, held: true, timing })]} />)
+    const why = within(screen.getAllByRole('row')[2]).getAllByRole('cell').at(-1)!
+    expect(why.textContent).toBe('No answer from the buyer')
   })
 
   it('reads only the attempt row of the buyer named on the entry', () => {

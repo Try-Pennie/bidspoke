@@ -204,7 +204,12 @@ export function BuyersConsidered({ step, attempts = [] }: { step: BuyerSelectSte
                 const noAnswer = gotNoAnswer(c)
                 const reasonWords = noAnswer && c.reason === 'outcome_unknown' ? UNRESOLVED_ANSWER_LABELS.no_answer.reason : reasonLabel(c.reason)
                 const outcomeWords = noAnswer ? UNRESOLVED_ANSWER_LABELS.no_answer.outcome : CONSIDERED_OUTCOME_LABELS[c.outcome]
-                const why = [reasonWords, c.detail].filter(Boolean).join('. ')
+                // A call that got no answer records why in a sentence that already says no answer
+                // arrived, so the label before it would say it twice (Dan, 2026-10-30): its Why is the
+                // detail alone, begun with a capital, or the label when no detail was recorded.
+                const why = noAnswer && c.detail
+                  ? c.detail.charAt(0).toUpperCase() + c.detail.slice(1)
+                  : [reasonWords, c.detail].filter(Boolean).join('. ')
                 return (
                   <tr key={`${c.partner}-${i}`} aria-current={took ? 'true' : undefined} className={took ? 'bg-green-50/40' : ''}>
                     <td className="px-3 py-2 text-right font-mono tabular-nums text-gray-600">{c.priority ?? 'none'}</td>
