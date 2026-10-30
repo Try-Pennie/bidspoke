@@ -57,6 +57,7 @@ import {
   takeLookupAllowance,
   purgeScheduleObservations,
   readMissingWorkflowDefinitions,
+  readUnstartedRunWaits,
   readWorkflowDefinition,
   saveWorkflowDefinition,
   recordStepTest,
@@ -68,6 +69,9 @@ import {
   purgeRunVariables,
   purgeTerminalRunRequests,
   purgeVariableCopies,
+  purgeSendLedger,
+  purgeScheduleFires,
+  purgeExpiredDedupTombstones,
   readVariableCopies,
   saveVariableCopies,
   recordRunCheckpoint,
@@ -75,7 +79,7 @@ import {
   observeOpsReseal,
   recordOpsResealRun,
 } from '../ops-writes'
-import type { ResourceWaitCause } from '../run-vocabulary'
+import type { ResourceWaitCause, UnstartedReturnCause } from '../run-vocabulary'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const RUN = '0199f0a0-0000-7000-8000-000000000001'
@@ -402,6 +406,47 @@ describe('the typed wrappers', () => {
       outcome: 'suspend', reason: 'resource_wait', cause: 'pool_busy' as ResourceWaitCause, notBefore: new Date('2026-10-17T23:05:00Z'),
     })).rejects.toThrow(/pool_busy is not a resource wait cause/)
     expect(calls).toEqual([])
+  })
+
+  it('complete: a return unstarted names its cause as p_reason, and one past the hour reads as failed (#3039)', async () => {
+    const { client, calls } = rpcFetch([{ outcome: 'completed', run_status: 'queued', state_version: 10 }])
+    expect(await completeRunRequest(client, ORG, RUN, TOKEN, {
+      outcome: 'retry', unstartedCause: 'variables_unavailable', error: 'the run\'s variables could not be had', notBefore: new Date('2026-10-30T13:05:00Z'),
+    })).toEqual({ outcome: 'completed', runStatus: 'queued' })
+    expect(calls[0].body).toEqual({
+      p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_outcome: 'retry', p_reason: 'variables_unavailable',
+      p_error: 'the run\'s variables could not be had', p_not_before: '2026-10-30T13:05:00.000Z',
+    })
+    // The database gave it up: the status it chose is read, never assumed queued.
+    const gaveUp = rpcFetch([{ outcome: 'completed', run_status: 'failed', state_version: 11 }])
+    expect(await completeRunRequest(gaveUp.client, ORG, RUN, TOKEN, { outcome: 'retry', unstartedCause: 'definition_unavailable' }))
+      .toEqual({ outcome: 'completed', runStatus: 'failed' })
+    // A retry of a run that started names no cause, so its call is the one it always was.
+    const plain = rpcFetch([{ outcome: 'completed', run_status: 'queued', state_version: 12 }])
+    await completeRunRequest(plain.client, ORG, RUN, TOKEN, { outcome: 'retry', error: 'a step failed' })
+    expect(plain.calls[0].body).toEqual({ p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_outcome: 'retry', p_error: 'a step failed' })
+    // A cause the database does not take is refused before anything is sent.
+    const odd = rpcFetch([])
+    await expect(completeRunRequest(odd.client, ORG, RUN, TOKEN, { outcome: 'retry', unstartedCause: 'gateway_down' as UnstartedReturnCause }))
+      .rejects.toThrow(/gateway_down is not a cause a run is returned unstarted for/)
+    expect(odd.calls).toEqual([])
+  })
+
+  it('reads the waits to start per workflow, and refuses an answer it cannot read by name (#3039)', async () => {
+    const row = {
+      organization_id: ORG, workflow_id: WF, runs: 3, oldest_since: '2026-10-30T13:00:00+00:00', waited_seconds: 1260,
+      causes: ['definition_unavailable', null],
+    }
+    const { client, calls } = rpcFetch([row])
+    expect(await readUnstartedRunWaits(client, 900, 2)).toEqual({
+      waits: [{ organizationId: ORG, workflowId: WF, runs: 3, oldestSince: '2026-10-30T13:00:00+00:00', waitedSeconds: 1260, causes: ['definition_unavailable', null] }],
+      reachedLimit: false,
+    })
+    expect(calls[0].body).toEqual({ p_min_wait_seconds: 900, p_limit: 2 })
+    expect((await readUnstartedRunWaits(rpcFetch([row, row]).client, 900, 2)).reachedLimit).toBe(true)
+    await expect(readUnstartedRunWaits(rpcFetch([{ ...row, causes: ['gateway_down'] }]).client, 900, 2)).rejects.toThrow(/unstarted_run_waits returned causes that is not causes/)
+    await expect(readUnstartedRunWaits(rpcFetch([{ ...row, runs: 0 }]).client, 900, 2)).rejects.toThrow(/unstarted_run_waits returned runs that is not a count of one or more/)
+    await expect(readUnstartedRunWaits(rpcFetch([{ ...row, organization_id: 'nope' }]).client, 900, 2)).rejects.toThrow(/organization is not a uuid/)
   })
 
   it('the lease sweep reads the runs it ended failed, and refuses an answer without that count', async () => {
@@ -1124,6 +1169,22 @@ describe('the step record wrappers (#2703)', () => {
     await expect(purgeTerminalRunRequests(rpcFetch([]).client, new Date('2026-07-19T07:15:00.000Z'), 1000)).rejects.toThrow(/purge_terminal_run_requests/)
     await expect(purgeTerminalRunRequests(rpcFetch([{ purged: '7', tombstoned: 0, more: false }]).client, new Date('2026-07-19T07:15:00.000Z'), 1000))
       .rejects.toThrow(/purged/)
+  })
+
+  // #3052: the nightly purges of the sends past a year, the slots past 6 months and the expired dedup tombstones.
+  it.each([
+    ['purge_send_ledger', purgeSendLedger],
+    ['purge_schedule_fires', purgeScheduleFires],
+    ['purge_expired_dedup_tombstones', purgeExpiredDedupTombstones],
+  ] as const)('%s reads its page, and throws on a refusal or an answer it cannot read, never reading either as nothing purged', async (name, purge) => {
+    const { client, calls } = rpcFetch([{ purged: 5, more: true }])
+    expect(await purge(client, 1000)).toEqual({ purged: 5, more: true })
+    expect(calls[0]).toEqual({ path: `/rest/v1/rpc/${name}`, body: { p_limit: 1000 } })
+    const refused = rpcFetch({ code: '22023', message: `${name}: limit must be 1 to 1000, not 0` }, { status: 400 })
+    await expect(purge(refused.client, 0)).rejects.toThrow(/limit must be 1 to 1000/)
+    await expect(purge(rpcFetch([]).client, 1000)).rejects.toThrow(new RegExp(name))
+    await expect(purge(rpcFetch([{ purged: '5', more: true }]).client, 1000)).rejects.toThrow(/purged/)
+    await expect(purge(rpcFetch([{ purged: 5, more: 'yes' }]).client, 1000)).rejects.toThrow(/more/)
   })
 
   it('purge_ops_step_records reads its page', async () => {

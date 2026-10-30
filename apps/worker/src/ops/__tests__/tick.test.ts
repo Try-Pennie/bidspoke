@@ -18,12 +18,13 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { MAX_DEFINITIONS_PER_REQUEST, OPS_TICK_PROBLEM_RULES, OpsGatewayContractError } from '../../lib/ops-gateway-contract'
+import { OPS_UNSTARTED_WAIT_MAX_MS } from '../run-vocabulary'
 import { VARIABLE_COPY_REFRESH_AT_ONCE, VARIABLE_COPY_REFRESH_DEADLINE_MS } from '../variable-copies'
 import { organizationIdFrom, type OrganizationId } from '../ops-db'
 import {
   OpsWriteTimeoutError, type ConnectionCopyInput, type SaveConnectionCopiesResult, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
   type OpsResealState, type UnservedIdentityRemoved, type WorkflowCopy, type WorkflowCopyInput,
-  type SaveVariableCopiesResult, type VariableCopy, type VariableCopyInput,
+  type SaveVariableCopiesResult, type VariableCopy, type VariableCopyInput, type UnstartedRunWait,
 } from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
 import { ConnectionRefusal, RequeueAt } from '../connections/refusals'
@@ -34,10 +35,14 @@ import { RUN_LEASE_SECONDS, type RunInvocationReport } from '../run-invocation'
 import type { DispatchedRunVariables } from '../run-variables'
 import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
 import { RUN_DISPATCH_DEADLINE_MS } from '../tick-live'
+import { MAX_FIRE_AGE_MS } from '@bidspoke/workflow-definition'
+// Read through Vite's raw import rather than node:fs, because the worker tsconfig targets the Workers runtime and carries no Node types.
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text; there is no ambient declaration for it in this package.
+import RETENTION_MIGRATION from '../../../../../supabase-ops/supabase/migrations/20261030210000_retention_purges_3052.sql?raw'
 import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
 import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
 import {
-  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, FINISHED_RUN_KEPT_DAYS, NIGHTLY_PURGE, NIGHTLY_PURGE_DESIGN, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
+  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, UNSTARTED_ALERT_AFTER_SECONDS, UNSTARTED_READ_LIMIT, FINISHED_RUN_KEPT_DAYS, NIGHTLY_PURGE, SCHEDULE_FIRES_KEPT_MONTHS, SEND_LEDGER_KEPT_MONTHS, NIGHTLY_PURGE_DESIGN, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -236,8 +241,16 @@ function fake(opts: {
   variableCopies?: readonly VariableCopy[]
   /** What each page of the variable copy purge answers (#2999). */
   variableCopiesPurge?: PurgeAnswer
+  /** What each page of the send ledger, schedule fires and dedup tombstone purges answers (#3052). */
+  sendLedgerPurge?: PurgeAnswer
+  scheduleFiresPurge?: PurgeAnswer
+  dedupTombstonesPurge?: PurgeAnswer
   /** What each page of the finished run purge answers (#3018), by page from 1; none purged by default. */
   finishedRunsPurge?: (page: number) => { purged: number; tombstoned: number; more: boolean }
+  /** The waits to start unstarted_run_waits holds (#3039), filtered by the minimum asked as the database does; none by default. */
+  unstartedWaits?: UnstartedRunWait[]
+  /** What completeRun answers as the run's status, by the end sent; the end's own outcome by default. */
+  completedStatus?: (end: CompleteOutcome) => string
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
@@ -293,7 +306,7 @@ function fake(opts: {
     },
     async completeRun(run: ClaimedRun, end: CompleteOutcome): Promise<CompletedRun> {
       fail('completeRun'); db.completed.push({ runRequestId: run.runRequestId, end })
-      return { outcome: 'completed', runStatus: end.outcome }
+      return { outcome: 'completed', runStatus: opts.completedStatus?.(end) ?? end.outcome }
     },
     async missingDefinitions(limit: number) {
       fail('missingDefinitions'); calls.push(`missingDefinitions:${limit}`)
@@ -312,6 +325,9 @@ function fake(opts: {
     async purgeRunVariables(limit: number) { return purgePage('purgeRunVariables', limit, opts.runVariablesPurge) },
     savedVariableCopies: [] as VariableCopyInput[][],
     async purgeVariableCopies(limit: number) { return purgePage('purgeVariableCopies', limit, opts.variableCopiesPurge) },
+    async purgeSendLedger(limit: number) { return purgePage('purgeSendLedger', limit, opts.sendLedgerPurge) },
+    async purgeScheduleFires(limit: number) { return purgePage('purgeScheduleFires', limit, opts.scheduleFiresPurge) },
+    async purgeDedupTombstones(limit: number) { return purgePage('purgeDedupTombstones', limit, opts.dedupTombstonesPurge) },
     async purgeFinishedRuns(terminalBefore: Date, limit: number) {
       fail('purgeFinishedRuns'); calls.push(`purgeFinishedRuns:${terminalBefore.toISOString()}:${limit}`)
       const page = calls.filter((c) => c.startsWith('purgeFinishedRuns:')).length
@@ -354,6 +370,11 @@ function fake(opts: {
     },
     async readCopies() { fail('readCopies'); return { copies: opts.copies ?? [copy()], reachedLimit: opts.copiesFull ?? false } },
     async recordObservation(_org: unknown, o: ScheduleObservation) { fail('recordObservation'); observations.push(o); return opts.observed?.(o) ?? 'recorded' },
+    async unstartedWaits(minWaitSeconds: number, limit: number) {
+      fail('unstartedWaits'); calls.push(`unstartedWaits:${minWaitSeconds}:${limit}`)
+      const waits = (opts.unstartedWaits ?? []).filter((w) => w.waitedSeconds >= minWaitSeconds).slice(0, limit)
+      return { waits, reachedLimit: waits.length === limit }
+    },
     async dueQueueDepth() { fail('dueQueueDepth'); return { dueRuns: opts.dueRuns ?? 0, dueWorkflows: opts.dueRuns ? 1 : 0, oldestDue: null } },
     async saveConnectionCopies(_servedAt: string, _complete: boolean, list: readonly ConnectionCopyInput[]): Promise<SaveConnectionCopiesResult> {
       fail('saveConnectionCopies'); savedConnections.push([...list])
@@ -1498,6 +1519,9 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
     schedule_observations: { call: 'purgeObservations', count: 'observations_purged' },
     step_test_results: { call: 'purgeStepTests', count: 'step_tests_purged' },
     variable_copies: { call: 'purgeVariableCopies', count: 'variable_copies_purged' },
+    send_ledger: { call: 'purgeSendLedger', count: 'send_ledger_purged' },
+    schedule_fires: { call: 'purgeScheduleFires', count: 'schedule_fires_purged' },
+    dedup_tombstones: { call: 'purgeDedupTombstones', count: 'dedup_tombstones_purged' },
   }
   /** The fake's option making one purge answer each page with `answer`. */
   const answering = (s: Subject, answer: (page: number) => { purged: number; more: boolean }) => {
@@ -1508,6 +1532,9 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
       case 'schedule_observations': return { observationsPurge: answer }
       case 'step_test_results': return { stepTestsPurge: answer }
       case 'variable_copies': return { variableCopiesPurge: answer }
+      case 'send_ledger': return { sendLedgerPurge: answer }
+      case 'schedule_fires': return { scheduleFiresPurge: answer }
+      case 'dedup_tombstones': return { dedupTombstonesPurge: answer }
     }
   }
   const always = () => ({ purged: 1000, more: true })
@@ -1519,7 +1546,9 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
   })
 
   it('names every purge the nightly sweep runs, each with its own page cap', () => {
-    expect(SUBJECTS.sort()).toEqual(['finished_runs', 'run_variables', 'schedule_observations', 'step_records', 'step_test_results', 'variable_copies'])
+    expect(SUBJECTS.sort()).toEqual([
+      'dedup_tombstones', 'finished_runs', 'run_variables', 'schedule_fires', 'schedule_observations', 'send_ledger', 'step_records', 'step_test_results', 'variable_copies',
+    ])
   })
 
   // The arithmetic, as code: the designed rows a day come from the run volume
@@ -1533,6 +1562,14 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
     expect(d.rowsPerDay.step_records).toBe(d.runsPerDay * d.stepRecordsPerRun)
     expect(d.stepRecordsPerRun).toBeGreaterThanOrEqual(20)
     expect(d.rowsPerDay.schedule_observations).toBe(68 * 1440)
+    // #3052: a send ledger row a send, half the steps of the 20 step run; a schedule fire a fired slot, as an observation is.
+    expect(d.sendsPerRun).toBe(d.stepRecordsPerRun / 2)
+    expect(d.rowsPerDay.send_ledger).toBe(d.runsPerDay * d.sendsPerRun)
+    expect(d.rowsPerDay.schedule_fires).toBe(d.rowsPerDay.schedule_observations)
+    // The nightly run purge writes a tombstone only for a run whose 30 day dedup
+    // window outlives its FINISHED_RUN_KEPT_DAYS (retention_purges.test.sql case C proves none does).
+    expect(d.rowsPerDay.dedup_tombstones).toBe(0)
+    expect(FINISHED_RUN_KEPT_DAYS).toBeGreaterThan(30)
   })
 
   it.each(SUBJECTS)('%s: its page cap removes at least twice its designed rows a day in one night', (s) => {
@@ -1547,9 +1584,10 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
 
   // A minute cron may make 10,000 subrequests and run 15 minutes of wall clock
   // (docs/ops-ceilings-spike.md P1, P3), and every page is one subrequest.
-  it('keeps every page it may take inside a quarter of the tick\'s subrequests, and its budget inside a run dispatch\'s deadline', () => {
+  // Half, since #3052: the rest of a tick asks at most a few hundred (NIGHTLY_PURGE says which).
+  it('keeps every page it may take inside half the tick\'s subrequests, and its budget inside a run dispatch\'s deadline', () => {
     const pages = SUBJECTS.reduce((n, s) => n + NIGHTLY_PURGE.maxPages[s], 0)
-    expect(pages).toBeLessThanOrEqual(10_000 / 4)
+    expect(pages).toBeLessThanOrEqual(10_000 / 2)
     expect(NIGHTLY_PURGE.budgetMs + 10 * NIGHTLY_PURGE_DESIGN.assumedPageMs).toBeLessThan(RUN_DISPATCH_DEADLINE_MS)
   })
 
@@ -1628,6 +1666,65 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
     expect(report.counts.nightly_purge_pages).toBe(SUBJECTS.length)
     expect(report.counts.nightly_purge_ms).toBeGreaterThan(0)
     expect(report.problem_keys).toEqual([])
+  })
+})
+
+// #3052: Dan decided on 2026-10-30 that the record of each schedule slot fired
+// is kept 6 months, the record of what each run sent 1 year, and a purged run's
+// dedup tombstone until its window ends. Each is a nightly purge of its own.
+describe('the retention of schedule fires, sends and dedup tombstones (#3052)', () => {
+  const NIGHT = '2026-10-17T07:15:00.000Z' // 03:15 EDT
+  const DAY = 24 * 3600 * 1000
+
+  it('keeps a fired slot 6 months and a send 1 year, the windows the database functions hold', () => {
+    expect(SCHEDULE_FIRES_KEPT_MONTHS).toBe(6)
+    expect(SEND_LEDGER_KEPT_MONTHS).toBe(12)
+    expect(RETENTION_MIGRATION).toContain(`v_cutoff timestamptz := now() - interval '${SCHEDULE_FIRES_KEPT_MONTHS} months';`)
+    expect(RETENTION_MIGRATION).toContain(`v_cutoff timestamptz := now() - interval '${SEND_LEDGER_KEPT_MONTHS / 12} year';`)
+  })
+
+  // A slot older than any fire the tick can plan is never asked for again, so
+  // its row guards nothing (planFires, MAX_FIRE_AGE_MS). Six months is at least
+  // 181 days, many times past that.
+  it('keeps a fired slot far longer than the furthest back the tick ever fires a slot', () => {
+    expect(181 * DAY).toBeGreaterThan(50 * MAX_FIRE_AGE_MS)
+  })
+
+  it.each([
+    ['send_ledger', 'purgeSendLedger', 'send_ledger_purged', 'sendLedgerPurge'],
+    ['schedule_fires', 'purgeScheduleFires', 'schedule_fires_purged', 'scheduleFiresPurge'],
+    ['dedup_tombstones', 'purgeDedupTombstones', 'dedup_tombstones_purged', 'dedupTombstonesPurge'],
+  ] as const)('%s: purged in the nightly sweep a page of 1,000 at a time, counted, and never outside its hour', async (_subject, call, count, option) => {
+    const f = fake({ dbNow: NIGHT, [option]: (page: number) => ({ purged: page < 3 ? 1000 : 7, more: page < 3 }) })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls.filter((c) => c === `${call}:1000`)).toHaveLength(3)
+    expect(report.counts[count]).toBe(2007)
+    expect(report.problem_keys).toEqual([])
+    const quiet = fake({})
+    await runOpsTick(quiet.ports)
+    expect(quiet.db.calls.filter((c) => c.startsWith(call))).toEqual([])
+  })
+
+  // Fail loud: a purge erroring is its own purge_failed, with the error and what
+  // it removed first, and stops none of the others.
+  it.each([
+    ['send_ledger', 'sendLedgerPurge', /sends recorded more than a year ago .*failed after removing 1,000: .*statement timeout/],
+    ['schedule_fires', 'scheduleFiresPurge', /schedule slots fired more than 6 months ago .*failed after removing 1,000: .*statement timeout/],
+    ['dedup_tombstones', 'dedupTombstonesPurge', /dedup tombstones past their window .*failed after removing 1,000: .*statement timeout/],
+  ] as const)('%s: a page erroring is purge_failed for it alone, and the other purges run that night', async (subject, option, words) => {
+    const f = fake({
+      dbNow: NIGHT,
+      [option]: (page: number) => {
+        if (page === 2) throw new Error('canceling statement due to statement timeout')
+        return { purged: 1000, more: true }
+      },
+      stepRecordsPurge: { purged: 4, more: false },
+    })
+    const report = await runOpsTick(f.ports)
+    expect((report.problem_keys ?? []).filter((k) => k.startsWith('purge_'))).toEqual([`purge_failed:${subject}`])
+    expect(report.problems.join(' ')).toMatch(words)
+    expect(report.counts.step_records_purged).toBe(4)
+    expect(OPS_TICK_PROBLEM_RULES.purge_failed).toBe('two_in_a_row')
   })
 })
 
@@ -2194,7 +2291,7 @@ describe('the variables of the runs a live tick claims (#2998, phase 2 of #2982)
       expect(f.ranRuns).toEqual([])
       expect(RUN_VARIABLES_RETRY_MS).toBe(60_000)
       for (const c of f.db.completed) {
-        expect(c.end).toMatchObject({ outcome: 'retry', notBefore: new Date(Date.parse(DB_NOW) + RUN_VARIABLES_RETRY_MS) })
+        expect(c.end).toMatchObject({ outcome: 'retry', unstartedCause: 'variables_unavailable', notBefore: new Date(Date.parse(DB_NOW) + RUN_VARIABLES_RETRY_MS) })
         expect((c.end as { error: string }).error).toMatch(/^the run's variables could not be had from the bidding Worker \(.+\), so it was returned to the queue unstarted$/)
       }
       expect(f.db.completed).toHaveLength(3)
@@ -2545,5 +2642,105 @@ describe('the last good copy of each version\'s plain variables (#2999, phase 3 
     const failed = await runOpsTick(failing.ports)
     expect(failed.problem_keys).toContain('purge_failed:variable_copies')
     expect(failing.db.calls).toContain('purgeRunVariables')
+  })
+})
+
+describe('runs returned to the queue unstarted (#3039, Dan\'s decision of 2026-10-30)', () => {
+  const ORG_2 = organizationIdFrom('7a2d3c9f-1e4b-4d2f-8b66-2c3d4e5f6071')
+  /** A wait as unstarted_run_waits answers it, its oldest begun `waited` seconds before the database clock. */
+  const wait = (waited: number, over: Partial<UnstartedRunWait> = {}): UnstartedRunWait => ({
+    organizationId: ORG, workflowId: WF_A, runs: 3, oldestSince: new Date(Date.parse(DB_NOW) - waited * 1000).toISOString(),
+    waitedSeconds: waited, causes: ['definition_unavailable'], ...over,
+  })
+  const problemOf = (report: { problems: string[]; problem_keys: string[] | null }, key: string) => report.problems[(report.problem_keys ?? []).indexOf(key)]
+
+  it('pages a workflow whose runs have waited 15 minutes to start, in the approved words, and not at 14 minutes 59 seconds', async () => {
+    expect(UNSTARTED_ALERT_AFTER_SECONDS).toBe(15 * 60)
+    const early = await runOpsTick(fake({ mode: 'live', unstartedWaits: [wait(15 * 60 - 1)] }).ports)
+    expect(early.problem_keys).not.toContain(`runs_unstarted:${WF_A}`)
+    // It judged every workflow with runs waiting, so a workflow it does not name is not waiting 15 minutes.
+    expect(early.counts.unstarted_waits_judged).toBe(1)
+
+    const f = fake({ mode: 'live', unstartedWaits: [wait(21 * 60)] })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls).toContain(`unstartedWaits:900:${UNSTARTED_READ_LIMIT}`)
+    // Begun at 9:41:30 UTC, so given up at 10:41:30 UTC: 6:41 AM in New York in October.
+    expect(problemOf(report, `runs_unstarted:${WF_A}`)).toBe(
+      '3 runs have waited 21 minutes to start because the workflow\'s saved version could not be loaded from bidding. Each run is given up after 1 hour of waiting, at 6:41 AM ET for the oldest.',
+    )
+    expect(OPS_TICK_PROBLEM_RULES.runs_unstarted).toBe('at_once')
+    expect(OPS_UNSTARTED_WAIT_MAX_MS).toBe(60 * 60_000)
+  })
+
+  it('names each cause the returns named, and one run in the singular', async () => {
+    const report = await runOpsTick(fake({
+      mode: 'live',
+      unstartedWaits: [
+        wait(16 * 60, { runs: 1, causes: ['variables_unavailable'] }),
+        wait(40 * 60, { organizationId: ORG_2, workflowId: WF_B, runs: 2, causes: ['definition_unavailable', 'variables_unavailable'] }),
+      ],
+    }).ports)
+    expect(problemOf(report, `runs_unstarted:${WF_A}`)).toMatch(/^1 run has waited 16 minutes to start because its environment variables could not be read from bidding\. Each run is given up after 1 hour of waiting, at /)
+    expect(problemOf(report, `runs_unstarted:${WF_B}`)).toMatch(
+      /^2 runs have waited 40 minutes to start because the workflow's saved version could not be loaded from bidding or its environment variables could not be read from bidding\. /,
+    )
+  })
+
+  // Dan's wording for a return that named no cause (#3039, 2026-10-30): the reason was not recorded.
+  it('says the reason was not recorded when no return named one, and lists only the named causes beside a return that named none', async () => {
+    const WF_C = '00000000-0000-4000-8000-0000000019a3'
+    const WF_D = '00000000-0000-4000-8000-0000000019a4'
+    const WF_E = '00000000-0000-4000-8000-0000000019a5'
+    const report = await runOpsTick(fake({
+      mode: 'live',
+      unstartedWaits: [
+        wait(30 * 60, { workflowId: WF_C, runs: 3, causes: [null] }),
+        wait(20 * 60, { workflowId: WF_D, runs: 2, causes: ['definition_unavailable', null] }),
+        wait(15 * 60, { workflowId: WF_E, runs: 1, causes: [null] }),
+      ],
+    }).ports)
+    // Each oldest wait began 30, 20 and 15 minutes before 10:02:30 UTC, so is given up an hour on, in New York time.
+    expect(problemOf(report, `runs_unstarted:${WF_C}`)).toBe(
+      '3 runs have waited 30 minutes to start, and the reason was not recorded. Each run is given up after 1 hour of waiting, at 6:32 AM ET for the oldest.',
+    )
+    expect(problemOf(report, `runs_unstarted:${WF_D}`)).toBe(
+      '2 runs have waited 20 minutes to start because the workflow\'s saved version could not be loaded from bidding. Each run is given up after 1 hour of waiting, at 6:42 AM ET for the oldest.',
+    )
+    expect(problemOf(report, `runs_unstarted:${WF_E}`)).toBe(
+      '1 run has waited 15 minutes to start, and the reason was not recorded. Each run is given up after 1 hour of waiting, at 6:47 AM ET for the oldest.',
+    )
+    expect(report.problems.join(' ')).not.toMatch(/did not say why/)
+  })
+
+  it('stands down by not reporting it once no run of the workflow has waited 15 minutes', async () => {
+    const report = await runOpsTick(fake({ mode: 'live', unstartedWaits: [] }).ports)
+    expect((report.problem_keys ?? []).filter((k) => k.startsWith('runs_unstarted'))).toEqual([])
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('reports a read that failed, and a read at its limit, by name; in observe mode it reads nothing', async () => {
+    const failed = await runOpsTick(fake({ mode: 'live', failing: { unstartedWaits: new Error('statement timeout') } }).ports)
+    expect(problemOf(failed, 'runs_unstarted_unread')).toMatch(/could not read which runs are waiting to start \(statement timeout\)/)
+    expect(failed.counts.unstarted_waits_judged).toBeUndefined()
+    expect(OPS_TICK_PROBLEM_RULES.runs_unstarted_unread).toBe('three_in_a_row')
+    const many = Array.from({ length: UNSTARTED_READ_LIMIT }, (_, i) => wait(20 * 60, { workflowId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}` }))
+    const full = await runOpsTick(fake({ mode: 'live', unstartedWaits: many }).ports)
+    expect(full.problem_keys).toContain('runs_unstarted_limit')
+    expect(full.counts.unstarted_waits_judged).toBeUndefined()
+    expect(OPS_TICK_PROBLEM_RULES.runs_unstarted_limit).toBe('at_once')
+    const observe = fake({ unstartedWaits: [wait(30 * 60)] })
+    expect((await runOpsTick(observe.ports)).counts.unstarted_waits_judged).toBeUndefined()
+    expect(observe.db.calls.some((c) => c.startsWith('unstartedWaits'))).toBe(false)
+  })
+
+  it('counts a run the database gave up on its return as failed, not requeued', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1)], serveRunVariables: async () => { throw new Error('the bidding Worker did not answer') },
+      completedStatus: (end) => (end.outcome === 'retry' ? 'failed' : end.outcome),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.completed).toEqual([{ runRequestId: claimedRun(WF_A, 1).runRequestId, end: expect.objectContaining({ outcome: 'retry', unstartedCause: 'variables_unavailable' }) }])
+    expect(report.counts).toMatchObject({ runs_failed: 1, runs_unstarted_given_up: 1 })
+    expect(report.counts.runs_requeued).toBeUndefined()
   })
 })

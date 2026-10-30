@@ -88,6 +88,9 @@ export const OPS_LANE_RPCS = [
   // one batched write spans organizations, and the nightly purge belongs to none.
   'save_variable_copies',
   'purge_variable_copies',
+  // The nightly purges of the slots fired past 6 months and the sends past a year (#3052).
+  'purge_schedule_fires',
+  'purge_send_ledger',
   // How long an ops key reseal has been switched on, and what its runs last
   // said (#2486): the lane's own state, which belongs to no organization.
   'observe_ops_reseal',
@@ -112,6 +115,8 @@ export const OPS_LANE_READ_ONLY_RPCS = [
   'connection_check_targets',
   // The saved copies whose current version has no definition held yet (#1950), each row carrying its organization.
   'missing_workflow_definitions',
+  // The runs waiting to start, per workflow (#3039), each row carrying its organization.
+  'unstarted_run_waits',
 ] as const
 export const OPS_ORGANIZATION_READ_ONLY_RPCS = [
   'connection_copy', 'connection_status', 'google_delegation_check', 'list_google_delegation_subjects',
