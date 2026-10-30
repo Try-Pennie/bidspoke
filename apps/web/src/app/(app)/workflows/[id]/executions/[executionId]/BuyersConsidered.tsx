@@ -106,7 +106,7 @@ const OUTCOME_TONE: Record<ConsideredOutcome, Tone> = {
 
 const money = (cents: number): string => `$${(cents / 100).toFixed(2)}`
 
-/** Words for a reason code; the headline's own, so an unknown outcome is worded by whether an answer arrived (#3087). */
+/** Words for a reason code; the headline's own, so an unknown outcome is worded by what the buyer answered (#3087, #3129). */
 type ReasonWords = (reason: string | undefined) => string
 
 /** What each exit says the node did, by exit. Every exit in the node's list has one (tested). */
