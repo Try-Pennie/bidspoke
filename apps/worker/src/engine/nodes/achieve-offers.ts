@@ -104,13 +104,29 @@ export const ACHIEVE_FETCH_TIMEOUT_MS = 9_000
 export const ACHIEVE_WINDOW_MARGIN_MS = 500
 
 /**
- * The shortest wait worth sending for (#2834). With less time than this left the
- * node sends nothing and says why, rather than hand Achieve the lead's details for
- * an answer that cannot arrive in time. Replies were measured at 4.7 s median and
- * 5.8 s for nine in ten (above); how fast the fastest are is not measured here, so
- * 1 s is a judgment: a floor under the replies, not a fitted figure.
+ * The shortest wait worth sending for (#2834, set from measured replies in #2862).
+ * With less time than this left the node sends nothing and says why, rather than
+ * hand Achieve the lead's details for an answer that cannot arrive in time.
+ *
+ * Measured on 2026-10-30 from the exported evaluations in Snowflake
+ * (BIDSPOKE.PUBLIC.ACHIEVE_EVALUATIONS, live and production only, 2026-07-13 to
+ * 2026-10-23), by the step's duration, which is the reply plus a few milliseconds
+ * of the node's own work. Of 6,842 accepts and evaluated declines, the fastest was
+ * 1.5 s, 4 came back inside 2 s, 37 (1 in 185) inside 2.5 s and 86 inside 3 s; the
+ * fastest 1 in 100 took 2.8 s overall and at least 2.5 s in every month (October,
+ * the fastest, 2.51 s). No accept came back inside 4.1 s (638 of them, 1 in 100
+ * by 4.3 s). Only a DuplicateLead decline, for a lead Achieve already holds, answers
+ * faster: 1,862 of them, half inside 0.3 s, none of use to the evaluation.
+ *
+ * So 2.5 s, under the fastest 1 in 100 real answers in every month measured: a
+ * shorter wait records almost nothing and still hands over the lead. The step's
+ * output carries the time that was left, and the window skip check
+ * (lib/achieve-window-skips.ts) counts the skips a day and pages above its rate.
  */
-export const ACHIEVE_MIN_WAIT_MS = 1_000
+export const ACHIEVE_MIN_WAIT_MS = 2_500
+
+/** The reason a lead skipped for lack of time carries, which the window skip check counts by. */
+export const ACHIEVE_WINDOW_SPENT_REASON = 'answer_window_spent'
 
 /** What the node does with the time left: send and wait `waitMs`, or skip. */
 export type AchieveWait = { send: true; waitMs: number; shortened: boolean } | { send: false; waitMs: number }
@@ -354,7 +370,7 @@ export async function executeAchieveOffersNode(
     return {
       output: {
         _achieve_skipped: true as const,
-        reason: 'answer_window_spent',
+        reason: ACHIEVE_WINDOW_SPENT_REASON,
         window: { ms_left: msLeft, margin_ms: ACHIEVE_WINDOW_MARGIN_MS, min_wait_ms: ACHIEVE_MIN_WAIT_MS },
         ok: false,
         response_status: 'skipped',

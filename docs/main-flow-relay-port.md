@@ -102,7 +102,9 @@ used to wait up to 9 s for Achieve's reply whatever time was left
 case it ended about 18.5 s after the answer and the run was reported as unfinished
 work. It now waits only for what is left of the window less 500 ms
 (`achieveWait`), so at worst it ends 11.5 s after the answer, and with less than
-1.5 s left it sends nothing and records why (`answer_window_spent`). The window
+3 s left it sends nothing and records why (`answer_window_spent`, a 2.5 s floor
+set from the fastest measured replies in #2862, and counted a day by the Achieve
+window skip check). The window
 test runs the node itself on every branch from that worst case. Typically the
 write takes about 0.1 s, the inquiry post about 2 s (the median of the
 `credit-trades` call, the closest one measured) and Achieve 4.7 s (9 in 10 within

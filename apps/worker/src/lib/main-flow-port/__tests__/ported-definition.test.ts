@@ -237,11 +237,14 @@ describe('the worst case after the answer fits the 12 s window', () => {
       ends[write.namespace] = { achieve: achieve?.namespace ?? null, startsAtMs, endsAtMs: achieve ? await achieveEndsAtMs(achieve, startsAtMs) : startsAtMs }
     }
     for (const [write, e] of Object.entries(ends)) expect({ write, ...e, fits: e.endsAtMs <= CONTINUATION_WINDOW_MS }).toEqual({ write, ...e, fits: true })
-    // Achieve starts 9.5 s after the answer at worst, so it waits the 2.5 s left
-    // less its 500 ms margin, and ends 11.5 s after the answer.
+    // Achieve starts 9.5 s after the answer at worst, with 2.5 s left: under the 3 s
+    // a send needs (its 500 ms margin and the 2.5 s shortest wait set from measured
+    // replies, #2862), so it sends nothing and ends where it started. The skip is
+    // counted by the Achieve window skip check. A start just inside 9 s still waits
+    // the 2.5 s and ends 11.5 s after the answer, the latest any branch ends.
     expect(Object.fromEntries(Object.entries(ends).map(([w, e]) => [w, [e.achieve, e.endsAtMs]]))).toEqual({
-      tripoint_sf_post: ['achieve_tripoint_win', 11_500], amone_sf_post: ['achieve_amone_win', 11_500], engine_no_bids_sf_post: ['achieve_no_bids', 11_500],
-      under_10000_sf_post: ['achieve_under_10k', 11_500], invalid_state_sf_post: ['achieve_invalid_state', 11_500], debt_missing_sf_post: ['achieve_debt_missing', 11_500],
+      tripoint_sf_post: ['achieve_tripoint_win', 9_500], amone_sf_post: ['achieve_amone_win', 9_500], engine_no_bids_sf_post: ['achieve_no_bids', 9_500],
+      under_10000_sf_post: ['achieve_under_10k', 9_500], invalid_state_sf_post: ['achieve_invalid_state', 9_500], debt_missing_sf_post: ['achieve_debt_missing', 9_500],
       send_salesforce: [null, 11_450], send_fallback_salesforce: [null, 9_500], send_fallback_salesforce_1: [null, 9_500],
     })
   })
