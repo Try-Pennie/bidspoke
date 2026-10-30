@@ -242,6 +242,8 @@ export type OpsRunVariableNamesRequest = OpsRunVariablesRequest & { secrets: 'na
  */
 export const RUN_VARIABLES_REFUSALS = ['version_missing', 'other_organization', 'not_ops_lane', 'workflow_deleted', 'version_unreadable', 'secret_unreadable'] as const
 export type RunVariablesRefusal = (typeof RUN_VARIABLES_REFUSALS)[number]
+/** A refusal that fails a run (variables_refused, #3131): every one but workflow_deleted, which ends it dead. */
+export type FailingRunVariablesRefusal = Exclude<RunVariablesRefusal, 'workflow_deleted'>
 
 /**
  * One run's current variables: every one its version's definition reads that
@@ -865,6 +867,14 @@ export const OPS_TICK_PROBLEM_RULES = {
    * workflow, on a page of its own (MISSING_VARIABLE_PAGE).
    */
   runs_variable_missing: 'at_once',
+  /**
+   * A switched on workflow's runs failed because the bidding Worker refused to
+   * hand over their variables (variables_refused, #3131): a setup break a
+   * person must fix, as a missing variable is. Each failed run is reported
+   * once, so it pages at once, per workflow, on a page of its own
+   * (REFUSED_VARIABLES_PAGE).
+   */
+  runs_refused_variables: 'at_once',
   // Reported once, never again by a later tick.
   /** The agreement check failed after its claim; it is not tried again for 14 minutes. */
   agreement_check_failed: 'at_once',
@@ -1049,9 +1059,26 @@ export const MISSING_VARIABLE_PAGE = {
   about: 'runs that failed on a missing variable',
 } as const satisfies OpsOwnPage
 
+/**
+ * A switched on workflow's runs that failed because the bidding Worker refused
+ * to hand over their variables (runs_refused_variables, the run's reason
+ * variables_refused, #3131), named from each run's end (its refusal and
+ * refusedVariables), never from its error's words. The words are a draft for
+ * Dan's approval. judgedCount: every live tick whose claim answered.
+ */
+export const REFUSED_VARIABLES_PAGE = {
+  kind: 'runs_refused_variables',
+  job: (workflowId: string) => `ops-runs-variables-refused:${workflowId}`,
+  title: (workflowName: string) => `Ops runs failed because bidding refused their variables: ${workflowName}`,
+  fix: 'If a secret could not be read, enter its value again on the Environment Variables page. Otherwise open the workflow in Bidspoke and save it again. Runs that already failed are not run again.',
+  judgedCount: 'variables_refused_judged',
+  perWorkflow: true,
+  about: 'runs bidding refused their variables',
+} as const satisfies OpsOwnPage
+
 /** Every kind that pages on a page of its own, in the order the bidding Worker settles them. */
 export const OPS_OWN_PAGES: readonly OpsOwnPage[] = [
-  UNSTARTED_RUNS_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, MISSING_VARIABLE_PAGE,
+  UNSTARTED_RUNS_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, MISSING_VARIABLE_PAGE, REFUSED_VARIABLES_PAGE,
 ]
 
 /** The own page a problem's key belongs to, read from its kind, or null for the minute cron's shared page. */
@@ -1115,6 +1142,58 @@ export function missingVariableText(r: { runs: number; names: readonly string[] 
   const lead = r.runs === 1 ? '1 run' : `${r.runs} runs`
   const end = one ? ' and no such variable exists.' : ' and no such variables exist.'
   const make = (list: string) => `${lead} failed before sending anything, because this workflow reads the ${one ? 'variable' : 'variables'} ${list}${end}`
+  return fitted(make, listed(names))
+}
+
+/** One refused run as the refused variables page reads it: why, and the secrets it names. */
+export interface RefusedRun {
+  reason: FailingRunVariablesRefusal
+  keys: readonly string[]
+}
+
+/**
+ * Why bidding refused, in plain words, for a refusal that names no variable
+ * (#3131): never its code. runs says whether "it was" or "they were".
+ */
+function refusedWhy(reason: Exclude<FailingRunVariablesRefusal, 'secret_unreadable'>, runs: number): string {
+  const were = runs === 1 ? 'it was' : 'they were'
+  switch (reason) {
+    case 'version_missing': return `the saved version of this workflow ${were} started on no longer exists in bidding`
+    case 'version_unreadable': return `bidding could not read the saved version of this workflow ${were} started on, so it could not tell which variables to send`
+    case 'other_organization': return 'in bidding, this workflow now belongs to another organization'
+    case 'not_ops_lane': return 'in bidding, this workflow is no longer set to run on ops'
+  }
+}
+
+/**
+ * The body of runs_refused_variables (#3131): how many runs failed, and for
+ * each reason bidding refused (in RUN_VARIABLES_REFUSALS order) why, in plain
+ * words, naming every secret it could not read (each once, sorted), from the
+ * runs' typed refusals, never their errors. One reason reads as one sentence;
+ * several say each with its runs. Only the list of secret names is cut to fit.
+ */
+export function refusedVariablesText(runs: readonly RefusedRun[]): string {
+  const lead = runs.length === 1 ? '1 run' : `${runs.length} runs`
+  const groups = RUN_VARIABLES_REFUSALS.flatMap((reason) => {
+    const count = runs.filter((r) => r.reason === reason).length
+    return reason === 'workflow_deleted' || count === 0 ? [] : [{ reason, runs: count }]
+  })
+  const names = [...new Set(runs.filter((r) => r.reason === 'secret_unreadable').flatMap((r) => r.keys))].sort()
+  // The secrets by name, or said without one when the refusal named none.
+  const secrets = (list: string) => (names.length === 0 ? 'a secret variable it reads' : `the secret ${names.length === 1 ? 'variable' : 'variables'} ${list}`)
+  const opening = `${lead} failed before sending anything, because bidding would not hand over`
+  const make = (list: string): string => {
+    if (groups.length === 1) {
+      const g = groups[0]
+      if (g.reason === 'secret_unreadable') return `${opening} ${secrets(list)}: ${names.length > 1 ? 'they' : 'it'} could not be read.`
+      return `${opening} ${runs.length === 1 ? 'its' : 'their'} variables: ${refusedWhy(g.reason, g.runs)}.`
+    }
+    const each = groups.map((g) => {
+      const why = g.reason === 'secret_unreadable' ? `${secrets(list)} could not be read` : refusedWhy(g.reason, g.runs)
+      return `For ${g.runs === 1 ? '1 run' : `${g.runs} runs`}, ${why}.`
+    })
+    return `${opening} their variables. ${each.join(' ')}`
+  }
   return fitted(make, listed(names))
 }
 

@@ -81,7 +81,8 @@
  *     once per organization for every run the tick will start, within the
  *     gateway deadline, and each run's answer goes in its own signed dispatch
  *     (run-variables.ts): secret values for that run only, never kept. A run the
- *     bidding Worker refused is ended unrun by its own reason (refusedRunEnd); a
+ *     bidding Worker refused is ended unrun by its own reason (refusedRunEnd,
+ *     failed as variables_refused unless its workflow is deleted, #3131); a
  *     run whose variables could not be had (the call failed, timed out, or its
  *     answer, or the run's part of it, could not be read) goes back to the
  *     queue unstarted, RUN_VARIABLES_RETRY_MS on, spending no attempt, as a run
@@ -101,7 +102,9 @@
  *     same tick (runs_on_variable_copy), the refresh failing three ticks in a
  *     row (variable_copy_refresh_failing), an answer it cannot read
  *     (run_variables_unreadable), and a run that failed on a variable it was
- *     not given (runs_variable_missing, the run's reason variable_unavailable).
+ *     not given (runs_variable_missing, the run's reason variable_unavailable),
+ *     and runs bidding refused their variables (runs_refused_variables, the
+ *     run's reason variables_refused, #3131).
  *  7. Dispatch, each item inside its own boundary: every newly recorded fire is
  *     handed to OpsInternal.observe through the SELF binding, signed (dispatch-
  *     auth.ts), and awaited, because a dispatched call dies with the tick that
@@ -125,8 +128,8 @@ import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type
 import {
   COPIES_STALE_AFTER_MS, CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, MAX_RUN_VARIABLES_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsRunVariables,
   parseServedOpsWorkflows, tickProblem, unstartedRunsText, UNSTARTED_RUNS_PAGE,
-  MISSING_VARIABLE_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, missingVariableText, refreshFailingText,
-  runVariablesUnreadableText, runsOnVariableCopyText,
+  MISSING_VARIABLE_PAGE, REFUSED_VARIABLES_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, missingVariableText, refreshFailingText,
+  refusedVariablesText, runVariablesUnreadableText, runsOnVariableCopyText, type RefusedRun,
   type ConnectionLoginsReport, type OpsDefinitionRequest, type OpsRunVariablesRequest, type RunVariablesRefusal, type OpsGatewayJob, type OpsJobReport,
   type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem, type WriteBacksReport,
 } from '../lib/ops-gateway-contract'
@@ -1144,6 +1147,8 @@ interface RunResult {
   ran?: RunVariablesUsed
   /** The variables it failed on, by name, when it failed on one it was not given (variable_unavailable, #3000). */
   missing?: readonly string[]
+  /** Why bidding refused its variables, once the tick ended it failed for that (variables_refused, #3131). */
+  refused?: RefusedRun
 }
 
 /**
@@ -1175,7 +1180,10 @@ async function dispatchOneRun(
       const end = refusedRunEnd(given, run.workflowVersion)
       await db.completeRun(run, end)
       bump(counts, 'runs_variables_refused')
-      return end.outcome === 'dead' ? { workflowId: run.workflowId, tally: 'ended' } : { workflowId: run.workflowId, tally: 'failed', error: 'error' in end ? end.error : undefined }
+      if (end.outcome === 'dead') return { workflowId: run.workflowId, tally: 'ended' }
+      const result: RunResult = { workflowId: run.workflowId, tally: 'failed', error: 'error' in end ? end.error : undefined }
+      // Why, from the end's own fields, never its error's words (#3131): only an end that was written is paged.
+      return end.outcome === 'failed' && end.reason === 'variables_refused' ? { ...result, refused: { reason: end.refusal, keys: end.refusedVariables } } : result
     }
     if (given.kind === 'unavailable') {
       if (db === null) throw new Error('no ops database to return the run to the queue in')
@@ -1278,8 +1286,14 @@ function judgeRunOutcomes(
  *  - runs_variable_missing, per workflow, at once: runs that failed with
  *    variable_unavailable. The tick dispatches only runs of a workflow that
  *    may start, so each is a switched on workflow's.
+ *  - runs_refused_variables, per workflow, at once (#3131): runs this tick
+ *    ended failed with variables_refused because bidding refused to hand over
+ *    their variables, named from each end's refusal and refusedVariables. Only
+ *    a run of a workflow that may start is asked for, so each is a switched on
+ *    workflow's; one whose end could not be written is not paged (it lapses,
+ *    and the next tick asks again).
  * judged is whether this tick's claim ran and answered, so the runs it
- * dispatched are all it could judge, which judges the two per workflow kinds:
+ * dispatched are all it could judge, which judges the three per workflow kinds:
  * a tick whose claim failed, or that could not claim (held, no database clock,
  * the copies unread), judges neither, and stands neither page down.
  */
@@ -1313,6 +1327,10 @@ function judgeVariables(
       // A run of this release always names them (its type requires it): none named is logged as the defect it would be.
       if (names.length === 0) log('variable_unavailable_unnamed', { workflow_id: workflowId, runs: named.length })
       problem(MISSING_VARIABLE_PAGE.kind, missingVariableText({ runs: named.length, names }), workflowId)
+    }
+    bump(counts, REFUSED_VARIABLES_PAGE.judgedCount)
+    for (const [workflowId, refused] of byWorkflow((r) => r.refused)) {
+      problem(REFUSED_VARIABLES_PAGE.kind, refusedVariablesText(refused), workflowId)
     }
   }
   if (refresh !== null) {

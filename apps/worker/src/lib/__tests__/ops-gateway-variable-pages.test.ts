@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { OPS_TICK_JOB, opsOwnPagePrefix, recordOpsTickCompleted, runOpsTickReportCheck } from '../ops-gateway'
 import {
-  MISSING_VARIABLE_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, missingVariableText,
+  MISSING_VARIABLE_PAGE, REFUSED_VARIABLES_PAGE, refusedVariablesText, RUN_VARIABLES_UNREADABLE_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, missingVariableText,
   refreshFailingText, runVariablesUnreadableText, runsOnVariableCopyText,
 } from '../ops-gateway-contract'
 
@@ -21,8 +21,9 @@ const MISSING = missingVariableText({ runs: 2, names: ['LIST_ID'] })
 const ON_COPY = runsOnVariableCopyText({ runs: 2, ageSeconds: 14 * 60 })
 const REFRESH = refreshFailingText({ workflows: 12, error: 'the bidding Worker\'s run variables did not answer within 15 s' })
 const UNREADABLE = runVariablesUnreadableText({ requests: 1 })
+const REFUSED = refusedVariablesText([{ reason: 'secret_unreadable', keys: ['API_TOKEN'] }])
 /** Every variables kind judged whole, as a live tick that dispatched its runs, ran its refresh and read an answer reports. */
-const ALL_JUDGED = { variable_copy_use_judged: 1, variable_copy_refresh_judged: 1, run_variables_answers_judged: 1, variable_missing_judged: 1 }
+const ALL_JUDGED = { variable_copy_use_judged: 1, variable_copy_refresh_judged: 1, run_variables_answers_judged: 1, variable_missing_judged: 1, variables_refused_judged: 1 }
 
 function kv() {
   const m = new Map<string, string>()
@@ -71,6 +72,40 @@ describe('the pages about a run\'s variables (#3000)', () => {
       job: `ops-runs-variable-missing:${WF}`, errors: [MISSING], title: 'Ops runs failed on a missing variable: Lead intake', fixHint: MISSING_VARIABLE_PAGE.fix, context: undefined,
     }])
     expect(d.recovered).toEqual([OPS_TICK_JOB])
+  })
+
+  // #3131: runs bidding refused their variables, on a page of their own beside the missing variable page.
+  it('(e) pages a workflow whose runs bidding refused their variables at once, under its own title and fix, and never on the minute cron\'s page', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 1, report(1, [[`runs_refused_variables:${WF}`, REFUSED]]))).toBe('alerted')
+    expect(d.sent).toEqual([{
+      job: `ops-runs-variables-refused:${WF}`, errors: [REFUSED], title: 'Ops runs failed because bidding refused their variables: Lead intake',
+      fixHint: REFUSED_VARIABLES_PAGE.fix, context: undefined,
+    }])
+    expect(d.recovered).toEqual([OPS_TICK_JOB])
+  })
+
+  it('(e) stands the refused variables page down only on a report that judged it and no longer names it', async () => {
+    const store = kv()
+    const d = deps()
+    await tick(store, d, 1, report(1, [[`runs_refused_variables:${WF}`, REFUSED]]))
+    const { variables_refused_judged: _, ...notJudged } = ALL_JUDGED
+    await tick(store, d, 2, report(2, [], notJudged))
+    expect(d.recovered).not.toContain(`ops-runs-variables-refused:${WF}`)
+    expect(store.m.has(`${opsOwnPagePrefix('runs_refused_variables')}${WF}`)).toBe(true)
+    await tick(store, d, 3, report(3, []))
+    expect(d.recovered.filter((j) => j === `ops-runs-variables-refused:${WF}`)).toHaveLength(1)
+    expect(store.m.has(`${opsOwnPagePrefix('runs_refused_variables')}${WF}`)).toBe(false)
+  })
+
+  it('(e) raises a refused variables page that failed to send, keeping its record so its all clear still follows', async () => {
+    const store = kv()
+    const d = deps({ failJob: `ops-runs-variables-refused:${WF}` })
+    await recordOpsTickCompleted(store as unknown as KVNamespace, report(1, [[`runs_refused_variables:${WF}`, REFUSED]]), NOW + MIN + 2000)
+    await expect(runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + MIN + 30_000, d))
+      .rejects.toThrow(/the page for workflow .* runs bidding refused their variables failed: Slack refused the page/)
+    expect(store.m.has(`${opsOwnPagePrefix('runs_refused_variables')}${WF}`)).toBe(true)
   })
 
   it('(a) pages runs that ran on the copy while bidding answered the refresh at once, per workflow', async () => {

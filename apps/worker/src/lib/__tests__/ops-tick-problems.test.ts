@@ -48,6 +48,8 @@ const AT_ONCE = [
   'runs_unstarted', 'runs_unstarted_limit',
   // #3000: runs on the copy while bidding answered, an unreadable answer, a missing variable.
   'runs_on_variable_copy', 'run_variables_unreadable', 'runs_variable_missing',
+  // #3131: a switched on workflow's runs failed because bidding refused their variables.
+  'runs_refused_variables',
   // #3046: a no-retry run of a live workflow whose lease lapsed ended failed; nothing reruns it.
   'runs_lapsed_no_retry',
   'db_not_configured', 'not_configured', 'secrets_unchecked', 'agreement_check_failed', 'queue_disagreement', 'workflow_refused',

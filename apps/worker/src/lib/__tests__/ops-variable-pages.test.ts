@@ -33,7 +33,7 @@ describe('the rule each variables page pages by (#3000)', () => {
 
   it('lists every page of its own once, each with its own kind, job and count of the reports that judged it', () => {
     const kinds = OPS_OWN_PAGES.map((p) => p.kind)
-    expect(kinds).toEqual(['runs_unstarted', 'runs_on_variable_copy', 'variable_copy_refresh_failing', 'run_variables_unreadable', 'runs_variable_missing'])
+    expect(kinds).toEqual(['runs_unstarted', 'runs_on_variable_copy', 'variable_copy_refresh_failing', 'run_variables_unreadable', 'runs_variable_missing', 'runs_refused_variables'])
     expect(new Set(OPS_OWN_PAGES.map((p) => p.judgedCount)).size).toBe(OPS_OWN_PAGES.length)
     expect(new Set(OPS_OWN_PAGES.map((p) => p.job(WF))).size).toBe(OPS_OWN_PAGES.length)
     for (const p of OPS_OWN_PAGES) expect(Object.hasOwn(OPS_TICK_PROBLEM_RULES, p.kind), p.kind).toBe(true)
