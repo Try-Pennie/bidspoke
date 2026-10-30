@@ -1869,16 +1869,19 @@ export async function walkGraph(
           if (childIndex < 0) continue
           const child = resolvedChildren[childIndex]
           const errMsg = `Parallel group timed out after ${timeoutMs}ms before this child completed`
-          // What later steps read of the slot stays keyed on its first step, as
-          // it always was: moving it would change what they resolve, and so
-          // what the run sends. Only the row below moves (#3071).
-          if (recordOnContext) recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
           // Under the step the slot was running (#3071), with that step's own
           // start and order and the request it noted last (#3064), the same
           // masked object its own row would have stored. None when that step
           // already wrote its own row: never a second row (#63).
           const cutOff = slotSteps.cutOff(childIndex, { node: child, stepOrder: childOrderBase + childIndex, startedAt: stepStartedAt })
           if (!cutOff) continue
+          // What later steps read records the cut-off under that same step
+          // (#3082). It used to go under the slot's first step, overwriting the
+          // output of a step the slot had finished, so a later
+          // {{steps.<first>.output}} sent a blank. A step the slot finished keeps
+          // the output it recorded; one that already wrote its own record is
+          // left alone above.
+          if (recordOnContext) recordStepOutput(ctx, cutOff.node.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
           // Marked as the block's deadline, not the child's own (#3047), so a
           // reader of step timeouts tells the two apart without the text.
           logStep(stepLogQueue, executionId, executionStartedAt, cutOff.node, 'failed', cutOff.input, null, errMsg, 'transient', 0, cutOff.startedAt, cutOff.stepOrder, node.id, undefined, timeoutMarker(PARALLEL_BLOCK_DEADLINE, timeoutMs))
