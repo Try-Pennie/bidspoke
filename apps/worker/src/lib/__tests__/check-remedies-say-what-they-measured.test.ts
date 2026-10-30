@@ -71,6 +71,7 @@ import {
 import { BUYER_OUTCOME_RATE_REMEDY, BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNLISTED_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
 import { BUYER_SELECT_PARITY_REMEDY } from '../buyer-select-parity'
 import { TRIPOINT_PING_OUTCOME_RATE_REMEDY } from '../tripoint-ping-outcome-rate'
+import { ACHIEVE_WINDOW_SKIPS_REMEDY } from '../achieve-window-skips'
 import { BUYER_OBJECTS_DRILL_REMEDY } from '../buyer-objects-health'
 import { ENGINE_SCRIPT_DRIFT_REMEDY, ENGINE_SCRIPT_DRIFT_UNREADABLE_REMEDY } from '../engine-script-drift'
 import { CLICK_CHECK_ERRORS_REMEDY, CLICK_PATH_QUIET_REMEDY, CLICK_PATH_UNREAD_REMEDY, CLICK_RECONCILE_REMEDY, CLICK_SEND_REFUSALS_REMEDY } from '../click-path-checks'
@@ -159,6 +160,7 @@ const TITLED: ReadonlyArray<readonly [string, TitledRemedy]> = [
   ['buyer sale drain buyer list unread', BUYER_SALE_DRAIN_UNLISTED_REMEDY],
   ['buyer sale drain ledger mark failed', BUYER_SALE_DRAIN_UNMARKED_REMEDY],
   ['buyer sale drain more than one problem', BUYER_SALE_DRAIN_SEVERAL_REMEDY],
+  ['achieve window skips', ACHIEVE_WINDOW_SKIPS_REMEDY],
 ]
 
 const EXPORT_ONLY = ['not exported', 'un-exported', 'unexported', 'analytics in snowflake', 'supabase disk']
