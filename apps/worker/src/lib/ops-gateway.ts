@@ -54,7 +54,7 @@ import {
   CONNECTION_CHECK_JOB, CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, SF_LIMITS_JOB, TOMBSTONE_SERVE_WINDOW_MS, parseOpsJobId, parseOpsJobReport, parseOpsTickReport,
   inARowToPage, parseSealedEnvelope, sweepOfProblemKey,
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
-  servedConnectionProblem,
+  servedConnectionProblem, UNSTARTED_RUNS_PAGE,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
   type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
   MAX_RUN_VARIABLES_PER_REQUEST, type OpsRunVariablesRequest, type RefusedRunVariables, type RunVariablesRefusal, type ServedOpsRunVariableNames, type ServedOpsRunVariables,
@@ -1016,6 +1016,8 @@ export interface OpsTickReportCheckDeps {
     options: { repeatsHeldByCaller: boolean },
   ) => Promise<void>
   notifyRecovery: (kv: KvLike, job: string, nowMs: number) => Promise<void>
+  /** The names of bidding workflows by id, for the title of a page for runs that cannot start (#3039); read from workflows when absent. */
+  workflowNames?: (supabase: SupabaseClient, ids: readonly string[]) => Promise<Map<string, string>>
 }
 
 const LIVE_DEPS: OpsTickReportCheckDeps = {
@@ -1071,6 +1073,114 @@ export function notConfiguredFix(secrets: readonly string[] | null): string {
 }
 const PROBLEMS_FIX = 'Search the bidspoke-worker-ops logs for ops_tick around the time of this alert: every problem is logged there with the tick it came from.'
 
+/**
+ * The workflows a page for runs that cannot start is open for (#3039), one key
+ * each under this prefix, so the first report that no longer names one stands
+ * its page down. Written by runOpsTickReportCheck alone, a key per workflow so
+ * a page is recorded even while the others cannot be listed. No expiry: a page
+ * stays open until a readable report stands it down, as the alerter's own
+ * condition does.
+ */
+export const OPS_TICK_UNSTARTED_PAGE_PREFIX = 'ops-tick:unstarted-page:'
+/** More pages than are ever open (one read lists 15 workflows); a listing past it is refused rather than half read. */
+const MAX_UNSTARTED_PAGE_LISTS = 5
+
+const WORKFLOW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Each workflow's name, by id, from the bidding database: the workflows a
+ * report names as having runs that cannot start, at most UNSTARTED_READ_LIMIT
+ * (15) of them, so one bounded read. Throws on a failed read; the caller names
+ * the workflow by its id instead.
+ */
+async function readWorkflowNames(supabase: SupabaseClient, ids: readonly string[]): Promise<Map<string, string>> {
+  const wanted = ids.filter((id) => WORKFLOW_ID.test(id))
+  if (wanted.length === 0) return new Map()
+  const { data, error } = await supabase.from('workflows').select('id, name').in('id', wanted).limit(100)
+  if (error) throw new Error(`the workflows' names could not be read: ${error.message}`)
+  const names = new Map<string, string>()
+  for (const row of (data ?? []) as Array<{ id: unknown; name: unknown }>) {
+    if (typeof row.id === 'string' && typeof row.name === 'string' && row.name.trim() !== '') names.set(row.id, row.name)
+  }
+  return names
+}
+
+/** The workflows whose page for runs that cannot start is open. Throws when they cannot all be listed. */
+async function listUnstartedPages(kv: KVNamespace): Promise<string[]> {
+  const ids: string[] = []
+  let cursor: string | undefined
+  for (let i = 0; i < MAX_UNSTARTED_PAGE_LISTS; i++) {
+    const page = await kv.list({ prefix: OPS_TICK_UNSTARTED_PAGE_PREFIX, ...(cursor === undefined ? {} : { cursor }) })
+    for (const k of page.keys) ids.push(k.name.slice(OPS_TICK_UNSTARTED_PAGE_PREFIX.length))
+    if (page.list_complete) return ids
+    cursor = page.cursor
+  }
+  throw new Error(`more than ${MAX_UNSTARTED_PAGE_LISTS} listings of open pages`)
+}
+
+/**
+ * The pages for runs that cannot start (#3039): each workflow the report names
+ * under UNSTARTED_RUNS_PAGE.kind pages on its own, as its own alert job, under
+ * Dan's approved title and fix, and every workflow paged before that a
+ * report judging every workflow with runs waiting no longer names is stood
+ * down. Any other report (one it could not read, one that left problems out,
+ * or one whose tick did not read every wait: a failed or full read, observe
+ * mode, no database) stands nothing down. Never throws: each page is its own boundary, and the failures
+ * are answered for the caller to raise once the rest is judged.
+ */
+async function settleUnstartedPages(
+  supabase: SupabaseClient, kv: KVNamespace, own: ReadonlyArray<{ workflowId: string; text: string }>, known: boolean, nowMs: number,
+  deps: OpsTickReportCheckDeps,
+): Promise<{ paged: boolean; failures: string[] }> {
+  const failures: string[] = []
+  let open: string[] | null = null
+  try {
+    open = await listUnstartedPages(kv)
+  } catch (err) {
+    // Not known which pages are open: none is stood down this time, and those paged now are still recorded.
+    failures.push(`the open pages for runs that cannot start could not be read: ${formatErr(err)}`)
+  }
+  let names = new Map<string, string>()
+  if (own.length > 0) {
+    try {
+      names = await (deps.workflowNames ?? readWorkflowNames)(supabase, own.map((o) => o.workflowId))
+    } catch (err) {
+      console.error(`[ops-tick] runs that cannot start are paged by workflow id: ${formatErr(err)}`)
+    }
+  }
+  let paged = false
+  for (const o of own) {
+    const name = names.get(o.workflowId) ?? `workflow ${o.workflowId}`
+    try {
+      await deps.notifyFailure(supabase, UNSTARTED_RUNS_PAGE.job(o.workflowId), [o.text], kv, { title: UNSTARTED_RUNS_PAGE.title(name), fixHint: UNSTARTED_RUNS_PAGE.fix }, nowMs, { repeatsHeldByCaller: true })
+      paged = true
+    } catch (err) {
+      failures.push(`the page for workflow ${o.workflowId}'s runs that cannot start failed: ${formatErr(err)}`)
+    }
+    // Recorded whether or not it delivered, so its all clear still follows.
+    if (open === null || !open.includes(o.workflowId)) {
+      try {
+        await kv.put(`${OPS_TICK_UNSTARTED_PAGE_PREFIX}${o.workflowId}`, new Date(nowMs).toISOString())
+      } catch (err) {
+        failures.push(`the page for workflow ${o.workflowId}'s runs that cannot start could not be recorded: ${formatErr(err)}`)
+      }
+    }
+  }
+  if (known && open !== null) {
+    const current = own.map((o) => o.workflowId)
+    for (const id of open) {
+      if (current.includes(id)) continue
+      try {
+        await deps.notifyRecovery(kv, UNSTARTED_RUNS_PAGE.job(id), nowMs)
+        await kv.delete(`${OPS_TICK_UNSTARTED_PAGE_PREFIX}${id}`)
+      } catch (err) {
+        failures.push(`the all clear for workflow ${id}'s runs that cannot start failed: ${formatErr(err)}`)
+      }
+    }
+  }
+  return { paged, failures }
+}
+
 export type OpsTickReportVerdict = 'healthy' | 'alerted' | 'held' | 'stale' | 'no_report'
 
 /**
@@ -1110,6 +1220,35 @@ export async function runOpsTickReportCheck(
   // An unreadable time is judged as fresh, the side that pages, never read as an
   // old report and left quiet (L50). Only a readable, old one is the heartbeat's.
   if (Number.isFinite(receivedMs) && nowMs - receivedMs > OPS_TICK_REPORT_FRESH_MS) return 'stale'
+  // Runs that cannot start page on their own pages (#3039), and leave the
+  // minute cron's page: it is judged on the rest of the report alone.
+  const keys = kept.problem_keys
+  const isUnstarted = (i: number) => keys !== null && keys.length === kept.problems.length && keys[i].startsWith(`${UNSTARTED_RUNS_PAGE.kind}:`)
+  const own = kept.problems.flatMap((text, i) => (isUnstarted(i) ? [{ workflowId: (keys as string[])[i].slice(UNSTARTED_RUNS_PAGE.kind.length + 1), text }] : []))
+  // Stood down only on a report that judged every workflow with runs waiting, and left no problem out.
+  const known = keys !== null && keys.length === kept.problems.length && !keys.includes('report_unreadable') && !keys.includes('problems_left_out')
+    && kept.counts[UNSTARTED_RUNS_PAGE.judgedCount] === 1
+  const unstarted = await settleUnstartedPages(supabase, kv, own, known, nowMs, deps)
+  if (own.length > 0) {
+    const rest = (_: unknown, i: number) => !isUnstarted(i)
+    const problems = kept.problems.filter(rest)
+    kept = {
+      ...kept,
+      problems,
+      problem_keys: (keys as string[]).filter(rest),
+      problem_streaks: kept.problem_streaks === null ? null : kept.problem_streaks.filter(rest),
+      outcome: kept.outcome === 'problems' && problems.length === 0 ? 'ok' : kept.outcome,
+    }
+  }
+  const verdict = await judgeTickPage(supabase, kv, kept, nowMs, deps)
+  if (unstarted.failures.length > 0) throw new Error(`[ops-tick] ${unstarted.failures.join('; ')}`)
+  return unstarted.paged ? 'alerted' : verdict
+}
+
+/** The minute cron's own page, judged on a kept report (#2506, #2340). */
+async function judgeTickPage(
+  supabase: SupabaseClient, kv: KVNamespace, kept: KeptReport, nowMs: number, deps: OpsTickReportCheckDeps,
+): Promise<OpsTickReportVerdict> {
   // A sweep's problem stands until its sweep runs again (#2340), so a tick
   // carrying one is not clean, and one whose carried problems are not known
   // (the count could not be read) is neither paged nor read as clean.

@@ -57,6 +57,7 @@ import {
   takeLookupAllowance,
   purgeScheduleObservations,
   readMissingWorkflowDefinitions,
+  readUnstartedRunWaits,
   readWorkflowDefinition,
   saveWorkflowDefinition,
   recordStepTest,
@@ -75,7 +76,7 @@ import {
   observeOpsReseal,
   recordOpsResealRun,
 } from '../ops-writes'
-import type { ResourceWaitCause } from '../run-vocabulary'
+import type { ResourceWaitCause, UnstartedReturnCause } from '../run-vocabulary'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const RUN = '0199f0a0-0000-7000-8000-000000000001'
@@ -402,6 +403,47 @@ describe('the typed wrappers', () => {
       outcome: 'suspend', reason: 'resource_wait', cause: 'pool_busy' as ResourceWaitCause, notBefore: new Date('2026-10-17T23:05:00Z'),
     })).rejects.toThrow(/pool_busy is not a resource wait cause/)
     expect(calls).toEqual([])
+  })
+
+  it('complete: a return unstarted names its cause as p_reason, and one past the hour reads as failed (#3039)', async () => {
+    const { client, calls } = rpcFetch([{ outcome: 'completed', run_status: 'queued', state_version: 10 }])
+    expect(await completeRunRequest(client, ORG, RUN, TOKEN, {
+      outcome: 'retry', unstartedCause: 'variables_unavailable', error: 'the run\'s variables could not be had', notBefore: new Date('2026-10-30T13:05:00Z'),
+    })).toEqual({ outcome: 'completed', runStatus: 'queued' })
+    expect(calls[0].body).toEqual({
+      p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_outcome: 'retry', p_reason: 'variables_unavailable',
+      p_error: 'the run\'s variables could not be had', p_not_before: '2026-10-30T13:05:00.000Z',
+    })
+    // The database gave it up: the status it chose is read, never assumed queued.
+    const gaveUp = rpcFetch([{ outcome: 'completed', run_status: 'failed', state_version: 11 }])
+    expect(await completeRunRequest(gaveUp.client, ORG, RUN, TOKEN, { outcome: 'retry', unstartedCause: 'definition_unavailable' }))
+      .toEqual({ outcome: 'completed', runStatus: 'failed' })
+    // A retry of a run that started names no cause, so its call is the one it always was.
+    const plain = rpcFetch([{ outcome: 'completed', run_status: 'queued', state_version: 12 }])
+    await completeRunRequest(plain.client, ORG, RUN, TOKEN, { outcome: 'retry', error: 'a step failed' })
+    expect(plain.calls[0].body).toEqual({ p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_outcome: 'retry', p_error: 'a step failed' })
+    // A cause the database does not take is refused before anything is sent.
+    const odd = rpcFetch([])
+    await expect(completeRunRequest(odd.client, ORG, RUN, TOKEN, { outcome: 'retry', unstartedCause: 'gateway_down' as UnstartedReturnCause }))
+      .rejects.toThrow(/gateway_down is not a cause a run is returned unstarted for/)
+    expect(odd.calls).toEqual([])
+  })
+
+  it('reads the waits to start per workflow, and refuses an answer it cannot read by name (#3039)', async () => {
+    const row = {
+      organization_id: ORG, workflow_id: WF, runs: 3, oldest_since: '2026-10-30T13:00:00+00:00', waited_seconds: 1260,
+      causes: ['definition_unavailable', null],
+    }
+    const { client, calls } = rpcFetch([row])
+    expect(await readUnstartedRunWaits(client, 900, 2)).toEqual({
+      waits: [{ organizationId: ORG, workflowId: WF, runs: 3, oldestSince: '2026-10-30T13:00:00+00:00', waitedSeconds: 1260, causes: ['definition_unavailable', null] }],
+      reachedLimit: false,
+    })
+    expect(calls[0].body).toEqual({ p_min_wait_seconds: 900, p_limit: 2 })
+    expect((await readUnstartedRunWaits(rpcFetch([row, row]).client, 900, 2)).reachedLimit).toBe(true)
+    await expect(readUnstartedRunWaits(rpcFetch([{ ...row, causes: ['gateway_down'] }]).client, 900, 2)).rejects.toThrow(/unstarted_run_waits returned causes that is not causes/)
+    await expect(readUnstartedRunWaits(rpcFetch([{ ...row, runs: 0 }]).client, 900, 2)).rejects.toThrow(/unstarted_run_waits returned runs that is not a count of one or more/)
+    await expect(readUnstartedRunWaits(rpcFetch([{ ...row, organization_id: 'nope' }]).client, 900, 2)).rejects.toThrow(/organization is not a uuid/)
   })
 
   it('the lease sweep reads the runs it ended failed, and refuses an answer without that count', async () => {
