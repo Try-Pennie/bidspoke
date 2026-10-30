@@ -12,7 +12,7 @@ import { buildSandboxEnv } from '../lib/sandbox-env'
 import { loadPartnerConstants } from '../lib/partner-constants-loader'
 import { buildContext, recordStepOutput, resolveValue } from './context'
 import { executeNode, createNodeExecutor, type ExecuteNode } from './nodes/index'
-import { continuingSlots, executeParallelNode } from './nodes/parallel'
+import { continuingSlots, deadlineResultsOf, executeParallelNode } from './nodes/parallel'
 import type { ParallelChildResult, ParallelFailureCause } from './nodes/parallel'
 import { executeBidGroupNode } from './nodes/bid-group'
 import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
@@ -1855,6 +1855,36 @@ export async function walkGraph(
       const continuing = continuingSlots(execNode.config)
       const isContinuing = (childIndex: number) => continuing.has(slotHandleIds[childIndex] ?? '')
 
+      // Children cut off by the block's timeout never get their own step row
+      // written (runParallelChild was abandoned, #63). Synthesize one so clicking
+      // the child in the UI shows what happened instead of "not reached", whether
+      // the block carried on without them or failed at its deadline (#3072).
+      // `recordOnContext` is false on the failure path: the run ends there, and
+      // only the row is added, so nothing the run reads changes.
+      const writeCutOffRows = (results: ParallelChildResult[], recordOnContext: boolean): void => {
+        const timeoutMs = (execNode.config.timeout_ms as number | undefined) ?? 15000
+        for (const childResult of results) {
+          if (childResult.status !== 'timeout') continue
+          const childIndex = resolvedChildren.findIndex((c) => c.namespace === childResult.namespace)
+          if (childIndex < 0) continue
+          const child = resolvedChildren[childIndex]
+          const errMsg = `Parallel group timed out after ${timeoutMs}ms before this child completed`
+          // What later steps read of the slot stays keyed on its first step, as
+          // it always was: moving it would change what they resolve, and so
+          // what the run sends. Only the row below moves (#3071).
+          if (recordOnContext) recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
+          // Under the step the slot was running (#3071), with that step's own
+          // start and order and the request it noted last (#3064), the same
+          // masked object its own row would have stored. None when that step
+          // already wrote its own row: never a second row (#63).
+          const cutOff = slotSteps.cutOff(childIndex, { node: child, stepOrder: childOrderBase + childIndex, startedAt: stepStartedAt })
+          if (!cutOff) continue
+          // Marked as the block's deadline, not the child's own (#3047), so a
+          // reader of step timeouts tells the two apart without the text.
+          logStep(stepLogQueue, executionId, executionStartedAt, cutOff.node, 'failed', cutOff.input, null, errMsg, 'transient', 0, cutOff.startedAt, cutOff.stepOrder, node.id, undefined, timeoutMarker(PARALLEL_BLOCK_DEADLINE, timeoutMs))
+        }
+      }
+
       try {
         // Chain-walk children only when a parallel_end is present in the
         // workflow. Legacy parallel definitions (no parallel_end) rely on
@@ -1872,38 +1902,19 @@ export async function walkGraph(
         output = result.output
         lastOutput = output
         forwardBlockSightings(result)
-
-        // Children cut off by the parent's timeout never get their own step log
-        // written (runParallelChild was abandoned). Synthesize one so clicking
-        // the child in the UI shows what happened instead of "not reached".
-        if (Array.isArray(output)) {
-          const timeoutMs = (execNode.config.timeout_ms as number | undefined) ?? 15000
-          for (const childResult of output as ParallelChildResult[]) {
-            if (childResult.status !== 'timeout') continue
-            const childIndex = resolvedChildren.findIndex((c) => c.namespace === childResult.namespace)
-            if (childIndex < 0) continue
-            const child = resolvedChildren[childIndex]
-            const errMsg = `Parallel group timed out after ${timeoutMs}ms before this child completed`
-            // What later steps read of the slot stays keyed on its first step, as
-            // it always was: moving it would change what they resolve, and so
-            // what the run sends. Only the row below moves (#3071).
-            recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
-            // Under the step the slot was running (#3071), with that step's own
-            // start and order and the request it noted last (#3064), the same
-            // masked object its own row would have stored. None when that step
-            // already wrote its own row: never a second row (#63).
-            const cutOff = slotSteps.cutOff(childIndex, { node: child, stepOrder: childOrderBase + childIndex, startedAt: stepStartedAt })
-            if (!cutOff) continue
-            // Marked as the block's deadline, not the child's own (#3047), so a
-            // reader of step timeouts tells the two apart without the text.
-            logStep(stepLogQueue, executionId, executionStartedAt, cutOff.node, 'failed', cutOff.input, null, errMsg, 'transient', 0, cutOff.startedAt, cutOff.stepOrder, node.id, undefined, timeoutMarker(PARALLEL_BLOCK_DEADLINE, timeoutMs))
-          }
-        }
+        if (Array.isArray(output)) writeCutOffRows(output as ParallelChildResult[], true)
       } catch (err) {
         blockSettled = true
         stepStatus = 'failed'
         errorMessage = formatErr(err)
         forwardBlockSightings(err)
+        // A block that failed because its own deadline passed carries the slots
+        // it left (#3072): each one still running gets the same row as when the
+        // block carries on, before the block's failure ends the run. A block that
+        // failed on a slot that failed carries none, so a slot still running then
+        // is not recorded as the deadline the run did not fail on.
+        const leftAtDeadline = deadlineResultsOf(err)
+        if (leftAtDeadline) writeCutOffRows(leftAtDeadline, false)
         // A parallel failure the children didn't reach a verdict on (a timeout, a
         // structural error, a mix of outcomes) is operational, never a clean
         // business rejection, so give it a real type and let the failure alert
