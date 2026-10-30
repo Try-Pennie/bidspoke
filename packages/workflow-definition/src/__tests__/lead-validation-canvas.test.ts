@@ -117,4 +117,29 @@ describe('findLeadValidationPlacementProblems: never inside a parallel block', (
     const edges = [{ source: 'par', target: 'v' }, { source: 'v', target: 'next' }]
     expect(findLeadValidationPlacementProblems(nodes, edges).map((p) => p.nodeId)).toEqual(['v'])
   })
+
+  // #3142: the engine reads a block's slots from one list (parallelSlots, #3125)
+  // and runs the legacy children list when no slot holds a step. A block whose
+  // every slot edge goes straight to parallel_end, still carrying a children
+  // list, runs those children; the check must see them as inside the block.
+  it('reads a block whose every slot is empty by its children list, as the engine runs it', () => {
+    const nodes = [{ ...node('par', 'parallel'), children: ['v'] }, node('v', 'lead_validation'), node('end', 'parallel_end')]
+    const edges = [
+      { source: 'par', target: 'end', source_handle: 'child-0' },
+      { source: 'par', target: 'end', source_handle: 'child-1' },
+      { source: 'par', target: 'v' },
+    ]
+    expect(findLeadValidationPlacementProblems(nodes, edges).map((p) => p.nodeId)).toEqual(['v'])
+  })
+
+  it('reads a block with one real slot by its slot edges alone, never also its children list', () => {
+    const nodes = [{ ...node('par', 'parallel'), children: ['stale'] }, node('a', 'code'), node('stale', 'lead_validation'), node('end', 'parallel_end')]
+    const edges = [
+      { source: 'par', target: 'end', source_handle: 'child-0' },
+      { source: 'par', target: 'a', source_handle: 'child-1' },
+      { source: 'a', target: 'end' },
+      { source: 'end', target: 'stale' },
+    ]
+    expect(findLeadValidationPlacementProblems(nodes, edges)).toEqual([])
+  })
 })

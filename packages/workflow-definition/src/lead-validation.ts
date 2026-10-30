@@ -21,6 +21,7 @@
 import { isNodeType } from '@bidspoke/node-types'
 import { CONDITION_OPERATOR_SPECS, isConditionOperator, isConditionValueReference, operatorTakesValue, type ConditionOperator } from './condition-operators'
 import { isLeadRejectionReason, type LeadRejectionReason } from './lead-rejection-reasons'
+import { parallelSlots } from './parallel-slots'
 import { upstreamNamespaces } from './reference-validation'
 import type { EdgeDefLike, NodeDefLike, ValidationError } from './workflow-validation'
 
@@ -427,10 +428,10 @@ export function leadValidationCheckSummary(check: unknown): string | null {
 /**
  * The ids of every node that runs inside a parallel block, read the way the
  * engine runs one (runParallelChild in apps/worker/src/engine/index.ts): each
- * slot's first node is a `child-` edge's target off the parallel step (or, for a
- * legacy parallel with no slot edges, its `children` list), and a slot runs on
- * down its edges until the parallel_end. A legacy parallel with no parallel_end
- * runs only the child itself in the block.
+ * slot's first node comes from the engine's own slot list (parallelSlots, so a
+ * block falls back to its legacy `children` list exactly when the engine does,
+ * #3142), and a slot runs on down its edges until the parallel_end. A legacy
+ * parallel with no parallel_end runs only the child itself in the block.
  */
 function nodesInsideParallelBlocks(nodes: NodeDefLike[], edges: EdgeDefLike[]): Set<string> {
   const byId = new Map(nodes.map((n) => [n.id, n]))
@@ -438,10 +439,7 @@ function nodesInsideParallelBlocks(nodes: NodeDefLike[], edges: EdgeDefLike[]): 
   const inside = new Set<string>()
   for (const parallel of nodes) {
     if (parallel.type !== 'parallel') continue
-    const slotTargets = out(parallel.id)
-      .filter((e) => (e.source_handle ?? '').startsWith('child-'))
-      .map((e) => e.target)
-    const children = (slotTargets.length > 0 ? slotTargets : parallel.children ?? []).filter((id) => byId.get(id)?.type !== 'parallel_end')
+    const children = parallelSlots(parallel, { nodes, edges }).map((s) => s.node.id)
     const walked = new Set<string>()
     let joined = false
     const queue = [...children]
