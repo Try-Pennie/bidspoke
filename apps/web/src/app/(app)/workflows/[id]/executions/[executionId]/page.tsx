@@ -880,7 +880,15 @@ export default function ExecutionDetailPage() {
                 <section aria-labelledby="buyers-considered-heading">
                   <h2 id="buyers-considered-heading" className="mb-3 text-sm font-semibold text-gray-700">Buyers considered</h2>
                   <div className="space-y-3">
-                    {buyerSteps.map((s) => <BuyersConsidered key={s.id} step={s} />)}
+                    {/* Each step's own buyer attempt rows, linked to it by its node id, so an
+                        unknown outcome is worded by whether an answer arrived (#3087). */}
+                    {buyerSteps.map((s) => {
+                      const nodeId = (s as { step_node_id?: string | null }).step_node_id
+                      const attempts = nodeId
+                        ? execution.steps.filter((a) => a.step_type === 'partner_bid' && (a as { parallel_group_id?: string | null }).parallel_group_id === nodeId)
+                        : []
+                      return <BuyersConsidered key={s.id} step={s} attempts={attempts} />
+                    })}
                   </div>
                 </section>
               )

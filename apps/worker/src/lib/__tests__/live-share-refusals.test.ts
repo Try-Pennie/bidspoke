@@ -164,6 +164,18 @@ describe('runLiveShareRefusals', () => {
     expect(lines[0]).toMatch(/EDT/)
   })
 
+  // #3087: the line words a reason through the shared reasonLabel, so a node
+  // level reason reads as the run page reads it, and a code in neither list is
+  // shown as itself rather than dropped.
+  it('words a node level reason as the run page does, and shows a code in neither list as itself', async () => {
+    const leads = Array.from({ length: REFUSAL_RUN_FLOOR }, (_, i) => refused(`2026-10-14T${String(23 - i).padStart(2, '0')}:00:00Z`, i % 2 === 0 ? 'profiles_unavailable' : 'a_newer_reason', 'tripoint'))
+    const d = deps('2026-10-15T00:30:00Z', { readLeads: async (_s, fromMs, toMs) => leads.filter((l) => Date.parse(l.at) >= fromMs && Date.parse(l.at) < toMs) })
+    await runLiveShareRefusals(d)
+    const [lines] = d.notify.mock.calls[0] as unknown as [string[], string[]]
+    expect(lines[0]).toContain('buyer profiles could not be read and no earlier copy was held')
+    expect(lines[0]).toContain('a_newer_reason')
+  })
+
   it('stands the page down with an empty call once a lead is sent, so the alerter clears it', async () => {
     const d = deps('2026-10-16T12:00:00Z')
     const s = await runLiveShareRefusals(d)

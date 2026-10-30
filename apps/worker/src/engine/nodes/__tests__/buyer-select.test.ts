@@ -15,7 +15,7 @@ import { PAST_THE_LIMIT, cutOffFetch, tricklingFetch } from '../../../lib/__test
 import type { ClaimBody, ClaimResult } from '../../../durable-objects/lead-sale'
 import type { EntryKey, EntryResult, LedgerEntry, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
-import { canaryBucket, canonicalBodySha256 } from '@bidspoke/buyer-profile'
+import { canaryBucket, canonicalBodySha256, unresolvedAnswerOf } from '@bidspoke/buyer-profile'
 import { summariseParityDay } from '../../../lib/buyer-select-parity'
 import { ENGINE_TRIPOINT_SALE_PAYLOAD } from '../buyer-select-payload'
 import { markDeadline, stepTimeoutMarkerOf, BUYER_CALL_DEADLINE } from '../../step-timeout'
@@ -1702,6 +1702,20 @@ describe('a live buyer call that got no answer says so, and why (#3080)', () => 
     expect(r.failure).toBeUndefined()
     expect(out(r).considered).toEqual([expect.objectContaining({ partner: 'tripoint', outcome: 'outcome_unknown', detail: 'buyer answered http 200 and no rule matched' })])
     expect(r.attempts[0]).toMatchObject({ status: 'completed', output: { detail: 'buyer answered http 200 and no rule matched', http_status: 200 } })
+  })
+
+  // #3087: the run page words the two apart by reading this row with the
+  // package's own reader, so these hold the row the node writes to that reader.
+  it.each(cases)('%s: the attempt row reads to the run page as a call that got no answer (#3087)', async (_label, thrown) => {
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [thrown()] } })
+    const r = await run(h)
+    expect(unresolvedAnswerOf(r.attempts[0].output)).toBe('no_answer')
+  })
+
+  it('an answer no rule matched reads to the run page as an answer not classified (#3087)', async () => {
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [UNMATCHED_200] } })
+    const r = await run(h)
+    expect(unresolvedAnswerOf(r.attempts[0].output)).toBe('not_classified')
   })
 })
 
