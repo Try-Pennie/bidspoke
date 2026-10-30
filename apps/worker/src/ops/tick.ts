@@ -865,18 +865,23 @@ function lastServedMs(c: WorkflowCopy, live: boolean): number | null {
  * claim, a start or complete that failed and a dispatch that failed (each
  * leaves the run to the lease sweep); requeued a retry or a wait; requeue_capped
  * a rate limit wait the database ended failed at the requeue cap (#2859);
- * failed a run that failed, including a wait the database ended (a resource
- * wait past its 24 hours); ended a run of a workflow switched off or deleted,
+ * returned_unstarted a run returned to the queue unstarted because its saved
+ * version or its variables could not be had (#3039), which runs_unstarted pages
+ * and runs_failing leaves out (#3105); failed a run that failed, including a
+ * wait the database ended (a resource wait past its 24 hours) and a return
+ * unstarted it gave up; ended a run of a workflow switched off or deleted,
  * ended without running.
  */
-export type RunTally = 'done' | 'lost' | 'unknown' | 'requeued' | 'requeue_capped' | 'failed' | 'ended'
+export type RunTally = 'done' | 'lost' | 'unknown' | 'requeued' | 'requeue_capped' | 'returned_unstarted' | 'failed' | 'ended'
 
 function tallyOf(report: RunInvocationReport): RunTally {
   if (report.outcome !== 'completed') return 'lost'
   switch (report.end.outcome) {
     case 'done': return 'done'
     // A return unstarted the database gave up (#3039) ended the run.
-    case 'retry': return report.runStatus === 'failed' ? 'failed' : 'requeued'
+    case 'retry':
+      if (report.runStatus === 'failed') return 'failed'
+      return report.end.unstartedCause === undefined ? 'requeued' : 'returned_unstarted'
     // A wait is what the database made of it: failed when it ended the run instead.
     case 'suspend':
       if (report.runStatus !== 'failed') return 'requeued'
@@ -1074,7 +1079,7 @@ async function dispatchOneRun(
         bump(counts, 'runs_unstarted_given_up')
         return { workflowId: run.workflowId, tally: 'failed', error }
       }
-      return { workflowId: run.workflowId, tally: 'requeued', error }
+      return { workflowId: run.workflowId, tally: 'returned_unstarted', error }
     }
     const report = await ports.dispatchRun(run, given.variables)
     const tally = tallyOf(report)
@@ -1093,7 +1098,9 @@ async function dispatchOneRun(
  * unknown send pages at once: the run waits for a person. Lost, requeued and
  * requeue capped runs (#2859) page, held for three ticks, once they reach
  * RUN_OUTCOME_FAILING_RATE of at least RUN_OUTCOME_MIN_RUNS runs of one
- * workflow in the tick.
+ * workflow in the tick. A run returned to the queue unstarted is left out of
+ * both counts (#3105): runs_unstarted pages that cause, so one cause pages once,
+ * and a run that never started says nothing about whether the workflow's runs fail.
  */
 function judgeRunOutcomes(
   results: ReadonlyArray<{ workflowId: string; tally: RunTally; error?: string }>,
@@ -1103,11 +1110,12 @@ function judgeRunOutcomes(
   const byWorkflow = new Map<string, Record<RunTally, number> & { runs: number; errors: string[] }>()
   for (const r of results) {
     bump(counts, `runs_${r.tally}`)
-    const w = byWorkflow.get(r.workflowId) ?? { runs: 0, done: 0, lost: 0, unknown: 0, requeued: 0, requeue_capped: 0, failed: 0, ended: 0, errors: [] }
-    w.runs++
-    w[r.tally]++
-    if (r.error) w.errors.push(r.error)
+    const w = byWorkflow.get(r.workflowId) ?? { runs: 0, done: 0, lost: 0, unknown: 0, requeued: 0, requeue_capped: 0, returned_unstarted: 0, failed: 0, ended: 0, errors: [] }
     byWorkflow.set(r.workflowId, w)
+    w[r.tally]++
+    if (r.tally === 'returned_unstarted') continue
+    w.runs++
+    if (r.error) w.errors.push(r.error)
   }
   for (const [workflowId, w] of byWorkflow) {
     if (w.unknown > 0) {
@@ -1117,7 +1125,8 @@ function judgeRunOutcomes(
     if (w.runs >= RUN_OUTCOME_MIN_RUNS && failing / w.runs >= RUN_OUTCOME_FAILING_RATE) {
       const first = w.errors[0] ? ` The first error: ${w.errors[0]}.` : ''
       const capped = w.requeue_capped > 0 ? `, or ${w.requeue_capped} stopped at the requeue cap, a service that kept asking them to wait` : ''
-      problem('runs_failing', `${failing} of the ${w.runs} runs of workflow ${workflowId} this tick were lost (${w.lost}) or requeued (${w.requeued})${capped}.${first}`, workflowId)
+      const unstarted = w.returned_unstarted > 0 ? ` ${w.returned_unstarted} more ${w.returned_unstarted === 1 ? 'was' : 'were'} returned to the queue unstarted and not counted here.` : ''
+      problem('runs_failing', `${failing} of the ${w.runs} runs of workflow ${workflowId} this tick were lost (${w.lost}) or requeued (${w.requeued})${capped}.${first}${unstarted}`, workflowId)
     }
   }
 }

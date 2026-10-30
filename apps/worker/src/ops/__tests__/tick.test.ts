@@ -2208,9 +2208,10 @@ describe('the variables of the runs a live tick claims (#2998, phase 2 of #2982)
         expect((c.end as { error: string }).error).toMatch(/^the run's variables could not be had from the bidding Worker \(.+\), so it was returned to the queue unstarted$/)
       }
       expect(f.db.completed).toHaveLength(3)
-      expect(report.counts).toMatchObject({ runs_variables_unavailable: 3, runs_requeued: 3 })
-      // Counted against the rate as requeued runs are, so a gateway that keeps failing pages (L77).
-      expect(report.problem_keys).toContain(`runs_failing:${WF_A}`)
+      expect(report.counts).toMatchObject({ runs_variables_unavailable: 3, runs_returned_unstarted: 3 })
+      expect(report.counts.runs_requeued).toBeUndefined()
+      // Left out of runs_failing (#3105): a gateway that keeps failing pages as runs_unstarted, its own page, once.
+      expect(report.problem_keys).not.toContain(`runs_failing:${WF_A}`)
     })
   }
 
@@ -2655,5 +2656,68 @@ describe('runs returned to the queue unstarted (#3039, Dan\'s decision of 2026-1
     expect(f.db.completed).toEqual([{ runRequestId: claimedRun(WF_A, 1).runRequestId, end: expect.objectContaining({ outcome: 'retry', unstartedCause: 'variables_unavailable' }) }])
     expect(report.counts).toMatchObject({ runs_failed: 1, runs_unstarted_given_up: 1 })
     expect(report.counts.runs_requeued).toBeUndefined()
+  })
+
+  // #3105: one cause pages once. A busy workflow whose runs keep coming back
+  // unstarted is the Ops runs can't start page's, never also runs_failing's.
+  describe('a busy workflow whose runs keep returning unstarted pages once (#3105)', () => {
+    const unstartedDefinition: RunInvocationReport = {
+      outcome: 'completed', end: { outcome: 'retry', unstartedCause: 'definition_unavailable', error: 'no definition' }, runStatus: 'queued',
+    }
+    const busy = [claimedRun(WF_A, 1), claimedRun(WF_A, 2), claimedRun(WF_A, 3), claimedRun(WF_A, 4)]
+
+    it('for want of its variables: runs_unstarted reports it, runs_failing does not', async () => {
+      const f = fake({
+        mode: 'live', claimed: busy, unstartedWaits: [wait(20 * 60, { runs: 4, causes: ['variables_unavailable'] })],
+        serveRunVariables: async () => { throw new Error('the bidding Worker did not answer') },
+      })
+      const report = await runOpsTick(f.ports)
+      expect(f.db.completed).toHaveLength(4)
+      expect(report.counts).toMatchObject({ runs_variables_unavailable: 4, runs_returned_unstarted: 4 })
+      expect(report.counts.runs_requeued).toBeUndefined()
+      expect(problemOf(report, `runs_unstarted:${WF_A}`)).toMatch(/^4 runs have waited 20 minutes to start because its environment variables could not be read from bidding\./)
+      expect(report.problem_keys).not.toContain(`runs_failing:${WF_A}`)
+    })
+
+    it('for want of its saved version: runs_unstarted reports it, runs_failing does not', async () => {
+      const f = fake({
+        mode: 'live', claimed: busy, unstartedWaits: [wait(20 * 60, { runs: 4 })], runReport: async () => unstartedDefinition,
+      })
+      const report = await runOpsTick(f.ports)
+      expect(report.counts).toMatchObject({ runs_returned_unstarted: 4 })
+      expect(report.counts.runs_requeued).toBeUndefined()
+      expect(problemOf(report, `runs_unstarted:${WF_A}`)).toMatch(/^4 runs have waited 20 minutes to start because the workflow's saved version could not be loaded from bidding\./)
+      expect(report.problem_keys).not.toContain(`runs_failing:${WF_A}`)
+    })
+
+    it('still counts every other requeue, and judges the rate over the runs that were not returned unstarted', async () => {
+      const retried: RunInvocationReport = { outcome: 'completed', end: { outcome: 'retry', error: 'step a: rate_limited' }, runStatus: 'queued' }
+      const waited: RunInvocationReport = {
+        outcome: 'completed',
+        end: { outcome: 'suspend', reason: 'rate_limit_wait', step: 'post', status: 429, notBefore: new Date(WORKER_NOW + 60_000), error: 'step post (POST quota.example.com): rate_limited, answered 429' },
+        runStatus: 'suspended',
+      }
+      const lost: RunInvocationReport = { outcome: 'claim_lost', during: 'heartbeat' }
+      const done: RunInvocationReport = { outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' }
+      // Three unstarted, then a retry, a rate limit wait, a lost claim and a run done: 3 of the 4 that were judged failed.
+      const reports = [unstartedDefinition, unstartedDefinition, unstartedDefinition, retried, waited, lost, done]
+      const f = fake({
+        mode: 'live', claimed: reports.map((_, i) => claimedRun(WF_A, i + 1)),
+        runReport: async (run) => reports[Number(run.runRequestId.slice(-1)) - 1],
+      })
+      const report = await runOpsTick(f.ports)
+      expect(report.counts).toMatchObject({ runs_returned_unstarted: 3, runs_requeued: 2, runs_lost: 1, runs_done: 1 })
+      expect(problemOf(report, `runs_failing:${WF_A}`)).toBe(
+        `3 of the 4 runs of workflow ${WF_A} this tick were lost (1) or requeued (2). 3 more were returned to the queue unstarted and not counted here.`,
+      )
+
+      // Unstarted returns never make up the minimum count: two other requeues beside them are too few to judge (L716).
+      const thin = [unstartedDefinition, unstartedDefinition, retried, retried]
+      const few = fake({
+        mode: 'live', claimed: thin.map((_, i) => claimedRun(WF_A, i + 1)),
+        runReport: async (run) => thin[Number(run.runRequestId.slice(-1)) - 1],
+      })
+      expect((await runOpsTick(few.ports)).problem_keys ?? []).not.toContain(`runs_failing:${WF_A}`)
+    })
   })
 })
