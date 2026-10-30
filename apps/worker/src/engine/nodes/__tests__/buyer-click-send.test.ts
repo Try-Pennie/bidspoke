@@ -14,7 +14,7 @@ import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { ClaimResult } from '../../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import { postToPartner, type PartnerCallResult } from '../../../lib/post-to-partner'
-import { PAST_THE_LIMIT, tricklingFetch } from '../../../lib/__tests__/_trickling-fetch'
+import { PAST_THE_LIMIT, cutOffFetch, tricklingFetch } from '../../../lib/__tests__/_trickling-fetch'
 import type { Env } from '../../../index'
 import { BUYER_CALL_DEADLINE, CLICK_POST_DEADLINE } from '../../step-timeout'
 import { clickAlertMessage, type ClickAlert, type ClickAlertOutcome } from '../../../lib/buyer-click-alert'
@@ -986,6 +986,33 @@ describe('a post our own timer stopped carries the marker for the step row (#307
     const r = await run(h)
     expect(r.output).toMatchObject({ _route: 'unknown', reason: 'outcome_unknown' })
     expect(r.deadline).toBeUndefined()
+  })
+
+  // #3091: a body cut off by anything but our timer is no complete answer.
+  // Before, the post returned the real status with empty text and the node
+  // classified that; now the post throws, and the node routes it exactly as
+  // the same failure before the headers: unknown, held, paged, no marker.
+  it.each([
+    ['a connection reset mid body, on a 200', 200, () => new TypeError('Network connection lost.')],
+    ['a connection reset mid body, on a 422', 422, () => new TypeError('Network connection lost.')],
+    ['an abort from elsewhere mid body, on a 503', 503, () => platformAbort()],
+  ] as const)('%s: no answer from the buyer, exactly as that failure before the headers', async (_label, status, cause) => {
+    const err = cause()
+    const { fetchImpl } = cutOffFetch(status, 'Records created', err)
+    const h = harness({ post: realPost(fetchImpl as unknown as (url: string, init: { signal?: AbortSignal }) => Promise<Response>) })
+    const r = await run(h)
+    expect(r.output).toMatchObject({ _route: 'unknown', reason: 'outcome_unknown', detail: `no answer from the buyer: ${err.message}` })
+    expect(r.output.status).toBeNull()
+    expect(r.deadline).toBeUndefined()
+    expect(r.failure).toBeUndefined()
+    const control = harness({ post: () => Promise.reject(cause()) })
+    const controlRun = await run(control)
+    expect(r.output).toEqual(controlRun.output)
+    expect(h.holds).toEqual(control.holds)
+    expect(h.alerts).toEqual(control.alerts)
+    expect(h.posts).toHaveLength(1)
+    expect(h.sold).toEqual([])
+    expect(h.freed).toEqual([])
   })
 
   it('every other ending carries no marker', async () => {

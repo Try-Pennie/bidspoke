@@ -11,7 +11,7 @@ import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { Env } from '../../../index'
 import type { BuyerProfilesSnapshot, LoadedBuyer } from '../../../lib/buyer-profile-loader'
 import { markNoAnswer, type PartnerCallResult } from '../../../lib/post-to-partner'
-import { PAST_THE_LIMIT, tricklingFetch } from '../../../lib/__tests__/_trickling-fetch'
+import { PAST_THE_LIMIT, cutOffFetch, tricklingFetch } from '../../../lib/__tests__/_trickling-fetch'
 import type { ClaimBody, ClaimResult } from '../../../durable-objects/lead-sale'
 import type { EntryKey, EntryResult, LedgerEntry, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
@@ -1653,6 +1653,47 @@ describe('a live buyer call that got no answer says so, and why (#3080)', () => 
     expect(r.attempts).toHaveLength(1)
     expect(r.attempts[0]).toMatchObject({ status: 'failed', error: detail, timeout: { timeout_kind: 'buyer_call', timed_out_after_ms: BUYER_CALL_TIMEOUT_MS }, output: { outcome: 'outcome_unknown', http_status: null, held: true } })
     expect(h.sales[0].state).toBe('in_flight')
+  })
+
+  // #3091: a body cut off by anything but our timer is no complete answer
+  // either. Before, the production call returned the real status with empty
+  // text, so a 503 was judged an answered buyer error and a rule on status alone
+  // could record a sale. Now the call throws, and the attempt records it exactly
+  // as the same failure before the headers: no answer, held, paged, the breaker
+  // told of an error, and no buyer_call marker, since our timer did not stop it.
+  it.each([
+    ['a connection reset mid body, on a 503', () => cutOffFetch(503, '{"error":', new TypeError('Network connection lost.')), () => markNoAnswer(new TypeError('Network connection lost.'), 'connection'), 'no answer arrived from the buyer: the connection to it failed'],
+    ['an abort from elsewhere mid body, on a 200', () => cutOffFetch(200, '{"ok":', platformAbort()), () => markNoAnswer(platformAbort(), 'cancelled'), 'no answer arrived from the buyer: the call was cancelled, not by our time limit'],
+  ] as const)('%s: the production buyer call throws, and the attempt records no answer exactly as before the headers', async (_label, cutOff, beforeHeaders, detail) => {
+    vi.stubGlobal('fetch', cutOff().fetchImpl)
+    let thrown: unknown
+    try {
+      const objects = { idFromName: () => 'id', get: () => ({}) }
+      const production = productionDeps(ctx(), { BUYER_LEDGER: objects, LEAD_SALE: objects, CIRCUIT_BREAKER: objects } as unknown as Env, {} as never)
+      const target = { slug: 'tripoint', api_endpoint: 'https://tripoint.example/leads', cf_secret_key: null }
+      thrown = await production.callBuyer(target, {}, { traceId: 't', timeoutMs: BUYER_CALL_TIMEOUT_MS }).catch((e: unknown) => e)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(thrown).toBeInstanceOf(Error)
+    expect(stepTimeoutMarkerOf(thrown)).toBeNull()
+
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [thrown as Error] } })
+    const r = await run(h)
+    expect(r.failure).toEqual({ message: `buyer_select outcome_unknown: ${detail}`, errorType: 'transient', reason: 'outcome_unknown' })
+    expect(r.attempts).toHaveLength(1)
+    expect(r.attempts[0]).toMatchObject({ status: 'failed', error: detail, error_type: 'transient', output: { outcome: 'outcome_unknown', detail, http_status: null, held: true } })
+    expect(r.attempts[0].timeout).toBeUndefined()
+    expect(h.sales[0].state).toBe('in_flight')
+
+    const before = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [beforeHeaders()] } })
+    const b = await run(before)
+    expect(withoutWords(r.attempts)).toEqual(withoutWords(b.attempts))
+    expect(r.failure).toEqual(b.failure)
+    expect(withoutWords(r.output)).toEqual(withoutWords(b.output))
+    expect(h.breakerCalls).toEqual(before.breakerCalls)
+    expect(withoutWords(h.bidRows)).toEqual(withoutWords(before.bidRows))
+    expect(h.ledgers.get('p-1')!.calls).toEqual(before.ledgers.get('p-1')!.calls)
   })
 
   it('a real answer no rule matched keeps its words, and still does not fail the step', async () => {
