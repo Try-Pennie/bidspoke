@@ -120,10 +120,13 @@ export function liftEngineTimers(host: TimerHost, opts: LiftOptions = {}): Lifte
     return handle
   }) as typeof setTimeout
 
-  host.clearTimeout = (handle: Parameters<typeof clearTimeout>[0]) => {
+  // The cast is needed under tsconfig.scripts.json, whose Node types give clearTimeout a
+  // second overload; the Workers config alone does not need it, which lint reports.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+  host.clearTimeout = ((handle: Parameters<typeof clearTimeout>[0]) => {
     pending.delete(handle)
     realClearTimeout.call(globalThis, handle)
-  }
+  }) as typeof clearTimeout
 
   // One real turn, on the timer the lift found, so work already in flight lands before time moves.
   const settle = (): Promise<void> => new Promise((resolve) => { realSetTimeout.call(globalThis, resolve, 0) })
