@@ -1,6 +1,8 @@
 /**
- * The bidding Worker pages the four variables problems the ops tick reports
- * (#3000, phase 4 of #2982), each on a page of its own as Ops runs can't start
+ * The bidding Worker pages the variables problems the ops tick reports: the
+ * four of #3000 (phase 4 of #2982), cases (a) to (d), and the two pages for
+ * runs whose variables bidding refused (#3131), cases (e), at once with a fix
+ * per reason, and (f), off the ops lane, three ticks in a row. Each is on a page of its own as Ops runs can't start
  * is (#3039): due by its kind's rule, under its own title and fix, never on
  * the minute cron's shared page, and stood down only by a report that judged
  * its kind and no longer names it.

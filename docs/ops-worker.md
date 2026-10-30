@@ -150,13 +150,13 @@ included ("Any secret, no exceptions").
   own (`OPS_OWN_PAGES` in `lib/ops-gateway-contract.ts`, `judgeVariables` in
   `src/ops/tick.ts`): runs that started on the copy while bidding answered the
   copy's refresh in the same tick; the refresh failing three ticks in a row;
-  an answer from bidding ops cannot read; and a switched on workflow's runs
+  an answer from bidding ops cannot read; a switched on workflow's runs
   failing with `variable_unavailable`; and a switched on workflow's runs
   that bidding refused their variables (`refusedRunEnd`, status reason
   `variables_refused`, #3131), named from the refusal's fields, at once,
   except a refusal because the workflow is off the ops lane, which pages
-  three ticks in a row. The refresh is skipped only when the
-  tick's own workflow fetch failed, so it runs beside a claimed ask that failed.
+  three ticks in a row. The refresh is skipped only when the tick's own
+  workflow fetch failed, so it runs beside a claimed ask that failed.
   Each page is in reference/observability.md.
 - **Retired.** The version capture #2702 added (`capture_version_env_variables`,
   `workflow_versions.env_capture`, `ops_workflow_definitions.variables`,
