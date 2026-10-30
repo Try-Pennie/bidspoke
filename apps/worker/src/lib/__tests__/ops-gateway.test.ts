@@ -451,11 +451,12 @@ describe('the page for runs that cannot start (#3039)', () => {
   const MIN = 60_000
   const TEXT = '3 runs have waited 21 minutes to start because the workflow\'s saved version could not be loaded from bidding. Each run is given up after 1 hour of waiting, at 6:41 AM ET for the oldest.'
   const SWEEP = 'The lease_expiry sweep failed: lock timeout.'
-  const report = (n: number, problems: Array<[string, string]>) => ({
+  /** A live tick's report; by default one that judged every workflow with runs waiting (unstarted_waits_judged). */
+  const report = (n: number, problems: Array<[string, string]>, counts: Record<string, number> = { unstarted_waits_judged: 1 }) => ({
     tick_id: `t${n}`, mode: 'live', scheduled_time: null,
     started_at: new Date(NOW + n * MIN).toISOString(), finished_at: new Date(NOW + n * MIN + 1000).toISOString(),
     db_now: null, outcome: problems.length > 0 ? 'problems' : 'ok', problems: problems.map(([, t]) => t), problem_keys: problems.map(([k]) => k),
-    counts: {}, start_stamp_failed: false,
+    counts, start_stamp_failed: false,
   })
 
   function deps(names: Record<string, string> | Error = { [WF]: 'Lead intake' }) {
@@ -511,6 +512,27 @@ describe('the page for runs that cannot start (#3039)', () => {
     const before = d.recovered.filter((j) => j === `ops-runs-unstarted:${WF}`).length
     await tick(store, d, 4, report(4, []))
     expect(d.recovered.filter((j) => j === `ops-runs-unstarted:${WF}`).length).toBe(before)
+  })
+
+  // A report that did not judge every waiting workflow says nothing about one it
+  // leaves out: the read failed, stopped at its limit, did not run (observe mode,
+  // no database), or the report left problems out.
+  it('stands nothing down on a report that did not judge every workflow with runs waiting', async () => {
+    const store = kv()
+    const d = deps()
+    await tick(store, d, 1, report(1, [[`runs_unstarted:${WF}`, TEXT]]))
+    const unread = 'The ops tick could not read which runs are waiting to start (statement timeout), so a workflow whose runs keep returning to the queue unstarted is not paged this tick.'
+    const limit = '15 or more workflows have runs that have waited 15 minutes to start, as many as one read lists, so any past them is not paged.'
+    const leftOut = 'More problems were left out of this report.'
+    await tick(store, d, 2, report(2, [['runs_unstarted_unread', unread]], {}))
+    await tick(store, d, 3, report(3, [['runs_unstarted_limit', limit]], {}))
+    await tick(store, d, 4, report(4, [], {}))
+    await tick(store, d, 5, report(5, [['problems_left_out', leftOut]]))
+    expect(d.recovered).not.toContain(`ops-runs-unstarted:${WF}`)
+    expect(store.m.has(`${OPS_TICK_UNSTARTED_PAGE_PREFIX}${WF}`)).toBe(true)
+    // The next report that judged them all stands it down.
+    await tick(store, d, 6, report(6, []))
+    expect(d.recovered).toContain(`ops-runs-unstarted:${WF}`)
   })
 
   it('pages the minute cron\'s other problems on its own page beside it, without the runs that cannot start', async () => {

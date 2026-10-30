@@ -1122,9 +1122,10 @@ async function listUnstartedPages(kv: KVNamespace): Promise<string[]> {
  * The pages for runs that cannot start (#3039): each workflow the report names
  * under UNSTARTED_RUNS_PAGE.kind pages on its own, as its own alert job, under
  * Dan's approved title and fix, and every workflow paged before that a
- * readable report no longer names is stood down. A report whose keys are not
- * known (one it could not read, or from an ops release before #2506) stands
- * nothing down. Never throws: each page is its own boundary, and the failures
+ * report judging every workflow with runs waiting no longer names is stood
+ * down. Any other report (one it could not read, one that left problems out,
+ * or one whose tick did not read every wait: a failed or full read, observe
+ * mode, no database) stands nothing down. Never throws: each page is its own boundary, and the failures
  * are answered for the caller to raise once the rest is judged.
  */
 async function settleUnstartedPages(
@@ -1224,7 +1225,9 @@ export async function runOpsTickReportCheck(
   const keys = kept.problem_keys
   const isUnstarted = (i: number) => keys !== null && keys.length === kept.problems.length && keys[i].startsWith(`${UNSTARTED_RUNS_PAGE.kind}:`)
   const own = kept.problems.flatMap((text, i) => (isUnstarted(i) ? [{ workflowId: (keys as string[])[i].slice(UNSTARTED_RUNS_PAGE.kind.length + 1), text }] : []))
-  const known = keys !== null && keys.length === kept.problems.length && !keys.includes('report_unreadable')
+  // Stood down only on a report that judged every workflow with runs waiting, and left no problem out.
+  const known = keys !== null && keys.length === kept.problems.length && !keys.includes('report_unreadable') && !keys.includes('problems_left_out')
+    && kept.counts[UNSTARTED_RUNS_PAGE.judgedCount] === 1
   const unstarted = await settleUnstartedPages(supabase, kv, own, known, nowMs, deps)
   if (own.length > 0) {
     const rest = (_: unknown, i: number) => !isUnstarted(i)

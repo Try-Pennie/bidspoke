@@ -2571,6 +2571,8 @@ describe('runs returned to the queue unstarted (#3039, Dan\'s decision of 2026-1
     expect(UNSTARTED_ALERT_AFTER_SECONDS).toBe(15 * 60)
     const early = await runOpsTick(fake({ mode: 'live', unstartedWaits: [wait(15 * 60 - 1)] }).ports)
     expect(early.problem_keys).not.toContain(`runs_unstarted:${WF_A}`)
+    // It judged every workflow with runs waiting, so a workflow it does not name is not waiting 15 minutes.
+    expect(early.counts.unstarted_waits_judged).toBe(1)
 
     const f = fake({ mode: 'live', unstartedWaits: [wait(21 * 60)] })
     const report = await runOpsTick(f.ports)
@@ -2632,13 +2634,15 @@ describe('runs returned to the queue unstarted (#3039, Dan\'s decision of 2026-1
   it('reports a read that failed, and a read at its limit, by name; in observe mode it reads nothing', async () => {
     const failed = await runOpsTick(fake({ mode: 'live', failing: { unstartedWaits: new Error('statement timeout') } }).ports)
     expect(problemOf(failed, 'runs_unstarted_unread')).toMatch(/could not read which runs are waiting to start \(statement timeout\)/)
+    expect(failed.counts.unstarted_waits_judged).toBeUndefined()
     expect(OPS_TICK_PROBLEM_RULES.runs_unstarted_unread).toBe('three_in_a_row')
     const many = Array.from({ length: UNSTARTED_READ_LIMIT }, (_, i) => wait(20 * 60, { workflowId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}` }))
     const full = await runOpsTick(fake({ mode: 'live', unstartedWaits: many }).ports)
     expect(full.problem_keys).toContain('runs_unstarted_limit')
+    expect(full.counts.unstarted_waits_judged).toBeUndefined()
     expect(OPS_TICK_PROBLEM_RULES.runs_unstarted_limit).toBe('at_once')
     const observe = fake({ unstartedWaits: [wait(30 * 60)] })
-    await runOpsTick(observe.ports)
+    expect((await runOpsTick(observe.ports)).counts.unstarted_waits_judged).toBeUndefined()
     expect(observe.db.calls.some((c) => c.startsWith('unstartedWaits'))).toBe(false)
   })
 

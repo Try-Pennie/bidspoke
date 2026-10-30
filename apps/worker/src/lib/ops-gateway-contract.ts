@@ -819,7 +819,8 @@ export const OPS_TICK_PROBLEM_RULES = {
    * unstarted each time they were claimed (#3039, Dan's decision of
    * 2026-10-30). The wait itself is the hold, so it pages at once, on a page
    * of its own per workflow in Dan's approved words (UNSTARTED_RUNS_PAGE), and
-   * stands down on the first report that no longer names it.
+   * stands down on the first report that judged every waiting workflow and no
+   * longer names it (UNSTARTED_RUNS_PAGE.judgedCount).
    */
   runs_unstarted: 'at_once',
   /** More workflows have runs waiting to start than one read lists, so a workflow past them is not paged. */
@@ -902,6 +903,14 @@ export const UNSTARTED_RUNS_PAGE = {
   job: (workflowId: string) => `ops-runs-unstarted:${workflowId}`,
   title: (workflowName: string) => `Ops runs can't start: ${workflowName}`,
   fix: 'Open the workflow in Bidspoke and save it again, or check that the bidding Worker is up.',
+  /**
+   * The count a tick's report carries, as 1, when it read the waits of every
+   * workflow with runs waiting: the read worked and did not stop at its limit.
+   * Only such a report, with no problem left out, stands a page down; any other
+   * (a failed or full read, observe mode, no database) says nothing about a
+   * workflow it does not name.
+   */
+  judgedCount: 'unstarted_waits_judged',
 } as const
 
 /**

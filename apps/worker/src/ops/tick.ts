@@ -1600,6 +1600,9 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
       const { waits, reachedLimit } = await db.unstartedWaits(UNSTARTED_ALERT_AFTER_SECONDS, UNSTARTED_READ_LIMIT)
       for (const w of waits) problem(UNSTARTED_RUNS_PAGE.kind, unstartedRunsText(w), w.workflowId)
       if (waits.length > 0) bump(counts, 'workflows_runs_unstarted', waits.length)
+      // Every workflow with runs waiting was judged, so one this report does not
+      // name has none waiting that long: only such a report stands a page down.
+      if (!reachedLimit) bump(counts, UNSTARTED_RUNS_PAGE.judgedCount)
       if (reachedLimit) {
         problem('runs_unstarted_limit', `${UNSTARTED_READ_LIMIT} or more workflows have runs that have waited ${UNSTARTED_ALERT_AFTER_SECONDS / 60} minutes to start, as many as one read lists, so any past them is not paged; the ops Worker's logs and the run_requests table have every one.`)
       }
