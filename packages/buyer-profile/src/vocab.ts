@@ -244,6 +244,22 @@ export const NODE_REASON_LABELS: Record<NodeReason, string> = {
 }
 
 /**
+ * The plain words for a buyer_select reason code, from whichever list holds it:
+ * the code itself when neither does (a newer engine's reason is shown, never
+ * hidden), and nothing when there is no reason. The one lookup every surface
+ * uses (#3087); `reason-label-shared-guard.test.ts` fails on another. Only a
+ * list's own members count, so `constructor` is not read as a label.
+ */
+export function reasonLabel(reason: string | undefined): string {
+  if (!reason) return ''
+  const out = OUT_REASON_LABELS as Record<string, string>
+  if (Object.hasOwn(out, reason)) return out[reason]
+  const node = NODE_REASON_LABELS as Record<string, string>
+  if (Object.hasOwn(node, reason)) return node[reason]
+  return reason
+}
+
+/**
  * What the buyer_select node records for each buyer it looked at, in the
  * output's `considered` list (#1411). Written by the engine, read by the
  * execution view, so the labels live beside the codes (L113).

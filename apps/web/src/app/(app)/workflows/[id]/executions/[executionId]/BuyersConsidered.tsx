@@ -10,9 +10,9 @@
  */
 import { AlertTriangle, CheckCircle, MinusCircle } from 'lucide-react'
 import {
-  CONSIDERED_OUTCOMES, CONSIDERED_OUTCOME_LABELS, MODE_EFFECTIVE, MODE_EFFECTIVE_LABELS, NODE_REASON_LABELS, OUT_REASON_LABELS,
-  UNRESOLVED_ANSWER_LABELS, unresolvedAnswerOf,
-  type ConsideredOutcome, type ModeEffective, type NodeReason, type OutReason,
+  CONSIDERED_OUTCOMES, CONSIDERED_OUTCOME_LABELS, MODE_EFFECTIVE, MODE_EFFECTIVE_LABELS,
+  UNRESOLVED_ANSWER_LABELS, reasonLabel, unresolvedAnswerOf,
+  type ConsideredOutcome, type ModeEffective,
 } from '@bidspoke/buyer-profile'
 import { NODE_TRAITS } from '@/types/workflow'
 import { ToneBadge, type Tone } from './ToneBadge'
@@ -90,14 +90,6 @@ export function readBuyerSelectOutput(output: unknown): Output | null {
     sale: { partner_slug: typeof output.sale.partner_slug === 'string' ? output.sale.partner_slug : null, accepted: output.sale.accepted === true },
     considered,
   }
-}
-
-/** The plain words for a reason code from either shared list; the code itself when it is from neither. */
-export function reasonLabel(reason: string | undefined): string {
-  if (!reason) return ''
-  if (reason in OUT_REASON_LABELS) return OUT_REASON_LABELS[reason as OutReason]
-  if (reason in NODE_REASON_LABELS) return NODE_REASON_LABELS[reason as NodeReason]
-  return reason
 }
 
 const OUTCOME_TONE: Record<ConsideredOutcome, Tone> = {
