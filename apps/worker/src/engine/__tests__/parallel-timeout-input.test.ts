@@ -31,6 +31,7 @@ vi.mock('../step-logger', () => ({
 
 import { walkGraph } from '../index'
 import { buildContext } from '../context'
+import { attributeOutageCause, failingStepDeadline, UPSTREAM_OUTAGE_CAUSES, type MarkedFailedStep } from '../../lib/upstream-outage'
 
 const EXEC = 'exec-3064'
 const env = { PII_REDACTION_FIELDS: '' } as unknown as Env
@@ -82,14 +83,22 @@ const edge = (source: string, target: string, source_handle?: string): EdgeDefin
 
 /** A block of one slot, the slot a chain of `slot` steps, cut off after BLOCK_TIMEOUT_MS. */
 function inParallel(...slot: NodeDefinition[]) {
+  return inBlock({ on_child_error: 'continue', on_timeout: 'partial' }, slot)
+}
+
+/** A block with its own settings, each slot a chain of steps, cut off after BLOCK_TIMEOUT_MS. */
+function inBlock(settings: Record<string, unknown>, ...slots: NodeDefinition[][]) {
   const nodes: NodeDefinition[] = [
-    { id: 'fan', namespace: 'fan', type: 'parallel', config: { wait_for: 'all', on_child_error: 'continue', on_timeout: 'partial', timeout_ms: BLOCK_TIMEOUT_MS, children: [{ id: 'child-0' }] } },
-    ...slot,
+    { id: 'fan', namespace: 'fan', type: 'parallel', config: { wait_for: 'all', timeout_ms: BLOCK_TIMEOUT_MS, ...settings, children: slots.map((_, i) => ({ id: `child-${i}` })) } },
+    ...slots.flat(),
     { id: 'fan_end', namespace: 'fan_end', type: 'parallel_end', config: {} },
     { id: 'done', namespace: 'done', type: 'exit', config: {} },
   ]
-  const chain = slot.slice(1).map((n, i) => edge(slot[i].id, n.id))
-  const edges = [edge('fan', slot[0].id, 'child-0'), edge('fan', 'fan_end', 'output'), ...chain, edge(slot[slot.length - 1].id, 'fan_end'), edge('fan_end', 'done')]
+  const edges = [edge('fan', 'fan_end', 'output'), edge('fan_end', 'done')]
+  slots.forEach((slot, s) => {
+    edges.push(edge('fan', slot[0].id, `child-${s}`), edge(slot[slot.length - 1].id, 'fan_end'))
+    slot.slice(1).forEach((n, i) => edges.push(edge(slot[i].id, n.id)))
+  })
   return { nodes, edges }
 }
 
@@ -110,6 +119,17 @@ async function walk(c: ExecutionContext, def: { nodes: NodeDefinition[]; edges: 
   const queue: StepLogEntry[] = []
   await walkGraph(c, def, EXEC, '2026-10-29T12:00:00.000Z', supabase, env, 'money', 'v1', queue, () => {}).catch(() => null)
   return queue
+}
+
+/** The fields of the failure the run ends with, the ones its record and alerts are built from. */
+interface RunFailure { message: string; stepNamespace: string; errorType: unknown; suppressAlert: boolean; childFailure: unknown; afterAnswer: unknown }
+
+async function walkFailing(c: ExecutionContext, def: { nodes: NodeDefinition[]; edges: EdgeDefinition[] }): Promise<{ queue: StepLogEntry[]; failure: RunFailure }> {
+  const queue: StepLogEntry[] = []
+  const err = await walkGraph(c, def, EXEC, '2026-10-29T12:00:00.000Z', supabase, env, 'money', 'v1', queue, () => {}).then(() => null, (e: unknown) => e)
+  if (!(err instanceof Error)) throw new Error('the walk did not fail')
+  const f = err as Error & Omit<RunFailure, 'message'>
+  return { queue, failure: { message: f.message, stepNamespace: f.stepNamespace, errorType: f.errorType, suppressAlert: f.suppressAlert, childFailure: f.childFailure, afterAnswer: f.afterAnswer } }
 }
 
 function rowsOf(queue: StepLogEntry[], ns: string): StepLogEntry[] {
@@ -185,17 +205,43 @@ describe('a parallel child the block cut off records the request it sent (#3064)
     await lateStepEnded('tripoint_sf_post', 'step_error')
   })
 
-  it('a step the slot reached before the cut-off keeps its own row, and the cut-off row is not given a later step\'s request', async () => {
+})
+
+describe('a slot cut off on a later step of its chain: the row is that step\'s (#3071)', () => {
+  const gate: NodeDefinition = { id: 'gate', namespace: 'gate', type: 'filter', config: { operation: 'continue_if', condition: { field: 'trigger.payload.score', operator: 'gt', value: '600' } } }
+
+  it('the step it was running gets the cut-off row with its request, and the step it finished keeps its one row', async () => {
     const held = holdFetch(fetchMock)
-    const gate: NodeDefinition = { id: 'gate', namespace: 'gate', type: 'filter', config: { operation: 'continue_if', condition: { field: 'trigger.payload.score', operator: 'gt', value: '600' } } }
-    const queue = await walk(ctx(), inParallel(gate, relayPost('tripoint_sf_post')))
-    // The block names the slot by its first step, which had already finished:
-    // the request noted by the step after it is not that step's request.
-    const row = cutOffRow(queue, 'gate')
-    expect(row.input).toBeNull()
+    const queue = await walk(ctx(), inParallel(gate, relayPost('tripoint_sf_post'), relayPost('follow_up_post')))
     expect(held).toHaveLength(1)
+    // The step it finished: one row, completed, never a second one failed by the block.
+    const gateRows = rowsOf(queue, 'gate')
+    expect(gateRows).toHaveLength(1)
+    expect(gateRows[0].status).toBe('completed')
+    expect(gateRows[0]).not.toHaveProperty('timeout_kind')
+    // The step it was on: the block's row, with what it sent, in its own place in the slot.
+    const row = cutOffRow(queue, 'tripoint_sf_post')
+    expect(row).toMatchObject({ status: 'failed', error_message: CUT_OFF_MESSAGE, error_type: 'transient', timeout_kind: 'parallel_block', timed_out_after_ms: BLOCK_TIMEOUT_MS, parallel_group_id: 'fan', step_order: gateRows[0].step_order + 1 })
+    expectTheRequestSent(row)
+    expectNoSecret(row)
+    // It started when that step did, not when the block did.
+    expect(Date.parse(row.started_at)).toBeGreaterThanOrEqual(Date.parse(gateRows[0].started_at))
+    // The step after it never started, so it has no row.
+    expect(rowsOf(queue, 'follow_up_post')).toHaveLength(0)
     held[0].fail(new TypeError('Network connection lost.'))
     await lateStepEnded('tripoint_sf_post', 'step_error')
+  })
+
+  it('a late success of that step writes no second row and starts no further step', async () => {
+    const held = holdFetch(fetchMock)
+    const queue = await walk(ctx(), inParallel(gate, relayPost('tripoint_sf_post'), relayPost('follow_up_post')))
+    held[0].answer(new Response('{"ok":true}', { status: 200 }))
+    await lateStepEnded('tripoint_sf_post', 'step_complete')
+    expect(rowsOf(queue, 'gate')).toHaveLength(1)
+    expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(1)
+    expectTheRequestSent(cutOffRow(queue, 'tripoint_sf_post'))
+    expect(rowsOf(queue, 'follow_up_post')).toHaveLength(0)
+    expect(held).toHaveLength(1)
   })
 })
 
@@ -259,5 +305,117 @@ describe('the child finishing after the block gave up changes nothing the row re
     await lateStepEnded('tripoint_sf_post', 'step_error')
     expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(1)
     expectTheRequestSent(cutOffRow(queue, 'tripoint_sf_post'), 'sub-3064')
+  })
+})
+
+/** The marked failed rows of the run, as the upstream outage check reads them (readMarkedFailedSteps). */
+function markedFailedRows(queue: StepLogEntry[]): MarkedFailedStep[] {
+  return queue
+    .map((r) => r as StepLogEntry & { timeout_kind?: unknown })
+    .filter((r) => r.status === 'failed' && r.timeout_kind != null)
+    .map((r) => ({ execution_id: r.execution_id, step_type: r.step_type, parallel_group_id: r.parallel_group_id ?? null, step_node_id: r.step_node_id, timeout_kind: r.timeout_kind }))
+}
+
+/** The outage bucket the run falls in with its rows, and with no marked row at all (how it was read before #3072). */
+function bucketsOf(queue: StepLogEntry[], failure: RunFailure): { withRows: string | null; withoutRows: string | null } {
+  const run = { id: EXEC, failed_step_type: 'parallel' }
+  return {
+    withRows: attributeOutageCause(failure.message, run.failed_step_type, UPSTREAM_OUTAGE_CAUSES, failingStepDeadline(run, markedFailedRows(queue)))?.key ?? null,
+    withoutRows: attributeOutageCause(failure.message, run.failed_step_type, UPSTREAM_OUTAGE_CAUSES, null)?.key ?? null,
+  }
+}
+
+describe('a block that fails on its own deadline records the slots it cut off (#3072)', () => {
+  const failOnTimeout = { on_child_error: 'continue', on_timeout: 'fail' }
+
+  it('on_timeout fail: the slot still running gets the block\'s row with its request, and the run fails as before', async () => {
+    const held = holdFetch(fetchMock)
+    const c = ctx()
+    const { queue, failure } = await walkFailing(c, inBlock(failOnTimeout, [relayPost('tripoint_sf_post')]))
+    // The run's failure is the block's, unchanged: its step, type, alert and child.
+    expect(failure.message).toMatch(/^Parallel node timed out \u{2014} 1 child\(ren\) did not settle within 5ms$/u)
+    expect(failure).toMatchObject({ stepNamespace: 'fan', errorType: 'transient', suppressAlert: false, childFailure: null, afterAnswer: false })
+    expect(rowsOf(queue, 'fan')).toMatchObject([{ status: 'failed', error_message: failure.message }])
+    expect(rowsOf(queue, 'fan')[0]).not.toHaveProperty('timeout_kind')
+    // Only the row is written: what later steps would read of the slot is untouched.
+    expect(c.steps.tripoint_sf_post).toBeUndefined()
+    const row = cutOffRow(queue, 'tripoint_sf_post')
+    expect(row).toMatchObject({ status: 'failed', error_message: CUT_OFF_MESSAGE, error_type: 'transient', timeout_kind: 'parallel_block', timed_out_after_ms: BLOCK_TIMEOUT_MS, parallel_group_id: 'fan' })
+    expectTheRequestSent(row)
+    expectNoSecret(row)
+    held[0].fail(new TypeError('Network connection lost.'))
+    await lateStepEnded('tripoint_sf_post', 'step_error')
+  })
+
+  it('cut off on a later step of its chain: that step\'s row, and the step it finished keeps its one row', async () => {
+    const held = holdFetch(fetchMock)
+    const gate: NodeDefinition = { id: 'gate', namespace: 'gate', type: 'filter', config: { operation: 'continue_if', condition: { field: 'trigger.payload.score', operator: 'gt', value: '600' } } }
+    const { queue } = await walkFailing(ctx(), inBlock(failOnTimeout, [gate, relayPost('tripoint_sf_post')]))
+    expect(rowsOf(queue, 'gate')).toMatchObject([{ status: 'completed' }])
+    expectTheRequestSent(cutOffRow(queue, 'tripoint_sf_post'))
+    held[0].fail(new TypeError('Network connection lost.'))
+    await lateStepEnded('tripoint_sf_post', 'step_error')
+  })
+
+  it('the default settings (on_child_error fail, on_timeout partial) failing on the late slot write its row too', async () => {
+    const held = holdFetch(fetchMock)
+    const { queue, failure } = await walkFailing(ctx(), inBlock({}, [relayPost('tripoint_sf_post')]))
+    expect(failure.message).toBe('Parallel failed: child "tripoint_sf_post" did not complete in time')
+    expectTheRequestSent(cutOffRow(queue, 'tripoint_sf_post'))
+    held[0].fail(new TypeError('Network connection lost.'))
+    await lateStepEnded('tripoint_sf_post', 'step_error')
+  })
+
+  it('a late success writes no second row', async () => {
+    const held = holdFetch(fetchMock)
+    const { queue } = await walkFailing(ctx(), inBlock(failOnTimeout, [relayPost('tripoint_sf_post')]))
+    held[0].answer(new Response('{"ok":true}', { status: 200 }))
+    await lateStepEnded('tripoint_sf_post', 'step_complete')
+    expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(1)
+    expect(cutOffRow(queue, 'tripoint_sf_post').output).toBeNull()
+  })
+
+  it('a late failure writes no second row', async () => {
+    const held = holdFetch(fetchMock)
+    const { queue } = await walkFailing(ctx(), inBlock(failOnTimeout, [relayPost('tripoint_sf_post')]))
+    held[0].fail(new TypeError('Network connection lost.'))
+    await lateStepEnded('tripoint_sf_post', 'step_error')
+    expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(1)
+    expect(cutOffRow(queue, 'tripoint_sf_post').error_message).toBe(CUT_OFF_MESSAGE)
+  })
+})
+
+describe('the rows a failed block now writes leave the run in the outage bucket it was in (#3072, #3069)', () => {
+  it('on_timeout fail: the timeout bucket, by the marker now as by the text before', async () => {
+    const held = holdFetch(fetchMock)
+    const { queue, failure } = await walkFailing(ctx(), inBlock({ on_child_error: 'continue', on_timeout: 'fail' }, [relayPost('tripoint_sf_post')]))
+    expect(markedFailedRows(queue)).toHaveLength(1)
+    expect(bucketsOf(queue, failure)).toEqual({ withRows: 'timeout', withoutRows: 'timeout' })
+    held[0].fail(new TypeError('Network connection lost.'))
+    await lateStepEnded('tripoint_sf_post', 'step_error')
+  })
+
+  it('failing on the late slot under the default settings: the timeout bucket either way', async () => {
+    const held = holdFetch(fetchMock)
+    const { queue, failure } = await walkFailing(ctx(), inBlock({}, [relayPost('tripoint_sf_post')]))
+    expect(bucketsOf(queue, failure)).toEqual({ withRows: 'timeout', withoutRows: 'timeout' })
+    held[0].fail(new TypeError('Network connection lost.'))
+    await lateStepEnded('tripoint_sf_post', 'step_error')
+  })
+
+  it('failing on a slot that was refused while another was still running: no cut-off row, so not read as a timeout', async () => {
+    const held: HeldCall[] = []
+    fetchMock.mockImplementation((url: unknown) => String(url).includes('refused')
+      ? Promise.resolve(new Response('{"error":"bad lead"}', { status: 400 }))
+      : new Promise((resolve, reject) => { held.push({ answer: resolve, fail: reject }) }))
+    const refused = { ...relayPost('lendswift_post'), config: { ...relayPost('lendswift_post').config, url: 'https://refused.example.test/hook' } }
+    const { queue, failure } = await walkFailing(ctx(), inBlock({}, [refused], [relayPost('tripoint_sf_post')]))
+    expect(failure.message).toMatch(/^Parallel failed: child "lendswift_post" failed/)
+    // The block failed on the refusal, not its deadline: the late slot gets no row,
+    // as before, so the run is not bound to a deadline it did not fail on.
+    expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(0)
+    expect(bucketsOf(queue, failure)).toEqual({ withRows: null, withoutRows: null })
+    held[0].fail(new TypeError('Network connection lost.'))
+    await lateStepEnded('tripoint_sf_post', 'step_error')
   })
 })
