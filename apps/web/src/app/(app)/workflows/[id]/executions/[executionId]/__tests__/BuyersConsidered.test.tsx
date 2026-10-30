@@ -102,13 +102,17 @@ describe('BuyersConsidered', () => {
 })
 
 /**
- * #3087: an unknown outcome is worded by whether an answer arrived (Dan,
- * 2026-10-30). The node records both as outcome_unknown; the buyer's attempt
- * row says which, by its typed fields: a request left (its timing) and came
- * back with no status. A live call that got no answer reads "No answer" and
- * "No answer from the buyer"; an answer no rule matched keeps "Answer not
- * classified" and "Buyer response could not be classified". The row and the
- * headline say the same, and neither says the other's words.
+ * #3087, #3129: an unknown outcome is worded by what the buyer answered (Dan,
+ * 2026-10-30). The node records a call that got no answer, an answer no rule
+ * matched and an accepted answer whose sale could not be recorded all as
+ * outcome_unknown, and the buyer's attempt row says which. Since #3129 the row
+ * stores the buyer's answer when one arrived, and the table reads it: accepted
+ * reads "Sale not recorded", any other answer "Answer not classified". A row
+ * with no answer stored (none arrived, or it was written before #3129) is read
+ * by its typed fields: a request that left (its timing) and came back with no
+ * status reads "No answer" and "No answer from the buyer"; anything else keeps
+ * "Answer not classified" and "Buyer response could not be classified". The
+ * row and the headline say the same, and neither says another kind's words.
  */
 const timing = { before_call_ms: 40, call_ms: 20000, after_call_ms: 12 }
 const timerDetail = 'no answer arrived from the buyer within our 20000 ms limit, so we stopped the call'
