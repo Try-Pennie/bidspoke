@@ -46,8 +46,8 @@ vi.mock('../nodes/index', () => ({
 import { walkGraph } from '../index'
 import { buildContext } from '../context'
 import { executePartnerBidNode } from '../nodes/partner-bid'
-import { executeBuyerSelectNode, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS } from '../nodes/buyer-select'
-import { markDeadline, PARTNER_BID_DEADLINE, BUYER_SELECT_DEADLINE, timeoutMarker, stepTimedOut } from '../step-timeout'
+import { executeBuyerSelectNode, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, BUYER_CALL_TIMEOUT_MS } from '../nodes/buyer-select'
+import { markDeadline, PARTNER_BID_DEADLINE, BUYER_SELECT_DEADLINE, BUYER_CALL_DEADLINE, timeoutMarker, stepTimedOut } from '../step-timeout'
 
 const env = { PII_REDACTION_FIELDS: '' } as unknown as Env
 const supabase = {} as unknown as SupabaseClient
@@ -204,3 +204,44 @@ describe('a buyer select whose budget ended its walk (#3068)', () => {
     expect(queue.find((r) => r.step_type === 'buyer_select')).not.toHaveProperty('timeout_kind')
   })
 })
+
+/**
+ * #3075: a live buyer call its own timer stopped fails the node as
+ * outcome_unknown. The marker goes on the buyer's attempt row, the step whose
+ * work the timer cut short, and never on the node's row, which failed by its
+ * own rule on an unknown outcome. Every row is written as before otherwise.
+ */
+describe('a live buyer call its own timer stopped (#3075)', () => {
+  const select: NodeDefinition = { id: '0192a4f0-0000-7000-8000-0000000000b6', namespace: 'buyer_select', type: 'buyer_select', config: { mode: 'live' } }
+  const after: NodeDefinition = { id: 'n-after-sold', namespace: 'after_sold', type: 'code', config: {} }
+  const def = { nodes: [select, after], edges: [edge(select.id, after.id, 'sold')] }
+  const output = { _route: 'no_sale', reason: 'outcome_unknown', mode_effective: 'live', population: 'engine', lead_key: 'lead-1', sale: { skipped: false, accepted: false }, considered: [], live_percent_in_force: null, caps_in_force: [], duration_ms: 20_010 }
+  const attempt = (over: Record<string, unknown> = {}) => ({
+    partner_slug: 'tripoint', namespace: 'buyer_select.tripoint', status: 'failed', input: { partner_slug: 'tripoint' },
+    output: { outcome: 'outcome_unknown', held: true }, error: 'buyer answered http null and no rule matched', error_type: 'transient',
+    started_at: new Date('2026-10-29T12:00:00.000Z'), completed_at: new Date('2026-10-29T12:00:20.000Z'), ...over,
+  })
+  const failure = { message: 'buyer_select outcome_unknown: buyer answered http null and no rule matched', errorType: 'transient', reason: 'outcome_unknown' }
+
+  it('marks the buyer\'s attempt row buyer_call, and not the failed node row', async () => {
+    vi.mocked(executeBuyerSelectNode).mockResolvedValue({ output, attempts: [attempt({ timeout: timeoutMarker(BUYER_CALL_DEADLINE, BUYER_CALL_TIMEOUT_MS) })], failure } as never)
+    const queue: StepLogEntry[] = []
+    await walk(def, queue)
+    const attemptRow = queue.find((r) => r.step_namespace === 'buyer_select.tripoint')!
+    expect(attemptRow).toMatchObject({ status: 'failed', error_type: 'transient', step_type: 'partner_bid', timeout_kind: 'buyer_call', timed_out_after_ms: BUYER_CALL_TIMEOUT_MS })
+    expect(stepTimedOut(attemptRow)).toBe(false)
+    const nodeRow = queue.find((r) => r.step_type === 'buyer_select')!
+    expect(nodeRow.status).toBe('failed')
+    expect(nodeRow).not.toHaveProperty('timeout_kind')
+    expect(queue.filter((r) => r.timeout_kind !== undefined)).toHaveLength(1)
+  })
+
+  it('an attempt with no marker writes its row with none', async () => {
+    vi.mocked(executeBuyerSelectNode).mockResolvedValue({ output, attempts: [attempt()], failure } as never)
+    const queue: StepLogEntry[] = []
+    await walk(def, queue)
+    expect(queue.filter((r) => r.timeout_kind !== undefined)).toEqual([])
+    expect(queue.find((r) => r.step_namespace === 'buyer_select.tripoint')).not.toHaveProperty('timed_out_after_ms')
+  })
+})
+

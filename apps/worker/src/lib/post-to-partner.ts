@@ -9,12 +9,18 @@
  * body is read once as text and parsed beside it, because the text is what the
  * HTML error page rule needs (#756): an HTML document means an edge answered,
  * not the partner. The fetch is injectable so a test needs no network.
+ *
+ * The call's own timer marks the abort it causes as BUYER_CALL_DEADLINE
+ * (#3075), never by its text, so the buyer select attempt row it cut short can
+ * say our deadline stopped it. The error thrown is the platform's abort,
+ * unchanged, so every caller's handling of it is what it was.
  */
 import type { Env } from '../index'
 import { PartnerApiError } from '../engine/partner-bid-error'
 import { partnerCredentialValue } from './partner-credential'
 import { containsHtmlDocument } from './html-error-summary'
 import { linkAbort } from '../engine/retry'
+import { abortAfter, BUYER_CALL_DEADLINE } from '../engine/step-timeout'
 
 export interface PartnerCallTarget {
   slug: string
@@ -69,14 +75,18 @@ export async function postToPartner(target: PartnerCallTarget, body: unknown, en
   }
   const headers = partnerRequestHeaders(target, env, opts.traceId)
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), opts.timeoutMs)
+  // Knows whether it was the one that aborted the call, so only its own abort is
+  // marked as the buyer call's deadline; one from the step's signal is not (#3075).
+  const timer = abortAfter(controller, opts.timeoutMs, BUYER_CALL_DEADLINE)
   linkAbort(controller, opts.signal)
   const doFetch = opts.fetchImpl ?? fetch
   let res: Response
   try {
     res = await doFetch(target.api_endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
+  } catch (err) {
+    throw timer.mark(err)
   } finally {
-    clearTimeout(timeout)
+    timer.clear()
   }
   const text = await res.text().catch(() => '')
   let json: unknown = null

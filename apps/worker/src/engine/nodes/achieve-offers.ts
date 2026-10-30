@@ -48,6 +48,7 @@ import { formatErr } from '../../lib/format-error'
 import { CONTINUATION_WINDOW_MS } from '../../lib/post-response-budget'
 import { resolveValue } from '../context'
 import { linkAbort } from '../retry'
+import { abortAfter, ACHIEVE_OFFERS_DEADLINE } from '../step-timeout'
 import { shadowAchieveStub } from '../shadow'
 import { nodeSkipsScreenOn, shadowOf } from '../run-reality'
 
@@ -367,7 +368,15 @@ export async function executeAchieveOffersNode(
   // Own controller so the node's own wait AND the step-level timeout (#66)
   // can both cancel the call.
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), wait.waitMs)
+  // Knows whether it was the one that aborted the call (#3075). The node records
+  // the timeout in its output and completes, so there is no error to mark: the
+  // result carries the marker for its row instead, set only when this wait fired,
+  // whether it cut short the request or the reading of the answer.
+  const timer = abortAfter(controller, wait.waitMs, ACHIEVE_OFFERS_DEADLINE)
+  const marked = (done: StepExecutionResult): StepExecutionResult => {
+    const deadline = timer.marker()
+    return deadline ? { ...done, deadline } : done
+  }
   linkAbort(controller, signal)
   try {
     const res = await fetch(`${baseUrl}/evaluations`, {
@@ -402,17 +411,17 @@ export async function executeAchieveOffersNode(
       const reason = block
         ? `Achieve answered with a ${block.vendor === 'cloudflare' ? 'Cloudflare' : `HTTP ${res.status} HTML`} block page instead of data${block.bodyRayId ? ` (Ray ID ${block.bodyRayId})` : ''}`
         : responseBody?.response_reason ?? responseBody?.message ?? `Achieve API returned ${res.status}`
-      return {
+      return marked({
         output: result(false, res.status, 'error', reason, request, responseBody, !production, responseIds(res), metrics),
         resolvedInput,
-      }
+      })
     }
 
     const responseStatus =
       responseBody?.response === 'accepted' || responseBody?.response === 'rejected'
         ? responseBody.response
         : 'error'
-    return {
+    return marked({
       output: result(
         responseStatus === 'accepted',
         res.status,
@@ -425,16 +434,16 @@ export async function executeAchieveOffersNode(
         metrics
       ),
       resolvedInput,
-    }
+    })
   } catch (err) {
     const name = (err as { name?: string })?.name
     const message = formatErr(err)
     const reason = message.includes('timed out') || name === 'TimeoutError' || name === 'AbortError'
       ? `Achieve API timed out after ${wait.waitMs}ms${wait.shortened ? `, all that was left of the ${CONTINUATION_WINDOW_MS / 1000} s a run waits after the answer` : ''}`
       : message
-    return { output: result(false, 0, 'error', reason, request, null, !production, NO_RESPONSE_IDS, metrics), resolvedInput }
+    return marked({ output: result(false, 0, 'error', reason, request, null, !production, NO_RESPONSE_IDS, metrics), resolvedInput })
   } finally {
-    clearTimeout(timer)
+    timer.clear()
   }
 }
 

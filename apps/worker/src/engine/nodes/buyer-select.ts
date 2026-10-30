@@ -75,7 +75,7 @@ import { makeBidLogger, type BidLogger } from '../bid-logger'
 import { resolveValue } from '../context'
 import { nodeReportsOnly, runRealityOf } from '../run-reality'
 import { resolveSalePayload } from './buyer-select-payload'
-import { timeoutMarker, BUYER_SELECT_DEADLINE, type StepTimeoutMarker } from '../step-timeout'
+import { timeoutMarker, stepTimeoutMarkerOf, BUYER_SELECT_DEADLINE, type StepTimeoutMarker } from '../step-timeout'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -247,6 +247,12 @@ export interface BuyerAttemptRow {
   error_type: 'transient' | 'permanent' | null
   started_at: Date
   completed_at: Date
+  /**
+   * Set only when the live buyer call's own timer stopped this attempt (#3075):
+   * the 'buyer_call' marker the walker writes on this row. The buyer call is the
+   * attempt's work, so the attempt row carries it, never the node's row.
+   */
+  timeout?: StepTimeoutMarker
 }
 
 export interface BuyerSelectFailure {
@@ -704,6 +710,9 @@ class Run {
     // What the buyer answered, kept beside the outcome so a decline's sale can name
     // the code and the class Salesforce records (#1416). Null until an answer arrives.
     let lastAnswer: { record: SaleOutcomeRecord; response_class: ResponseClass | null } | null = null
+    // Set when the call's own timer stopped it (#3075), read from the error's mark,
+    // never its text: the marker this buyer's attempt row carries. Nothing decides on it.
+    let callTimeout: StepTimeoutMarker | null = null
 
     const callBuyer = async (): Promise<BuyerCall> => {
       if (!live) {
@@ -727,6 +736,7 @@ class Run {
         }
         // A timeout, an abort or a reset: the buyer may have received the lead.
         lastCall = { status: null, thrown: true }
+        callTimeout = stepTimeoutMarkerOf(err)
         await this.breakerOutcome(breaker, 'error', partner.slug)
         return { outcome: 'outcome_unknown', record: { buyer_reference: null, result_code: err instanceof Error ? err.name : 'thrown', http_status: null, payout_cents: c.payoutCents } }
       }
@@ -864,7 +874,10 @@ class Run {
         this.out.sale = saleOf(false, null, null)
         this.consider(c, 'outcome_unknown', 'outcome_unknown', detail)
         const failing = lastCall === null || (lastCall as { thrown: boolean }).thrown || status === null || status >= 500
-        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, failing ? 'failed' : 'completed', { outcome: 'outcome_unknown', detail, http_status: status, held: true }, failing ? detail ?? 'outcome_unknown' : null, failing ? 'transient' : null))
+        const unknownRow = this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, failing ? 'failed' : 'completed', { outcome: 'outcome_unknown', detail, http_status: status, held: true }, failing ? detail ?? 'outcome_unknown' : null, failing ? 'transient' : null)
+        // The call's own timer stopped it: this row is the one it cut short (#3075).
+        const timedOut = callTimeout as StepTimeoutMarker | null
+        this.attempts.push(timedOut ? { ...unknownRow, timeout: timedOut } : unknownRow)
         if (live && buyerCalled) this.logBid(c, startedAt, completedAt, status, 'transient', detail ?? 'outcome_unknown')
         if (failing) return { kind: 'stop', result: this.refuse('outcome_unknown', detail ?? 'the buyer answer could not be classified', 'transient') }
         return { kind: 'stop', result: this.done(live ? 'no_sale' : 'deferred', 'outcome_unknown', detail) }
