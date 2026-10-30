@@ -926,6 +926,8 @@ class Run {
   /**
    * Splits a live attempt at its buyer call, adds the call to the output's total and logs the
    * split (#1804). Null when no request left, which includes decide_only and a config error.
+   * The run page reads a row's timing as a request having left, and with no status as a call
+   * that got no answer (`unresolvedAnswerOf`, #3087), so keep it absent whenever none left.
    */
   private timeAttempt(c: Candidate, startedAt: Date, completedAt: Date, callWindow: { startMs: number; endMs: number } | null, landed: Partial<Record<AttemptStep, number>>, outcome: string): AttemptTiming | null {
     if (callWindow === null) return null

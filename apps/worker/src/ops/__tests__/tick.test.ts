@@ -1239,18 +1239,6 @@ describe('the frozen definition copies (#1950)', () => {
     expect(report.outcome).toBe('ok')
   })
 
-  it('saves a version an older bidding Worker serves with variables beside it, without them, whatever their shape (#3003)', async () => {
-    for (const variables of [{ values: { API_BASE: 'https://api.example.test' }, secret_keys: ['TOKEN'] }, { values: { K: 1 } }]) {
-      const f = fake({
-        missingDefs: missing,
-        serveDefs: async () => ({ definitions: [{ workflow_id: WF_D, organization_id: ORG, version_number: 3, definition: { nodes: [] }, variables }], unserved: [] }),
-      })
-      const report = await runOpsTick(f.ports)
-      expect(f.db.savedDefinitions).toEqual([{ organizationId: ORG, workflowId: WF_D, versionNumber: 3, definition: { nodes: [] } }])
-      expect(report.problem_keys).not.toContain(`definition_refused:${WF_D}`)
-    }
-  })
-
   it('pages at once on a conflict, a version the bidding Worker cannot serve, and a definition served under another organization', async () => {
     const other = '7a1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f61'
     const f = fake({

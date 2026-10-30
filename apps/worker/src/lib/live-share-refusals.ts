@@ -60,7 +60,7 @@
  * written by the cron wiring (L514).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { OUT_REASON_LABELS, NODE_REASON_LABELS, type NodeReason, type OutReason } from '@bidspoke/buyer-profile'
+import { reasonLabel, type OutReason } from '@bidspoke/buyer-profile'
 import type { Env } from '../index'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { formatErr } from './format-error'
@@ -236,20 +236,17 @@ export interface LiveShareSummary {
   paged_lines: number
 }
 
-/** The reason as the execution view words it. */
-function reasonLabel(reason: string): string {
-  const out = (OUT_REASON_LABELS as Record<string, string>)[reason as OutReason]
-  if (out) return out.charAt(0).toLowerCase() + out.slice(1)
-  const node = (NODE_REASON_LABELS as Record<string, string>)[reason as NodeReason]
-  if (node) return node.charAt(0).toLowerCase() + node.slice(1)
-  return reason
+/** The reason as the execution view words it (the shared reasonLabel, #3087), begun in lower case to sit mid sentence. */
+function reasonWords(reason: string): string {
+  const words = reasonLabel(reason)
+  return words.charAt(0).toLowerCase() + words.slice(1)
 }
 
 function refusingLine(subject: LiveShareSubject, v: Extract<RunVerdict, { verdict: 'refusing' }>, appUrl: string): string {
   const last = v.lastContactAt
     ? `The last lead sent to a buyer was at ${etTime(v.lastContactAt)}.`
     : `No lead was sent to a buyer in the ${LOOKBACK_MS / HOUR} hours read.`
-  const reasons = v.reasons.map((r) => `${r.partner ?? 'no buyer'} on ${r.count}, ${reasonLabel(r.reason)}`).join('; ')
+  const reasons = v.reasons.map((r) => `${r.partner ?? 'no buyer'} on ${r.count}, ${reasonWords(r.reason)}`).join('; ')
   const share = subject.livePercentEnv ? ` Setting ${subject.livePercentEnv} to 0 stops the loss while you look.` : ''
   return (
     `${subject.workflowName}, step ${subject.label}: the live share sent none of its last ${v.count} leads to a buyer, refusing every one since ${etTime(v.since)}. ` +

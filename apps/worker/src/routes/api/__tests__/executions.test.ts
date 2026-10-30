@@ -831,3 +831,58 @@ describe('the chosen route in the summary response (#1503)', () => {
     expect(inherited).not.toHaveProperty('output')
   })
 })
+
+describe('the order a run\'s steps are listed in (#3084)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
+    vi.mocked(readArchivedChildren).mockResolvedValue({ kind: 'ok', children: [] })
+    app = await makeApp()
+  })
+
+  it('lists an archived run\'s steps by step order, not the id order its bundle holds them in', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { single: null },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    vi.mocked(readArchivedExecution).mockResolvedValue({
+      kind: 'found',
+      execution: { id: 'exec-old', workflow_id: 'wf-1', status: 'completed' },
+      steps: [
+        { id: '0f', step_namespace: 'done', step_order: 2, started_at: '2026-10-01T12:00:00.200Z' },
+        { id: '1a', step_namespace: 'validate', step_order: 0, started_at: '2026-10-01T12:00:00.000Z' },
+        { id: '9c', step_namespace: 'score', step_order: 1, started_at: '2026-10-01T12:00:00.100Z' },
+      ],
+      archiveDay: '2026-10-01',
+      archivedIncomplete: false,
+    })
+    for (const path of ['/executions/exec-old', '/executions/exec-old?summary=1']) {
+      const body = await (await request(app, 'GET', path)).json() as { steps: Array<{ step_namespace: string }> }
+      expect(body.steps.map((s) => s.step_namespace)).toEqual(['validate', 'score', 'done'])
+    }
+  })
+
+  it('lists a run written before #3084 the same way on every read, its tied slot step before parallel_end', async () => {
+    const tied = [
+      { id: 'b', step_namespace: 'parallel_end_1', step_type: 'parallel_end', step_order: 6, started_at: '2026-10-29T12:00:00.010Z' },
+      { id: 'a', step_namespace: 'collections_apex', step_type: 'salesforce', step_order: 6, started_at: '2026-10-29T12:00:00.300Z' },
+      { id: 'c', step_namespace: 'after_block', step_type: 'code', step_order: 7, started_at: '2026-10-29T12:00:00.400Z' },
+    ]
+    for (const steps of [tied, [...tied].reverse()]) {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({
+          users: { single: testUser },
+          workflow_executions: [{ single: testExecution }, { list: [] }],
+          execution_steps: { list: steps },
+        }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const body = await (await request(app, 'GET', '/executions/exec-1')).json() as { steps: Array<{ step_namespace: string }> }
+      expect(body.steps.map((s) => s.step_namespace)).toEqual(['collections_apex', 'parallel_end_1', 'after_block'])
+    }
+  })
+})

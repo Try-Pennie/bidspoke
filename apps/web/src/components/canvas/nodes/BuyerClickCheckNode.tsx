@@ -1,6 +1,6 @@
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
-import { OUT_REASON_LABELS, type OutReason } from '@bidspoke/buyer-profile'
+import { reasonLabel } from '@bidspoke/buyer-profile'
 import type { CanvasNodeData } from '@/types/workflow'
 import { ShieldCheck } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
@@ -18,10 +18,6 @@ interface ClickCheckOutputPreview {
   count?: number | null
   daily_lead_cap?: number | null
   count_date?: string | null
-}
-
-function reasonLabel(reason: string): string {
-  return (OUT_REASON_LABELS as Record<string, string | undefined>)[reason as OutReason] ?? reason
 }
 
 /**
