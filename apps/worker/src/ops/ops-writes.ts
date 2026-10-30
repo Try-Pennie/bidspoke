@@ -52,6 +52,7 @@ import {
   OPS_STEP_RECORD_OUTCOMES, OPS_STEP_RECORD_STATUSES, type OpsStepRecordOutcome, type OpsStepRecordStatus,
   CHECKPOINT_ACK_OUTCOMES, type CheckpointAckOutcome,
   UNCHARGED_RESUME_REASONS,
+  UNSTARTED_RETURN_CAUSES, type UnstartedReturnCause,
 } from './run-vocabulary'
 import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
@@ -424,12 +425,17 @@ export async function extendRunLease(
  * asked (p_error); the database ends the run failed with requeue_cap_reached
  * instead once that step reaches the requeue cap (OPS_STEP_REQUEUE_MAX waits,
  * or OPS_STEP_REQUEUE_WAIT_MAX_MS after its first). A holder cannot fail a run
- * for an engine only reason (ENGINE_FAILED_REASONS, finding F122).
+ * for an engine only reason (ENGINE_FAILED_REASONS, finding F122). A retry of
+ * a run not yet started (a return unstarted, #3023) names why it could not
+ * start (unstartedCause, sent as p_reason, #3039); the database ends the run
+ * failed with unstarted_wait_exceeded instead once it has waited
+ * OPS_UNSTARTED_WAIT_MAX_MS to start, so read runStatus rather than assuming
+ * queued.
  */
 export type CompleteOutcome =
   | { outcome: 'done' }
   | { outcome: 'failed'; reason?: HolderFailedReason; error?: string }
-  | { outcome: 'retry'; error?: string; notBefore?: Date }
+  | { outcome: 'retry'; error?: string; notBefore?: Date; unstartedCause?: UnstartedReturnCause }
   | { outcome: 'suspend'; reason: 'continue' | 'wake'; notBefore: Date }
   | { outcome: 'suspend'; reason: 'resource_wait'; cause: ResourceWaitCause; notBefore: Date }
   | { outcome: 'suspend'; reason: 'rate_limit_wait'; step: string; status: number | null; notBefore: Date; error: string }
@@ -453,12 +459,15 @@ export async function completeRunRequest(
   if ('cause' in end && !(RESOURCE_WAIT_CAUSES as readonly string[]).includes(end.cause)) {
     throw new OpsWriteError(`${name}: ${end.cause} is not a resource wait cause`)
   }
+  if ('unstartedCause' in end && end.unstartedCause !== undefined && !(UNSTARTED_RETURN_CAUSES as readonly string[]).includes(end.unstartedCause)) {
+    throw new OpsWriteError(`${name}: ${end.unstartedCause} is not a cause a run is returned unstarted for`)
+  }
   const row = oneRow(name, await callOpsRpc(client, name, withoutUndefined({
     p_organization_id: organizationId,
     p_run_request_id: runRequestId,
     p_claim_token: claimToken,
     p_outcome: end.outcome,
-    p_reason: 'reason' in end ? end.reason : undefined,
+    p_reason: 'reason' in end ? end.reason : 'unstartedCause' in end ? end.unstartedCause : undefined,
     p_error: 'cause' in end ? end.cause : 'error' in end ? end.error : undefined,
     p_not_before: 'notBefore' in end ? iso(end.notBefore) : undefined,
     // Sent only for a rate limit wait, so every other outcome's call is the one it always was.
@@ -537,6 +546,7 @@ export async function purgeTerminalRunRequests(
   }
 }
 
+/** The nightly purge of dedup tombstones whose window has ended (#3052). */
 export async function purgeExpiredDedupTombstones(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
   const name = 'purge_expired_dedup_tombstones'
   const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
@@ -1653,6 +1663,55 @@ export async function readMissingWorkflowDefinitions(
   return { missing, reachedLimit: missing.length === limit }
 }
 
+// ── the waits to start (#3039, ops migration 20261030190000) ─────────────────
+
+/** One workflow's runs waiting to start, as unstarted_run_waits answers it. */
+export interface UnstartedRunWait {
+  organizationId: OrganizationId
+  workflowId: string
+  /** The runs whose wait has lasted at least the minimum asked. */
+  runs: number
+  /** When the oldest of their waits began, on the database clock. */
+  oldestSince: string
+  /** How long the oldest has waited, on the database clock. */
+  waitedSeconds: number
+  /** The causes their latest returns named; null for a return that named none (an ops release before #3039). */
+  causes: Array<UnstartedReturnCause | null>
+}
+
+const isCauses = (v: unknown): v is Array<UnstartedReturnCause | null> =>
+  Array.isArray(v) && v.length > 0 && v.every((c) => c === null || (UNSTARTED_RETURN_CAUSES as readonly unknown[]).includes(c))
+const isPositiveCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1
+
+/**
+ * Per workflow, the runs returned to the queue unstarted whose wait to start
+ * has lasted at least minWaitSeconds, oldest wait first, at most limit
+ * workflows (unstarted_run_waits, lane wide).
+ */
+export async function readUnstartedRunWaits(
+  client: OpsSupabaseClient, minWaitSeconds: number, limit: number, options?: OpsRpcOptions,
+): Promise<{ waits: UnstartedRunWait[]; reachedLimit: boolean }> {
+  const name = 'unstarted_run_waits'
+  const all = rows(name, await callOpsRpc(client, name, { p_min_wait_seconds: minWaitSeconds, p_limit: limit }, options))
+  const waits = all.map((row) => {
+    let organizationId: OrganizationId
+    try {
+      organizationId = organizationIdFrom(row.organization_id)
+    } catch {
+      throw new OpsWriteError(`${name} returned a workflow whose organization is not a uuid`)
+    }
+    return {
+      organizationId,
+      workflowId: field(name, row, 'workflow_id', isString, 'an id'),
+      runs: field(name, row, 'runs', isPositiveCount, 'a count of one or more'),
+      oldestSince: field(name, row, 'oldest_since', isTime, 'a time'),
+      waitedSeconds: field(name, row, 'waited_seconds', isCount, 'a count'),
+      causes: field(name, row, 'causes', isCauses, 'causes'),
+    }
+  })
+  return { waits, reachedLimit: waits.length === limit }
+}
+
 // ── a step's test result (#2339, ops migration 20261024010000) ──────────────
 
 export interface StepTestRecord {
@@ -2015,6 +2074,20 @@ export async function readVariableCopies(
 /** The nightly purge of copies past the age a fallback refuses, and of workflows gone from the lane. */
 export async function purgeVariableCopies(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
   const name = 'purge_variable_copies'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+/** The nightly purge of the slots fired more than 6 months ago, never a workflow's latest (#3052, ops migration 20261030210000). */
+export async function purgeScheduleFires(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_schedule_fires'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+/** The nightly purge of sends recorded more than a year ago, never of a kept, unended or chained run (#3052). */
+export async function purgeSendLedger(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_send_ledger'
   const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
   return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
 }

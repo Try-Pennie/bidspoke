@@ -121,7 +121,7 @@ for t in "${tests[@]}"; do
     continue
   fi
   if out="$(docker exec -i "$CONTAINER" psql -U postgres -h 127.0.0.1 -d postgres -v ON_ERROR_STOP=1 ${SELF_HOST_ARG[@]+"${SELF_HOST_ARG[@]}"} -q -f - < "$t" 2>&1)"; then
-    summary="$(printf '%s\n' "$out" | grep -E 'cases passed' | tail -1 | sed -E 's/^psql:<stdin>:[0-9]+: NOTICE:  //; s/^NOTICE:  //')"
+    summary="$(printf '%s\n' "$out" | grep -E 'cases passed' | tail -1 | sed -E 's/^psql:[^ ]+:[0-9]+: NOTICE:  //; s/^NOTICE:  //')"
     echo "PASS  $name${summary:+: $summary}"
   else
     echo "FAIL  $name" >&2

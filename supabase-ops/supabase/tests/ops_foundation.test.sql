@@ -53,8 +53,11 @@ BEGIN
       RAISE EXCEPTION '% can execute a new function', v_role;
     END IF;
   END LOOP;
-  IF NOT has_table_privilege('service_role', 'public.ops_probe_ok', 'SELECT,INSERT,UPDATE,DELETE') THEN
-    RAISE EXCEPTION 'service_role lacks a privilege on a new table';
+  -- From the platform change of 2026-10-30 (#3097) a new table is not given to
+  -- service_role either; each migration grants its own tables, which
+  -- explicit-table-grants.test.ts holds every ops migration to.
+  IF has_table_privilege('service_role', 'public.ops_probe_ok', 'SELECT,INSERT,UPDATE,DELETE') THEN
+    RAISE EXCEPTION 'service_role holds a privilege on a new table no migration granted';
   END IF;
   IF NOT has_function_privilege('service_role', 'public.ops_probe_fn()', 'EXECUTE') THEN
     RAISE EXCEPTION 'service_role cannot execute a new function';

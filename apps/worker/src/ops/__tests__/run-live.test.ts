@@ -207,9 +207,17 @@ describe('OpsInternal.run', () => {
     const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables: VARS }), deps(db.fetch))
     expect(db.names()).not.toContain('start_run_execution')
     const complete = db.calls.find((c) => c.name === 'complete_run_request')
-    expect(complete?.body).toMatchObject({ p_outcome: 'retry', p_not_before: new Date(NOW + RUN_DEFINITION_RETRY_MS).toISOString() })
+    expect(complete?.body).toMatchObject({ p_outcome: 'retry', p_reason: 'definition_unavailable', p_not_before: new Date(NOW + RUN_DEFINITION_RETRY_MS).toISOString() })
     expect(String(complete?.body.p_error)).toMatch(/definition/)
-    expect(report).toMatchObject({ outcome: 'definition_unavailable' })
+    expect(report).toMatchObject({ outcome: 'definition_unavailable', runStatus: 'queued' })
+  })
+
+  // #3039: an hour into its wait to start, the database gives the run up on this return.
+  it('answers the status the database chose, failed for a run given up an hour into its wait', async () => {
+    const gateway = { opsWorkflowDefinitions: async () => { throw new Error('the bidding Worker did not answer') } }
+    const db = opsDb({ ...LIFECYCLE, workflow_definition: [], complete_run_request: [{ outcome: 'completed', run_status: 'failed', state_version: 3 }] })
+    const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN, variables: VARS }), deps(db.fetch))
+    expect(report).toMatchObject({ outcome: 'definition_unavailable', runStatus: 'failed' })
   })
 
   it('answers a value, never a throw, when the ops database is not configured or the retry cannot be recorded', async () => {

@@ -26,11 +26,11 @@ import { raceDeadline } from '../lib/alert-claim'
 import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
-  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeOpsStepRecords, purgeScheduleObservations, purgeStepTestResults, readConnectionCheckTargets,
+  claimOpsSweep, dueQueueDepth, readUnstartedRunWaits, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeOpsStepRecords, purgeScheduleObservations, purgeStepTestResults, readConnectionCheckTargets,
   purgeRunVariables, purgeTerminalRunRequests, readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
   removeUnservedMeasuredIdentities, saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions, observeOpsReseal,
-  purgeVariableCopies, readVariableCopies, readWorkflowDefinition, saveVariableCopies,
+  purgeVariableCopies, readVariableCopies, readWorkflowDefinition, saveVariableCopies, purgeSendLedger, purgeScheduleFires, purgeExpiredDedupTombstones,
 } from './ops-writes'
 import { VARIABLE_COPY_CONFIRM_EVERY_SECONDS } from './variable-copies'
 import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps } from './connections/connection-fetch'
@@ -110,6 +110,10 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     purgeFinishedRuns: (terminalBefore, limit) => purgeTerminalRunRequests(client, terminalBefore, limit, rpc),
     // The last good copy of each version's plain variables (#2999): its reads, its one write, its purge.
     purgeVariableCopies: (limit) => purgeVariableCopies(client, limit, rpc),
+    // The send ledger past a year, the slots fired past 6 months and the expired dedup tombstones (#3052).
+    purgeSendLedger: (limit) => purgeSendLedger(client, limit, rpc),
+    purgeScheduleFires: (limit) => purgeScheduleFires(client, limit, rpc),
+    purgeDedupTombstones: (limit) => purgeExpiredDedupTombstones(client, limit, rpc),
     readVariableCopies: (org, versions) => readVariableCopies(client, org, versions, rpc),
     saveVariableCopies: (copies) => saveVariableCopies(client, copies, VARIABLE_COPY_CONFIRM_EVERY_SECONDS, rpc),
     readDefinition: async (org, workflowId, versionNumber) => (await readWorkflowDefinition(client, org, workflowId, versionNumber, rpc))?.definition ?? null,
@@ -124,6 +128,7 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     readCopies: (limit) => readWorkflowCopies(client, limit, rpc),
     recordObservation: (org, obs) => recordScheduleObservation(client, org, obs, rpc),
     dueQueueDepth: () => dueQueueDepth(client, rpc),
+    unstartedWaits: (minWaitSeconds, limit) => readUnstartedRunWaits(client, minWaitSeconds, limit, rpc),
     saveConnectionCopies: (servedAt, complete, copies) => saveConnectionCopies(client, servedAt, complete, copies, rpc),
     recordConnectionTombstone: (org, connectionId, generation, removedAt) => recordConnectionTombstone(client, org, connectionId, generation, removedAt, rpc),
     removeUnservedMeasuredIdentities: (servedAt, named) => removeUnservedMeasuredIdentities(client, servedAt, named, rpc),
@@ -246,8 +251,12 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
       const answer = await bounded('OpsInternal.run', () => self.run(signed), left, options.delay)
       const a = (typeof answer === 'object' && answer !== null ? answer : {}) as { refused?: unknown; outcome?: unknown; error?: unknown }
       if (typeof a.refused === 'string') throw new Error(`OpsInternal refused the run: ${a.refused}`)
-      // Returned to the queue for want of its definition: counted as requeued.
-      if (a.outcome === 'definition_unavailable') return { outcome: 'completed', end: { outcome: 'retry', error: String(a.error) }, runStatus: 'queued' }
+      // Returned to the queue for want of its definition: counted as requeued, or
+      // as failed when the database gave it up an hour into its wait (#3039).
+      if (a.outcome === 'definition_unavailable') {
+        const runStatus = (a as { runStatus?: unknown }).runStatus === 'failed' ? 'failed' : 'queued'
+        return { outcome: 'completed', end: { outcome: 'retry', unstartedCause: 'definition_unavailable', error: String(a.error) }, runStatus }
+      }
       if (a.outcome !== 'completed' && a.outcome !== 'claim_lost' && a.outcome !== 'start_failed' && a.outcome !== 'complete_failed') {
         throw new Error('OpsInternal.run answered without saying how the run ended')
       }

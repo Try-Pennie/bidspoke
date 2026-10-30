@@ -10,8 +10,8 @@
  * the minute, and a tick can be late, skipped or doubled.
  */
 import { describe, expect, it } from 'vitest'
-import { DUE_WINDOW_MS, jitterOffsetMs, planFires, scheduleFloorMs, type PlannedFire } from '../plan'
-import type { ScheduleConfig } from '../schedule'
+import { DUE_WINDOW_MS, MAX_FIRE_AGE_MS, jitterOffsetMs, planFires, scheduleFloorMs, type PlannedFire } from '../plan'
+import { MAX_CATCH_UP_WINDOW_SECONDS, type ScheduleConfig } from '../schedule'
 
 const NY = 'America/New_York'
 const MIN = 60_000
@@ -244,5 +244,51 @@ describe('scheduleFloorMs: no fire before the schedule existed here (D8)', () =>
 
   it('refuses a floor input that is not a time', () => {
     expect(() => scheduleFloorMs({ knownSinceMs: Number.NaN })).toThrow(/not a time/)
+  })
+})
+
+// #3052: the ops database deletes a schedule_fires row 6 months after its slot.
+// The row's unique slot key is what stops a slot firing twice, so it must
+// outlive any chance of the tick planning that slot again. This is the bound:
+// no plan fires a slot further back than MAX_FIRE_AGE_MS before the database
+// clock, nor at or before the last slot served.
+describe('planFires: how far back a fire can reach (#3052)', () => {
+  const hourlyCatchUp: ScheduleConfig = {
+    interval_seconds: 3600, timezone: 'UTC', overlap: 'skip', catch_up: 'latest', catch_up_window_seconds: 3599, jitter_max_seconds: 300,
+  }
+  const SCHEDULES: Array<[string, ScheduleConfig]> = [['weekly, 72 hour catch up', weeklyMon], ['daily, no catch up', dailyTen], ['hourly, catch up', hourlyCatchUp]]
+
+  it('is the longer of the due window and the longest catch up window, 72 hours', () => {
+    expect(MAX_FIRE_AGE_MS).toBe(Math.max(DUE_WINDOW_MS, MAX_CATCH_UP_WINDOW_SECONDS * 1000))
+    expect(MAX_FIRE_AGE_MS).toBe(72 * HOUR)
+  })
+
+  it.each(SCHEDULES)('%s: every fire is within MAX_FIRE_AGE_MS of the database clock and after the last served slot', (_name, schedule) => {
+    let fires = 0
+    // Every 7 hours for 3 weeks, against a range of last served slots and a floor long before.
+    for (let step = 0; step < 72; step++) {
+      const dbNowMs = TEN_EST + step * 7 * HOUR + 48_000
+      for (const back of [null, 30 * 24 * HOUR, 4 * 24 * HOUR, 71 * HOUR, 6 * HOUR, 10 * MIN, 0]) {
+        const lastServedMs = back === null ? null : dbNowMs - back
+        const plan = planFires({ workflowId: 'wf-age', schedule, dbNowMs, floorMs: dbNowMs - 400 * 24 * HOUR, lastServedMs })
+        for (const f of plan.fires) {
+          fires++
+          expect(dbNowMs - f.scheduled_for).toBeLessThanOrEqual(MAX_FIRE_AGE_MS)
+          if (lastServedMs !== null) expect(f.scheduled_for).toBeGreaterThan(lastServedMs)
+        }
+      }
+    }
+    expect(fires).toBeGreaterThan(0)
+  })
+
+  // The bound is reached, so the sweep above measures something: a weekly slot
+  // 71 hours old with nothing served since the week before is caught up.
+  it('a catch up reaches back close to the bound and no further', () => {
+    const slot = Date.UTC(2027, 0, 4, 11, 0) // Monday 06:00 New York
+    const caught = planFires({ workflowId: 'wf-age', schedule: weeklyMon, dbNowMs: slot + 71 * HOUR, floorMs: FLOOR, lastServedMs: slot - 7 * 24 * HOUR })
+    expect(caught.fires.map((f) => [iso(f.scheduled_for), f.reason])).toEqual([[iso(slot), 'catch_up']])
+    const past = planFires({ workflowId: 'wf-age', schedule: weeklyMon, dbNowMs: slot + 73 * HOUR, floorMs: FLOOR, lastServedMs: slot - 7 * 24 * HOUR })
+    expect(past.fires).toEqual([])
+    expect(past.missed?.reason).toBe('outside_catch_up_window')
   })
 })

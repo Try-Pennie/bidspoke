@@ -71,6 +71,9 @@ function opsDb() {
     purgeRunVariables: async () => { throw new Error('not claimed') },
     purgeFinishedRuns: async () => { throw new Error('not claimed') },
     purgeVariableCopies: async () => { throw new Error('not claimed') },
+    purgeSendLedger: async () => { throw new Error('not claimed') },
+    purgeScheduleFires: async () => { throw new Error('not claimed') },
+    purgeDedupTombstones: async () => { throw new Error('not claimed') },
     // Observe mode, as deployed: the variable copy is written only in live mode (#2999).
     readVariableCopies: async () => { throw new Error('observe mode keeps no variable copy') },
     saveVariableCopies: async () => { throw new Error('observe mode keeps no variable copy') },
@@ -89,6 +92,7 @@ function opsDb() {
     readCopies: async () => ({ copies: [], reachedLimit: false }),
     recordObservation: async () => 'recorded',
     dueQueueDepth: async () => ({ dueRuns: 0, dueWorkflows: 0, oldestDue: null }),
+    unstartedWaits: async () => ({ waits: [], reachedLimit: false }),
     async saveConnectionCopies(servedAt, _complete, list): Promise<SaveConnectionCopiesResult> {
       const r = { inserted: 0, updated: 0, confirmed: 0, refusedOlder: 0, refusedExpired: 0, refusedRemoved: 0, withdrawn: 0 }
       for (const c of list) {
