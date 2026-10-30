@@ -459,6 +459,7 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   let codeTrigger: unknown = null
   let lifted: LiftedTimers | null = null
   let timersFired: FiredTimer[]
+  let stillHeld: number
   let response: FixtureRecord['response'] = { status: 0, body: null }
   let answeredMs: number | null = null
   let error: string | undefined
@@ -579,6 +580,9 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   } finally {
     // A run that kept real timers lets them fire; only a lifted one that fires is a fault.
     timersFired = hooks.engineTimers === 'real' ? [] : (lifted?.fired() ?? [])
+    // A step still waiting on the replay's time when the run ends would carry on
+    // after its record closed (#3137), so it is counted before the lift goes.
+    stillHeld = lifted?.waiting() ?? 0
     lifted?.restore()
     globalThis.fetch = realFetch
     vi.useRealTimers()
@@ -589,6 +593,9 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   const drained = await (await e.GATE_IO.fetch('https://gate/drain')).json<{ outbound: OutboundRecord[]; unstubbed: string[]; refused?: string[] }>()
   // A code bundle that was handed an answer it cannot be given (#3086) ran on something else, so the run is no record.
   if (drained.refused?.length) throw new Error(drained.refused.join('\n'))
+  if (stillHeld > 0) {
+    throw new Error(`money gate: ${id}: ${stillHeld} answer(s) held on the replay's time were still waiting when the run ended, so a step after them would run after the record closed and go unrecorded (#3137)`)
+  }
   return {
     db,
     response,

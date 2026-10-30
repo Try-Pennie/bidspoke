@@ -231,6 +231,30 @@ describe('advanceUntil (#3086)', () => {
     }
   })
 
+  it('refuses by name to move time on once restored, and never moves the pinned clock again, so a walk that outlives its run cannot carry on unseen (#3137)', async () => {
+    const h = host()
+    const seen: number[] = []
+    const lift = liftEngineTimers(h, { onAdvance: (ms) => seen.push(ms) })
+    const held = lift.waitFor(new AbortController().signal, 7_500)
+    lift.restore()
+    await expect(held).rejects.toThrow('outlived its run')
+    expect(seen).toEqual([])
+  })
+
+  it('counts the held answers still waiting on the replay time, so a run can refuse to end while one waits (#3137)', async () => {
+    const h = host()
+    const lift = liftEngineTimers(h)
+    try {
+      expect(lift.waiting()).toBe(0)
+      const held = lift.waitFor(new AbortController().signal, 7_500)
+      expect(lift.waiting()).toBe(1)
+      expect(await held).toBe('elapsed')
+      expect(lift.waiting()).toBe(0)
+    } finally {
+      lift.restore()
+    }
+  })
+
   it('with floorMs 0 keeps every length as the engine asked, and can still advance', async () => {
     const asked: number[] = []
     // A real timer far off for the engine's, so only the advance can run it; the lift's own settle turn (0 ms) stays real.

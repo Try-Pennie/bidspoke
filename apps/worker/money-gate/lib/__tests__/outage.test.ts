@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { waitAtMost } from '../wait-at-most'
+import { waitAtMost, type CutTimers } from '../wait-at-most'
+import { liftEngineTimers, type TimerHost } from '../engine-timers'
 import {
   OUTAGE_DRILL_TIMEOUT_MS,
   OUTAGE_SHAPES,
@@ -408,13 +409,19 @@ describe('the drill has room to finish (#1851)', () => {
 })
 
 describe('waiting at most a while for post-response work (#1851)', () => {
+  // Read at each call, so they are vitest's fake timers once a test installs them.
+  const onFakeTimers: CutTimers = {
+    setTimeout: (handler, ms) => setTimeout(handler, ms),
+    clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  }
+
   it('returns when the work settles, and when the limit passes first, leaving no timer behind either way', async () => {
     vi.useFakeTimers()
     try {
-      await waitAtMost(Promise.resolve(), 250)
+      await waitAtMost(Promise.resolve(), 250, onFakeTimers)
       expect(vi.getTimerCount()).toBe(0)
       let done = false
-      const hung = waitAtMost(new Promise<void>(() => {}), 250).then(() => { done = true })
+      const hung = waitAtMost(new Promise<void>(() => {}), 250, onFakeTimers).then(() => { done = true })
       await vi.advanceTimersByTimeAsync(249)
       expect(done).toBe(false)
       await vi.advanceTimersByTimeAsync(1)
@@ -425,10 +432,27 @@ describe('waiting at most a while for post-response work (#1851)', () => {
     }
   })
 
+  it('cuts on real time, so a held answer after the response that the replay moves past the cut is still waited for (#3137)', async () => {
+    // The drill lifts the global timers for each run (floorMs 0) and cuts the hung
+    // shape's post-response work at 1 s. A cut set through the lifted setTimeout is a
+    // pending engine timer due before a 7.5 s held answer, so the replay's own advance
+    // ran it first and ended the run mid walk: the Achieve step after the slow write
+    // then sent through the restored fetch and was never recorded.
+    const lift = liftEngineTimers(globalThis as unknown as TimerHost, { floorMs: 0 })
+    let recorded = false
+    try {
+      const walk = lift.waitFor(new AbortController().signal, 7_500).then(() => { recorded = true }, () => {})
+      await waitAtMost(walk, 1_000)
+    } finally {
+      lift.restore()
+    }
+    expect(recorded).toBe(true)
+  })
+
   it('clears its timer when the work rejects, and passes the rejection on', async () => {
     vi.useFakeTimers()
     try {
-      await expect(waitAtMost(Promise.reject(new Error('post-response write failed')), 250)).rejects.toThrow('post-response write failed')
+      await expect(waitAtMost(Promise.reject(new Error('post-response write failed')), 250, onFakeTimers)).rejects.toThrow('post-response write failed')
       expect(vi.getTimerCount()).toBe(0)
     } finally {
       vi.useRealTimers()

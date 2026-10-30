@@ -302,7 +302,12 @@ For each live fixture of each money flow it:
    hung shape the lead must also be answered within `HUNG_ANSWER_ALLOWANCE_MS`
    (2 s) of its twin, since Engine's own timeout is recorded nowhere, and a run
    still unanswered after 30 s stops the drill by name, as a wait with no
-   deadline.
+   deadline. The hung shape's post-response work is cut after 1 s of real time
+   (`waitAtMost`), on a timer taken before the run lifts the engine's, so the
+   replay's time cannot run the cut early (#3137): a late answer after the
+   response is waited for, and the steps after it are recorded. A run that
+   ends with an answer still held on the replay's time stops the drill by
+   name, and once a run ends its replay time never moves again.
 
 A down run that never asked the database fails the drill, because it drilled
 nothing. Decisions come from the engine's step observer, since a down run never
