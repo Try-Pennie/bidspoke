@@ -126,7 +126,7 @@ export function consumeParens(src: string, open: number): number {
  * definition of its own: create, duplicate and restore always do, and a save
  * does unless its fields are an inline object naming no definition, which
  * write_workflow answers by snapshotting the stored definition with its stored
- * stamp (#2702: switching an ops workflow on writes such a version). A save
+ * stamp (#2702 wrote one at an ops switch on; #3003 stopped it). A save
  * whose fields are anything else (an object built earlier) counts, so a guard
  * never passes a definition it cannot see. Read on source with comments
  * blanked and strings kept.

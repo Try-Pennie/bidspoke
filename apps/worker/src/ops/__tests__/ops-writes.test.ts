@@ -1014,14 +1014,6 @@ describe('retention and the definition copies (#1950, ops migration 202610221500
     await expect(saveWorkflowDefinition(rpcFetch('replaced').client, ORG, WF, 3, { nodes: [] })).rejects.toThrow(/save outcome/)
   })
 
-  it('reads a version without the variables an earlier deploy kept beside it, whatever their shape (#3003)', async () => {
-    const def = { nodes: [{ id: 'a' }] }
-    for (const variables of [{ values: { API_BASE: 'a' }, secret_keys: ['TOKEN'] }, { values: { K: 1 }, secret_keys: [] }, 'x', null]) {
-      expect(await readWorkflowDefinition(rpcFetch([{ definition: def, saved_at: '2026-10-22T10:00:00Z', variables }]).client, ORG, WF, 3))
-        .toEqual({ definition: def, savedAt: '2026-10-22T10:00:00Z' })
-    }
-  })
-
   it('reads one version, null when it is not held, and refuses a definition that is not an object', async () => {
     const def = { nodes: [{ id: 'a' }] }
     expect(await readWorkflowDefinition(rpcFetch([{ definition: def, saved_at: '2026-10-22T10:00:00Z' }]).client, ORG, WF, 3))

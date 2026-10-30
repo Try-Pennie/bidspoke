@@ -4,6 +4,7 @@
  * the web app so the form, the API and the engine cannot drift apart.
  */
 export * from './vocab'
+export * from './unresolved-answer'
 export * from './tiers'
 export * from './parse'
 export * from './clock'
