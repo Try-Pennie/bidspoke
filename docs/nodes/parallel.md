@@ -14,6 +14,8 @@ A Parallel node owns a set of slots. Each slot is one branch (one child node, wh
 
 Slots are defined in the node config under `children` (each with an `id` like `child-0` and a `label`). Each slot connects to its branch via an outgoing edge whose `source_handle` is the slot id (`child-0`, `child-1`, and so on). The engine sorts the wired child edges by slot index and runs them concurrently.
 
+An empty slot runs nothing and is skipped: one with no edge, one whose edge goes straight to `parallel_end` (what deleting the only step of a slot leaves), or one whose edge goes to a step that no longer exists. Everything that names a slot reads one slot list (`engine/parallel-slots.ts`, #3125), so an empty slot never shifts the others: `wait_for_slot` and an `on_failure` mark always belong to the slot whose id they name, and each real slot keeps its own range of step orders. A `wait_for_slot` naming an empty slot fails the block as not connected. The save does not refuse an empty slot.
+
 Every step produced inside the parallel block is tagged with the same `parallel_group_id` so the execution view can group the fan-out and so a resume can re-run only the children that did not finish.
 
 ## Config schema
