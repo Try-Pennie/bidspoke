@@ -27,7 +27,7 @@ import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { sendExportFailureAlert } from './slack'
 import { buildFixHint, buildConsequence, isTransientExportError } from './export-error-hints'
 import { clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
-import { markAlerted, markSpikeSeen, recordPaged, recoveryKey, settleRecovery, type IncidentContext } from './alert-recovery'
+import { markAlerted, markSpikeSeen, recordPageOutcome, recoveryKey, settleRecovery, type IncidentContext } from './alert-recovery'
 import { reportRecordError } from './incident-outbox'
 import { formatErr } from './format-error'
 
@@ -374,10 +374,10 @@ export async function notifyExportFailure(
     await recordAlert(kv, backoff, recurrence.kind === 'reminder' ? recurrence.standing : null, nowMs, { fingerprint: nextFingerprint(standing, print) })
     // The incident (#2103): opened on its first delivered page, then one page per
     // delivered round. Only after the send, and only once it delivered.
-    await bookkeeping(jobName, 'paged', async () => {
-      await markAlerted(kv, EXPORT_ALERT_SIGNAL, jobName, exportIncident(jobName), nowMs)
-      await recordPaged(kv, EXPORT_ALERT_SIGNAL, jobName, exportIncident(jobName), nowMs)
-    })
-    await bookkeeping(jobName, 'running end', () => markSpikeSeen(kv, EXPORT_ALERT_SIGNAL, jobName, nowMs))
+    await bookkeeping(jobName, 'opened', () => markAlerted(kv, EXPORT_ALERT_SIGNAL, jobName, exportIncident(jobName), nowMs))
   }
+  // Delivered or not, the round is recorded: a round nobody received keeps the
+  // incident that was due (#3056).
+  if (kv) await bookkeeping(jobName, delivered ? 'paged' : 'undelivered', () => recordPageOutcome(kv, EXPORT_ALERT_SIGNAL, jobName, exportIncident(jobName), nowMs, delivered))
+  if (kv && delivered) await bookkeeping(jobName, 'running end', () => markSpikeSeen(kv, EXPORT_ALERT_SIGNAL, jobName, nowMs))
 }

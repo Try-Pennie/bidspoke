@@ -69,6 +69,7 @@ import { sendCronHeartbeatAlert, sendCronHeartbeatGroupAlert, sendCronHeartbeatG
 import { BACKOFF_STEPS_SECONDS, clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, type Recurrence, type StandingCondition } from './alert-backoff'
 import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 import { reportRecordError, writeIncidentEvent, type IncidentContext } from './incident-outbox'
+import { recordPageOutcomeOn } from './alert-recovery'
 import type { IncidentEndReason } from './incident-signals'
 import { formatErr } from './format-error'
 import type { TickRetry, TickRetryReader } from './cron-once'
@@ -1211,56 +1212,67 @@ async function darkPageOf(kv: KVNamespace, check: JobCheck, nowMs: number): Prom
     settle: async (alerted, group) => {
       // Only arm the next interval once something actually delivered, so a Slack
       // outage does not silence the condition for a day.
-      if (!alerted) {
-        // A page nobody received: the job is still dark, so its incident stays open.
-        await check.keepOpen()
-        return
-      }
-      const { standing } = judged
-      const reminderOf = reminder()?.standing ?? null
-      await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
-      // The incident this page belongs to, if one is open: read only on a delivered
-      // page, which is rare. A failed read loses the record's continuity, never the page.
-      let open: AlertedStatus | null = null
-      try {
-        open = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
-      } catch (e) {
-        reportRecordError(incident, `paged ${CRON_HEARTBEAT_SIGNAL} ${job.id} not recorded: the paged status record could not be read: ${formatErr(e)}`)
-      }
-      let startedAt = open ? incidentStartOf(open) : null
-      // Which status was paged, and when, so the healthy side knows an all-clear is owed (#2057).
-      if (reminderOf === null) {
-        const since = job.completionDroughtMs ? (lastCompleted ?? watchingSince) : lastRan
-        const at = new Date(nowMs).toISOString()
-        // A new status while the condition stands is the same incident paged again: the start is kept.
-        startedAt = startedAt ?? at
-        const record: AlertedStatus = {
-          status, at, startedAt: lastRan, since, deliveredTo: [], attempts: 0, incidentStartedAt: startedAt,
-          // Paged with others (#2117): its all-clear goes out with theirs.
-          ...(group ? { group: group.key, groupJobs: group.jobIds } : {}),
-        }
-        await writeAlertedStatus(kv, job.id, record, nowMs)
-        if (open === null) {
-          await writeIncidentEvent(kv, { type: 'opened', signal: CRON_HEARTBEAT_SIGNAL, subject: job.id, startedAt }, incident, nowMs)
-        }
-      }
-      // A reminder page round renews the open incident's marker, whenever it was last renewed.
-      if (reminderOf !== null && open !== null) {
-        try {
-          await writeAlertedStatus(kv, job.id, open, nowMs)
-        } catch (e) {
-          reportRecordError(incident, `${CRON_HEARTBEAT_SIGNAL} ${job.id}: the paged status record could not be renewed: ${formatErr(e)}`)
-        }
-      }
-      // One page per delivered round, about the open incident. A reminder with no
-      // paged status record (a condition standing from before #2057) has no
-      // incident to count it against.
-      if (startedAt !== null) {
-        await writeIncidentEvent(kv, { type: 'paged', signal: CRON_HEARTBEAT_SIGNAL, subject: job.id, startedAt }, incident, nowMs)
-      } else {
-        reportRecordError(incident, `paged ${CRON_HEARTBEAT_SIGNAL} ${job.id} not recorded: no open incident to page about`)
-      }
+      const startedAt = alerted ? await armDelivered(group) : await keepUndelivered()
+      // Delivered or not, the page is recorded (#3056): one nobody received
+      // counts against the open incident, or keeps the incident that was due.
+      await recordPageOutcomeOn(kv, CRON_HEARTBEAT_SIGNAL, job.id, startedAt, incident, nowMs, alerted)
     },
+  }
+
+  /** A page nobody received: the job is still dark, so its incident stays open. Returns its start, if one is open. */
+  async function keepUndelivered(): Promise<string | null> {
+    await check.keepOpen()
+    try {
+      const open = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
+      return open ? incidentStartOf(open) : null
+    } catch (e) {
+      reportRecordError(incident, `undelivered ${CRON_HEARTBEAT_SIGNAL} ${job.id}: the paged status record could not be read, so it is recorded as an incident nobody was told of: ${formatErr(e)}`)
+      return null
+    }
+  }
+
+  /** Arms the next interval and the open incident after a delivered page. Returns the incident's start, or null when none is open. */
+  async function armDelivered(group: DarkGroup | null): Promise<string | null> {
+    const { standing } = judged
+    const reminderOf = reminder()?.standing ?? null
+    await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
+    // The incident this page belongs to, if one is open: read only on a delivered
+    // page, which is rare. A failed read loses the record's continuity, never the page.
+    let open: AlertedStatus | null = null
+    try {
+      open = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
+    } catch (e) {
+      reportRecordError(incident, `paged ${CRON_HEARTBEAT_SIGNAL} ${job.id} not recorded: the paged status record could not be read: ${formatErr(e)}`)
+    }
+    let startedAt = open ? incidentStartOf(open) : null
+    // Which status was paged, and when, so the healthy side knows an all-clear is owed (#2057).
+    if (reminderOf === null) {
+      const since = job.completionDroughtMs ? (lastCompleted ?? watchingSince) : lastRan
+      const at = new Date(nowMs).toISOString()
+      // A new status while the condition stands is the same incident paged again: the start is kept.
+      startedAt = startedAt ?? at
+      const record: AlertedStatus = {
+        status, at, startedAt: lastRan, since, deliveredTo: [], attempts: 0, incidentStartedAt: startedAt,
+        // Paged with others (#2117): its all-clear goes out with theirs.
+        ...(group ? { group: group.key, groupJobs: group.jobIds } : {}),
+      }
+      await writeAlertedStatus(kv, job.id, record, nowMs)
+      if (open === null) {
+        await writeIncidentEvent(kv, { type: 'opened', signal: CRON_HEARTBEAT_SIGNAL, subject: job.id, startedAt }, incident, nowMs)
+      }
+    }
+    // A reminder page round renews the open incident's marker, whenever it was last renewed.
+    if (reminderOf !== null && open !== null) {
+      try {
+        await writeAlertedStatus(kv, job.id, open, nowMs)
+      } catch (e) {
+        reportRecordError(incident, `${CRON_HEARTBEAT_SIGNAL} ${job.id}: the paged status record could not be renewed: ${formatErr(e)}`)
+      }
+    }
+    // One page per delivered round, about the open incident. A reminder with no
+    // paged status record (a condition standing from before #2057) has no
+    // incident to count it against, which recordPageOutcomeOn reports.
+    return startedAt
   }
 }
 

@@ -20,7 +20,7 @@
 import { minuteAlertClaimKey, minuteAllClearClaim, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
 import type { AlertClaims } from './alert-claim'
 import { logReadFailure } from './scheduled-read'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, pageTried, recordPageOutcome, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MutedFailureSignal } from '@bidspoke/workflow-definition'
@@ -295,13 +295,12 @@ export async function runFailureRateCheck(
         },
       })
 
-      if (outcome === 'sent') {
-        // The marker before the cooldown (#2058): a cut or a refused write
-        // between them then costs at worst a repeated page, never a lost all-clear.
-        await markAlerted(kv, 'failure-rate', recoveryId, incident, now)
-        await recordPaged(kv, 'failure-rate', recoveryId, incident, now)
-        await kv.put(cooldownKey, '1', { expirationTtl: cooldownMinutes * 60 })
-      }
+      // The marker before the cooldown (#2058): a cut or a refused write
+      // between them then costs at worst a repeated page, never a lost all-clear.
+      if (outcome === 'sent') await markAlerted(kv, 'failure-rate', recoveryId, incident, now)
+      // Delivered or not, a page this tick tried is recorded (#3056).
+      if (pageTried(outcome)) await recordPageOutcome(kv, 'failure-rate', recoveryId, incident, now, outcome === 'sent')
+      if (outcome === 'sent') await kv.put(cooldownKey, '1', { expirationTtl: cooldownMinutes * 60 })
     }
   }
 }

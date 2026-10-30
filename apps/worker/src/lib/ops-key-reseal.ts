@@ -34,7 +34,7 @@
  * Never throws to the minute cron: every fault is in the summary's errors.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, pageTried, recordPageOutcome, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { backoffCooldownKey, clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
 import { minuteAllClearClaim, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
 import type { AlertClaims } from './alert-claim'
@@ -147,14 +147,18 @@ async function page(deps: OpsKeyResealDeps, report: OpsResealReport, nowMs: numb
     inCooldown: async () => !different && (await inCooldown(kv, CONDITION_KEY)),
     send: () => fanOut(deps, 'page', (orgId) => deps.sendAlert(orgId, { report, ...(repeat ? { repeat } : {}) }), errors),
   })
-  if (posted !== 'sent') {
+  const delivered = posted === 'sent'
+  if (delivered) {
+    await recordAlert(kv, CONDITION_KEY, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
+    await markAlerted(kv, OPS_KEY_RESEAL_SIGNAL, OPS_KEY_RESEAL_SUBJECT, incident(errors), nowMs)
+  }
+  // Delivered or not, a page this run tried is recorded (#3056).
+  if (pageTried(posted)) await recordPageOutcome(kv, OPS_KEY_RESEAL_SIGNAL, OPS_KEY_RESEAL_SUBJECT, incident(errors), nowMs, delivered)
+  if (!delivered) {
     // Armed only on delivery, so a Slack outage does not buy silence, and an all clear never follows an unseen page.
     if (marker !== null) await refreshAlerted(kv, OPS_KEY_RESEAL_SIGNAL, OPS_KEY_RESEAL_SUBJECT)
     return false
   }
-  await recordAlert(kv, CONDITION_KEY, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
-  await markAlerted(kv, OPS_KEY_RESEAL_SIGNAL, OPS_KEY_RESEAL_SUBJECT, incident(errors), nowMs)
-  await recordPaged(kv, OPS_KEY_RESEAL_SIGNAL, OPS_KEY_RESEAL_SUBJECT, incident(errors), nowMs)
   return true
 }
 

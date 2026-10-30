@@ -26,7 +26,7 @@
 import type { PartnerBlockSighting } from '../types'
 import type { AlertClaims } from './alert-claim'
 import { inCooldown, readCondition, recordAlert, describeRepeat, touchCondition, fingerprintAlert, nextFingerprint, recurrenceOf, type BackoffKv } from './alert-backoff'
-import { keepAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { keepAlerted, markSpikeSeen, recordPageOutcome, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { sendPartnerBlockAlert, type PartnerBlockAlertPayload } from './slack'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { formatErr } from './format-error'
@@ -218,18 +218,22 @@ export async function reportPartnerBlock(
     const one = await send(slack, slack.default_channel, payload)
     if (one !== null && ts === null) ts = one
   }
-  if (ts === null) {
+  const delivered = ts !== null
+  if (delivered) {
+    const next = await recordAlert(deps.kv, key, reminderOf, nowMs, {
+      conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS,
+      fingerprint: nextFingerprint(standing, print),
+    })
+    await keepAlerted(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, next.since, partnerHostIncident(sighting.host, deps.onRecordError), nowMs)
+  }
+  // Delivered or not, the page is recorded (#3056), unless the probe is only
+  // observing, when a post reaches nobody and is no page at all.
+  if (!deps.observing) await recordPageOutcome(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, partnerHostIncident(sighting.host, deps.onRecordError), nowMs, delivered)
+  if (!delivered) {
     log(`[partner-block] Slack post failed for ${sighting.host}; holding further attempts for ${POST_RETRY_HOLD_SECONDS}s`)
     await deps.kv.put(retryHoldKey(sighting.host), '1', { expirationTtl: POST_RETRY_HOLD_SECONDS })
     await release()
     return 'post_failed'
   }
-
-  const next = await recordAlert(deps.kv, key, reminderOf, nowMs, {
-    conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS,
-    fingerprint: nextFingerprint(standing, print),
-  })
-  await keepAlerted(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, next.since, partnerHostIncident(sighting.host, deps.onRecordError), nowMs)
-  if (!deps.observing) await recordPaged(deps.kv, PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host, partnerHostIncident(sighting.host, deps.onRecordError), nowMs)
   return 'posted'
 }

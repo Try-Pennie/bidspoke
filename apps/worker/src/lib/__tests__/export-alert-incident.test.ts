@@ -106,11 +106,12 @@ describe('opening and paging', () => {
     expect(transitions(kv.store)).toEqual([`opened ${JOB}`, `paged ${JOB}`])
   })
 
-  it('records nothing for a page Slack refused, since nobody was paged', async () => {
+  it('records a page Slack refused as not delivered, keeping the incident that was due without arming its marker (#3056)', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(false)
     const kv = makeKv()
     await fail(kv, T0, PERMANENT, ['org-1', 'org-2'])
-    expect(transitions(kv.store)).toEqual([])
+    expect(transitions(kv.store)).toEqual([`undelivered ${JOB}`])
+    expect(outboxEvents(kv.store)[0]).toMatchObject({ unannounced: true, startedAt: iso(T0) })
     expect(kv.store.has(MARKER)).toBe(false)
   })
 

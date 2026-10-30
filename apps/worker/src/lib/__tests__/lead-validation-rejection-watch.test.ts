@@ -28,6 +28,7 @@ import {
   WINDOW_MINUTES,
   baselineDays,
   judgeRejectionShares,
+  leadValidationRejectionEnding,
   readBaselineCounts,
   readRejectionCounts,
   rejectionBuckets,
@@ -37,7 +38,7 @@ import {
 import { getSlackConnection, sendLeadValidationRejectionAlert, sendRecoveryAlert } from '../slack'
 import { CRON_JOBS } from '../cron-heartbeat'
 import { incidentSignal } from '../incident-signals'
-import { transitions } from './_incident-events'
+import { outboxEvents, transitions } from './_incident-events'
 
 const GIGFI = '6624acd0-bf61-4d21-85fc-4371ca7ed77d'
 const LENDSWIFT = 'e1b810da-16c0-49eb-bf12-ba1c9b67c914'
@@ -466,6 +467,43 @@ describe('runLeadValidationRejectionWatch', () => {
     const second = await runLeadValidationRejectionWatch(supabase as never, kv as never, URL, NOW + 3_600_000)
     expect(second.paged).toEqual([])
     expect(sendLeadValidationRejectionAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('records a page Slack refused as not delivered, keeping the incident that was due, and tries again next hour (#3056)', async () => {
+    vi.mocked(sendLeadValidationRejectionAlert).mockResolvedValue(false)
+    const kv = makeKv()
+    const supabase = db(runs(windowAt, 600, { 'loan amount exceeds maximum': 95 }))
+    const first = await runLeadValidationRejectionWatch(supabase as never, kv as never, URL, NOW)
+    expect(first.paged).toEqual([])
+    expect(first.undelivered).toEqual([GIGFI])
+    expect(transitions(kv.store)).toEqual([`undelivered ${GIGFI}`])
+    expect(outboxEvents(kv.store)[0]).toMatchObject({ unannounced: true, startedAt: new Date(NOW).toISOString() })
+    // No marker: nobody was told, so no all-clear is owed and no page reads as a repeat.
+    expect(kv.store.has(`${LEAD_VALIDATION_REJECTION_SIGNAL}-recovery:${GIGFI}`)).toBe(false)
+    expect(kv.store.has(`${LEAD_VALIDATION_REJECTION_SIGNAL}-cooldown:${GIGFI}`)).toBe(false)
+    expect(leadValidationRejectionEnding(first)).toMatchObject({ outcome: 'page_not_delivered', summary: { paged: [], undelivered: [GIGFI] } })
+
+    // The next hour Slack takes it: the same shift, paged now.
+    vi.mocked(sendLeadValidationRejectionAlert).mockResolvedValue(true)
+    const second = await runLeadValidationRejectionWatch(supabase as never, kv as never, URL, NOW + 3_600_000)
+    expect(second.paged).toEqual([GIGFI])
+    expect(second.undelivered).toEqual([])
+    expect(transitions(kv.store)).toEqual([`undelivered ${GIGFI}`, `opened ${GIGFI}`, `paged ${GIGFI}`])
+    expect(leadValidationRejectionEnding(second).outcome).toBe('ok')
+  })
+
+  it('records a page that delivered as paged, and the run as ok', async () => {
+    const out = await runLeadValidationRejectionWatch(db(runs(windowAt, 600, { 'loan amount exceeds maximum': 95 })) as never, makeKv() as never, URL, NOW)
+    expect(out.undelivered).toEqual([])
+    expect(leadValidationRejectionEnding(out)).toMatchObject({ outcome: 'ok', summary: { paged: [GIGFI], undelivered: [] } })
+  })
+
+  it('records a page with no Slack connection to send through as not delivered too', async () => {
+    vi.mocked(getSlackConnection).mockResolvedValue(null)
+    const kv = makeKv()
+    const out = await runLeadValidationRejectionWatch(db(runs(windowAt, 600, { 'loan amount exceeds maximum': 95 })) as never, kv as never, URL, NOW)
+    expect(out.undelivered).toEqual([GIGFI])
+    expect(transitions(kv.store)).toEqual([`undelivered ${GIGFI}`])
   })
 
   it('sends the all-clear on a judged normal window past the re-arm window, and clears the incident', async () => {

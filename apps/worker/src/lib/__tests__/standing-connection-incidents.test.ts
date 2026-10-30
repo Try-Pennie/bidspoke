@@ -99,7 +99,8 @@ describe('settleConnectionIncidents: the record a check keeps with each open inc
     await h.run([h.finding()], NOW + MIN)
     expect(h.send).toHaveBeenLastCalledWith(null)
     expect(h.kv.store.get(recoveryKey(SIGNAL, CONN))).toBe(iso(NOW + MIN))
-    expect(transitions(h.kv.store)).toEqual([`opened ${CONN}`, `paged ${CONN}`])
+    // The refused page is recorded as not delivered (#3056), the delivered one as paged.
+    expect(transitions(h.kv.store)).toEqual([`undelivered ${CONN}`, `opened ${CONN}`, `paged ${CONN}`])
   })
 })
 

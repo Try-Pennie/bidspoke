@@ -189,12 +189,13 @@ describe('opening and paging', () => {
     expect(eventsFor(kv, daily().id)[2]).toMatchObject({ startedAt: iso(NOW), at: iso(NOW + 30 * MIN) })
   })
 
-  it('records nothing for a page Slack refused, since nobody was paged', async () => {
+  it('records a page Slack refused as not delivered, keeping the incident that was due without opening one an all-clear is owed for (#3056)', async () => {
     vi.mocked(sendCronHeartbeatAlert).mockResolvedValue(false)
     const kv = staleKv()
     await run(kv, NOW, ['org-1', 'org-2'])
     expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(2)
-    expect(transitions(kv.store)).toEqual([])
+    expect(transitions(kv.store)).toEqual([`undelivered ${daily().id}`])
+    expect(outboxEvents(kv.store)[0]).toMatchObject({ unannounced: true })
     expect(kv.store.has(alertedStatusKey(daily().id))).toBe(false)
   })
 })

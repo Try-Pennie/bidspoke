@@ -40,8 +40,10 @@
  * THE INCIDENT RECORD (signal partner-page-live-miss). Each miss is a single
  * event, so it is one incident of its own, keyed `<partner id>:<miss id>` and
  * labelled with the partner's name: opened (keepAlerted, starting when the page
- * saw it), paged only once Slack accepted the post (recordPaged), and stood
- * down by design at once (settleRecovery), since no all-clear follows.
+ * saw it), its post recorded whether Slack accepted it or not
+ * (recordPageOutcome, #3056), and stood down by design at once
+ * (settleRecovery), since no all-clear follows. A post Slack refused is tried
+ * again next run, so its incident is kept open until one is settled.
  *
  * FAILING LOUD. A read that fails (the watermark, the misses, the partner or
  * person names) posts nothing and is recorded in job_runs as `unmeasured` with
@@ -58,7 +60,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { LIVE_MISS_CAUSES, type LiveMissCause } from '@bidspoke/partner-page-live'
 import type { AlertClaims } from './alert-claim'
 import { raceDeadline, releaseClaimQuietly } from './alert-claim'
-import { keepAlerted, markSpikeSeen, recordPaged, settleRecovery, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { keepAlerted, markSpikeSeen, recordPageOutcome, settleRecovery, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { reportRecordError } from './incident-outbox'
 import { failedRun, type FailedRun } from './minute-job-failures'
 import { formatErr } from './format-error'
@@ -411,13 +413,18 @@ async function handleMiss(deps: LiveMissNoticeDeps, row: LiveMissRow, nowMs: num
 
   const notice = composeLiveMissNotice(row)
   let post: NoticePost
+  let threw = false
   try {
     post = await deps.post(row.organizationId, notice)
   } catch (e) {
+    threw = true
     post = { kind: 'failed', reason: formatErr(e) }
   }
   if (post.kind === 'failed') {
     summary.errors.push(`${row.id}: the notice was not posted: ${post.reason}`)
+    // A post Slack refused is recorded as not delivered (#3056); one that threw
+    // may have landed, so it is recorded as neither.
+    if (!threw) await recordIncident(deps.kv, row, post.kind, nowMs, summary)
     await releaseClaimQuietly(deps.claims, claimKey)
     return 'failed'
   }
@@ -431,12 +438,16 @@ async function handleMiss(deps: LiveMissNoticeDeps, row: LiveMissRow, nowMs: num
     // only a watermark write that also fails could post it twice.
     summary.errors.push(`${row.id}: settled, but its sent marker could not be written: ${formatErr(e)}`)
   }
-  await recordIncident(deps.kv, row, post.kind === 'posted', nowMs, summary)
+  await recordIncident(deps.kv, row, post.kind, nowMs, summary)
   return post.kind === 'posted' ? 'posted' : 'not_posted'
 }
 
-/** One incident per miss: opened when the page saw it, paged if Slack took the post, stood down at once. Never throws. */
-async function recordIncident(kv: RecoveryKv, row: LiveMissRow, paged: boolean, nowMs: number, summary: LiveMissNoticeSummary): Promise<void> {
+/**
+ * One incident per miss: opened when the page saw it, its post recorded whether
+ * Slack took it or not (#3056), and stood down at once once settled. A post
+ * Slack refused leaves it open, since the next run tries it again. Never throws.
+ */
+async function recordIncident(kv: RecoveryKv, row: LiveMissRow, post: NoticePost['kind'], nowMs: number, summary: LiveMissNoticeSummary): Promise<void> {
   const subject = `${row.partnerId}:${row.id}`
   const incident: IncidentContext = {
     scope: { kind: 'org', organizationId: row.organizationId },
@@ -448,8 +459,9 @@ async function recordIncident(kv: RecoveryKv, row: LiveMissRow, paged: boolean, 
   try {
     await keepAlerted(kv, PARTNER_LIVE_MISS_SIGNAL, subject, seenAt, incident, nowMs)
     await markSpikeSeen(kv, PARTNER_LIVE_MISS_SIGNAL, subject, Number.isFinite(seenMs) ? seenMs : nowMs)
-    if (paged) await recordPaged(kv, PARTNER_LIVE_MISS_SIGNAL, subject, incident, nowMs)
-    await settleRecovery(kv, PARTNER_LIVE_MISS_SIGNAL, subject, null, { ...incident, reason: 'stood_down_by_design' }, nowMs)
+    // A notice not posted because nobody there asked to be told was never tried.
+    if (post !== 'not_posted') await recordPageOutcome(kv, PARTNER_LIVE_MISS_SIGNAL, subject, incident, nowMs, post === 'posted')
+    if (post !== 'failed') await settleRecovery(kv, PARTNER_LIVE_MISS_SIGNAL, subject, null, { ...incident, reason: 'stood_down_by_design' }, nowMs)
   } catch (e) {
     reportRecordError(incident, `${PARTNER_LIVE_MISS_SIGNAL} ${subject} not recorded: ${formatErr(e)}`)
   }

@@ -4,7 +4,7 @@ import {
   keepAlerted,
   markAlerted,
   markSpikeSeen,
-  recordPaged,
+  recordPageOutcome,
   recoveryKey,
   refreshAlerted,
   settleRecovery,
@@ -122,7 +122,7 @@ describe('opened: the marker going from absent to present', () => {
 describe('paged: a page that reached Slack', () => {
   it('records the page against the open incident', async () => {
     const kv = fakeKv({ [recoveryKey('slow-spike', 'wf-1')]: '2026-10-14T10:00:00.000Z' })
-    await recordPaged(kv, 'slow-spike', 'wf-1', ORG, Date.parse('2026-10-14T10:30:00.000Z'))
+    await recordPageOutcome(kv, 'slow-spike', 'wf-1', ORG, Date.parse('2026-10-14T10:30:00.000Z'), true)
     const [e] = events(kv)
     expect(e).toMatchObject({ type: 'paged', startedAt: '2026-10-14T10:00:00.000Z', at: '2026-10-14T10:30:00.000Z' })
     expect(typeof e.id).toBe('string')
@@ -131,7 +131,7 @@ describe('paged: a page that reached Slack', () => {
   it('reports rather than guesses when no incident is open to page about', async () => {
     const kv = fakeKv()
     const onRecordError = vi.fn()
-    await recordPaged(kv, 'slow-spike', 'wf-1', { ...ORG, onRecordError }, NOW_MS)
+    await recordPageOutcome(kv, 'slow-spike', 'wf-1', { ...ORG, onRecordError }, NOW_MS, true)
     expect(events(kv)).toEqual([])
     expect(onRecordError).toHaveBeenCalledWith(expect.stringContaining('no open incident'))
   })

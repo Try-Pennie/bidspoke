@@ -31,7 +31,7 @@ import { formatErr } from './format-error'
 import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
 import { readExecutionCountsPerMinute, type MinuteCount } from './execution-counts'
 import { getSlackConnection, postMessage } from './slack'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, recordPageOutcome, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { sendRecoveryAlert } from './slack'
 import type { SecretKeyInput } from './secret-crypto'
 import type { AlertClaims } from './alert-claim'
@@ -409,13 +409,14 @@ export async function runVolumeCliffCheck(
     // Only record the alert (which arms the next, longer cooldown) once it actually
     // delivered, so a kicked bot (Slack ok:false) does not suppress retries while
     // the outage goes unannounced.
+    // Separate marker, longer TTL: a cliff lasting past the cooldown would
+    // otherwise leave nothing to say it had ever been broken (#253). Written
+    // before the cooldown (#2058): a cut or a refused write between them then
+    // costs at worst a repeated page, never a lost all-clear.
+    if (sent) await markAlerted(kv, 'volume-cliff', wfId, incident, nowMs)
+    // Delivered or not, the page is recorded (#3056).
+    await recordPageOutcome(kv, 'volume-cliff', wfId, incident, nowMs, Boolean(sent))
     if (sent) {
-      // Separate marker, longer TTL: a cliff lasting past the cooldown would
-      // otherwise leave nothing to say it had ever been broken (#253). Written
-      // before the cooldown (#2058): a cut or a refused write between them then
-      // costs at worst a repeated page, never a lost all-clear.
-      await markAlerted(kv, 'volume-cliff', wfId, incident, nowMs)
-      await recordPaged(kv, 'volume-cliff', wfId, incident, nowMs)
       await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: VOLUME_CLIFF_STEPS, conditionTtlSeconds: VOLUME_CONDITION_TTL_SECONDS })
     } else if (claims) {
       // Slack refused: free the claim so the next tick can retry, the same way

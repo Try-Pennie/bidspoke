@@ -25,7 +25,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { minuteAlertClaimKey, minuteAllClearClaim, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
 import type { AlertClaims } from './alert-claim'
 import { logReadFailure } from './scheduled-read'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, pageTried, recordPageOutcome, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
 import type { WorkflowDefinition } from '../types'
 import { sendSlowSpikeAlert } from './slack'
@@ -283,10 +283,9 @@ export async function runSlowExecutionCheck(
     // ok:false) would otherwise suppress retries while the spike kept going.
     // The marker goes before the cooldown (#2058): a cut or a refused write
     // between them then costs at worst a repeated page, never a lost all-clear.
-    if (sent) {
-      await markAlerted(kv, 'slow-spike', wfId, incident, now)
-      await recordPaged(kv, 'slow-spike', wfId, incident, now)
-      await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
-    }
+    if (sent) await markAlerted(kv, 'slow-spike', wfId, incident, now)
+    // Delivered or not, a page this tick tried is recorded (#3056).
+    if (pageTried(outcome)) await recordPageOutcome(kv, 'slow-spike', wfId, incident, now, sent)
+    if (sent) await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
   }
 }

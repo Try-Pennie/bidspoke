@@ -53,7 +53,7 @@ import {
   announceRecovery,
   markAlerted,
   markSpikeSeen,
-  recordPaged,
+  recordPageOutcome,
   recoveryKey,
   refreshAlerted,
   RECOVERY_REARM_MINUTES,
@@ -320,23 +320,29 @@ async function checkOrg(
     ...(reminderOf ? { repeat: describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged) ?? undefined } : {}),
   }
   let delivered = false
+  let threw = false
   try {
     delivered = await deps.sendAlert(orgId, alert)
   } catch (e) {
+    threw = true
     summary.errors.push(`${orgId}: the page failed: ${formatErr(e)}`)
   }
+  if (delivered) {
+    await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
+    try {
+      await markAlerted(kv, WRITEBACK_BACKLOG_SIGNAL, orgId, incident, nowMs)
+    } catch (e) {
+      reportRecordError(incident, `paged ${WRITEBACK_BACKLOG_SIGNAL} ${orgId} not recorded: ${formatErr(e)}`)
+    }
+  }
+  // Delivered or not, the page is recorded (#3056); one that threw may have
+  // landed, so it is recorded as neither.
+  if (!threw) await recordPageOutcome(kv, WRITEBACK_BACKLOG_SIGNAL, orgId, incident, nowMs, delivered)
   // Armed only on delivery, so a Slack outage does not buy silence about a
   // backlog nobody was told of, and an all-clear never follows an unseen page.
   if (!delivered) {
     if (marker !== null) await refreshAlerted(kv, WRITEBACK_BACKLOG_SIGNAL, orgId)
     return marker !== null
-  }
-  await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
-  try {
-    await markAlerted(kv, WRITEBACK_BACKLOG_SIGNAL, orgId, incident, nowMs)
-    await recordPaged(kv, WRITEBACK_BACKLOG_SIGNAL, orgId, incident, nowMs)
-  } catch (e) {
-    reportRecordError(incident, `paged ${WRITEBACK_BACKLOG_SIGNAL} ${orgId} not recorded: ${formatErr(e)}`)
   }
   summary.paged.push(orgId)
   return true

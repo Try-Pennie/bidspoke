@@ -238,9 +238,13 @@ describe('runWorkflowScheduleWatch: a workflow that has gone dark', () => {
     // incident nobody was told about (#851). The running-end markers
     // (`workflow-schedule-active:`) are written on every dark tick by design, so
     // the all-clear can later say how long the fault lasted; alone they owe nothing.
+    // The page nobody received is recorded as not delivered (#3056): an outbox
+    // event and the start of its stretch per workflow, which owe nothing either.
     const keys = [...kv.store.keys()]
-    expect(keys.filter((k) => !k.startsWith('workflow-schedule-active:'))).toEqual([])
-    expect(keys.length, 'the running end of each dark workflow was not recorded').toBeGreaterThan(0)
+    const recorded = (k: string) => k.startsWith('workflow-schedule-active:') || k.startsWith('incident-outbox:') || k.startsWith('workflow-schedule-due:')
+    expect(keys.filter((k) => !recorded(k))).toEqual([])
+    expect(keys.filter((k) => k.startsWith('workflow-schedule-active:')).length, 'the running end of each dark workflow was not recorded').toBeGreaterThan(0)
+    expect(keys.filter((k) => k.startsWith('incident-outbox:')).length).toBe(keys.filter((k) => k.startsWith('workflow-schedule-due:')).length)
   })
 })
 

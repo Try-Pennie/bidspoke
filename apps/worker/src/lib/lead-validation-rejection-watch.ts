@@ -80,7 +80,7 @@
  * against, as they were.
  *
  * Conventions shared with the other rate checks (partner-error-rate.ts): the
- * incident record through markAlerted, recordPaged and announceRecovery under
+ * incident record through markAlerted, recordPageOutcome and announceRecovery under
  * the registered signal, a COOLDOWN between repeat pages, an all-clear only on a
  * judged normal window at least one whole window after the last shift, and an
  * open incident kept, never stood down, through hours with no leads. Its own
@@ -91,7 +91,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { LEAD_REJECTION_REASONS } from '@bidspoke/workflow-definition'
 import { orgIdsToTell, slackOrgIds } from './alert-fanout'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, recordPageOutcome, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
 import { withJobRun, type JobRunEnding } from './job-run-record'
 import { getSlackConnection, sendLeadValidationRejectionAlert, sendRecoveryAlert } from './slack'
@@ -415,6 +415,8 @@ export async function readBaselineCounts(supabase: SupabaseClient, kv: RecoveryK
 export interface RejectionWatchSummary {
   judged: Array<{ workflowId: string; state: RejectionVerdict['state']; runs: number; baselineRuns?: number }>
   paged: string[]
+  /** Workflows whose page was due this run and did not reach Slack (#3056). */
+  undelivered: string[]
   allClear: string[]
 }
 
@@ -426,7 +428,7 @@ export async function runLeadValidationRejectionWatch(
   now: number = Date.now(),
   watches: readonly RejectionWatch[] = REJECTION_WATCHES,
 ): Promise<RejectionWatchSummary> {
-  const summary: RejectionWatchSummary = { judged: [], paged: [], allClear: [] }
+  const summary: RejectionWatchSummary = { judged: [], paged: [], undelivered: [], allClear: [] }
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, LEAD_VALIDATION_REJECTION_JOB, 'measure-from-database'))
   if (orgIds.length === 0) return summary
   const workflows = await readActiveWorkflows<Pick<ActiveWorkflowRow, 'id' | 'name' | 'organization_id' | 'slack_channel'>>(
@@ -508,28 +510,36 @@ export async function runLeadValidationRejectionWatch(
       app_url: appUrl,
     })
     // The marker before the cooldown (#2058): a cut between them costs at worst
-    // a repeated page, never a lost all-clear.
+    // a repeated page, never a lost all-clear. Armed only on delivery, so no
+    // all-clear follows a page nobody saw; no cooldown either, so a refused page
+    // is tried again next hour.
+    if (sent) await markAlerted(kv, LEAD_VALIDATION_REJECTION_SIGNAL, wf.id, incident, now)
+    // Delivered or not, the record keeps the incident that was due (#3056).
+    await recordPageOutcome(kv, LEAD_VALIDATION_REJECTION_SIGNAL, wf.id, incident, now, sent, { sameIncidentWithinMinutes: 2 * 60 })
     if (sent) {
-      await markAlerted(kv, LEAD_VALIDATION_REJECTION_SIGNAL, wf.id, incident, now)
-      await recordPaged(kv, LEAD_VALIDATION_REJECTION_SIGNAL, wf.id, incident, now)
       await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
       summary.paged.push(wf.id)
+    } else {
+      console.error(`[${LEAD_VALIDATION_REJECTION_JOB}] page not delivered workflow_id=${wf.id}: ${slack === null ? 'no Slack connection could be read' : 'Slack did not take it'}; tried again next hour`)
+      summary.undelivered.push(wf.id)
     }
   }
   return summary
 }
 
-function endingOf(s: RejectionWatchSummary): JobRunEnding {
+/** What the run's job_runs row says. Exported for its tests. */
+export function leadValidationRejectionEnding(s: RejectionWatchSummary): JobRunEnding {
   const judged = s.judged.filter((j) => j.state === 'normal' || j.state === 'shifted')
   return {
-    // A run that judged nothing (no leads, no Slack, the workflow switched off)
-    // is recorded as unmeasured, never as ok (L557).
-    outcome: judged.length ? 'ok' : 'unmeasured',
-    summary: { judged: s.judged, paged: s.paged, all_clear: s.allClear },
+    // A page that was due and reached nobody is the run's first fact (#3056),
+    // never ok. A run that judged nothing (no leads, no Slack, the workflow
+    // switched off) is recorded as unmeasured, never as ok (L557).
+    outcome: s.undelivered.length ? 'page_not_delivered' : judged.length ? 'ok' : 'unmeasured',
+    summary: { judged: s.judged, paged: s.paged, undelivered: s.undelivered, all_clear: s.allClear },
   }
 }
 
 /** The scheduled entry: the check under a job run record. */
 export function runLeadValidationRejectionWatchForEnv(supabase: SupabaseClient, kv: RecoveryKv, appUrl: string): Promise<RejectionWatchSummary> {
-  return withJobRun(supabase, LEAD_VALIDATION_REJECTION_JOB, () => runLeadValidationRejectionWatch(supabase, kv, appUrl), endingOf)
+  return withJobRun(supabase, LEAD_VALIDATION_REJECTION_JOB, () => runLeadValidationRejectionWatch(supabase, kv, appUrl), leadValidationRejectionEnding)
 }

@@ -30,7 +30,7 @@
  * reads one Worker setting and posts to each organization's own channel.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, recordPageOutcome, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { salesforceBulkheadLimit } from './bulkhead-client'
 import { formatErr } from './format-error'
@@ -145,15 +145,16 @@ export async function runSalesforceBulkheadCheck(deps: SalesforceBulkheadCheckDe
       console.error(`${LOG} the page to org ${orgId} failed, the others go on: ${formatErr(err)}`)
     }
   }
-  if (summary.paged === 0) {
+  // One delivered round is one page, however many organizations it reached.
+  const delivered = summary.paged > 0
+  if (delivered) await markAlerted(kv, SALESFORCE_BULKHEAD_SIGNAL, SALESFORCE_BULKHEAD_SUBJECT, incident(errors), nowMs)
+  // Delivered or not, the round is recorded (#3056). The check runs daily.
+  await recordPageOutcome(kv, SALESFORCE_BULKHEAD_SIGNAL, SALESFORCE_BULKHEAD_SUBJECT, incident(errors), nowMs, delivered, { sameIncidentWithinMinutes: 2 * 24 * 60 })
+  if (!delivered) {
     console.error(`${LOG} the Salesforce bulkhead limit resolves to ${limit}, not ${sizedFor}, and the page reached no organization`)
     // Armed only on delivery, so an all clear never follows an unseen page.
     if (firstReportedAt !== null) await refreshAlerted(kv, SALESFORCE_BULKHEAD_SIGNAL, SALESFORCE_BULKHEAD_SUBJECT)
-    return summary
   }
-  // One delivered round is one page, however many organizations it reached.
-  await markAlerted(kv, SALESFORCE_BULKHEAD_SIGNAL, SALESFORCE_BULKHEAD_SUBJECT, incident(errors), nowMs)
-  await recordPaged(kv, SALESFORCE_BULKHEAD_SIGNAL, SALESFORCE_BULKHEAD_SUBJECT, incident(errors), nowMs)
   return summary
 }
 

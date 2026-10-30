@@ -16,8 +16,9 @@
  * marker gets its own key and a TTL long enough to outlive a real outage.
  *
  * THE INCIDENT RECORD (#2099). The marker's transitions are also the incident's:
- * it appears (opened), a page about it reaches Slack (paged, recorded by the
- * caller at each delivery site with recordPaged), and it is settled (ended). Each
+ * it appears (opened), a page about it reaches Slack (paged) or does not
+ * (undelivered, #3056), both recorded by the caller at each delivery site with
+ * recordPageOutcome, and it is settled (ended). Each
  * is written to the KV outbox (incident-outbox.ts) on the transition only, never
  * per sighting, and never in the way of a page or an all-clear: a recorder fault
  * is reported and the alert carries on. Every function here takes the signal as
@@ -25,7 +26,7 @@
  * or one whose registry entry keeps its marker elsewhere (the cron heartbeat,
  * #2103), fails to compile.
  */
-import type { RecoveryMarkerSignal } from './incident-signals'
+import type { IncidentSignal, RecoveryMarkerSignal } from './incident-signals'
 import { reportRecordError, writeIncidentEvent, type IncidentContext, type IncidentEnd } from './incident-outbox'
 import { formatErr } from './format-error'
 import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
@@ -194,31 +195,175 @@ export async function refreshAlerted(kv: RecoveryKv, prefix: RecoveryMarkerSigna
 }
 
 /**
- * Record that a page about the open incident reached Slack (#2099). Called by
- * the check at each DELIVERY site, after its marker is armed, so the record
- * counts pages where they were sent rather than inferring them from the marker
- * (three signals arm with keepAlerted on sightings and page separately). Never
- * throws.
+ * Key holding the start of an incident whose pages were due and reached nobody
+ * (#3056), and when the last of them was refused: `{ startedAt, lastAt }`.
+ *
+ * Its own key, never the recovery marker: the marker means somebody was told.
+ * Pages read it to say "first reported at" or to word a repeat, and the
+ * all-clear is owed for it, so arming it for a page nobody received would make
+ * the next page claim an earlier report and end the incident with an all-clear
+ * about an alert nobody saw (the rule standing-connection-incidents.ts and
+ * pg-cron-watch.ts record). This key is read only on the rare refused page, and
+ * only to keep one stretch of refusals as one incident in the record.
  */
-export async function recordPaged(
+export function dueKey(signal: IncidentSignal, id: string): string {
+  return `${signal}-due:${id}`
+}
+
+/** What dueKey holds. */
+interface DueRecord {
+  startedAt: string
+  lastAt: string
+}
+
+function readDueRecord(raw: string | null): DueRecord | null {
+  if (raw === null) return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const { startedAt, lastAt } = parsed as Record<string, unknown>
+    if (typeof startedAt !== 'string' || typeof lastAt !== 'string') return null
+    if (!Number.isFinite(Date.parse(startedAt)) || !Number.isFinite(Date.parse(lastAt))) return null
+    return { startedAt, lastAt }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * What a post under a cooldown and a claim came to (postMinutePage,
+ * postStandingOutcome): delivered, tried and not delivered, or not tried by
+ * this tick at all.
+ */
+export type PostAttempt = 'sent' | 'not_sent' | 'in_cooldown' | 'claimed_elsewhere'
+
+/**
+ * Whether this tick tried a page at all (#3056): a page held by the cooldown,
+ * or left to the tick that holds the claim, was never due from this one, so it
+ * has no outcome to record.
+ */
+export function pageTried(attempt: PostAttempt): boolean {
+  return attempt === 'sent' || attempt === 'not_sent'
+}
+
+/**
+ * The least time between two refused pages recorded about an incident nobody
+ * was told of (#3056). Every scheduled check runs at most once a minute, so for
+ * them each refused page is recorded; a check paged from the engine's runs
+ * (lead-validation-config-alert.ts) retries on every lead, and is recorded at
+ * most once a minute.
+ */
+export const UNDELIVERED_RECORD_GAP_MS = 60_000
+
+export interface PageOutcomeOptions {
+  /**
+   * How long after a refused page the next one still belongs to the same
+   * incident, when no page about it reached anybody. RECOVERY_REARM_MINUTES,
+   * the gap an all-clear waits for, unless the check passes more: a check that
+   * runs hourly or daily passes about two of its intervals, so the refused
+   * pages of consecutive runs that each find the condition are one incident.
+   */
+  sameIncidentWithinMinutes?: number
+}
+
+/**
+ * Record what became of a page about an incident (#2099, #3056). THE one
+ * place a delivery site records its page, whatever the send answered: call it
+ * after every page the check tried to send, with whether it reached Slack, and
+ * never inside the branch that runs only on a delivered send.
+ * `__guards__/worker/page-outcomes-recorded.test.ts` fails on a site that
+ * arms a marker without calling it, or that hands it a literal true.
+ *
+ * Delivered: a `paged` event against the open incident (its marker), so the
+ * record counts pages where they were sent rather than inferring them from the
+ * marker (several signals arm with keepAlerted on sightings and page
+ * separately). Call it after the marker is armed.
+ *
+ * Not delivered: an `undelivered` event. Against the open incident when one is
+ * (a repeat page somebody's earlier page announced). When none is, nobody has
+ * been told: the marker is left alone (dueKey says why) and the record keeps
+ * the incident that was due as its own row, from the first refused page of
+ * the stretch, closed, since no all-clear is owed for it. Refused pages no
+ * further apart than `sameIncidentWithinMinutes` are one stretch.
+ *
+ * Never throws: a recorder fault is reported and the alert carries on.
+ */
+export async function recordPageOutcome(
   kv: RecoveryKv,
   prefix: RecoveryMarkerSignal,
   id: string,
   incident: IncidentContext,
   now: number,
+  delivered: boolean,
+  opts: PageOutcomeOptions = {},
 ): Promise<void> {
-  let startedAt: string | null
+  let openStart: string | null
   try {
-    startedAt = await kv.get(recoveryKey(prefix, id))
+    openStart = await kv.get(recoveryKey(prefix, id))
   } catch (e) {
-    reportRecordError(incident, `paged ${prefix} ${id} not recorded: the marker could not be read: ${formatErr(e)}`)
+    reportRecordError(incident, `${delivered ? 'paged' : 'undelivered'} ${prefix} ${id} not recorded: the marker could not be read: ${formatErr(e)}`)
     return
   }
-  if (startedAt === null) {
-    reportRecordError(incident, `paged ${prefix} ${id} not recorded: no open incident to page about`)
+  await recordPageOutcomeOn(kv, prefix, id, openStart, incident, now, delivered, opts)
+}
+
+/**
+ * recordPageOutcome for a check that keeps its open incident in its own state
+ * (the cron heartbeat, #2103): the caller passes the open incident's start,
+ * or null when none is open. Never throws.
+ */
+export async function recordPageOutcomeOn(
+  kv: RecoveryKv,
+  signal: IncidentSignal,
+  id: string,
+  openStart: string | null,
+  incident: IncidentContext,
+  now: number,
+  delivered: boolean,
+  opts: PageOutcomeOptions = {},
+): Promise<void> {
+  if (delivered) {
+    if (openStart === null) {
+      reportRecordError(incident, `paged ${signal} ${id} not recorded: no open incident to page about`)
+    } else {
+      await writeIncidentEvent(kv, { type: 'paged', signal, subject: id, startedAt: openStart }, incident, now)
+    }
+    // Somebody has been told: a refusal after this is about the open incident,
+    // or, once it has ended, the start of a new stretch.
+    try {
+      await kv.delete(dueKey(signal, id))
+    } catch (e) {
+      reportRecordError(incident, `${signal} ${id}: the record of earlier refused pages could not be cleared: ${formatErr(e)}`)
+    }
     return
   }
-  await writeIncidentEvent(kv, { type: 'paged', signal: prefix, subject: id, startedAt }, incident, now)
+
+  if (openStart !== null) {
+    await writeIncidentEvent(kv, { type: 'undelivered', signal, subject: id, startedAt: openStart, unannounced: false }, incident, now)
+    return
+  }
+
+  const at = new Date(now).toISOString()
+  const withinMs = (opts.sameIncidentWithinMinutes ?? RECOVERY_REARM_MINUTES) * 60 * 1000
+  let startedAt = at
+  try {
+    const due = readDueRecord(await kv.get(dueKey(signal, id)))
+    if (due && now - Date.parse(due.lastAt) <= withinMs && Date.parse(due.startedAt) <= now) {
+      // A check paged from every lead retries on every lead while Slack refuses
+      // it: one record a minute is enough, and KV takes one write a second to a key.
+      if (now - Date.parse(due.lastAt) < UNDELIVERED_RECORD_GAP_MS) return
+      startedAt = due.startedAt
+    }
+  } catch (e) {
+    reportRecordError(incident, `${signal} ${id}: the record of earlier refused pages could not be read, so this one starts its own incident: ${formatErr(e)}`)
+  }
+  try {
+    const ttl = Math.max(RECOVERY_TTL_SECONDS, Math.ceil(withinMs / 1000) + 3_600)
+    await kv.put(dueKey(signal, id), JSON.stringify({ startedAt, lastAt: at } satisfies DueRecord), { expirationTtl: ttl })
+  } catch (e) {
+    reportRecordError(incident, `${signal} ${id}: the record of this refused page could not be kept, so the next one starts its own incident: ${formatErr(e)}`)
+  }
+  await writeIncidentEvent(kv, { type: 'undelivered', signal, subject: id, startedAt, unannounced: true }, incident, now)
 }
 
 /**
