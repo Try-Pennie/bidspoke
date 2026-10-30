@@ -1074,12 +1074,16 @@ export function notConfiguredFix(secrets: readonly string[] | null): string {
 const PROBLEMS_FIX = 'Search the bidspoke-worker-ops logs for ops_tick around the time of this alert: every problem is logged there with the tick it came from.'
 
 /**
- * The workflows a page for runs that cannot start is open for (#3039), so the
- * first report that no longer names one stands its page down. Written by
- * runOpsTickReportCheck alone. No expiry: a page stays open until a readable
- * report stands it down, as the alerter's own condition does.
+ * The workflows a page for runs that cannot start is open for (#3039), one key
+ * each under this prefix, so the first report that no longer names one stands
+ * its page down. Written by runOpsTickReportCheck alone, a key per workflow so
+ * a page is recorded even while the others cannot be listed. No expiry: a page
+ * stays open until a readable report stands it down, as the alerter's own
+ * condition does.
  */
-export const OPS_TICK_UNSTARTED_PAGES_KEY = 'ops-tick:unstarted-pages'
+export const OPS_TICK_UNSTARTED_PAGE_PREFIX = 'ops-tick:unstarted-page:'
+/** More pages than are ever open (one read lists 15 workflows); a listing past it is refused rather than half read. */
+const MAX_UNSTARTED_PAGE_LISTS = 5
 
 const WORKFLOW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -1101,6 +1105,19 @@ async function readWorkflowNames(supabase: SupabaseClient, ids: readonly string[
   return names
 }
 
+/** The workflows whose page for runs that cannot start is open. Throws when they cannot all be listed. */
+async function listUnstartedPages(kv: KVNamespace): Promise<string[]> {
+  const ids: string[] = []
+  let cursor: string | undefined
+  for (let i = 0; i < MAX_UNSTARTED_PAGE_LISTS; i++) {
+    const page = await kv.list({ prefix: OPS_TICK_UNSTARTED_PAGE_PREFIX, ...(cursor === undefined ? {} : { cursor }) })
+    for (const k of page.keys) ids.push(k.name.slice(OPS_TICK_UNSTARTED_PAGE_PREFIX.length))
+    if (page.list_complete) return ids
+    cursor = page.cursor
+  }
+  throw new Error(`more than ${MAX_UNSTARTED_PAGE_LISTS} listings of open pages`)
+}
+
 /**
  * The pages for runs that cannot start (#3039): each workflow the report names
  * under UNSTARTED_RUNS_PAGE.kind pages on its own, as its own alert job, under
@@ -1117,12 +1134,9 @@ async function settleUnstartedPages(
   const failures: string[] = []
   let open: string[] | null = null
   try {
-    const raw = await kv.get(OPS_TICK_UNSTARTED_PAGES_KEY)
-    const parsed: unknown = raw === null ? [] : JSON.parse(raw)
-    if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== 'string')) throw new Error('the record is not a list of workflow ids')
-    open = parsed as string[]
+    open = await listUnstartedPages(kv)
   } catch (err) {
-    // Not known which pages are open: none is stood down, and those paged now are kept.
+    // Not known which pages are open: none is stood down this time, and those paged now are still recorded.
     failures.push(`the open pages for runs that cannot start could not be read: ${formatErr(err)}`)
   }
   let names = new Map<string, string>()
@@ -1142,27 +1156,26 @@ async function settleUnstartedPages(
     } catch (err) {
       failures.push(`the page for workflow ${o.workflowId}'s runs that cannot start failed: ${formatErr(err)}`)
     }
+    // Recorded whether or not it delivered, so its all clear still follows.
+    if (open === null || !open.includes(o.workflowId)) {
+      try {
+        await kv.put(`${OPS_TICK_UNSTARTED_PAGE_PREFIX}${o.workflowId}`, new Date(nowMs).toISOString())
+      } catch (err) {
+        failures.push(`the page for workflow ${o.workflowId}'s runs that cannot start could not be recorded: ${formatErr(err)}`)
+      }
+    }
   }
-  const current = own.map((o) => o.workflowId)
-  const stood: string[] = []
   if (known && open !== null) {
+    const current = own.map((o) => o.workflowId)
     for (const id of open) {
       if (current.includes(id)) continue
       try {
         await deps.notifyRecovery(kv, UNSTARTED_RUNS_PAGE.job(id), nowMs)
-        stood.push(id)
+        await kv.delete(`${OPS_TICK_UNSTARTED_PAGE_PREFIX}${id}`)
       } catch (err) {
         failures.push(`the all clear for workflow ${id}'s runs that cannot start failed: ${formatErr(err)}`)
       }
     }
-  }
-  // Kept: those paged now, and any open page not stood down.
-  const next = [...new Set([...current, ...(open ?? []).filter((id) => !stood.includes(id))])]
-  try {
-    if (next.length > 0) await kv.put(OPS_TICK_UNSTARTED_PAGES_KEY, JSON.stringify(next))
-    else if (open === null || open.length > 0) await kv.delete(OPS_TICK_UNSTARTED_PAGES_KEY)
-  } catch (err) {
-    failures.push(`the open pages for runs that cannot start could not be written: ${formatErr(err)}`)
   }
   return { paged, failures }
 }

@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { completedKey, heartbeatKey } from '../cron-heartbeat'
 import {
   OPS_TICK_JOB, OPS_TICK_REPORT_KEY, OPS_TICK_REPORT_FRESH_MS, OPS_TICK_STREAKS_KEY, OPS_TICK_STREAK_TTL_SECONDS, OPS_TICK_TICKS_IN_A_ROW_TO_PAGE,
-  OPS_TICK_WRITE_BACKS_KEY, readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, runOpsTickReportCheck,
+  OPS_TICK_UNSTARTED_PAGE_PREFIX, OPS_TICK_WRITE_BACKS_KEY, readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, runOpsTickReportCheck,
 } from '../ops-gateway'
 import { MAX_REPLACED_WORKFLOWS, parseServedOpsWorkflows } from '../ops-gateway-contract'
 
@@ -25,6 +25,7 @@ function kv() {
     get: async (k: string) => m.get(k) ?? null,
     put: async (k: string, v: string) => { m.set(k, v) },
     delete: async (k: string) => { m.delete(k) },
+    list: async (o: { prefix: string }) => ({ keys: [...m.keys()].filter((k) => k.startsWith(o.prefix)).sort().map((name) => ({ name })), list_complete: true }),
   }
 }
 
@@ -521,6 +522,28 @@ describe('the page for runs that cannot start (#3039)', () => {
       [OPS_TICK_JOB, 'The ops minute cron reported a problem', [SWEEP]],
     ])
     expect(d.recovered).toEqual([])
+  })
+
+  // The open pages that cannot be listed stand nothing down that minute, and a
+  // page sent meanwhile is still recorded, so every page keeps its all clear.
+  it('pages, records the page, stands nothing down and raises it when the open pages cannot be listed', async () => {
+    const OTHER = '00000000-0000-4000-8000-0000000019b2'
+    const store = kv()
+    const d = deps({ [WF]: 'Lead intake', [OTHER]: 'Payout sync' })
+    await tick(store, d, 1, report(1, [[`runs_unstarted:${WF}`, TEXT]]))
+    expect(store.m.has(`${OPS_TICK_UNSTARTED_PAGE_PREFIX}${WF}`)).toBe(true)
+    // One minute the open pages cannot be listed; another workflow is named, WF is not.
+    const failing = { ...store, list: async () => { throw new Error('KV did not answer') } }
+    await recordOpsTickCompleted(failing as unknown as KVNamespace, report(2, [[`runs_unstarted:${OTHER}`, TEXT]]), NOW + 2 * MIN + 2000)
+    await expect(runOpsTickReportCheck({} as never, failing as unknown as KVNamespace, NOW + 2 * MIN + 30_000, d)).rejects.toThrow(/open pages for runs that cannot start could not be read: KV did not answer/)
+    expect(d.sent.map((p) => p.title)).toContain('Ops runs can\'t start: Payout sync')
+    expect(d.recovered).not.toContain(`ops-runs-unstarted:${WF}`)
+    expect(store.m.has(`${OPS_TICK_UNSTARTED_PAGE_PREFIX}${WF}`)).toBe(true)
+    expect(store.m.has(`${OPS_TICK_UNSTARTED_PAGE_PREFIX}${OTHER}`)).toBe(true)
+    // Listed again, a clean report stands both pages down.
+    await tick(store, d, 3, report(3, []))
+    expect(d.recovered).toEqual(expect.arrayContaining([`ops-runs-unstarted:${WF}`, `ops-runs-unstarted:${OTHER}`]))
+    expect([...store.m.keys()].filter((k) => k.startsWith(OPS_TICK_UNSTARTED_PAGE_PREFIX))).toEqual([])
   })
 
   it('names the workflow by its id when its name cannot be read, rather than not paging', async () => {
