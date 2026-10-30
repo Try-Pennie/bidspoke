@@ -10,8 +10,9 @@
  * Our other deadlines are marked where they pass too (#3068), each as its own
  * kind: a code chain's dispatch, a node's own request timer, the partner bid's
  * bid request, a bid group that stops waiting for a partner, and the buyer
- * select budget; and since #3075 the buyer select live buyer call and the
- * achieve_offers node's own wait. A timer marks the error its own abort caused
+ * select budget; since #3075 the buyer select live buyer call and the
+ * achieve_offers node's own wait; and since #3079 buyer_click_send's post,
+ * stopped by its own timer or by the node's bound on it. A timer marks the error its own abort caused
  * (abortAfter, markDeadline), never by its text: "The operation was aborted" is
  * what every abort says. A node that records its timeout in its output and
  * completes has no error to mark, so it asks its timer for the row's marker
@@ -24,7 +25,10 @@
  * that stopped waiting for one partner marks that partner's attempt row, never
  * its own, and a buyer select whose live buyer call its own timer stopped
  * marks that buyer's attempt row, never its own, which failed by its rule on an
- * unknown outcome. Only STEP_DEADLINE is what the step timeout audit and the
+ * unknown outcome. buyer_click_send has no attempt rows: its post is the node's
+ * own work, so its completed row (routed unknown) carries the marker (#3079).
+ * A row the walk fails afterwards for a reason no deadline caused (the unknown
+ * handle not wired) is not marked. Only STEP_DEADLINE is what the step timeout audit and the
  * daily writes report count, so a new kind changes neither.
  *
  * `error_type` stays `transient` for a timeout: it decides whether a step is
@@ -53,13 +57,21 @@ export const BID_GROUP_DEADLINE = 'bid_group'
 export const BUYER_SELECT_DEADLINE = 'buyer_select'
 /**
  * A buyer post's own timer aborted it (postToPartner, #3075): the buyer select
- * live buyer call (BUYER_CALL_TIMEOUT_MS), marked on that buyer's attempt row.
- * buyer_click_send's post runs under the same timer, but its node records no
- * marker on a row.
+ * live buyer call (BUYER_CALL_TIMEOUT_MS), marked on that buyer's attempt row,
+ * and since #3079 buyer_click_send's post (CLICK_POST_TIMEOUT_MS), marked on
+ * the node's row.
  */
 export const BUYER_CALL_DEADLINE = 'buyer_call'
 /** The achieve_offers node's own wait aborted its call to Achieve (#3075), marked on its completed row. */
 export const ACHIEVE_OFFERS_DEADLINE = 'achieve_offers'
+/**
+ * buyer_click_send stopped waiting for its post (CLICK_POST_DEADLINE_MS, #3079),
+ * a second past the post's own timer. Not BUYER_CALL_DEADLINE: that timer aborts
+ * the call, and this one fires only when the post did not end at its abort (a
+ * fetch that ignored it, or an answer whose body was still being read), so the
+ * call may still be running. Marked on the node's row.
+ */
+export const CLICK_POST_DEADLINE = 'click_post'
 /** Every value a step row's `timeout_kind` can hold. */
 export const TIMEOUT_KINDS = [
   STEP_DEADLINE,
@@ -71,6 +83,7 @@ export const TIMEOUT_KINDS = [
   BUYER_SELECT_DEADLINE,
   BUYER_CALL_DEADLINE,
   ACHIEVE_OFFERS_DEADLINE,
+  CLICK_POST_DEADLINE,
 ] as const
 export type TimeoutKind = (typeof TIMEOUT_KINDS)[number]
 

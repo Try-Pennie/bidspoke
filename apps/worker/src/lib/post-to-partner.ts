@@ -11,8 +11,9 @@
  * not the partner. The fetch is injectable so a test needs no network.
  *
  * The call's own timer marks the abort it causes as BUYER_CALL_DEADLINE
- * (#3075), never by its text, so the buyer select attempt row it cut short can
- * say our deadline stopped it. The error thrown is the platform's abort,
+ * (#3075), never by its text, so the row it cut short (a buyer select
+ * attempt's, or since #3079 the buyer_click_send node's) can say our deadline
+ * stopped it. The error thrown is the platform's abort,
  * unchanged, so every caller's handling of it is what it was.
  */
 import type { Env } from '../index'

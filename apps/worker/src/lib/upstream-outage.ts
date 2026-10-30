@@ -153,7 +153,10 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
     // budget. Read from the marker, so no message is matched for a marked run.
     // The two #3075 added never bring a run here: a live buyer call its timer
     // stopped is marked on the buyer's attempt row, which failingStepDeadline
-    // skips as the node's own, and achieve_offers marks a completed row.
+    // skips as the node's own, and achieve_offers marks a completed row. Nor
+    // does buyer_click_send's (#3079): its marker is on its row only when the
+    // node completed, routing unknown, and a row the walk then fails for an
+    // unwired handle is left unmarked, so that run reads by its message as before.
     //
     // A gateway timeout (an upstream answering 504) is the upstream's answer, not
     // our deadline: it carries no marker and nothing below names it, so it is

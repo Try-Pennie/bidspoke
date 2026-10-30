@@ -89,6 +89,7 @@ import { log as structuredLog } from '../../lib/logger'
 import { leadDatabaseDown, noteLeadWriteUnanswered } from '../../lib/lead-read-budget'
 import { resolveValue } from '../context'
 import { nodeReportsOnly, runRealityOf } from '../run-reality'
+import { markDeadline, stepTimeoutMarkerOf, CLICK_POST_DEADLINE, type StepTimeoutMarker } from '../step-timeout'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -288,6 +289,14 @@ export interface BuyerClickSendFailure {
 export interface BuyerClickSendResult {
   output: BuyerClickSendOutput
   failure?: BuyerClickSendFailure
+  /**
+   * Set only when one of our own timers stopped the post (#3079), as
+   * StepExecutionResult.deadline is for a node that completes anyway: the post's
+   * own timer ('buyer_call', CLICK_POST_TIMEOUT_MS) or the node's bound on it
+   * ('click_post', CLICK_POST_DEADLINE_MS). The marker the walk writes on the
+   * node's row. Nothing decides on it, and the output is what it was.
+   */
+  deadline?: StepTimeoutMarker
 }
 
 // ── Injectable dependencies ───────────────────────────────────────────────────
@@ -623,12 +632,20 @@ class Run {
 
     // 2. post
     let res: PartnerCallResult
+    // The node's bound on the post, which knows whether it was the one that fired (#3079).
+    const bound = watchedTimers(this.deps.timers)
     try {
-      res = await withDeadline(this.deps.post({ slug: v.slug, url: v.url }, v.body, { traceId: this.ctx.trigger.trace_id, timeoutMs: CLICK_POST_TIMEOUT_MS }), CLICK_POST_DEADLINE_MS, 'click post', this.deps.timers)
+      res = await withDeadline(this.deps.post({ slug: v.slug, url: v.url }, v.body, { traceId: this.ctx.trigger.trace_id, timeoutMs: CLICK_POST_TIMEOUT_MS }), CLICK_POST_DEADLINE_MS, 'click post', bound)
     } catch (err) {
       const detail = `no answer from the buyer: ${messageOf(err)}`
       await this.holdAndPage(v, 'outcome_unknown', detail, null)
-      return this.done('unknown', 'outcome_unknown', detail)
+      // Which of our timers stopped the post, if one did, read from the marks and
+      // never the text: the bound when it fired, else whatever the post's own
+      // timer marked (postToPartner, 'buyer_call'). Changes nothing else.
+      if (bound.fired()) markDeadline(err, CLICK_POST_DEADLINE, CLICK_POST_DEADLINE_MS)
+      const deadline = stepTimeoutMarkerOf(err)
+      const unknown = this.done('unknown', 'outcome_unknown', detail)
+      return deadline ? { ...unknown, deadline } : unknown
     }
     this.out.status = res.status
 
@@ -863,6 +880,28 @@ class Run {
     } catch {
       return undefined
     }
+  }
+}
+
+/**
+ * Timers for withDeadline that remember whether the deadline fired (#3079), as
+ * abortAfter does for an abort, so only the rejection the bound caused is marked
+ * as it, never another error of the same class or words. Over `base` when the
+ * node was given timers; otherwise reads the global setTimeout at the call, as
+ * withDeadline's own default does, so the money gate's lift still reaches it.
+ */
+function watchedTimers(base: Timers | undefined): Timers & { fired(): boolean } {
+  let fired = false
+  return {
+    setTimeout: (fn, ms) => {
+      const watched = () => {
+        fired = true
+        fn()
+      }
+      return base ? base.setTimeout(watched, ms) : setTimeout(watched, ms)
+    },
+    clearTimeout: (handle) => (base ? base.clearTimeout(handle) : clearTimeout(handle as ReturnType<typeof setTimeout>)),
+    fired: () => fired,
   }
 }
 
