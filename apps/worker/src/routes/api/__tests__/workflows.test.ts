@@ -3426,29 +3426,15 @@ describe('an ops workflow\'s environment variables at switch on, a live save and
     environment_variables: variables,
   })
 
-  it('switching an ops workflow on writes a new version first, then switches it on from it', async () => {
+  // Dan, 2026-10-30 (#3003): switching an ops workflow on just switches it on.
+  // The "Switched on" version #2702 wrote existed only so the version kept that
+  // day's variable values, which no run reads since #2982.
+  it('switching an ops workflow on writes no version, and switches it on from the version whose definition was checked (#3003)', async () => {
     const sb = client(opsOff, { list: [plain('API_BASE')] })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
     expect(res.status).toBe(200)
-    expect(sb.writes.map((w) => w.p_op)).toEqual(['save', 'patch'])
-    const [save, patch] = sb.writes
-    // No definition is sent, so the version snapshots the stored one.
-    expect(save).toMatchObject({ p_id: 'wf-1', p_expected_version: 4, p_fields: { message: 'Switched on' } })
-    expect(Object.keys(save.p_fields)).toEqual(['message'])
-    expect(patch).toMatchObject({ p_fields: { is_active: true }, p_expected_version: 5 })
-  })
-
-  it('a switch on whose new version cannot be written switches nothing on', async () => {
-    const sb = makeSupabase(
-      { users: { single: testUser }, workflows: [{ single: opsOff }], environment_variables: { list: [plain('API_BASE')] } },
-      { write: (args) => (args.p_op === 'save' ? { data: null, error: { code: 'XX000', message: 'the database is not answering' } } : defaultWrite(args)) },
-    )
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
-    expect(res.status).toBeGreaterThanOrEqual(500)
-    expect(writesOf(sb, 'patch')).toEqual([])
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'patch', p_id: 'wf-1', p_expected_version: 4, p_fields: { is_active: true } })])
   })
 
   it('switching a money workflow on, an ops workflow off, or one already on writes no version', async () => {
@@ -3471,7 +3457,7 @@ describe('an ops workflow\'s environment variables at switch on, a live save and
     vi.mocked(createSupabaseClient).mockReturnValue(off as unknown as ReturnType<typeof createSupabaseClient>)
     const switched = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
     expect(switched.status).toBe(200)
-    expect(off.writes.map((w) => w.p_op)).toEqual(['save', 'patch'])
+    expect(off.writes.map((w) => w.p_op)).toEqual(['patch'])
 
     const live = client({ ...opsOff, is_active: true, definition: reads() }, { list: [secretRow] })
     vi.mocked(createSupabaseClient).mockReturnValue(live as unknown as ReturnType<typeof createSupabaseClient>)

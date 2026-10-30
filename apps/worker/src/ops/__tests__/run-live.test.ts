@@ -163,17 +163,6 @@ describe('OpsInternal.run', () => {
     expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'current' } })
   })
 
-  it('runs a held version whose kept variables cannot be read, on its dispatch\'s current values (#3003)', async () => {
-    const db = opsDb({
-      ...LIFECYCLE, record_ops_step: 'recorded',
-      workflow_definition: [{ definition: readsBase, saved_at: '2026-10-17T09:00:00Z', variables: { values: { API_BASE: 7 }, secret_keys: 'x' } }],
-    })
-    const variables = { ...VARS, values: { API_BASE: 'current' } }
-    expect(await runDispatched(env(), await signed({ kind: 'run', run: RUN, variables }), deps(db.fetch))).toMatchObject({ outcome: 'completed' })
-    expect(db.names()).not.toContain('save_workflow_definition')
-    expect(db.calls.find((c) => c.name === 'record_ops_step')?.body).toMatchObject({ p_output: { base: 'current' } })
-  })
-
   it('gives a run the secret its dispatch carried, records the secret\'s name only, and masks its value from every record and log line (#2998)', async () => {
     const PLANTED = 'fake-run-live-secret-value'
     const def = { nodes: [{ id: 'shape', namespace: 'shape', type: 'transform', config: { mappings: [{ source: 'env.TOKEN', target: 't' }] } }], edges: [{ id: 'e0', source: 'trigger', target: 'shape' }] }

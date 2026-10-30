@@ -6,10 +6,10 @@
  * it to serve an ops run, and an ops step test, only the current values of the
  * variables its definition reads (ops-gateway.ts readOpsRunVariables,
  * routes/api/ops-step-test.ts), and to refuse a live save that reads one that
- * does not exist (routes/api/workflows.ts); the ops run uses it to refuse,
- * before any step, a definition reading one it was not given
- * (ops/run-walk.ts). So none of them can disagree about which variables a
- * definition reads. No imports, so the ops Worker takes nothing of the bidding
+ * does not exist (routes/api/workflows.ts); the ops run uses it (run-walk.ts)
+ * to refuse, before any step, a definition reading one it was not given
+ * (ops/run-variables.ts, runVariablesFor). So none of them can disagree about
+ * which variables a definition reads. No imports, so the ops Worker takes nothing of the bidding
  * Worker's with it.
  */
 
