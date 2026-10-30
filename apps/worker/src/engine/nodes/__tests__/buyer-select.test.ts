@@ -10,7 +10,7 @@ import { OBJECT_CALL_DEADLINE_MS, type ClientOptions } from '../../../lib/buyer-
 import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { Env } from '../../../index'
 import type { BuyerProfilesSnapshot, LoadedBuyer } from '../../../lib/buyer-profile-loader'
-import type { PartnerCallResult } from '../../../lib/post-to-partner'
+import { markNoAnswer, type PartnerCallResult } from '../../../lib/post-to-partner'
 import type { ClaimBody, ClaimResult } from '../../../durable-objects/lead-sale'
 import type { EntryKey, EntryResult, LedgerEntry, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
@@ -1510,14 +1510,15 @@ describe('the live buyer call\'s own timer is marked on the buyer\'s attempt row
     // The node's own row carries no marker: the budget marker is #3068's alone.
     expect(r.deadline).toBeUndefined()
 
-    // Everything else is what the same abort without a marker produces.
+    // Everything else is what the same abort without a marker produces, apart
+    // from the words, which since #3080 say our timer stopped the call.
     const { timeout: _timeout, ...markedRow } = r.attempts[0]
-    expect(markedRow).toEqual(before.attempts[0])
-    expect(r.failure).toEqual(before.failure)
-    expect(r.output).toEqual(before.output)
+    expect(withoutWords(markedRow)).toEqual(withoutWords(before.attempts[0]))
+    expect({ ...r.failure, message: undefined }).toEqual({ ...before.failure, message: undefined })
+    expect(withoutWords(r.output)).toEqual(withoutWords(before.output))
     expect(marked.buyerCalls).toEqual(plain.buyerCalls)
     expect(marked.breakerCalls).toEqual(plain.breakerCalls)
-    expect(marked.bidRows).toEqual(plain.bidRows)
+    expect(withoutWords(marked.bidRows)).toEqual(withoutWords(plain.bidRows))
     expect(marked.sales[0].state).toBe('in_flight')
   })
 
@@ -1555,6 +1556,71 @@ describe('the live buyer call\'s own timer is marked on the buyer\'s attempt row
       vi.useRealTimers()
       vi.unstubAllGlobals()
     }
+  })
+})
+
+/** The fields that carry the words: an attempt's and a considered buyer's detail, a row's error, a bid row's decline reason. */
+const WORDS = new Set(['detail', 'error', 'decline_reason'])
+
+/** A value with every field in WORDS left out, for comparing two runs that differ only in their words. */
+function withoutWords(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutWords)
+  if (value === null || typeof value !== 'object' || value instanceof Date) return value
+  return Object.fromEntries(Object.entries(value).filter(([k]) => !WORDS.has(k)).map(([k, v]) => [k, withoutWords(v)]))
+}
+
+/**
+ * #3080: a live buyer call that THREW (our timer, a connection reset, an abort
+ * from elsewhere) got no answer, so the attempt row, the considered entry and
+ * the node's failure say so, and why where the call knows it, instead of
+ * "buyer answered http null and no rule matched". The cause is read from the
+ * marks postToPartner and its timer leave on the error, never from its text.
+ * The route, the reason, the failure's type, the hold, the breaker and every
+ * send are what an unmarked abort produces. A real answer no rule matched
+ * keeps its words.
+ */
+describe('a live buyer call that got no answer says so, and why (#3080)', () => {
+  const platformAbort = () => new DOMException('The operation was aborted.', 'AbortError')
+  const cases = [
+    ['our timer', () => markDeadline(platformAbort(), BUYER_CALL_DEADLINE, BUYER_CALL_TIMEOUT_MS), `no answer arrived from the buyer within our ${BUYER_CALL_TIMEOUT_MS} ms limit, so we stopped the call`],
+    ['a connection reset', () => markNoAnswer(new TypeError('Network connection lost.'), 'connection'), 'no answer arrived from the buyer: the connection to it failed'],
+    ['an abort from elsewhere', () => markNoAnswer(platformAbort(), 'cancelled'), 'no answer arrived from the buyer: the call was cancelled, not by our time limit'],
+    ['a throw nothing marked', () => platformAbort(), 'no answer arrived from the buyer'],
+  ] as const
+
+  it.each(cases)('%s: the attempt row, the considered entry and the failure say no answer arrived', async (_label, thrown, detail) => {
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [thrown()] } })
+    const r = await run(h)
+    expect(r.failure).toEqual({ message: `buyer_select outcome_unknown: ${detail}`, errorType: 'transient', reason: 'outcome_unknown' })
+    expect(r.attempts).toHaveLength(1)
+    expect(r.attempts[0]).toMatchObject({ status: 'failed', error: detail, error_type: 'transient', output: { outcome: 'outcome_unknown', detail, http_status: null, held: true } })
+    expect(out(r).considered).toEqual([expect.objectContaining({ partner: 'tripoint', outcome: 'outcome_unknown', reason: 'outcome_unknown', detail })])
+    expect(h.bidRows).toEqual([expect.objectContaining({ partner_slug: 'tripoint', http_status: null, classification: 'transient', decline_reason: detail })])
+    expect(JSON.stringify({ r, bids: h.bidRows })).not.toMatch(/answered http null|no rule matched/)
+  })
+
+  it.each(cases)('%s: routes, holds, pages and sends exactly as an unmarked abort does', async (_label, thrown) => {
+    const marked = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [thrown()] } })
+    const plain = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [platformAbort()] } })
+    const r = await run(marked)
+    const before = await run(plain)
+    const { timeout: _timeout, ...markedRow } = r.attempts[0]
+    expect(withoutWords(markedRow)).toEqual(withoutWords(before.attempts[0]))
+    expect({ ...r.failure, message: undefined }).toEqual({ ...before.failure, message: undefined })
+    expect(withoutWords(r.output)).toEqual(withoutWords(before.output))
+    expect(marked.buyerCalls).toEqual(plain.buyerCalls)
+    expect(marked.breakerCalls).toEqual(plain.breakerCalls)
+    expect(withoutWords(marked.bidRows)).toEqual(withoutWords(plain.bidRows))
+    expect(marked.ledgers.get('p-1')!.calls).toEqual(plain.ledgers.get('p-1')!.calls)
+    expect(marked.sales[0].state).toBe('in_flight')
+  })
+
+  it('a real answer no rule matched keeps its words, and still does not fail the step', async () => {
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [UNMATCHED_200] } })
+    const r = await run(h)
+    expect(r.failure).toBeUndefined()
+    expect(out(r).considered).toEqual([expect.objectContaining({ partner: 'tripoint', outcome: 'outcome_unknown', detail: 'buyer answered http 200 and no rule matched' })])
+    expect(r.attempts[0]).toMatchObject({ status: 'completed', output: { detail: 'buyer answered http 200 and no rule matched', http_status: 200 } })
   })
 })
 
