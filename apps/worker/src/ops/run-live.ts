@@ -136,9 +136,7 @@ interface RunVersion {
 
 /**
  * The run's definition at its version: the frozen copy, else the bidding
- * Worker's, frozen. Throws when neither can be had. Variables an older bidding
- * Worker serves beside it, or an earlier deploy kept with the copy, are
- * neither read nor saved (#3003), so they can never stop a run.
+ * Worker's, frozen. Throws when neither can be had, saying why.
  */
 async function definitionOf(env: OpsEnv, client: OpsSupabaseClient, run: ClaimedRun, delay: RunLiveDeps['delay']): Promise<RunVersion> {
   const held = await readWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion)
@@ -152,9 +150,13 @@ async function definitionOf(env: OpsEnv, client: OpsSupabaseClient, run: Claimed
   const served = parseServedOpsDefinitions(r.value, asked)
   const def = served.definitions.find((d) => d.workflowId === run.workflowId && d.versionNumber === run.workflowVersion)
   if (def === undefined) {
-    // A version an older bidding Worker held and would not serve says why (#2702), rather than reading as one it lacks.
-    const refused = served.refused.find((r) => r.workflowId === run.workflowId)
-    throw new Error(refused?.text ?? `the bidding Worker holds no ops lane version ${run.workflowVersion} of workflow ${run.workflowId}`)
+    // Say which it was (#3122): a version bidding holds no row of, one served in a shape not read, or one not answered at all.
+    if (served.unserved.some((u) => u.workflowId === run.workflowId && u.versionNumber === run.workflowVersion)) {
+      throw new Error(`the bidding Worker holds no ops lane version ${run.workflowVersion} of workflow ${run.workflowId}`)
+    }
+    const unread = served.refused.filter((r) => r.workflowId === run.workflowId).map((r) => r.text)
+    throw new Error(unread.length > 0 ? unread.join(' ')
+      : `the bidding Worker answered for workflow ${run.workflowId} version ${run.workflowVersion} but neither served it nor said it holds none`)
   }
   if (def.organizationId !== run.organizationId) throw new Error(`the bidding Worker served workflow ${run.workflowId} under another organization than its run`)
   const saved = await saveWorkflowDefinition(client, run.organizationId, run.workflowId, run.workflowVersion, def.definition)
