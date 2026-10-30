@@ -54,7 +54,7 @@ import {
   CONNECTION_CHECK_JOB, CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, SF_LIMITS_JOB, TOMBSTONE_SERVE_WINDOW_MS, parseOpsJobId, parseOpsJobReport, parseOpsTickReport,
   inARowToPage, parseSealedEnvelope, sweepOfProblemKey,
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
-  servedConnectionProblem, UNSTARTED_RUNS_PAGE,
+  servedConnectionProblem, OPS_OWN_PAGES, UNSTARTED_RUNS_PAGE, ownPageOf, type OpsOwnPage, type OpsTickProblemKind,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
   type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
   MAX_RUN_VARIABLES_PER_REQUEST, type OpsRunVariablesRequest, type RefusedRunVariables, type RunVariablesRefusal, type ServedOpsRunVariableNames, type ServedOpsRunVariables,
@@ -1073,24 +1073,32 @@ export function notConfiguredFix(secrets: readonly string[] | null): string {
 const PROBLEMS_FIX = 'Search the bidspoke-worker-ops logs for ops_tick around the time of this alert: every problem is logged there with the tick it came from.'
 
 /**
- * The workflows a page for runs that cannot start is open for (#3039), one key
- * each under this prefix, so the first report that no longer names one stands
- * its page down. Written by runOpsTickReportCheck alone, a key per workflow so
- * a page is recorded even while the others cannot be listed. No expiry: a page
- * stays open until a readable report stands it down, as the alerter's own
- * condition does.
+ * The pages of their own that are open (#3039, #3000), one KV key each under
+ * their kind's prefix (opsOwnPagePrefix), keyed by the page's subject (a
+ * workflow's id, or nothing for a kind with one page), so the first report
+ * that judged the kind and no longer names one stands its page down. Written
+ * by runOpsTickReportCheck alone, a key per page so a page is recorded even
+ * while the others cannot be listed. No expiry: a page stays open until a
+ * readable report stands it down, as the alerter's own condition does.
+ *
+ * The page for runs that cannot start keeps the prefix it was first written
+ * under (OPS_TICK_UNSTARTED_PAGE_PREFIX), so a page open across this release
+ * is still stood down.
  */
 export const OPS_TICK_UNSTARTED_PAGE_PREFIX = 'ops-tick:unstarted-page:'
-/** More pages than are ever open (one read lists 15 workflows); a listing past it is refused rather than half read. */
-const MAX_UNSTARTED_PAGE_LISTS = 5
+export function opsOwnPagePrefix(kind: OpsTickProblemKind): string {
+  return kind === UNSTARTED_RUNS_PAGE.kind ? OPS_TICK_UNSTARTED_PAGE_PREFIX : `ops-tick:own-page:${kind}:`
+}
+/** More pages than are ever open of one kind (one report carries 20 problems); a listing past it is refused rather than half read. */
+const MAX_OWN_PAGE_LISTS = 5
 
 const WORKFLOW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
  * Each workflow's name, by id, from the bidding database: the workflows a
- * report names as having runs that cannot start, at most UNSTARTED_READ_LIMIT
- * (15) of them, so one bounded read. Throws on a failed read; the caller names
- * the workflow by its id instead.
+ * report names on a page of its own, at most a report's 20 problems, so one
+ * bounded read. Throws on a failed read; the caller names the workflow by its
+ * id instead.
  */
 async function readWorkflowNames(supabase: SupabaseClient, ids: readonly string[]): Promise<Map<string, string>> {
   const wanted = ids.filter((id) => WORKFLOW_ID.test(id))
@@ -1104,76 +1112,85 @@ async function readWorkflowNames(supabase: SupabaseClient, ids: readonly string[
   return names
 }
 
-/** The workflows whose page for runs that cannot start is open. Throws when they cannot all be listed. */
-async function listUnstartedPages(kv: KVNamespace): Promise<string[]> {
-  const ids: string[] = []
+/** The subjects of one kind whose page is open. Throws when they cannot all be listed. */
+async function listOwnPages(kv: KVNamespace, kind: OpsTickProblemKind): Promise<string[]> {
+  const prefix = opsOwnPagePrefix(kind)
+  const subjects: string[] = []
   let cursor: string | undefined
-  for (let i = 0; i < MAX_UNSTARTED_PAGE_LISTS; i++) {
-    const page = await kv.list({ prefix: OPS_TICK_UNSTARTED_PAGE_PREFIX, ...(cursor === undefined ? {} : { cursor }) })
-    for (const k of page.keys) ids.push(k.name.slice(OPS_TICK_UNSTARTED_PAGE_PREFIX.length))
-    if (page.list_complete) return ids
+  for (let i = 0; i < MAX_OWN_PAGE_LISTS; i++) {
+    const page = await kv.list({ prefix, ...(cursor === undefined ? {} : { cursor }) })
+    for (const k of page.keys) subjects.push(k.name.slice(prefix.length))
+    if (page.list_complete) return subjects
     cursor = page.cursor
   }
-  throw new Error(`more than ${MAX_UNSTARTED_PAGE_LISTS} listings of open pages`)
+  throw new Error(`more than ${MAX_OWN_PAGE_LISTS} listings of open pages`)
 }
 
+/** One problem of a kind that pages on its own: its subject, its sentence, and whether its rule has it due now or held. */
+interface OwnProblem {
+  subject: string
+  text: string
+  key: string
+  due: boolean
+}
+
+/** Whom an own page is about, in the bidding Worker's own error lines. */
+const pageOf = (page: OpsOwnPage, subject: string) => (page.perWorkflow ? `the page for workflow ${subject}'s ${page.about}` : `the page for ${page.about}`)
+
 /**
- * The pages for runs that cannot start (#3039): each workflow the report names
- * under UNSTARTED_RUNS_PAGE.kind pages on its own, as its own alert job, under
- * Dan's approved title and fix, and every workflow paged before that a
- * report judging every workflow with runs waiting no longer names is stood
- * down. Any other report (one it could not read, one that left problems out,
- * or one whose tick did not read every wait: a failed or full read, observe
- * mode, no database) stands nothing down. Never throws: each page is its own boundary, and the failures
+ * One kind's pages of their own (#3039, #3000): each due problem of the kind
+ * pages on its own, as its own alert job, under the kind's title and fix (with
+ * the workflow's name for a page per workflow, and the fixed sentence saying it
+ * was held for one its rule holds), and every page open before that a report
+ * judging the kind (known) no longer names is stood down. A held problem is
+ * neither paged nor stood down. Any other report (one it could not read, one
+ * that left problems out, or one whose tick did not judge the kind) stands
+ * nothing down. Never throws: each page is its own boundary, and the failures
  * are answered for the caller to raise once the rest is judged.
  */
-async function settleUnstartedPages(
-  supabase: SupabaseClient, kv: KVNamespace, own: ReadonlyArray<{ workflowId: string; text: string }>, known: boolean, nowMs: number,
+async function settleOwnPages(
+  supabase: SupabaseClient, kv: KVNamespace, page: OpsOwnPage, own: readonly OwnProblem[], known: boolean, names: ReadonlyMap<string, string>, nowMs: number,
   deps: OpsTickReportCheckDeps,
 ): Promise<{ paged: boolean; failures: string[] }> {
   const failures: string[] = []
+  const prefix = opsOwnPagePrefix(page.kind)
   let open: string[] | null = null
   try {
-    open = await listUnstartedPages(kv)
+    open = await listOwnPages(kv, page.kind)
   } catch (err) {
     // Not known which pages are open: none is stood down this time, and those paged now are still recorded.
-    failures.push(`the open pages for runs that cannot start could not be read: ${formatErr(err)}`)
-  }
-  let names = new Map<string, string>()
-  if (own.length > 0) {
-    try {
-      names = await (deps.workflowNames ?? readWorkflowNames)(supabase, own.map((o) => o.workflowId))
-    } catch (err) {
-      console.error(`[ops-tick] runs that cannot start are paged by workflow id: ${formatErr(err)}`)
-    }
+    failures.push(`the open pages for ${page.about} could not be read: ${formatErr(err)}`)
   }
   let paged = false
-  for (const o of own) {
-    const name = names.get(o.workflowId) ?? `workflow ${o.workflowId}`
+  for (const o of own.filter((p) => p.due)) {
+    const name = page.perWorkflow ? names.get(o.subject) ?? `workflow ${o.subject}` : ''
+    const held = inARowToPage(o.key) !== null
     try {
-      await deps.notifyFailure(supabase, UNSTARTED_RUNS_PAGE.job(o.workflowId), [o.text], kv, { title: UNSTARTED_RUNS_PAGE.title(name), fixHint: UNSTARTED_RUNS_PAGE.fix }, nowMs, { repeatsHeldByCaller: true })
+      await deps.notifyFailure(supabase, page.job(o.subject), [o.text], kv, {
+        title: page.title(name), fixHint: page.fix, ...(held ? { context: repeatedContext([o.key]) } : {}),
+      }, nowMs, { repeatsHeldByCaller: true })
       paged = true
     } catch (err) {
-      failures.push(`the page for workflow ${o.workflowId}'s runs that cannot start failed: ${formatErr(err)}`)
+      failures.push(`${pageOf(page, o.subject)} failed: ${formatErr(err)}`)
     }
     // Recorded whether or not it delivered, so its all clear still follows.
-    if (open === null || !open.includes(o.workflowId)) {
+    if (open === null || !open.includes(o.subject)) {
       try {
-        await kv.put(`${OPS_TICK_UNSTARTED_PAGE_PREFIX}${o.workflowId}`, new Date(nowMs).toISOString())
+        await kv.put(`${prefix}${o.subject}`, new Date(nowMs).toISOString())
       } catch (err) {
-        failures.push(`the page for workflow ${o.workflowId}'s runs that cannot start could not be recorded: ${formatErr(err)}`)
+        failures.push(`${pageOf(page, o.subject)} could not be recorded: ${formatErr(err)}`)
       }
     }
   }
   if (known && open !== null) {
-    const current = own.map((o) => o.workflowId)
-    for (const id of open) {
-      if (current.includes(id)) continue
+    const named = own.map((o) => o.subject)
+    for (const subject of open) {
+      if (named.includes(subject)) continue
       try {
-        await deps.notifyRecovery(kv, UNSTARTED_RUNS_PAGE.job(id), nowMs)
-        await kv.delete(`${OPS_TICK_UNSTARTED_PAGE_PREFIX}${id}`)
+        await deps.notifyRecovery(kv, page.job(subject), nowMs)
+        await kv.delete(`${prefix}${subject}`)
       } catch (err) {
-        failures.push(`the all clear for workflow ${id}'s runs that cannot start failed: ${formatErr(err)}`)
+        failures.push(`the all clear for ${pageOf(page, subject).replace(/^the page for /, '')} failed: ${formatErr(err)}`)
       }
     }
   }
@@ -1219,17 +1236,45 @@ export async function runOpsTickReportCheck(
   // An unreadable time is judged as fresh, the side that pages, never read as an
   // old report and left quiet (L50). Only a readable, old one is the heartbeat's.
   if (Number.isFinite(receivedMs) && nowMs - receivedMs > OPS_TICK_REPORT_FRESH_MS) return 'stale'
-  // Runs that cannot start page on their own pages (#3039), and leave the
-  // minute cron's page: it is judged on the rest of the report alone.
+  // The kinds that page on pages of their own (#3039, #3000) leave the minute
+  // cron's page: it is judged on the rest of the report alone.
   const keys = kept.problem_keys
-  const isUnstarted = (i: number) => keys !== null && keys.length === kept.problems.length && keys[i].startsWith(`${UNSTARTED_RUNS_PAGE.kind}:`)
-  const own = kept.problems.flatMap((text, i) => (isUnstarted(i) ? [{ workflowId: (keys as string[])[i].slice(UNSTARTED_RUNS_PAGE.kind.length + 1), text }] : []))
-  // Stood down only on a report that judged every workflow with runs waiting, and left no problem out.
-  const known = keys !== null && keys.length === kept.problems.length && !keys.includes('report_unreadable') && !keys.includes('problems_left_out')
-    && kept.counts[UNSTARTED_RUNS_PAGE.judgedCount] === 1
-  const unstarted = await settleUnstartedPages(supabase, kv, own, known, nowMs, deps)
-  if (own.length > 0) {
-    const rest = (_: unknown, i: number) => !isUnstarted(i)
+  const aligned = keys !== null && keys.length === kept.problems.length
+  const ownAt = (i: number) => (aligned ? ownPageOf((keys as string[])[i]) : null)
+  const runs = kept.problem_streaks
+  // Stood down only on a report that judged the kind, and left no problem out.
+  const readable = aligned && !(keys as string[]).includes('report_unreadable') && !(keys as string[]).includes('problems_left_out')
+  const owned = OPS_OWN_PAGES.map((page) => ({
+    page,
+    own: kept.problems.flatMap((text, i): OwnProblem[] => {
+      if (ownAt(i) !== page) return []
+      const key = (keys as string[])[i]
+      const pagesAt = inARowToPage(key)
+      // Runs that cannot be matched to the problems page every problem (L50).
+      const due = pagesAt === null || runs === null || runs[i] === undefined || runs[i].in_a_row >= pagesAt
+      return [{ subject: key.slice(page.kind.length + 1), text, key, due }]
+    }),
+  }))
+  let names = new Map<string, string>()
+  const workflowIds = [...new Set(owned.flatMap(({ page, own }) => (page.perWorkflow ? own.filter((o) => o.due).map((o) => o.subject) : [])))]
+  if (workflowIds.length > 0) {
+    try {
+      names = await (deps.workflowNames ?? readWorkflowNames)(supabase, workflowIds)
+    } catch (err) {
+      console.error(`[ops-tick] the pages of their own name each workflow by its id: ${formatErr(err)}`)
+    }
+  }
+  let ownPaged = false
+  let ownHeld = false
+  const ownFailures: string[] = []
+  for (const { page, own } of owned) {
+    const settled = await settleOwnPages(supabase, kv, page, own, readable && kept.counts[page.judgedCount] === 1, names, nowMs, deps)
+    ownPaged ||= settled.paged
+    ownHeld ||= own.some((o) => !o.due)
+    ownFailures.push(...settled.failures)
+  }
+  if (owned.some(({ own }) => own.length > 0)) {
+    const rest = (_: unknown, i: number) => ownAt(i) === null
     const problems = kept.problems.filter(rest)
     kept = {
       ...kept,
@@ -1240,8 +1285,10 @@ export async function runOpsTickReportCheck(
     }
   }
   const verdict = await judgeTickPage(supabase, kv, kept, nowMs, deps)
-  if (unstarted.failures.length > 0) throw new Error(`[ops-tick] ${unstarted.failures.join('; ')}`)
-  return unstarted.paged ? 'alerted' : verdict
+  if (ownFailures.length > 0) throw new Error(`[ops-tick] ${ownFailures.join('; ')}`)
+  if (ownPaged) return 'alerted'
+  // A problem of a page of its own still held is neither paged nor read as healthy.
+  return ownHeld && verdict === 'healthy' ? 'held' : verdict
 }
 
 /** The minute cron's own page, judged on a kept report (#2506, #2340). */

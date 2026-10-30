@@ -1,18 +1,4 @@
 {
   "about": "Differences a pull request MEANS to make to what the bidding engine sends or decides. Each entry: workflow, check, optional node pattern, field pattern (* matches anything), and a reason in words. An entry excuses differences only in the change that adds it; once on main it is carried over and excuses nothing, and once the live worker runs the commit that added it, every pull request fails until it is deleted. A new entry that matches no difference fails the gate. See README.md, Reading a red.",
-  "entries": [
-    {
-      "workflow": "Main Flow",
-      "check": "nodes_executed",
-      "field": "nodes_executed",
-      "reason": "Intended by #3084: the same nodes run, listed in a new order. The list is read from the step rows sorted by step order, and parallel_1's slots now have their own runs of orders, so it lists trades_body, trades_request, pennie_debt_calculation, send_salesforce_inquiry, collections_body, collections_apex (slot then chain order) where ties used to be broken by namespace."
-    },
-    {
-      "workflow": "Main Flow",
-      "check": "supabase_write",
-      "node": "insert execution_steps",
-      "field": "insert execution_steps values[*",
-      "reason": "Intended by #3084: only step_order moves. parallel_1's slot chains (3, 1 and 2 steps) took shared orders; each slot now has a range as wide as its chain, so parallel_end and every step after the block move up by 3. The gate lines the rows up by order, so every field of a moved row reads as changed. Checked against both transcripts with step_order set aside: all 131 fixtures match exactly, the 20 Main Flow ones differ only in step_order and the listing order, and no head run holds a shared order where all 20 base runs did."
-    }
-  ]
+  "entries": []
 }
