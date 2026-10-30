@@ -11,7 +11,16 @@
  *
  * A request no rule matches is answered 599 and named in the coverage report, so a
  * fixture that wandered somewhere unexpected is visible rather than quietly green.
+ *
+ * An answer can also fail to arrive whole (#3086), as a buyer's sometimes does:
+ * its `ending` says how, and answerFetch plays it out as the platform's fetch
+ * would. Only the engine's own fetch can be given one; a code bundle's requests
+ * reach the gate through its outbound service, where a throw arrives as an HTTP
+ * 500, so codeBundleRefusal names any such answer there instead.
  */
+import type { WaitOnReplayTime } from './engine-timers'
+
+export type { WaitOnReplayTime } from './engine-timers'
 
 export interface StubRequest {
   method: string
@@ -20,11 +29,32 @@ export interface StubRequest {
   body: unknown
 }
 
+/**
+ * How an answer fails to arrive whole (#3086). Absent, it arrives whole.
+ *   connection_failed  the fetch rejects before any header, with nothing aborted,
+ *                      as a refused or dropped connection does.
+ *   no_headers         no header ever arrives: the fetch rejects only when the
+ *                      request's own signal aborts, with that signal's reason.
+ *   body_cut_off       the headers and the first piece of the body arrive, then
+ *                      the connection drops.
+ *   body_trickles      the headers and the first piece arrive at once, then one
+ *                      piece every TRICKLE_EVERY_MS of replay time, the last far
+ *                      past any buyer call's limit, until the signal aborts.
+ */
+export type AnswerEnding = 'connection_failed' | 'no_headers' | 'body_cut_off' | 'body_trickles'
+
 export interface StubAnswer {
   status: number
   headers?: Record<string, string>
+  /** For an answer with an ending, what the buyer would have sent had it arrived whole. */
   body: unknown
+  ending?: AnswerEnding
 }
+
+/** A trickling body's pace, in replay time: its last piece arrives at seven times this, past a 20 s limit. */
+export const TRICKLE_EVERY_MS = 5_000
+/** How many pieces a cut off or trickling body is sent in. */
+const BODY_PIECES = 8
 
 /** Rule name to scenario name, from the fixture variant. A rule a variant does not name uses its default. */
 export type Arms = Record<string, string>
@@ -116,6 +146,9 @@ const creditTrades = (calc: Record<string, unknown>) => (): StubAnswer => json({
 const engineData = (loanOffers: unknown[]) => ({ uuid: 'engine-gate-uuid-0001', leadUuid: 'engine-gate-lead-0001', loanOffers, specialOffers: [] })
 
 const tripoint = (createLead: Record<string, unknown> | null, ok = true, status = 200) => (): StubAnswer => json({ ok, data: { createLead } }, status)
+
+/** The answer `whole` gives, failing to arrive whole as `how` says (#3086). */
+const ending = (how: AnswerEnding, whole: (r: StubRequest) => StubAnswer) => (r: StubRequest): StubAnswer => ({ ...whole(r), ending: how })
 
 export const RULES: Rule[] = [
   // ── Salesforce (the instance host is a placeholder, so these match on path) ──
@@ -356,6 +389,13 @@ export const RULES: Rule[] = [
       null_id_fault: () => json({ ok: false, details: [{ message: 'Cannot return null for non-nullable field CreateLeadResponse.id.' }] }, 502),
       invalid_data: () => json({ ok: false, details: [{ message: 'Invalid email address' }] }, 502),
       outage: () => json({ error: 'upstream timeout' }, 504),
+      // The live buyer call getting no complete answer (#3086), each an acceptance
+      // that never arrives whole, since a buyer that may have taken the lead is the
+      // case the hold exists for.
+      no_answer_timeout: ending('no_headers', tripoint({ id: 'TP-GATE-0005', resultCode: 1000 })),
+      connection_failed: ending('connection_failed', tripoint({ id: 'TP-GATE-0005', resultCode: 1000 })),
+      body_cut_off: ending('body_cut_off', tripoint({ id: 'TP-GATE-0005', resultCode: 1000 })),
+      body_trickle_timeout: ending('body_trickles', tripoint({ id: 'TP-GATE-0005', resultCode: 1000 })),
     },
   },
 
@@ -422,11 +462,96 @@ export function stubAnswer(req: StubRequest, arms: Arms): { rule: string; scenar
   return null
 }
 
-/** The answer as a Response, with no body where HTTP allows none (a 204 carries none). */
+/** The answer as a Response, with no body where HTTP allows none (a 204 carries none). Refuses one that does not arrive whole. */
 export function toResponse(answer: StubAnswer): Response {
+  if (answer.ending) throw new Error(`money gate: an answer that ends ${answer.ending} does not arrive whole, so it cannot be sent as a whole Response; answerFetch plays it out`)
   const empty = answer.status === 204 || answer.status === 205 || answer.status === 304
-  const body = empty ? null : typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body)
-  return new Response(body, { status: answer.status, headers: answer.headers ?? { 'content-type': 'application/json' } })
+  return new Response(empty ? null : bodyText(answer), { status: answer.status, headers: answer.headers ?? { 'content-type': 'application/json' } })
+}
+
+function bodyText(answer: StubAnswer): string {
+  return typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body)
+}
+
+const CONNECTION_LOST = 'money gate: network connection lost'
+
+/** What the platform's fetch rejects with when a connection drops; the message says where it came from. */
+const connectionLost = (): TypeError => new TypeError(CONNECTION_LOST)
+
+/**
+ * Whether an unhandled error vitest reports is a no answer the replay played out
+ * (#3086): a dropped connection from answerFetch, or the abort a held answer
+ * caused by moving the replay's time on to the engine's own timer. workerd
+ * reports a rejected fetch as unhandled even when its caller awaits it (README,
+ * the outage drill's known quirk), and postToPartner awaits these: the replay
+ * records each as no answer. Matched on the error AND its origin in the gate's
+ * own files, so any other unhandled error still fails the run.
+ */
+export function isReplayedNoAnswerRejection(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const e = err as { name?: unknown; message?: unknown; stack?: unknown }
+  const stack = typeof e.stack === 'string' ? e.stack : ''
+  if (!/money-gate\/lib\/stub-rules\.ts/.test(stack)) return false
+  const dropped = e.name === 'TypeError' && e.message === CONNECTION_LOST
+  const advancedAbort = e.name === 'AbortError' && /money-gate\/lib\/engine-timers\.ts/.test(stack)
+  return dropped || advancedAbort
+}
+
+/** The signal's own reason, as the platform's fetch rejects an aborted request with. */
+const abortReason = (signal: AbortSignal): unknown => signal.reason ?? new DOMException('The operation was aborted.', 'AbortError')
+
+/**
+ * What the engine's fetch does with `answer` for a request sent with `signal`
+ * (#3086): resolves with the Response, or rejects as the platform's fetch does
+ * when no complete answer arrives. A held answer waits only on `wait`, the
+ * replay's own time, so nothing here waits for real.
+ */
+export async function answerFetch(answer: StubAnswer, signal: AbortSignal | undefined, wait: WaitOnReplayTime): Promise<Response> {
+  const how = answer.ending
+  if (!how) return toResponse(answer)
+  if (how === 'connection_failed') throw connectionLost()
+  if ((how === 'no_headers' || how === 'body_trickles') && !signal) {
+    throw new Error(`money gate: an answer that ends ${how} was asked for by a request with no signal, so nothing could ever end its wait`)
+  }
+  if (how === 'no_headers') {
+    await wait(signal!)
+    throw abortReason(signal!)
+  }
+  const text = bodyText(answer)
+  const size = Math.ceil(text.length / BODY_PIECES)
+  const pieces = Array.from({ length: Math.ceil(text.length / size) }, (_, i) => text.slice(i * size, (i + 1) * size))
+  const encoder = new TextEncoder()
+  let next = 0
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      // Errored with the signal's own reason, as the fetch standard's abort does to a body being read.
+      if (signal) signal.addEventListener('abort', () => controller.error(abortReason(signal)), { once: true })
+    },
+    async pull(controller) {
+      if (next > 0 && how === 'body_cut_off') {
+        controller.error(connectionLost())
+        return
+      }
+      if (next > 0 && (await wait(signal!, TRICKLE_EVERY_MS)) === 'aborted') return
+      if (signal?.aborted) return
+      controller.enqueue(encoder.encode(pieces[next]))
+      next += 1
+      if (next === pieces.length) controller.close()
+    },
+  }, { highWaterMark: 0 })
+  return new Response(stream, { status: answer.status, headers: answer.headers ?? { 'content-type': 'application/json' } })
+}
+
+/**
+ * Why a code bundle's request cannot be given this answer, or null when it can
+ * (#3086). A bundle's requests reach the gate through its outbound service, where
+ * a throw arrives as an HTTP 500 rather than as a failed fetch, and its timers are
+ * out of the lift's reach, so an answer that does not arrive whole is refused by
+ * name rather than played as something else.
+ */
+export function codeBundleRefusal(hit: { rule: string; scenario: string; answer: StubAnswer }, fixture: string): string | null {
+  if (!hit.answer.ending) return null
+  return `money gate: ${fixture}: a code bundle asked for ${hit.rule}/${hit.scenario}, which ends ${hit.answer.ending}; only the engine's own fetch can be given an answer that does not arrive whole`
 }
 
 /** A request body as text whatever its content type, read as bytes so a form body is not flagged as binary. */
