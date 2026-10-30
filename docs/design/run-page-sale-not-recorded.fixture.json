@@ -1,0 +1,11 @@
+{
+  "about": "The data the settled design run-page-sale-not-recorded.html draws (#3129): one buyer_select step, live, whose second buyer accepted and whose sale Bidspoke could not record.",
+  "step_namespace": "select_buyer",
+  "mode": "Live",
+  "headline": "No sale: Buyer accepted, but the sale could not be recorded",
+  "rows": [
+    {"priority": 1, "partner": "liberty1", "outcome": "Not eligible", "tone": "gray", "payout": "$45.00", "why": "State not accepted"},
+    {"priority": 2, "partner": "tripoint", "outcome": "Sale not recorded", "tone": "amber", "payout": "$38.00", "why": "Buyer accepted, but the sale could not be recorded"}
+  ],
+  "unresolved_partner": "tripoint"
+}

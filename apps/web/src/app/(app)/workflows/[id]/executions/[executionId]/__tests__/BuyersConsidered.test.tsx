@@ -166,6 +166,28 @@ describe('an unknown outcome, by whether an answer arrived (#3087)', () => {
     expect(why.textContent).toBe('No answer from the buyer')
   })
 
+  // #3129, Dan 2026-10-30: the buyer accepted and Bidspoke's own commit or mark
+  // sold after it failed. The row records the answer, so it reads apart from an
+  // answer no rule matched, which carries the same http 200.
+  it('an accepted answer whose sale could not be recorded reads Sale not recorded, in the row and the headline (#3129)', () => {
+    const detail = 'lead sale sold did not answer in 3000 ms'
+    render(<BuyersConsidered step={step(unresolved(detail))} attempts={[attempt({ outcome: 'outcome_unknown', detail, http_status: 200, held: true, answer: 'accepted', timing: { ...timing, commit_ms: 90 } })]} />)
+    const row = screen.getAllByRole('row')[2]
+    // Dan, #3129 design round 1: the amber badge, the same as Answer not classified.
+    expect(within(row).getByText('Sale not recorded')).toHaveClass('bg-amber-50', 'text-amber-700')
+    const why = within(row).getAllByRole('cell').at(-1)!
+    expect(why.textContent).toBe(`Buyer accepted, but the sale could not be recorded. ${detail}`)
+    expect(screen.getByText(/^No sale: Buyer accepted, but the sale could not be recorded/)).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/could not be classified|Answer not classified|No answer/)
+  })
+
+  it('a row recorded before the answer field keeps the words it had (#3129)', () => {
+    const detail = 'lead sale sold did not answer in 3000 ms'
+    render(<BuyersConsidered step={step(unresolved(detail))} attempts={[attempt({ outcome: 'outcome_unknown', detail, http_status: 200, held: true, timing: { ...timing, commit_ms: 90 } })]} />)
+    expect(within(screen.getAllByRole('row')[2]).getByText('Answer not classified')).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/Sale not recorded/)
+  })
+
   it('reads only the attempt row of the buyer named on the entry', () => {
     const other = { step_namespace: 'sell_to_buyer.acme', output: { outcome: 'outcome_unknown', http_status: null, held: true, timing } }
     render(<BuyersConsidered step={step(unresolved('buyer answered http 200 and no rule matched'))} attempts={[other]} />)
@@ -207,5 +229,18 @@ describe('the execution page places the table', () => {
     expect(within(section).getByText('No answer')).toBeInTheDocument()
     expect(within(section).getByText(/^No sale: No answer from the buyer/)).toBeInTheDocument()
     expect(within(section).queryByText(/could not be classified|Answer not classified/)).toBeNull()
+  })
+
+  it('an accepted answer whose sale could not be recorded reads Sale not recorded on the page (#3129)', () => {
+    const detail = 'lead sale sold did not answer in 3000 ms'
+    const child = {
+      ...step({}), id: 'step-2', step_type: 'partner_bid', step_namespace: 'sell_to_buyer.tripoint', parallel_group_id: 'node-1', status: 'completed', step_order: 5,
+      output: { outcome: 'outcome_unknown', detail, http_status: 200, held: true, answer: 'accepted', partner_slug: 'tripoint', payout_cents: 2190, kind: 'live', timing: { ...timing, commit_ms: 90 } },
+    }
+    vi.mocked(useExecution).mockReturnValue(pageState([step(unresolved(detail)), child]) as never)
+    render(<ExecutionDetailPage />)
+    const section = screen.getByRole('region', { name: 'Buyers considered' })
+    expect(within(section).getByText('Sale not recorded')).toBeInTheDocument()
+    expect(within(section).getByText(/^No sale: Buyer accepted, but the sale could not be recorded/)).toBeInTheDocument()
   })
 })
