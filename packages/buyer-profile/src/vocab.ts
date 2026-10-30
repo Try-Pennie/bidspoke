@@ -139,21 +139,36 @@ export const OUT_REASONS = [
 export type OutReason = (typeof OUT_REASONS)[number]
 
 /**
- * The two kinds of outcome_unknown a live buyer call can leave (#3087), worded
- * by whether an answer arrived (Dan, 2026-10-30). `no_answer`: the request left
- * and no answer came back (our timer, a connection failure, a cancelled call).
- * `not_classified`: an answer arrived and no rule matched it, which is also the
- * wording of every other outcome_unknown. The node records both as
- * outcome_unknown; the run page tells them apart with `unresolvedAnswerOf`
+ * The buyer's answer as a buyer_select attempt row records it, in its `answer`
+ * field (#3129): the classifier's verdict on an answer that arrived
+ * (`attemptAnswerOf` in outcome.ts). A row where no answer arrived, or no buyer
+ * was called (a rehearsal, a replayed sale, a config error), records none, and
+ * so does every row written before #3129. Its own words rather than the row's
+ * `outcome`, because the outcome also says what became of the sale afterwards:
+ * an accepted answer whose commit or mark sold failed is outcome_unknown.
+ */
+export const ATTEMPT_ANSWERS = ['accepted', 'declined', 'error', 'unmatched'] as const
+export type AttemptAnswer = (typeof ATTEMPT_ANSWERS)[number]
+
+/**
+ * The kinds of outcome_unknown a live buyer call can leave (#3087, #3129),
+ * worded by what the buyer answered (Dan, 2026-10-30). `no_answer`: the request
+ * left and no answer came back (our timer, a connection failure, a cancelled
+ * call). `not_classified`: an answer arrived and no rule matched it, which is
+ * also the wording of every other outcome_unknown. `accepted_not_recorded`: the
+ * buyer accepted and Bidspoke's own commit or mark sold after it failed, so the
+ * sale stands at the buyer and was not recorded here. The node records all three
+ * as outcome_unknown; the run page tells them apart with `unresolvedAnswerOf`
  * (unresolved-answer.ts), and the outcome_unknown labels of OUT_REASON_LABELS
  * and CONSIDERED_OUTCOME_LABELS are read from here, so there is one list.
  */
-export const UNRESOLVED_ANSWERS = ['no_answer', 'not_classified'] as const
+export const UNRESOLVED_ANSWERS = ['no_answer', 'not_classified', 'accepted_not_recorded'] as const
 export type UnresolvedAnswer = (typeof UNRESOLVED_ANSWERS)[number]
 
 export const UNRESOLVED_ANSWER_LABELS: Record<UnresolvedAnswer, { reason: string; outcome: string }> = {
   no_answer: { reason: 'No answer from the buyer', outcome: 'No answer' },
   not_classified: { reason: 'Buyer response could not be classified', outcome: 'Answer not classified' },
+  accepted_not_recorded: { reason: 'Buyer accepted, but the sale could not be recorded', outcome: 'Sale not recorded' },
 }
 
 /** Plain words for the execution view. The Record type makes a missing label a compile error (L113). */

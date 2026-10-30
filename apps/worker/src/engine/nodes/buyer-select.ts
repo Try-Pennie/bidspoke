@@ -48,6 +48,8 @@ import {
   parsePositiveAmount,
   parseUsState,
   responseClassOf,
+  attemptAnswerOf,
+  type AttemptAnswer,
   type ResponseClass,
   type UsState,
   type OutReason,
@@ -708,8 +710,9 @@ class Run {
     // When each step of the attempt landed, read on the same clock, to time each object call (#1804).
     const landed: Partial<Record<AttemptStep, number>> = {}
     // What the buyer answered, kept beside the outcome so a decline's sale can name
-    // the code and the class Salesforce records (#1416). Null until an answer arrives.
-    let lastAnswer: { record: SaleOutcomeRecord; response_class: ResponseClass | null } | null = null
+    // the code and the class Salesforce records (#1416), and the classified answer the
+    // attempt row records (#3129). Null until an answer arrives.
+    let lastAnswer: { record: SaleOutcomeRecord; response_class: ResponseClass | null; answer: AttemptAnswer } | null = null
     // Set when the call's own timer stopped it (#3075), read from the error's mark,
     // never its text: the marker this buyer's attempt row carries. Nothing decides on it.
     let callTimeout: StepTimeoutMarker | null = null
@@ -751,7 +754,7 @@ class Run {
       const decline = partner.response_classification?.rejection_signals ?? []
       const verdict = evaluateSaleOutcome(partner.accept_signals, decline as unknown as Signal[], res.status, res.json, res.isHtml, true)
       const record = recordFrom(partner, res, c.payoutCents)
-      lastAnswer = { record, response_class: responseClassOf(verdict.outcome, partner.duplicate_signals, res.json) }
+      lastAnswer = { record, response_class: responseClassOf(verdict.outcome, partner.duplicate_signals, res.json), answer: attemptAnswerOf(verdict.outcome) }
       return { outcome: verdict.outcome, record }
     }
 
@@ -848,6 +851,12 @@ class Run {
         this.deps.log({ event: 'buyer_select_body_hash_unmeasured', step_namespace: this.node.namespace, reason: 'sent', partner_slug: partner.slug, error_message: messageOf(err) })
       }
     }
+    // The buyer's classified answer, on every row of an attempt one arrived in (#3129), so an
+    // accepted answer whose commit or mark sold then failed reads apart from one no rule matched
+    // (`unresolvedAnswerOf`). None when no answer arrived or no buyer was called. Recorded only:
+    // nothing routes, sends or decides on it.
+    const arrived = lastAnswer as { answer: AttemptAnswer } | null
+    const answered: { answer?: AttemptAnswer } = arrived ? { answer: arrived.answer } : {}
 
     if (result.result === 'sold') {
       // An accepted sale is Success whichever answer produced it, a replayed earlier sale included.
@@ -855,7 +864,7 @@ class Run {
       this.out.mirrored = result.mirrored
       this.out.replay = result.replay
       this.consider(c, live ? 'sold' : 'rehearsed', undefined, result.replay ? 'replay of an earlier sale' : undefined)
-      this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, 'completed', { outcome: 'accepted', replay: result.replay, mirrored: result.mirrored, http_status: status, result_code: result.outcome.result_code }, null, null))
+      this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, 'completed', { outcome: 'accepted', replay: result.replay, mirrored: result.mirrored, http_status: status, result_code: result.outcome.result_code, ...answered }, null, null))
       if (live && buyerCalled) this.logBid(c, startedAt, completedAt, status, 'accept', null)
       return { kind: 'sold', result: this.done(live ? 'sold' : 'deferred', live ? 'sold' : 'decide_only') }
     }
@@ -869,7 +878,7 @@ class Run {
         const answer = lastAnswer as { record: SaleOutcomeRecord; response_class: ResponseClass | null } | null
         this.out.sale = saleOf(false, answer?.record ?? null, answer?.response_class ?? null)
         this.consider(c, reason, reason, detail)
-        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, 'completed', { outcome: reason, detail, http_status: status }, null, null))
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, 'completed', { outcome: reason, detail, http_status: status, ...answered }, null, null))
         if (live && buyerCalled) this.logBid(c, startedAt, completedAt, status, 'decline', detail ?? reason)
         return { kind: 'next', reason, detail }
       }
@@ -878,7 +887,7 @@ class Run {
         this.out.sale = saleOf(false, null, null)
         this.consider(c, 'outcome_unknown', 'outcome_unknown', detail)
         const failing = lastCall === null || (lastCall as { thrown: boolean }).thrown || status === null || status >= 500
-        const unknownRow = this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, failing ? 'failed' : 'completed', { outcome: 'outcome_unknown', detail, http_status: status, held: true }, failing ? detail ?? 'outcome_unknown' : null, failing ? 'transient' : null)
+        const unknownRow = this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, failing ? 'failed' : 'completed', { outcome: 'outcome_unknown', detail, http_status: status, held: true, ...answered }, failing ? detail ?? 'outcome_unknown' : null, failing ? 'transient' : null)
         // The call's own timer stopped it: this row is the one it cut short (#3075).
         const timedOut = callTimeout as StepTimeoutMarker | null
         this.attempts.push(timedOut ? { ...unknownRow, timeout: timedOut } : unknownRow)

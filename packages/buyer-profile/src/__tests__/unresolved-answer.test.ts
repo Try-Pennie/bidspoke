@@ -23,9 +23,21 @@ describe('the unresolved answer labels', () => {
     expect(UNRESOLVED_ANSWER_LABELS.not_classified).toEqual({ reason: 'Buyer response could not be classified', outcome: 'Answer not classified' })
   })
 
-  it('labels exactly the two cases', () => {
-    expect([...UNRESOLVED_ANSWERS].sort()).toEqual(['no_answer', 'not_classified'])
+  // #3129, Dan 2026-10-30: the buyer accepted, and Bidspoke's own commit or
+  // mark sold after it failed, so the sale stands at the buyer and is not
+  // recorded here.
+  it('words an accepted answer whose sale could not be recorded as Dan chose (#3129)', () => {
+    expect(UNRESOLVED_ANSWER_LABELS.accepted_not_recorded).toEqual({ reason: 'Buyer accepted, but the sale could not be recorded', outcome: 'Sale not recorded' })
+  })
+
+  it('labels exactly the three cases, in plain words with no dash or emoji', () => {
+    expect([...UNRESOLVED_ANSWERS].sort()).toEqual(['accepted_not_recorded', 'no_answer', 'not_classified'])
     expect(Object.keys(UNRESOLVED_ANSWER_LABELS).sort()).toEqual([...UNRESOLVED_ANSWERS].sort())
+    for (const kind of UNRESOLVED_ANSWERS) {
+      for (const words of Object.values(UNRESOLVED_ANSWER_LABELS[kind])) {
+        expect(words, kind).toMatch(/^[^\u{2013}\u{2014}\u{1F300}-\u{1FAFF}_]+$/u)
+      }
+    }
   })
 
   it('is where the outcome_unknown labels of both code lists come from', () => {
@@ -61,5 +73,45 @@ describe('unresolvedAnswerOf, from the attempt row the buyer_select node writes'
   it('a missing status is not read as no status', () => {
     expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', timing })).toBe('not_classified')
     expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', http_status: '200', timing })).toBe('not_classified')
+  })
+})
+
+/**
+ * #3129: the row now records the buyer's classified answer as `answer`, so an
+ * accepted answer whose commit or mark sold failed afterwards (buyer-sale-attempt.ts
+ * steps 4 and 5) reads apart from an answer no rule matched. Both carry http 200.
+ */
+describe('unresolvedAnswerOf reads the answer the row records (#3129)', () => {
+  const afterCommit = { ...timing, commit_ms: 90 }
+
+  it('an accepted answer on an unknown outcome is a sale that could not be recorded', () => {
+    // The commit failed: no commit_ms.
+    expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', http_status: 200, held: true, answer: 'accepted', timing })).toBe('accepted_not_recorded')
+    // The mark sold failed after the commit landed.
+    expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', http_status: 200, held: true, answer: 'accepted', timing: afterCommit })).toBe('accepted_not_recorded')
+  })
+
+  it('an unmatched answer is still not classified', () => {
+    expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', http_status: 200, held: true, answer: 'unmatched', timing })).toBe('not_classified')
+  })
+
+  it('a recorded answer of any kind means one arrived, so it is never read as no answer', () => {
+    expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', http_status: null, held: true, answer: 'unmatched', timing })).toBe('not_classified')
+  })
+
+  it('an accepted answer on a row that recorded the sale is not unresolved', () => {
+    expect(unresolvedAnswerOf({ outcome: 'accepted', http_status: 200, answer: 'accepted', timing: afterCommit })).toBeNull()
+  })
+
+  it('a row written before the field keeps the reading it had', () => {
+    // An accepted answer whose mark sold failed, as it was recorded before #3129: no answer field.
+    expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', http_status: 200, held: true, timing: afterCommit })).toBe('not_classified')
+    expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', http_status: null, held: true, timing })).toBe('no_answer')
+  })
+
+  it('an answer value it does not know is read as a row without one', () => {
+    expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', http_status: null, held: true, answer: 'maybe', timing })).toBe('no_answer')
+    expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', http_status: 200, held: true, answer: 'constructor', timing })).toBe('not_classified')
+    expect(unresolvedAnswerOf({ outcome: 'outcome_unknown', http_status: 200, held: true, answer: null, timing })).toBe('not_classified')
   })
 })
