@@ -61,7 +61,7 @@ import {
 import {
   OPS_STATEMENT_DEADLINE_MS, organizationIdFrom, readOpsRows, sendWithinOpsDeadline, type OpsDeadlineOptions, type OpsSupabaseClient, type OrganizationId,
 } from './ops-db'
-import { CONNECTION_SERVE_WINDOW_MS } from '../lib/ops-gateway-contract'
+import { CONNECTION_SERVE_WINDOW_MS, type FailingRunVariablesRefusal } from '../lib/ops-gateway-contract'
 import { DELEGATION_LIST_LIMIT } from '../lib/ops-connections-contract'
 import { ENV_KEY } from '../lib/definition-env-references'
 import { parseRunVariablesRecord, recordRow, type RunVariablesRecord } from './run-variables'
@@ -434,13 +434,20 @@ export async function extendRunLease(
  */
 export type CompleteOutcome =
   | { outcome: 'done' }
-  | { outcome: 'failed'; reason?: Exclude<HolderFailedReason, 'variable_unavailable'>; error?: string }
+  | { outcome: 'failed'; reason?: Exclude<HolderFailedReason, 'variable_unavailable' | 'variables_refused'>; error?: string }
   /**
    * A variable the run was not given (#3000): missingVariables names them,
    * bare, for the minute tick's page; only the reason and the error are sent
    * to complete_run_request.
    */
   | { outcome: 'failed'; reason: 'variable_unavailable'; missingVariables: readonly string[]; error?: string }
+  /**
+   * Variables the bidding Worker refused to hand over (#3131, the tick's
+   * refusedRunEnd): refusal is why, and refusedVariables the secrets it names
+   * (empty for every refusal but secret_unreadable), for the minute tick's
+   * page; only the reason and the error are sent to complete_run_request.
+   */
+  | { outcome: 'failed'; reason: 'variables_refused'; refusal: FailingRunVariablesRefusal; refusedVariables: readonly string[]; error?: string }
   | { outcome: 'retry'; error?: string; notBefore?: Date; unstartedCause?: UnstartedReturnCause }
   | { outcome: 'suspend'; reason: 'continue' | 'wake'; notBefore: Date }
   | { outcome: 'suspend'; reason: 'resource_wait'; cause: ResourceWaitCause; notBefore: Date }

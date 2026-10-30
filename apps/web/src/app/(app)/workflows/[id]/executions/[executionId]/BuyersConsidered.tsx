@@ -12,7 +12,7 @@ import { AlertTriangle, CheckCircle, MinusCircle } from 'lucide-react'
 import {
   CONSIDERED_OUTCOMES, CONSIDERED_OUTCOME_LABELS, MODE_EFFECTIVE, MODE_EFFECTIVE_LABELS,
   UNRESOLVED_ANSWER_LABELS, reasonLabel, unresolvedAnswerOf,
-  type ConsideredOutcome, type ModeEffective,
+  type ConsideredOutcome, type ModeEffective, type UnresolvedAnswer,
 } from '@bidspoke/buyer-profile'
 import { NODE_TRAITS } from '@/types/workflow'
 import { ToneBadge, type Tone } from './ToneBadge'
@@ -136,16 +136,20 @@ export interface BuyerAttemptStep {
 }
 
 /**
- * The buyers whose live call got no answer (#3087), read from their own attempt
- * rows by the package's reader, never from the recorded words (L35). The node
- * records such a call as outcome_unknown, as it does an answer no rule matched;
- * Dan words the two apart (2026-10-30).
+ * What each buyer with an unknown outcome answered (#3087, #3129), read from its
+ * own attempt row by the package's reader, never from the recorded words (L35).
+ * The node records a call that got no answer, an answer no rule matched and an
+ * accepted answer whose sale could not be recorded all as outcome_unknown; Dan
+ * words them apart (2026-10-30). All three keep the amber badge of an unknown
+ * outcome (Dan, #3129 design round 1).
  */
-function unansweredBuyers(stepNamespace: string, attempts: readonly BuyerAttemptStep[]): Set<string> {
+function unresolvedByBuyer(stepNamespace: string, attempts: readonly BuyerAttemptStep[]): Map<string, UnresolvedAnswer> {
   const prefix = `${stepNamespace}.`
-  const buyers = new Set<string>()
+  const buyers = new Map<string, UnresolvedAnswer>()
   for (const a of attempts) {
-    if (a.step_namespace.startsWith(prefix) && unresolvedAnswerOf(a.output) === 'no_answer') buyers.add(a.step_namespace.slice(prefix.length))
+    if (!a.step_namespace.startsWith(prefix)) continue
+    const kind = unresolvedAnswerOf(a.output)
+    if (kind) buyers.set(a.step_namespace.slice(prefix.length), kind)
   }
   return buyers
 }
@@ -160,11 +164,16 @@ export function BuyersConsidered({ step, attempts = [] }: { step: BuyerSelectSte
       </div>
     )
   }
-  const unanswered = unansweredBuyers(step.step_namespace, attempts)
-  const gotNoAnswer = (c: Considered) => c.outcome === 'outcome_unknown' && unanswered.has(c.partner)
+  const unresolved = unresolvedByBuyer(step.step_namespace, attempts)
+  // The labels for a buyer's unknown outcome, by what its attempt row says it answered; none for any other outcome.
+  const unresolvedWords = (c: Considered) => {
+    const kind = c.outcome === 'outcome_unknown' ? unresolved.get(c.partner) : undefined
+    return kind ? { kind, ...UNRESOLVED_ANSWER_LABELS[kind] } : null
+  }
   // The cascade stops at the buyer whose outcome is unknown, so the node's own reason is that buyer's.
   const unknownBuyer = out.considered.find((c) => c.outcome === 'outcome_unknown')
-  const headWords: ReasonWords = (reason) => reason === 'outcome_unknown' && unknownBuyer && gotNoAnswer(unknownBuyer) ? UNRESOLVED_ANSWER_LABELS.no_answer.reason : reasonLabel(reason)
+  const unknownWords = unknownBuyer ? unresolvedWords(unknownBuyer) : null
+  const headWords: ReasonWords = (reason) => reason === 'outcome_unknown' && unknownWords ? unknownWords.reason : reasonLabel(reason)
   const head = headline(out, headWords)
   const frame = { green: 'border-green-200 bg-green-50/30', red: 'border-red-200 bg-red-50/30', amber: 'border-amber-200 bg-amber-50/30', gray: 'border-gray-200 bg-gray-50/40' }[head.tone]
   const icon = head.tone === 'green' ? <CheckCircle className="h-4 w-4 text-green-600" aria-hidden="true" />
@@ -201,9 +210,10 @@ export function BuyersConsidered({ step, attempts = [] }: { step: BuyerSelectSte
             <tbody className="divide-y divide-gray-100">
               {rows.map((c, i) => {
                 const took = c.outcome === 'sold'
-                const noAnswer = gotNoAnswer(c)
-                const reasonWords = noAnswer && c.reason === 'outcome_unknown' ? UNRESOLVED_ANSWER_LABELS.no_answer.reason : reasonLabel(c.reason)
-                const outcomeWords = noAnswer ? UNRESOLVED_ANSWER_LABELS.no_answer.outcome : CONSIDERED_OUTCOME_LABELS[c.outcome]
+                const words = unresolvedWords(c)
+                const noAnswer = words?.kind === 'no_answer'
+                const reasonWords = words && c.reason === 'outcome_unknown' ? words.reason : reasonLabel(c.reason)
+                const outcomeWords = words ? words.outcome : CONSIDERED_OUTCOME_LABELS[c.outcome]
                 // A call that got no answer records why in a sentence that already says no answer
                 // arrived, so the label before it would say it twice (Dan, 2026-10-30): its Why is the
                 // detail alone, begun with a capital, or the label when no detail was recorded.

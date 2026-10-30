@@ -1,4 +1,12 @@
 {
   "about": "Differences a pull request MEANS to make to what the bidding engine sends or decides. Each entry: workflow, check, optional node pattern, field pattern (* matches anything), and a reason in words. An entry excuses differences only in the change that adds it; once on main it is carried over and excuses nothing, and once the live worker runs the commit that added it, every pull request fails until it is deleted. A new entry that matches no difference fails the gate. See README.md, Reading a red.",
-  "entries": []
+  "entries": [
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].output.answer",
+      "reason": "Issue 3129: a live buyer_select attempt row now records the buyer's classified answer (accepted, declined, error or unmatched) whenever one arrived, so the run page can tell an accepted answer whose sale could not be recorded from one no rule matched. A new field on the attempt step row only; the request, the route, the decision, the Durable Object state and KV are unchanged."
+    }
+  ]
 }

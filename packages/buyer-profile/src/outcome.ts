@@ -5,6 +5,7 @@
  * through the classifier; the accept half is `accept_signals`. Both are matched
  * here, and the classifier imports this file back.
  */
+import type { AttemptAnswer } from './vocab'
 
 /**
  * A signal is one field path plus exactly one operator, written as the key the
@@ -122,6 +123,22 @@ export function evaluateSaleOutcome(
   if (declineMatched.length > 0) return { outcome: 'declined_by_buyer', acceptFailed, declineMatched }
   if (status !== null && status >= 400 && status < 500) return { outcome: 'buyer_error', acceptFailed, declineMatched }
   return { outcome: 'outcome_unknown', acceptFailed, declineMatched }
+}
+
+const ATTEMPT_ANSWER_OF: Record<SaleOutcome, AttemptAnswer> = {
+  accepted: 'accepted',
+  declined_by_buyer: 'declined',
+  buyer_error: 'error',
+  outcome_unknown: 'unmatched',
+}
+
+/**
+ * The answer a buyer_select attempt row records for a buyer's classified answer
+ * (#3129, `ATTEMPT_ANSWERS`). Called only on an answer that arrived: an
+ * outcome_unknown here is an answer no rule matched, never a call that got none.
+ */
+export function attemptAnswerOf(outcome: SaleOutcome): AttemptAnswer {
+  return ATTEMPT_ANSWER_OF[outcome]
 }
 
 /** The class Salesforce records for a sale: the values of the Tripoint_Response__c picklist, now derived per buyer (#1416). */

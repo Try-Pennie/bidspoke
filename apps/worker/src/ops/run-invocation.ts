@@ -254,7 +254,8 @@ export type RunBodyEnd =
    * suspended to continue, at once, and resumed after that checkpoint.
    */
   | { outcome: 'continue' }
-  | { outcome: 'failed'; reason?: Exclude<HolderFailedReason, 'variable_unavailable'>; error?: string }
+  // variables_refused (#3131) is never a body's: only the tick ends a run for it, before any body runs.
+  | { outcome: 'failed'; reason?: Exclude<HolderFailedReason, 'variable_unavailable' | 'variables_refused'>; error?: string }
   /** A variable the run was not given (#3000): the names, bare, which the minute tick's page names. */
   | { outcome: 'failed'; reason: 'variable_unavailable'; missingVariables: readonly string[]; error?: string }
   | { outcome: 'retry'; error?: string; notBefore?: Date }

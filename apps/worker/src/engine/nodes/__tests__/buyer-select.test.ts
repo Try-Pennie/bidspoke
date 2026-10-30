@@ -1719,3 +1719,92 @@ describe('a live buyer call that got no answer says so, and why (#3080)', () => 
   })
 })
 
+/**
+ * #3129: each attempt row records the buyer's classified answer as `answer`,
+ * once one arrived, so an accepted answer whose commit or mark sold failed
+ * afterwards (buyer-sale-attempt.ts steps 4 and 5) reads apart from an answer
+ * no rule matched. Both are outcome_unknown with http 200. Dan, 2026-10-30: the
+ * run page reads the first as "Sale not recorded". A row where no answer
+ * arrived, or no buyer was called, records none. Nothing sent or decided moves.
+ */
+describe('each attempt row records the answer the buyer gave (#3129)', () => {
+  const REFUSED_400: PartnerCallResult = { status: 400, text: '', json: { ok: false }, isHtml: false, headers: {} }
+  const two = () => snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2))
+
+  /** A harness whose buyer ledger refuses the commit after the buyer accepted. */
+  function commitFails(h: Harness, err: Error): Harness {
+    const build = h.deps.ledgerClient
+    h.deps.ledgerClient = (partnerId, opts) => {
+      const l = build(partnerId, opts)
+      return { reserve: (b) => l.reserve(b), commit: () => Promise.reject(err), release: (k, s, o) => l.release(k, s, o), entry: (k) => l.entry(k) }
+    }
+    return h
+  }
+
+  /** A harness whose lead sale record refuses the mark sold after the commit landed. */
+  function markSoldFails(h: Harness, err: Error): Harness {
+    const build = h.deps.saleClient
+    h.deps.saleClient = (key, opts) => {
+      const s = build(key, opts) as FakeSale
+      s.sold = () => Promise.reject(err)
+      return s
+    }
+    return h
+  }
+
+  it('an accepted sale records accepted', async () => {
+    const r = await run(harness({ answers: { tripoint: [ACCEPTED] } }))
+    expect(r.attempts).toHaveLength(1)
+    expect(r.attempts[0].output).toMatchObject({ outcome: 'accepted', http_status: 200, answer: 'accepted' })
+  })
+
+  it('a decline records declined, and the buyer after it its own answer', async () => {
+    const r = await run(harness({ profiles: two(), answers: { tripoint: [DUPLICATE], liberty: [ACCEPTED] } }))
+    expect(r.attempts.map((a) => [a.partner_slug, a.output.outcome, a.output.answer])).toEqual([['tripoint', 'declined_by_buyer', 'declined'], ['liberty', 'accepted', 'accepted']])
+  })
+
+  it('a 4xx the buyer answered records error', async () => {
+    const r = await run(harness({ profiles: two(), answers: { tripoint: [REFUSED_400], liberty: [ACCEPTED] } }))
+    expect(r.attempts[0].output).toMatchObject({ outcome: 'buyer_error', http_status: 400, answer: 'error' })
+  })
+
+  it('an answer no rule matched records unmatched', async () => {
+    const r = await run(harness({ profiles: two(), answers: { tripoint: [UNMATCHED_200] } }))
+    expect(r.attempts[0].output).toMatchObject({ outcome: 'outcome_unknown', http_status: 200, answer: 'unmatched' })
+    expect(unresolvedAnswerOf(r.attempts[0].output)).toBe('not_classified')
+  })
+
+  it('a call that got no answer records none', async () => {
+    const r = await run(harness({ profiles: two(), answers: { tripoint: [new DOMException('The operation was aborted.', 'AbortError')] } }))
+    expect(r.attempts[0].output).not.toHaveProperty('answer')
+    expect(unresolvedAnswerOf(r.attempts[0].output)).toBe('no_answer')
+  })
+
+  it('a rehearsal called no buyer, so it records none', async () => {
+    const r = await run(harness(), ctx(), node({ mode: 'decide_only' }))
+    expect(r.attempts).toHaveLength(1)
+    expect(r.attempts[0].output).toMatchObject({ outcome: 'accepted' })
+    expect(r.attempts[0].output).not.toHaveProperty('answer')
+  })
+
+  it.each([
+    ['the commit', commitFails, undefined],
+    ['the mark sold', markSoldFails, 'number'],
+  ] as const)('an accepted answer whose %s failed records accepted on an unknown outcome, and reads as a sale not recorded', async (_label, fail, commitMs) => {
+    const h = fail(harness({ profiles: two(), answers: { tripoint: [ACCEPTED] } }), new Error('object did not answer'))
+    const r = await run(h)
+    expect(r.attempts).toHaveLength(1)
+    expect(r.attempts[0]).toMatchObject({ status: 'completed', output: { outcome: 'outcome_unknown', http_status: 200, held: true, answer: 'accepted', detail: 'object did not answer' } })
+    expect(typeof (r.attempts[0].output.timing as Record<string, unknown>).commit_ms).toBe(commitMs ?? 'undefined')
+    expect(unresolvedAnswerOf(r.attempts[0].output)).toBe('accepted_not_recorded')
+    // What the node decided is unchanged: the cascade stops on the held buyer, nobody after it is called.
+    expect(out(r)).toMatchObject({ _route: 'no_sale', reason: 'outcome_unknown' })
+    expect(h.buyerCalls.map((c) => c.slug)).toEqual(['tripoint'])
+  })
+
+  it('the field is the only change to a row: every other key is what the row carried before', async () => {
+    const r = await run(harness({ profiles: two(), answers: { tripoint: [UNMATCHED_200] } }))
+    expect(Object.keys(r.attempts[0].output).sort()).toEqual(['answer', 'detail', 'held', 'http_status', 'kind', 'outcome', 'partner_slug', 'payout_cents', 'sent_body_sha256', 'timing'])
+  })
+})
+

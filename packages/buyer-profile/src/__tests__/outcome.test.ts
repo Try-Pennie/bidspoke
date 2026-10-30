@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { evaluateSaleOutcome, getBodyField, looseEquals, matchSignal, responseClassOf, type Signal } from '../outcome'
+import { attemptAnswerOf, evaluateSaleOutcome, getBodyField, looseEquals, matchSignal, responseClassOf, type SaleOutcome, type Signal } from '../outcome'
+import { ATTEMPT_ANSWERS } from '../vocab'
 import success1001 from '../../fixtures/tripoint/success-1001.json'
 import duplicate1002 from '../../fixtures/tripoint/duplicate-1002.json'
 import duplicate1003 from '../../fixtures/tripoint/duplicate-1003.json'
@@ -169,5 +170,27 @@ describe('getBodyField and looseEquals are exported for the classifier to import
   it('looseEquals treats an empty string as not numeric', () => {
     expect(looseEquals(0, '')).toBe(false)
     expect(looseEquals('', 0)).toBe(false)
+  })
+})
+
+/**
+ * #3129: what a buyer_select attempt row records as the buyer's answer, once one
+ * arrived and was classified. A word of its own per outcome, so an accepted
+ * answer whose sale could not be recorded afterwards stays readable on a row
+ * whose outcome is outcome_unknown.
+ */
+describe('attemptAnswerOf: the answer an attempt row records (#3129)', () => {
+  it('names each classified outcome', () => {
+    const all: SaleOutcome[] = ['accepted', 'declined_by_buyer', 'buyer_error', 'outcome_unknown']
+    expect(all.map(attemptAnswerOf)).toEqual(['accepted', 'declined', 'error', 'unmatched'])
+  })
+
+  it('the list holds exactly those words', () => {
+    expect([...ATTEMPT_ANSWERS].sort()).toEqual(['accepted', 'declined', 'error', 'unmatched'])
+  })
+
+  it('an answer the classifier accepted records accepted, one no rule matched records unmatched', () => {
+    expect(attemptAnswerOf(outcomeOf(200, success1001.body))).toBe('accepted')
+    expect(attemptAnswerOf(outcomeOf(200, { ok: true, data: {} }))).toBe('unmatched')
   })
 })

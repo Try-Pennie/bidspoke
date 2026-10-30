@@ -249,6 +249,18 @@ describe('the run engine vocabularies match the ops database constraints', () =>
   })
 
   /**
+   * A run whose variables bidding refused to hand over fails before it sends
+   * anything, and names it (#3131): the claim holder (the minute tick) sends
+   * variables_refused, which it pages for a switched on workflow, so the
+   * database must take it from a holder and hold it in the status reason CHECK.
+   */
+  it('variables_refused is a reason a holder fails a run for, in the code and the database (#3131)', () => {
+    expect(HOLDER_FAILED_REASONS).toContain('variables_refused')
+    expect(constraintValues(SQL, 'run_requests_status_reason_check')).toContain('variables_refused')
+    expect(guardIn(functionBody(SQL, 'complete_run_request'), 'failed', 'p_reason')).toContain('variables_refused')
+  })
+
+  /**
    * A no-retry run whose lease lapses ends failed by name (#3046, Dan's decision
    * of 2026-10-30). Only the lease sweep writes the reason, so it is an engine
    * reason: in the CHECK and STATUS_REASONS.failed, refused from a holder, and

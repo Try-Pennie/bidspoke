@@ -81,7 +81,8 @@
  *     once per organization for every run the tick will start, within the
  *     gateway deadline, and each run's answer goes in its own signed dispatch
  *     (run-variables.ts): secret values for that run only, never kept. A run the
- *     bidding Worker refused is ended unrun by its own reason (refusedRunEnd); a
+ *     bidding Worker refused is ended unrun by its own reason (refusedRunEnd,
+ *     failed as variables_refused unless its workflow is deleted, #3131); a
  *     run whose variables could not be had (the call failed, timed out, or its
  *     answer, or the run's part of it, could not be read) goes back to the
  *     queue unstarted, RUN_VARIABLES_RETRY_MS on, spending no attempt, as a run
@@ -96,12 +97,14 @@
  *     (#3034) and concurrently under one deadline, skipped only when the tick's
  *     own workflow fetch failed. Each run reports where the variables it ran on
  *     came from and how old they were (RunInvocationReport.variables), and the
- *     tick pages, each on a page of its own (#3000, phase 4, judgeVariables):
+ *     tick pages, each on a page of its own (#3000, phase 4, judgeVariableRuns):
  *     runs that started on the copy while bidding answered the refresh in the
  *     same tick (runs_on_variable_copy), the refresh failing three ticks in a
  *     row (variable_copy_refresh_failing), an answer it cannot read
  *     (run_variables_unreadable), and a run that failed on a variable it was
- *     not given (runs_variable_missing, the run's reason variable_unavailable).
+ *     not given (runs_variable_missing, the run's reason variable_unavailable),
+ *     and runs bidding refused their variables (runs_refused_variables, the
+ *     run's reason variables_refused, #3131).
  *  7. Dispatch, each item inside its own boundary: every newly recorded fire is
  *     handed to OpsInternal.observe through the SELF binding, signed (dispatch-
  *     auth.ts), and awaited, because a dispatched call dies with the tick that
@@ -125,8 +128,8 @@ import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type
 import {
   COPIES_STALE_AFTER_MS, CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, MAX_RUN_VARIABLES_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsRunVariables,
   parseServedOpsWorkflows, tickProblem, unstartedRunsText, UNSTARTED_RUNS_PAGE,
-  MISSING_VARIABLE_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, missingVariableText, refreshFailingText,
-  runVariablesUnreadableText, runsOnVariableCopyText,
+  MISSING_VARIABLE_PAGE, REFUSED_OFF_LANE_PAGE, REFUSED_VARIABLES_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, missingVariableText, refreshFailingText,
+  refusedVariablesSubject, refusedVariablesText, runVariablesUnreadableText, runsOnVariableCopyText, type RefusedRun,
   type ConnectionLoginsReport, type OpsDefinitionRequest, type OpsRunVariablesRequest, type RunVariablesRefusal, type OpsGatewayJob, type OpsJobReport,
   type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem, type WriteBacksReport,
 } from '../lib/ops-gateway-contract'
@@ -1144,6 +1147,8 @@ interface RunResult {
   ran?: RunVariablesUsed
   /** The variables it failed on, by name, when it failed on one it was not given (variable_unavailable, #3000). */
   missing?: readonly string[]
+  /** Why bidding refused its variables, once the tick ended it failed for that (variables_refused, #3131). */
+  refused?: RefusedRun
 }
 
 /**
@@ -1175,7 +1180,10 @@ async function dispatchOneRun(
       const end = refusedRunEnd(given, run.workflowVersion)
       await db.completeRun(run, end)
       bump(counts, 'runs_variables_refused')
-      return end.outcome === 'dead' ? { workflowId: run.workflowId, tally: 'ended' } : { workflowId: run.workflowId, tally: 'failed', error: 'error' in end ? end.error : undefined }
+      if (end.outcome === 'dead') return { workflowId: run.workflowId, tally: 'ended' }
+      const result: RunResult = { workflowId: run.workflowId, tally: 'failed', error: 'error' in end ? end.error : undefined }
+      // Why, from the end's own fields, never its error's words (#3131): only an end that was written is paged.
+      return end.outcome === 'failed' && end.reason === 'variables_refused' ? { ...result, refused: { reason: end.refusal, keys: end.refusedVariables } } : result
     }
     if (given.kind === 'unavailable') {
       if (db === null) throw new Error('no ops database to return the run to the queue in')
@@ -1278,12 +1286,23 @@ function judgeRunOutcomes(
  *  - runs_variable_missing, per workflow, at once: runs that failed with
  *    variable_unavailable. The tick dispatches only runs of a workflow that
  *    may start, so each is a switched on workflow's.
+ *  - runs_refused_variables, per workflow, at once (#3131): runs this tick
+ *    ended failed with variables_refused because bidding refused to hand over
+ *    their variables, named from each end's refusal and refusedVariables, and
+ *    keyed by the workflow and the fixes they need (refusedVariablesSubject).
+ *    Runs refused because the workflow is off the ops lane are
+ *    runs_refused_off_lane instead, which the bidding Worker pages only once
+ *    a refused run comes 3 minutes or more after the workflow's first, with no
+ *    successful run between (Dan, 2026-10-30; the report's
+ *    succeeded_workflows). Only a run of a workflow that may start is asked for, so
+ *    each is a switched on workflow's; one whose end could not be written is
+ *    not paged (it lapses, and the next tick asks again).
  * judged is whether this tick's claim ran and answered, so the runs it
- * dispatched are all it could judge, which judges the two per workflow kinds:
+ * dispatched are all it could judge, which judges the four per workflow kinds:
  * a tick whose claim failed, or that could not claim (held, no database clock,
- * the copies unread), judges neither, and stands neither page down.
+ * the copies unread), judges none of them, and stands none of their pages down.
  */
-function judgeVariables(
+function judgeVariableRuns(
   judged: boolean, results: readonly RunResult[], asked: { answered: number; unreadable: readonly string[] }, refresh: VariableCopyRefresh | null, nowMs: number,
   problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void, counts: Record<string, number>,
 ): void {
@@ -1314,6 +1333,15 @@ function judgeVariables(
       if (names.length === 0) log('variable_unavailable_unnamed', { workflow_id: workflowId, runs: named.length })
       problem(MISSING_VARIABLE_PAGE.kind, missingVariableText({ runs: named.length, names }), workflowId)
     }
+    bump(counts, REFUSED_VARIABLES_PAGE.judgedCount)
+    bump(counts, REFUSED_OFF_LANE_PAGE.judgedCount)
+    for (const [workflowId, refused] of byWorkflow((r) => r.refused)) {
+      // Off the ops lane is held by its own rule (Dan, 2026-10-30), so a workflow mid move does not page; the rest page at once.
+      const offLane = refused.filter((r) => r.reason === 'not_ops_lane')
+      const rest = refused.filter((r) => r.reason !== 'not_ops_lane')
+      if (rest.length > 0) problem(REFUSED_VARIABLES_PAGE.kind, refusedVariablesText(rest), refusedVariablesSubject(workflowId, rest))
+      if (offLane.length > 0) problem(REFUSED_OFF_LANE_PAGE.kind, refusedVariablesText(offLane), workflowId)
+    }
   }
   if (refresh !== null) {
     bump(counts, VARIABLE_COPY_REFRESH_PAGE.judgedCount)
@@ -1326,6 +1354,16 @@ function judgeVariables(
     // The reasons are the log's, not the page's (Dan, 2026-10-30).
     for (const why of unreadable) log('run_variables_unreadable', { why })
   }
+}
+
+/**
+ * What the copies write is taken to have done when it threw (it never should):
+ * counted, and its refresh failed with no count of the workflows it covers,
+ * which is not known, so the refresh page names none rather than a false 0
+ * (#3131, the lessons review of #3000's code).
+ */
+export function variableCopiesWriteFailed(err: unknown): VariableCopiesWritten {
+  return { counts: { variable_copies_failed: 1 }, refresh: { kind: 'failed', workflows: null, error: formatErr(err), answeredRequests: 0, unreadable: [] } }
 }
 
 export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
@@ -1785,7 +1823,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
         log: (step, fields) => log(step, { tick_id: ports.tickId, ...fields }),
       }).catch((err: unknown): VariableCopiesWritten => {
         log('variable_copies_failed', { tick_id: ports.tickId, error: formatErr(err) })
-        return { counts: { variable_copies_failed: 1 }, refresh: { kind: 'failed', workflows: 0, error: formatErr(err), answeredRequests: 0, unreadable: [] } }
+        return variableCopiesWriteFailed(err)
       })
     }
     return Promise.all(claimed.map((run) => dispatchOneRun(ports, db, copies, run, answers.get(run.runRequestId), retryAt, counts)))
@@ -1798,8 +1836,11 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   for (const [key, n] of Object.entries(written?.counts ?? {})) bump(counts, key, n)
   // The pages about the runs' variables (#3000), in live mode with the database only.
   if (live && db !== null) {
-    judgeVariables(claimAnswered, results, asked, fetchError !== null ? null : (written?.refresh ?? null), ports.now(), problem, counts)
+    judgeVariableRuns(claimAnswered, results, asked, fetchError !== null ? null : (written?.refresh ?? null), ports.now(), problem, counts)
   }
+  // The workflows a run of ended done (#3131), so the bidding Worker starts a
+  // lane refusal's wait again; null when this tick judged no run.
+  const succeededWorkflows = live && db !== null && claimAnswered ? [...new Set(results.filter((r) => r.tally === 'done').map((r) => r.workflowId))].sort() : null
   sent.forEach((r, i) => {
     if (r.status === 'fulfilled') {
       bump(counts, 'dispatched')
@@ -1884,6 +1925,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     write_backs: writeBacks,
     sweeps_run: sweepsRun,
     reseal: resealWatch.report,
+    succeeded_workflows: succeededWorkflows,
   }
   log('finished', { tick_id: ports.tickId, outcome, problems: problems.length, ...counts })
   for (const p of problems) log('problem', { tick_id: ports.tickId, key: p.key, problem: p.text })
