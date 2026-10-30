@@ -54,7 +54,8 @@ const committedDefinitions = Object.values(import.meta.glob<DefinitionFile>('../
 const committedById = new Map(committedDefinitions.map((d) => [d.id, d]))
 
 // Every timer a definition sets is lifted far above any real step, on both sides
-// alike, so a slow runner can never time a step out on one side only (#1796). In
+// alike, so a slow runner can never time a step out on one side only (#1796); a
+// step a fixture names in timed_steps gets its own back for that run (#3138). In
 // A/B mode, only the candidate's workflow, with the candidate in place on its side.
 export const definitions = abDefinitions(
   committedDefinitions.map(liftStepDeadlines),
