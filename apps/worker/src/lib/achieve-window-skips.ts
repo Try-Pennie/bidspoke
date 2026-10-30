@@ -152,13 +152,21 @@ export interface WindowSkipsSummary {
   lines: string[]
 }
 
-/** When the observe week started, starting it now when no readable start is kept. */
-async function observingSince(kv: SkipsKv, nowMs: number): Promise<number> {
+/**
+ * When the observe week started, starting it now when none is kept. A kept value
+ * that does not parse is logged and read as a week long over (L50): restarting
+ * the week would let a damaged record silence the page for seven days.
+ */
+async function observingSince(kv: SkipsKv, nowMs: number, log: (line: string) => void): Promise<number> {
   const raw = await kv.get(ACHIEVE_WINDOW_SKIPS_OBSERVING_SINCE_KEY)
-  const started = raw === null ? Number.NaN : Number(raw)
+  if (raw === null) {
+    await kv.put(ACHIEVE_WINDOW_SKIPS_OBSERVING_SINCE_KEY, String(nowMs))
+    return nowMs
+  }
+  const started = Number(raw)
   if (Number.isFinite(started)) return started
-  await kv.put(ACHIEVE_WINDOW_SKIPS_OBSERVING_SINCE_KEY, String(nowMs))
-  return nowMs
+  log(`[${ACHIEVE_WINDOW_SKIPS_JOB}] the observe week's start is unreadable, so it is judged over: ${JSON.stringify(raw.slice(0, 40))}`)
+  return Number.NEGATIVE_INFINITY
 }
 
 export async function runAchieveWindowSkips(deps: WindowSkipsDeps): Promise<WindowSkipsSummary> {
@@ -177,7 +185,7 @@ export async function runAchieveWindowSkips(deps: WindowSkipsDeps): Promise<Wind
 
   // An unmeasured day neither raises nor clears, and does not start the observe week.
   if (verdict.verdict !== 'unmeasured') {
-    const started = await observingSince(deps.kv, now)
+    const started = await observingSince(deps.kv, now, deps.log)
     if (now - started < ACHIEVE_WINDOW_SKIPS_OBSERVE_FOR_MS) {
       observingUntil = new Date(started + ACHIEVE_WINDOW_SKIPS_OBSERVE_FOR_MS).toISOString()
       if (lines.length > 0) deps.log(`[${ACHIEVE_WINDOW_SKIPS_JOB}] would page (observing until ${observingUntil}): ${lines.join(' ')}`)

@@ -154,12 +154,13 @@ describe('runAchieveWindowSkips', () => {
       expect(notify).toHaveBeenCalledTimes(1)
     })
 
-    it('reads an unreadable start as none and starts the week again', async () => {
+    it('reads an unreadable start as a week long over and says so, so a damaged record cannot silence the page (L50)', async () => {
       const kv = memoryKv({ [ACHIEVE_WINDOW_SKIPS_OBSERVING_SINCE_KEY]: 'not a time' })
-      const { d, notify } = deps({ kv, counts: { sent: 128, skipped: 12 } })
-      await runAchieveWindowSkips(d)
-      expect(kv.store.get(ACHIEVE_WINDOW_SKIPS_OBSERVING_SINCE_KEY)).toBe(String(NOW))
-      expect(notify).not.toHaveBeenCalled()
+      const { d, notify, log } = deps({ kv, counts: { sent: 128, skipped: 12 } })
+      const s = await runAchieveWindowSkips(d)
+      expect(notify).toHaveBeenCalledTimes(1)
+      expect(s.observing_until).toBeNull()
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('start is unreadable, so it is judged over'))
     })
   })
 
