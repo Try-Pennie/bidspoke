@@ -26,9 +26,10 @@
 --                  as lease_requeues counts lapsed claims; unstarted_since,
 --                  when its current wait began; unstarted_since_attempts, its
 --                  attempts then; unstarted_cause, the cause the latest return
---                  named (NULL when none was named). The status reason CHECK
---                  gains unstarted_wait_exceeded, a reason only the engine fails
---                  a run for.
+--                  named (NULL when none was named). The status reason CHECK,
+--                  as 20261030160000 (#3046) left it, gains
+--                  unstarted_wait_exceeded, a reason only the engine fails a
+--                  run for.
 --   complete_run_request  a retry may name its cause in p_reason:
 --                  definition_unavailable or variables_unavailable, nothing else.
 --                  A retry of a run still claimed (an unstarted return, #3023)
@@ -89,7 +90,7 @@ ALTER TABLE public.run_requests
      'not_started_in_time',
      'max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded',
      'resource_wait_exceeded', 'lease_lapsed_repeatedly', 'requeue_cap_reached',
-     'retry_disabled', 'unstarted_wait_exceeded'));
+     'retry_disabled', 'lease_lapsed_no_retry', 'unstarted_wait_exceeded'));
 
 -- The runs in a wait to start, for unstarted_run_waits. A wait a start has
 -- ended stays in it until the run's next return or end; the read filters those.

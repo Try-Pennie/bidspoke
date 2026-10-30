@@ -362,16 +362,21 @@ export interface StartedRun {
 /**
  * Starts the claimed run. variables is what it records at its first start
  * (#2998), kept only then: start_run_execution answers the record the run
- * holds. Throws OpsClaimLostError when the claim is no longer this caller's.
+ * holds. retryDisabled is whether the run's workflow is set not to retry, as
+ * read from the run's version (run-live.ts), sent on every start and kept on
+ * the run (#3046), so the lease sweep ends a lapsed no-retry run failed rather
+ * than requeuing it. Throws OpsClaimLostError when the claim is no longer this
+ * caller's.
  */
 export async function startRunExecution(
   client: OpsSupabaseClient, organizationId: OrganizationId, runRequestId: string, claimToken: string, executionId: string,
-  variables: RunVariablesRecord | null, options?: OpsRpcOptions,
+  variables: RunVariablesRecord | null, retryDisabled: boolean, options?: OpsRpcOptions,
 ): Promise<StartedRun> {
   const name = 'start_run_execution'
   const row = oneRow(name, await callOpsRpc(client, name, {
     p_organization_id: organizationId, p_run_request_id: runRequestId, p_claim_token: claimToken, p_execution_id: executionId,
     p_variables: variables === null ? null : recordRow(variables),
+    p_retry_disabled: retryDisabled,
   }, options))
   const outcome = field(name, row, 'outcome', oneOf(['started', 'already_started', 'claim_lost'] as const), 'a start outcome')
   if (outcome === 'claim_lost') throw new OpsClaimLostError(`${name}: run ${runRequestId} is not held by this claim`)
@@ -482,11 +487,23 @@ export interface SweepResult {
   retried: number
   needsHuman: number
   dead: number
-  /** Ended failed: a fourth lapse with no send, lease_lapsed_repeatedly (#2334). */
+  /**
+   * Ended failed: a fourth lapse with no send, lease_lapsed_repeatedly (#2334),
+   * or a lapse of a run set not to retry, lease_lapsed_no_retry (#3046).
+   */
   failed: number
   /** A full page was taken: call again until false. */
   more: boolean
+  /**
+   * The workflow of each run ended lease_lapsed_no_retry (#3046), once per run,
+   * so the tick can page the live ones. Required once ops migration
+   * 20261030160000 is applied: its absence is refused by name, never read as
+   * none, which would let such a run end without a page.
+   */
+  noRetryWorkflowIds: string[]
 }
+
+const isUuidList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string' && UUID_SHAPE.test(x))
 
 export async function sweepExpiredLeases(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<SweepResult> {
   const name = 'sweep_expired_leases'
@@ -498,6 +515,7 @@ export async function sweepExpiredLeases(client: OpsSupabaseClient, limit: numbe
     dead: field(name, row, 'dead', isInt, 'a count'),
     failed: field(name, row, 'failed', isInt, 'a count'),
     more: field(name, row, 'more', isBool, 'true or false'),
+    noRetryWorkflowIds: field(name, row, 'no_retry_workflow_ids', isUuidList, 'a list of workflow ids'),
   }
 }
 

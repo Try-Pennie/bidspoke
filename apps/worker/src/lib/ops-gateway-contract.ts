@@ -807,6 +807,12 @@ export const OPS_TICK_PROBLEM_RULES = {
   /** A run lost its lease after a send that cannot be repeated, and waits for a person (lease_expired_after_send). */
   runs_lapsed_after_send: 'at_once',
   /**
+   * Runs of a live workflow set not to retry lost their lease and the sweep
+   * ended them failed, lease_lapsed_no_retry (#3046, Dan, 2026-10-30): nothing
+   * runs them again, and no later tick reports them again.
+   */
+  runs_lapsed_no_retry: 'at_once',
+  /**
    * A workflow's runs have waited 15 minutes to start, returned to the queue
    * unstarted each time they were claimed (#3039, Dan's decision of
    * 2026-10-30). The wait itself is the hold, so it pages at once, on a page

@@ -899,6 +899,38 @@ function refreshTargets(copies: readonly WorkflowCopy[]): CopyTarget[] {
     .map((c) => ({ organizationId: c.organizationId, workflowId: c.workflowId, versionNumber: c.versionNumber as number }))
 }
 
+/**
+ * The runs the lease sweep ended failed because their workflow is set not to
+ * retry (lease_lapsed_no_retry, #3046, Dan's decision of 2026-10-30). Each live
+ * workflow's pages at once, keyed by the workflow: nothing reruns such a run,
+ * and no later tick reports it again. Live is the rule a run starts by
+ * (copyMayStart), so a workflow switched off, deleted, withdrawn or named by no
+ * copy is counted, not paged. With no copies read, whether a workflow is live
+ * is not known, so it pages and says so: a run nothing reruns and nobody hears
+ * of is the failure this exists to stop.
+ */
+function judgeNoRetryLapses(
+  workflowIds: readonly string[],
+  copies: readonly WorkflowCopy[] | null,
+  problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void,
+  counts: Record<string, number>,
+): void {
+  if (workflowIds.length === 0) return
+  bump(counts, 'leases_lapsed_no_retry', workflowIds.length)
+  const byWorkflow = new Map<string, number>()
+  for (const id of workflowIds) byWorkflow.set(id, (byWorkflow.get(id) ?? 0) + 1)
+  for (const [workflowId, n] of byWorkflow) {
+    const copy = copies?.find((c) => c.workflowId === workflowId)
+    if (copies !== null && (copy === undefined || !copyMayStart(copy))) {
+      bump(counts, 'leases_lapsed_no_retry_not_live', n)
+      continue
+    }
+    const runs = n === 1 ? '1 run' : `${n} runs`
+    const live = copies === null ? ' The saved workflow copies could not be read, so whether the workflow is switched on is not known.' : ''
+    problem('runs_lapsed_no_retry', `${runs} of workflow ${workflowId} lost ${n === 1 ? 'its' : 'their'} lease mid run and ended failed, because the workflow is set not to retry, so nothing runs ${n === 1 ? 'it' : 'them'} again (lease_lapsed_no_retry).${live}`, workflowId)
+  }
+}
+
 /** The one rule a workflow's copy starts runs by: not deleted, not withdrawn, and may_start. */
 function copyMayStart(copy: WorkflowCopy): boolean {
   return copy.deletedAt === null && copy.withdrawnAt === null && copy.mayStart
@@ -1092,6 +1124,8 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   let nightlyPurgeRun: Promise<NightlyPurgeResult> | null = null
   let connectionLogins: ConnectionLoginsReport | null = null
   let writeBacksRun: Promise<WriteBacksRun> | null = null
+  /** The workflow of each run the lease sweep ended lease_lapsed_no_retry this tick (#3046), once per run. */
+  const lapsedNoRetry: string[] = []
 
   // 1. Started. A miss is reported under start_stamp, which the bidding Worker
   // holds until three ticks in a row miss (#2506), and flagged as before (#2410).
@@ -1186,6 +1220,8 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
               if (r.requeued > 0) bump(counts, 'leases_lapsed_requeued', r.requeued)
               if (r.retried > 0) bump(counts, 'leases_lapsed_retried', r.retried)
               if (r.needsHuman > 0) bump(counts, 'leases_lapsed_needs_human', r.needsHuman)
+              // Judged against the copies once they are read (step 4): only a live workflow's page (#3046).
+              lapsedNoRetry.push(...r.noRetryWorkflowIds)
               return r.more
             }
             case 'run_expiry': {
@@ -1273,6 +1309,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
       problem('copies_read_failed', `The ops tick could not read the saved workflow copies (${formatErr(err)}), so it planned no fires.`)
     }
   }
+  judgeNoRetryLapses(lapsedNoRetry, copiesRead ? copies : null, problem, counts)
   if (fetchError !== null) {
     if (copies.length > 0) {
       bump(counts, 'copies_used_saved')

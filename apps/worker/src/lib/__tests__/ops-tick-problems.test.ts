@@ -44,6 +44,8 @@ const AT_ONCE = [
   'copies_stale', 'run_outcome_unknown', 'runs_lapsed_after_send',
   // Runs that cannot start (#3039): the 15 minutes they waited is the hold.
   'runs_unstarted', 'runs_unstarted_limit',
+  // #3046: a no-retry run of a live workflow whose lease lapsed ended failed; nothing reruns it.
+  'runs_lapsed_no_retry',
   'db_not_configured', 'not_configured', 'secrets_unchecked', 'agreement_check_failed', 'queue_disagreement', 'workflow_refused',
   'workflows_too_many', 'copies_read_limit', 'schedule_refused', 'schedule_no_version', 'slot_missed', 'dispatch_failed',
   'connections_list_unreadable', 'connection_refused', 'connections_too_many', 'connection_copies_expired', 'connections_step_failed',

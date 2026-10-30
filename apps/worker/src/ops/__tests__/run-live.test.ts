@@ -252,7 +252,11 @@ describe('OpsInternal.run: the workflow\'s retry setting (#1693)', () => {
     } finally {
       spy.mockRestore()
     }
-    return { complete: db.calls.find((c) => c.name === 'complete_run_request')?.body, lines }
+    return {
+      complete: db.calls.find((c) => c.name === 'complete_run_request')?.body,
+      start: db.calls.find((c) => c.name === 'start_run_execution')?.body,
+      lines,
+    }
   }
 
   it('with none set, waits the default 15 s before the retry', async () => {
@@ -271,6 +275,15 @@ describe('OpsInternal.run: the workflow\'s retry setting (#1693)', () => {
     expect(complete).toMatchObject({ p_outcome: 'failed', p_reason: 'retry_disabled' })
     expect(complete).not.toHaveProperty('p_not_before')
     expect(String(complete?.p_error)).toMatch(/set not to retry/)
+  })
+
+  // #3046: the start tells the database the setting, so a lease that lapses mid run ends it failed rather than requeuing it.
+  it('tells the database at the start whether the run may be retried, from the same setting', async () => {
+    expect((await ending({ ...step, retry: { mode: 'none' } })).start).toMatchObject({ p_retry_disabled: true })
+    expect((await ending(step)).start).toMatchObject({ p_retry_disabled: false })
+    expect((await ending({ ...step, retry: { mode: 'backoff', base_seconds: 40 } })).start).toMatchObject({ p_retry_disabled: false })
+    // A setting the save would refuse runs on the default, so it may be retried.
+    expect((await ending({ ...step, retry: { mode: 'none', base_seconds: 5 } })).start).toMatchObject({ p_retry_disabled: false })
   })
 
   it('a stored setting the save would refuse runs on the default and says so by name', async () => {
