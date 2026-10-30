@@ -55,6 +55,29 @@ because its hung database ends only when the caller's own deadline fires. Code
 node scripts run in the nested workerd, out of reach of the lift, and keep real
 timers: their retry waits are meant to fire.
 
+An answer can fail to arrive whole (#3086). A stub scenario may carry an
+`ending` (`lib/stub-rules.ts`): `connection_failed` (the fetch rejects before
+any header), `no_headers` (it rejects only when the request's own signal
+aborts), `body_cut_off` (the headers and a first piece, then the connection
+drops) or `body_trickles` (a piece every 5 s, until the signal aborts).
+`answerFetch` plays each out as the platform's fetch would. A held answer waits
+on the replay's own time, never the real clock: the lift keeps every engine
+`setTimeout` still pending, due at the replay time it was set plus the length the
+engine asked for, and `advanceUntil` runs the one due first, early, until the
+request is aborted. So the buyer call's own 20 s timer (`abortAfter`) stops a
+held call at once, the pinned clock moves on by the same 20 s, and the record
+reads as production's would. A timer run this way is listed as advanced, not
+fired, since it did not race the runner. The outage drill tracks its real timers
+the same way (`floorMs: 0`), so its runs of these fixtures do not wait either.
+Only the engine's own fetch can be given an ending: a code bundle asking for
+one is refused by name (`codeBundleRefusal`), because its requests reach the
+gate through an outbound service, where a throw arrives as an HTTP 500. The
+Engine Bidding variants `buyer_select_live_no_answer_timeout`,
+`buyer_select_live_connection_failed`, `buyer_select_live_body_cut_off` and
+`buyer_select_live_body_trickle_timeout` replay the buyer select live call
+getting no answer this way: outcome_unknown, the held reservation and claim,
+the failed step, the breaker's error and the bid row.
+
 The replay also runs one lead twice, once as usual and once with every table
 read (rpc calls are not held) held past the click check's budget (`dbReadDelayMs`), and fails on any
 difference between the two records. It is the fixture that flipped on 2026-10-07,
@@ -141,7 +164,8 @@ A refresh changes no verdict by itself, and needs no `expected-changes.json`
 entry. The fixtures, harness and stub rules come from the head on both sides,
 so a definition changed in production (a canvas save, a Main Flow port stage) is
 replayed through the merge base's engine and the head's alike. An entry for it
-would match nothing and fail the gate.
+would match nothing and fail the gate. A new variant is the same: both sides
+replay it, so it is compared like any other fixture and needs no entry.
 
 ## Definition A/B mode: proving a lead validation swap
 
@@ -305,7 +329,10 @@ exempt.
 supabase-js catches it and the caller awaits the answer (reproduced with one
 awaited read and nothing of ours around it), so the drill's config ignores
 exactly the refused shape's own rejection (`isOutageNetworkRejection`); any other
-unhandled error still fails the run.
+unhandled error still fails the run. The same happens to a buyer call answered
+with an `ending`, which postToPartner awaits and the record shows it handled, so
+both the gate's config and the drill's ignore exactly those rejections too
+(`isReplayedNoAnswerRejection`, #3086).
 
 ## Known limits
 
