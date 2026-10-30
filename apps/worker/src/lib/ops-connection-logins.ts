@@ -257,8 +257,10 @@ async function nameOf(deps: ConnectionSignalDeps, organizationId: string, connec
 /**
  * One due item's page on the minute schedule: at once when it is new or its
  * state changed, otherwise only when its reminder interval has run, and under
- * the minute claims, so two overlapping ticks post it once. Returns whether it
- * reached Slack; the shared bookkeeping arms its incident only then.
+ * the minute claims, so two overlapping ticks post it once. Returns what it
+ * came to (#3056): the shared bookkeeping arms its incident only on `sent`,
+ * records a refusal only on `not_sent`, and records nothing for a page held by
+ * the interval or another tick's claim.
  */
 async function sendPage<I extends DueItem>(rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, item: I, name: string | null, nowMs: number): Promise<PostAttempt> {
   const { kv } = deps
