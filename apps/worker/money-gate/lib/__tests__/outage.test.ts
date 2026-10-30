@@ -268,40 +268,91 @@ describe('applyExemptions', () => {
   const today = '2026-10-07'
   const diff = (field: string, detail: string) => ({ field, detail })
   const ex = (over: Partial<OutageExemption> = {}): OutageExemption => ({
-    workflow: 'Engine Bidding Workflow', shape: 'refused', first_difference: 'error: *Failed to load workflow*', issue: 1845, expires: '2026-10-31', ...over,
+    workflow: 'Engine Bidding Workflow', fixture: 'v', shape: 'refused', first_difference: 'error: *Failed to load workflow*', issue: 1845, expires: '2026-10-31', ...over,
   })
+  /** The fixtures the drill runs, which an exemption may name. */
+  const drilled = [
+    { workflow: 'Engine Bidding Workflow', variant: 'v' },
+    { workflow: 'Main Flow', variant: 'v' },
+    { workflow: 'Main Flow', variant: 'tripoint_accepted' },
+    { workflow: 'Main Flow', variant: 'tripoint_declined' },
+  ]
 
-  it('excuses a fixture whose first difference matches an entry', () => {
-    const r = applyExemptions([{ workflow: 'Engine Bidding Workflow', variant: 'v', shape: 'refused', diffs: [diff('error', 'Error: Failed to load workflow wf-1')] }], [ex()], today)
+  it('excuses a fixture whose first difference matches an entry naming it', () => {
+    const r = applyExemptions([{ workflow: 'Engine Bidding Workflow', variant: 'v', shape: 'refused', diffs: [diff('error', 'Error: Failed to load workflow wf-1')] }], [ex()], today, drilled)
     expect(r.failures).toEqual([])
     expect(r.excused).toHaveLength(1)
   })
 
   it('fails a difference no entry covers, naming the fixture and the field', () => {
-    const r = applyExemptions([{ workflow: 'Main Flow', variant: 'v', shape: 'refused', diffs: [diff('outbound', 'missing POST x')] }], [], today)
+    const r = applyExemptions([{ workflow: 'Main Flow', variant: 'v', shape: 'refused', diffs: [diff('outbound', 'missing POST x')] }], [], today, drilled)
     expect(r.failures[0]).toMatch(/Main Flow.*refused.*outbound/)
   })
 
   it('does not excuse a different first difference in an exempted flow', () => {
-    const r = applyExemptions([{ workflow: 'Engine Bidding Workflow', variant: 'v', shape: 'refused', diffs: [diff('outbound', 'missing POST x')] }], [ex()], today)
+    const r = applyExemptions([{ workflow: 'Engine Bidding Workflow', variant: 'v', shape: 'refused', diffs: [diff('outbound', 'missing POST x')] }], [ex()], today, drilled)
     expect(r.failures).toHaveLength(2)
     expect(r.failures.join('\n')).toMatch(/matched no difference/)
   })
 
+  // #3147: a broad pattern written for one fixture must not excuse its siblings.
+  it('excuses only the fixture it names, so a sibling with the same first difference still fails', () => {
+    const same = [diff('outbound', 'at [5] missing POST https://partner.example/leads')]
+    const r = applyExemptions(
+      [
+        { workflow: 'Main Flow', variant: 'tripoint_accepted', shape: 'refused', diffs: same },
+        { workflow: 'Main Flow', variant: 'tripoint_declined', shape: 'refused', diffs: same },
+      ],
+      [ex({ workflow: 'Main Flow', fixture: 'tripoint_accepted', first_difference: 'outbound: at [5]*' })],
+      today,
+      drilled,
+    )
+    expect(r.excused.map((f) => f.variant)).toEqual(['tripoint_accepted'])
+    expect(r.failures).toHaveLength(1)
+    expect(r.failures[0]).toMatch(/^Main Flow\/tripoint_declined \[refused\] differs from its database-up twin/)
+  })
+
+  it('refuses, by name, an entry naming a fixture the drill does not run', () => {
+    const r = applyExemptions(
+      [{ workflow: 'Main Flow', variant: 'tripoint_accepted', shape: 'refused', diffs: [diff('outbound', 'at [5] missing POST x')] }],
+      [ex({ workflow: 'Main Flow', fixture: 'tripoint_acepted', first_difference: 'outbound: at [5]*' })],
+      today,
+      drilled,
+    )
+    expect(r.excused).toEqual([])
+    const refusal = r.failures.filter((m) => m.startsWith('exemption'))
+    expect(refusal).toEqual([expect.stringMatching(/Main Flow.*'tripoint_acepted'.*the drill does not run.*#1845/)])
+    // One fault, one message: the unknown name is not also reported as having matched nothing.
+    expect(r.failures.join('\n')).not.toMatch(/matched no difference/)
+    expect(r.failures.join('\n')).toMatch(/Main Flow\/tripoint_accepted \[refused\] differs/)
+  })
+
+  it('refuses an entry that names no fixture, which would otherwise excuse the whole flow', () => {
+    const { fixture: _omitted, ...withoutFixture } = ex()
+    const r = applyExemptions(
+      [{ workflow: 'Engine Bidding Workflow', variant: 'v', shape: 'refused', diffs: [diff('error', 'Error: Failed to load workflow wf-1')] }],
+      [withoutFixture as OutageExemption],
+      today,
+      drilled,
+    )
+    expect(r.excused).toEqual([])
+    expect(r.failures.join('\n')).toMatch(/exemption for Engine Bidding Workflow .*names no fixture.*#1845/)
+  })
+
   it('fails an entry past its expiry date, even when it still matches', () => {
-    const r = applyExemptions([{ workflow: 'Engine Bidding Workflow', variant: 'v', shape: 'refused', diffs: [diff('error', 'Error: Failed to load workflow wf-1')] }], [ex({ expires: '2026-10-06' })], today)
+    const r = applyExemptions([{ workflow: 'Engine Bidding Workflow', variant: 'v', shape: 'refused', diffs: [diff('error', 'Error: Failed to load workflow wf-1')] }], [ex({ expires: '2026-10-06' })], today, drilled)
     expect(r.failures.join('\n')).toMatch(/expired/)
   })
 
   it('prefers a live entry over an expired one for the same difference, whatever their order', () => {
     const f = { workflow: 'Engine Bidding Workflow', variant: 'v', shape: 'refused' as const, diffs: [diff('error', 'Error: Failed to load workflow wf-1')] }
-    const r = applyExemptions([f], [ex({ expires: '2026-10-06' }), ex()], today)
+    const r = applyExemptions([f], [ex({ expires: '2026-10-06' }), ex()], today, drilled)
     expect(r.excused).toHaveLength(1)
     expect(r.failures.join('\n')).not.toMatch(/expired on/)
   })
 
   it('fails an entry that matched nothing, so a fixed flow cannot stay exempt', () => {
-    const r = applyExemptions([], [ex()], today)
+    const r = applyExemptions([], [ex()], today, drilled)
     expect(r.failures.join('\n')).toMatch(/matched no difference.*#1845/)
   })
 })

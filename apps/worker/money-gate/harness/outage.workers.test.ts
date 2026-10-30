@@ -20,7 +20,7 @@
  *     over a network that refuses, answers 503, answers an HTML 522, or hangs
  *     until the caller's own deadline aborts the request (#1851).
  *  5. Require the failing run to match its twin (outage.ts compareOutage), unless
- *     outage-exemptions.json names that flow's first difference with an open issue,
+ *     outage-exemptions.json names that fixture and its first difference with an open issue,
  *     and in the hang to answer within HUNG_ANSWER_ALLOWANCE_MS of it (lateAnswer).
  *
  * Decisions are read from the engine's step observer, because a failing run
@@ -55,6 +55,7 @@ import {
   lateAnswer,
   isLastGoodKey,
   outageNetwork,
+  type DrilledFixture,
   type FixtureOutcome,
   type ObservedStep,
   ownExecutionId,
@@ -227,6 +228,8 @@ async function timed<T>(phase: string, work: () => Promise<T>): Promise<T> {
 async function drill(e: GateEnv): Promise<void> {
   await timed('host bundles', () => hostBundles(e))
   const outcomes: FixtureOutcome[] = []
+  // Every fixture the drill runs, the only names an exemption may give (#3147).
+  const drilled: DrilledFixture[] = []
   const controlFailures: string[] = []
   const variantsByWorkflow = new Map(variantFiles.map((v) => [v.workflow_id, v]))
   let fixtures = 0
@@ -239,6 +242,7 @@ async function drill(e: GateEnv): Promise<void> {
     for (const { variant } of runPlan(variantsByWorkflow.get(def.id)).filter((p) => p.kind === 'live')) {
       const id = fixtureId(def.name, variant.name, 'live')
       const stubs = variant.stubs ?? {}
+      drilled.push({ workflow: def.name, variant: variant.name })
 
       // 1 and 2. Warm on a different prospect, with the prewarm cron, then keep only the copies.
       await timed('reset', async () => { await reset(); forgetIsolateMemory() })
@@ -306,7 +310,7 @@ async function drill(e: GateEnv): Promise<void> {
   expect(fixtures, ONLY ? `no workflow named ${JSON.stringify(ONLY)} was drilled` : 'the drill ran no fixture at all, so it measured nothing').toBeGreaterThan(0)
   const today = new Date().toISOString().slice(0, 10)
   const exemptions = (exemptionsFile as { exemptions: OutageExemption[] }).exemptions.filter((e) => !ONLY || e.workflow === ONLY)
-  const verdict = applyExemptions(outcomes, exemptions, today)
+  const verdict = applyExemptions(outcomes, exemptions, today, drilled)
   const report = [
     `outage drill${ONLY ? ` NARROWED to ${ONLY}` : ''}: ${fixtures} fixtures, ${outcomes.filter((o) => o.diffs.length === 0).length} matched their twin, ${verdict.excused.length} excused by an open exemption`,
     `time by phase (s): ${Object.entries(phaseMs).sort(([, a], [, b]) => b - a).map(([k, v]) => `${k} ${(v / 1000).toFixed(1)}`).join(', ')}`,
