@@ -378,7 +378,7 @@ export const NIGHTLY_PURGE_DESIGN = {
  * Not pulled: a page larger than 1,000 rows. The round trip is most of the
  * assumed 200 ms, so pages of 5,000 would cut the time and the subrequests
  * about fivefold, but every purge function refuses a limit over 1,000, so it
- * needs an ops migration replacing eight functions and longer row locks each
+ * needs an ops migration replacing nine functions and longer row locks each
  * page. It is the lever to pull when the measured page time (nightly_purge_ms
  * over nightly_purge_pages) leaves a designed night past half the budget.
  */
