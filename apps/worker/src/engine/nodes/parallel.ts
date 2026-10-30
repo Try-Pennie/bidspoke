@@ -138,7 +138,10 @@ export async function executeParallelNode(
         // The named slot failed before any deadline, so a sibling still running was left by that failure (#3083).
         throw named.status === 'timeout' ? withDeadlineResults(err, output) : withLeftRunning(err, output, named.namespace, 'failed', null)
       }
-      return { output }
+      // The named slot succeeded before any deadline, so a sibling still running
+      // was left by that success, not cut off by a timeout (#3119). The output
+      // still shows it as timeout, as it always has.
+      return withLeftRunning({ output }, output, named.namespace, 'succeeded', null)
     }
 
     if (waitFor === 'first') {
@@ -339,22 +342,27 @@ export function deadlineResultsOf(err: unknown): ParallelOutput | null {
 
 /**
  * Slots a block stopped waiting for while they still ran, for a reason other
- * than a deadline it failed on (#3083): a winner returned under wait_for
- * first, or the block failed on another slot that failed. Nothing else records
- * them: the slot's own late finish writes no row (#63), and the rows of a
- * deadline (withDeadlineResults, or a block carrying on past its timeout) are
- * not written for them. The engine writes them as skipped, never failed, so
- * the upstream outage rule, which reads a marked failed row inside a block as
- * the reason a parallel run failed (failingStepDeadline), still reads the slot
- * the block failed on.
+ * than a deadline (#3083, #3119): a winner returned under wait_for first, the
+ * named slot of wait_for specific succeeded, or the block failed on another
+ * slot that failed. Nothing else records them: the slot's own late finish
+ * writes no row (#63), and the rows of a deadline (withDeadlineResults, or a
+ * block carrying on past its timeout) are not written for them. The engine
+ * writes them as skipped, never failed, so the upstream outage rule, which
+ * reads a marked failed row inside a block as the reason a parallel run failed
+ * (failingStepDeadline), still reads the slot the block failed on, and never a
+ * slot no deadline stopped. What later steps read of them (ctx.steps) is left
+ * as it is in every case.
  */
 export interface LeftRunning {
   /** Each slot as the block left it: `timeout` is one still running. */
   results: ParallelOutput
   /** The slot whose answer made the block stop waiting. */
   decidedBy: string
-  /** That slot succeeded first (wait_for first), or failed and failed the block. */
-  how: 'succeeded_first' | 'failed'
+  /**
+   * That slot succeeded first (wait_for first), was the named slot and
+   * succeeded (wait_for specific), or failed and failed the block.
+   */
+  how: 'succeeded_first' | 'succeeded' | 'failed'
   /**
    * The block's timeout, when it had passed by the time the block stopped
    * waiting (wait_for all, which waits for every slot until then), so the slots
@@ -380,11 +388,22 @@ export function leftRunningOf(resultOrErr: unknown): LeftRunning | null {
 /** What the row of a slot the block left running says (#3083), in the words Dan chose. */
 export function leftRunningMessage(left: LeftRunning): string {
   if (left.how === 'succeeded_first') return `Stopped waiting: branch ${left.decidedBy} finished first.`
-  if (left.afterTimeoutMs !== null) return `Stopped waiting at the ${limitInSeconds(left.afterTimeoutMs)} second limit, then branch ${left.decidedBy} failed.`
+  if (left.how === 'succeeded') return `Stopped waiting: branch ${left.decidedBy} finished.`
+  if (left.afterTimeoutMs !== null) {
+    const seconds = limitInSeconds(left.afterTimeoutMs)
+    // Under 0.1 second no figure reads well, so the limit is named instead (#3119).
+    const limit = seconds === null ? 'the block\'s time limit' : `the ${seconds} second limit`
+    return `Stopped waiting at ${limit}, then branch ${left.decidedBy} failed.`
+  }
   return `Stopped waiting: branch ${left.decidedBy} failed.`
 }
 
-/** A block's timeout in seconds: whole when it is a whole number of seconds ("20"), otherwise with one decimal ("1.5"). */
-export function limitInSeconds(ms: number): string {
-  return ms % 1000 === 0 ? String(ms / 1000) : (ms / 1000).toFixed(1)
+/**
+ * A block's timeout in seconds, to one decimal, written whole when that decimal
+ * is 0 ("20", and "2" for 1999 ms, never "2.0"), otherwise with it ("1.5").
+ * Null under 0.1 second, which would read "0.0" (#3119).
+ */
+export function limitInSeconds(ms: number): string | null {
+  if (ms < 100) return null
+  return (ms / 1000).toFixed(1).replace(/\.0$/, '')
 }

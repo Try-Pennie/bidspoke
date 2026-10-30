@@ -414,6 +414,24 @@ describe('a block that stops waiting for slots still running, for a reason other
     expect(left).toMatchObject({ decidedBy: 'collections', how: 'failed', afterTimeoutMs: null })
   })
 
+  it('wait_for specific: the named slot succeeded while a sibling still ran, before any deadline (#3119)', async () => {
+    const runChild = vi.fn().mockImplementation(async (child: NodeDefinition) =>
+      child.namespace === 'offers' ? hangs() : fulfilled(child.namespace))
+    const result = await settle(executeParallelNode(makeNode({ wait_for: 'specific', wait_for_slot: 'child-1', timeout_ms: 50 }), children, runChild, slots), 0)
+    // The output is as it was: the sibling still running shows as timeout.
+    expect((result.output as ParallelChildResult[]).map((c) => [c.namespace, c.status])).toEqual([['inquiry', 'fulfilled'], ['collections', 'fulfilled'], ['offers', 'timeout']])
+    const left = leftRunningOf(result)
+    expect(left?.results.map((c) => c.status)).toEqual(['fulfilled', 'fulfilled', 'timeout'])
+    // No deadline passed, so it is not the block's timeout that left it.
+    expect(left).toMatchObject({ decidedBy: 'collections', how: 'succeeded', afterTimeoutMs: null })
+  })
+
+  it('wait_for specific: a named slot that succeeded with nothing still running says nothing', async () => {
+    const all = makeRunChild([fulfilled('inquiry'), fulfilled('collections'), rejected('offers')])
+    const result = await executeParallelNode(makeNode({ wait_for: 'specific', wait_for_slot: 'child-1', timeout_ms: 50 }), children, all, slots)
+    expect(leftRunningOf(result)).toBeNull()
+  })
+
   it('a block its own deadline failed says it only through deadlineResultsOf', async () => {
     const runChild = vi.fn().mockImplementation(async (child: NodeDefinition) => child.namespace === 'offers' ? hangs() : fulfilled(child.namespace))
     const err = await settle(executeParallelNode(makeNode({ wait_for: 'all', on_timeout: 'fail', timeout_ms: 50 }), children, runChild, slots).then(() => null, (e: unknown) => e))
@@ -442,9 +460,21 @@ describe('what the row of a slot left running says (#3083, wording Dan chose)', 
     expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'failed', afterTimeoutMs: null })).toBe('Stopped waiting: branch collections failed.')
   })
 
+  it('the named slot succeeded (#3119)', () => {
+    expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'succeeded', afterTimeoutMs: null })).toBe('Stopped waiting: branch collections finished.')
+  })
+
   it('the block failed on another slot after its timeout, the limit in seconds', () => {
     expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'failed', afterTimeoutMs: 20000 })).toBe('Stopped waiting at the 20 second limit, then branch collections failed.')
     expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'failed', afterTimeoutMs: 1500 })).toBe('Stopped waiting at the 1.5 second limit, then branch collections failed.')
+    // Rounded to a whole number, written whole (#3119).
+    expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'failed', afterTimeoutMs: 1999 })).toBe('Stopped waiting at the 2 second limit, then branch collections failed.')
+  })
+
+  it('a timeout under 0.1 second, which no figure in seconds says well, is called the block\'s time limit (#3119)', () => {
+    expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'failed', afterTimeoutMs: 5 })).toBe('Stopped waiting at the block\'s time limit, then branch collections failed.')
+    expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'failed', afterTimeoutMs: 99 })).toBe('Stopped waiting at the block\'s time limit, then branch collections failed.')
+    expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'failed', afterTimeoutMs: 100 })).toBe('Stopped waiting at the 0.1 second limit, then branch collections failed.')
   })
 })
 
@@ -458,7 +488,18 @@ describe('limitInSeconds: a block timeout in seconds', () => {
   it('anything else is written with one decimal', () => {
     expect(limitInSeconds(1500)).toBe('1.5')
     expect(limitInSeconds(2250)).toBe('2.3')
-    expect(limitInSeconds(1999)).toBe('2.0')
-    expect(limitInSeconds(5)).toBe('0.0')
+    expect(limitInSeconds(100)).toBe('0.1')
+  })
+
+  it('a decimal that rounds to a whole number is written whole, never with a trailing .0 (#3119)', () => {
+    expect(limitInSeconds(1999)).toBe('2')
+    expect(limitInSeconds(999)).toBe('1')
+    expect(limitInSeconds(20040)).toBe('20')
+  })
+
+  it('under 0.1 second there is no figure to write (#3119)', () => {
+    expect(limitInSeconds(5)).toBeNull()
+    expect(limitInSeconds(0)).toBeNull()
+    expect(limitInSeconds(99)).toBeNull()
   })
 })
