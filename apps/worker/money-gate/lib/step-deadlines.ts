@@ -14,7 +14,9 @@
  * each timer it already sets raised to one deadline far above any real replay step,
  * on both sides alike. A timer a node does not set stays unset: a code node with a
  * custom timeout is kept out of a chain (isChainableCodeNode), so adding one would
- * change how the engine dispatches it.
+ * change how the engine dispatches it. The only timer not raised is one a fixture
+ * keeps by naming its step in `timed_steps` (#3138): keepStepDeadlines gives that
+ * step back its own deadline, so an unanswered attempt times out on the replay time.
  */
 
 /** Far above any step in a real replay, and below the replay's own test timeout. */
