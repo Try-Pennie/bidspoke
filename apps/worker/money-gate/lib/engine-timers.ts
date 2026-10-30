@@ -66,8 +66,20 @@ export interface LiftedTimers {
   advanceUntil(done: () => boolean): Promise<void>
   /** A held answer's wait on the replay's time (#3086), moved on by advanceUntil. */
   waitFor: WaitOnReplayTime
-  /** Puts back exactly what the lift replaced. */
+  /** How many held answers are waiting on the replay's time now (#3137). */
+  waiting(): number
+  /**
+   * Puts back exactly what the lift replaced. From then on the replay's time
+   * never moves again (#3137): an advance still running, or asked for later,
+   * refuses by name and never tells the pinned clock.
+   */
   restore(): void
+  /**
+   * Ends the run's time (#3137): counts the held answers still waiting, then
+   * restores, which refuses each of them by name. A count above zero is a step
+   * that would run after its run's record closed (`describeStillHeld`).
+   */
+  end(): number
 }
 
 export interface LiftOptions {
@@ -91,6 +103,8 @@ export function liftEngineTimers(host: TimerHost, opts: LiftOptions = {}): Lifte
   const pending = new Map<unknown, PendingTimer>()
   let replayNowMs = 0
   let seq = 0
+  let restored = false
+  let held = 0
 
   host.setTimeout = ((handler: unknown, ms?: number, ...args: unknown[]) => {
     // Workers refuse a string handler, so the engine never sets one; one here is a fault, not a timer.
@@ -135,6 +149,9 @@ export function liftEngineTimers(host: TimerHost, opts: LiftOptions = {}): Lifte
     for (let advances = 0; ; advances++) {
       await settle()
       if (done()) return
+      // The run this time belonged to has ended (#3137). Moving on now would run its
+      // timers early and pin the clock again, under whatever runs next.
+      if (restored) throw new Error('money gate: the replay\'s time was asked to move on after its run ended, so a step waiting on it outlived its run and would have run unrecorded (#3137)')
       if (advances >= ADVANCE_LIMIT) throw new Error(`money gate: the replay's time was moved on ${ADVANCE_LIMIT} times and the held answer is still waiting, so something re-arms a timer for ever`)
       let next: PendingTimer | null = null
       for (const t of pending.values()) if (!next || t.dueMs < next.dueMs || (t.dueMs === next.dueMs && t.seq < next.seq)) next = t
@@ -149,9 +166,11 @@ export function liftEngineTimers(host: TimerHost, opts: LiftOptions = {}): Lifte
     let elapsed = false
     // Set through the lift, so it is pending, in order, beside the engine's own timers.
     const handle = ms === undefined ? null : host.setTimeout(() => { elapsed = true }, ms)
+    held++
     try {
       await advanceUntil(() => signal.aborted || elapsed)
     } finally {
+      held--
       if (handle !== null) host.clearTimeout(handle)
     }
     return signal.aborted ? 'aborted' : 'elapsed'
@@ -164,15 +183,24 @@ export function liftEngineTimers(host: TimerHost, opts: LiftOptions = {}): Lifte
     return signal
   }
 
+  const restore = (): void => {
+    restored = true
+    host.setTimeout = realSetTimeout
+    host.clearTimeout = realClearTimeout
+    signals.timeout = realTimeout
+  }
+
   return {
     fired: () => [...fired],
     advanced: () => [...advanced],
     advanceUntil,
     waitFor,
-    restore: () => {
-      host.setTimeout = realSetTimeout
-      host.clearTimeout = realClearTimeout
-      signals.timeout = realTimeout
+    waiting: () => held,
+    restore,
+    end: () => {
+      const stillHeld = held
+      restore()
+      return stillHeld
     },
   }
 }
@@ -186,6 +214,16 @@ function setAt(stack: string | undefined): string {
     .filter((line) => line !== '' && !line.includes('engine-timers.ts'))
     .slice(0, 3)
     .join(' < ')
+}
+
+/**
+ * The replay's refusal for a run that ended with answers still held on its time
+ * (#3137); empty when none were. A step after such an answer would run after the
+ * record closed, through the restored network, and never be recorded.
+ */
+export function describeStillHeld(fixture: string, held: number): string {
+  if (held === 0) return ''
+  return `money gate: ${fixture}: ${held} answer(s) held on the replay's time were still waiting when the run ended, so a step after them would run after the record closed and go unrecorded (#3137)`
 }
 
 /** The replay's refusal for a run whose engine timers fired; empty when none did. */

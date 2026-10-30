@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { GATE_STEP_DEADLINE_MS } from '../step-deadlines'
-import { describeFiredTimers, liftEngineTimers, type TimerHost } from '../engine-timers'
+import { describeFiredTimers, describeStillHeld, liftEngineTimers, type TimerHost } from '../engine-timers'
 
 /**
  * A host made of the real timers, so these tests never replace a global the test
@@ -231,6 +231,48 @@ describe('advanceUntil (#3086)', () => {
     }
   })
 
+  it('refuses by name to move time on once restored, and never moves the pinned clock again, so a walk that outlives its run cannot carry on unseen (#3137)', async () => {
+    const h = host()
+    const seen: number[] = []
+    const lift = liftEngineTimers(h, { onAdvance: (ms) => seen.push(ms) })
+    const held = lift.waitFor(new AbortController().signal, 7_500)
+    lift.restore()
+    await expect(held).rejects.toThrow('outlived its run')
+    expect(seen).toEqual([])
+  })
+
+  it('counts the held answers still waiting on the replay time, so a run can refuse to end while one waits (#3137)', async () => {
+    const h = host()
+    const lift = liftEngineTimers(h)
+    try {
+      expect(lift.waiting()).toBe(0)
+      const held = lift.waitFor(new AbortController().signal, 7_500)
+      expect(lift.waiting()).toBe(1)
+      expect(await held).toBe('elapsed')
+      expect(lift.waiting()).toBe(0)
+    } finally {
+      lift.restore()
+    }
+  })
+
+  it('ends a run by counting the answers still held, then refusing each of them, so the replay can stop by name on a walk that outlived it (#3137)', async () => {
+    const h = host()
+    const seen: number[] = []
+    const lift = liftEngineTimers(h, { onAdvance: (ms) => seen.push(ms) })
+    const held = lift.waitFor(new AbortController().signal, 7_500)
+    expect(lift.end()).toBe(1)
+    await expect(held).rejects.toThrow('outlived its run')
+    expect(seen).toEqual([])
+    expect(h.setTimeout).toBe(globalThis.setTimeout)
+  })
+
+  it('ends a run with nothing held as zero', async () => {
+    const h = host()
+    const lift = liftEngineTimers(h)
+    expect(await lift.waitFor(new AbortController().signal, 7_500)).toBe('elapsed')
+    expect(lift.end()).toBe(0)
+  })
+
   it('with floorMs 0 keeps every length as the engine asked, and can still advance', async () => {
     const asked: number[] = []
     // A real timer far off for the engine's, so only the advance can run it; the lift's own settle turn (0 ms) stays real.
@@ -260,5 +302,17 @@ describe('describeFiredTimers (#1872)', () => {
 
   it('says nothing when no timer fired', () => {
     expect(describeFiredTimers('x', [])).toBe('')
+  })
+})
+
+describe('describeStillHeld (#3137)', () => {
+  it('names the fixture and how many answers were still held, so a walk that outlived its run stops the replay by name', () => {
+    const text = describeStillHeld('Main Flow/achieve_starts_7500ms_after_answer', 1)
+    expect(text).toContain('Main Flow/achieve_starts_7500ms_after_answer')
+    expect(text).toContain('1 answer(s) held on the replay\'s time were still waiting when the run ended')
+  })
+
+  it('says nothing when no answer was still held', () => {
+    expect(describeStillHeld('x', 0)).toBe('')
   })
 })

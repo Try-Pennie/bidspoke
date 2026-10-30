@@ -17,6 +17,12 @@
  * would. Only the engine's own fetch can be given one; a code bundle's requests
  * reach the gate through its outbound service, where a throw arrives as an HTTP
  * 500, so codeBundleRefusal names any such answer there instead.
+ *
+ * An answer can also arrive whole but late (#3128): its `arrivesAfterMs` holds it
+ * that long on the replay's own time, so the pinned clock moves on with it. The
+ * Achieve step reads how much of the window after the answer is left from that
+ * clock, so a slow write before it is what makes it start late. A code bundle is
+ * refused one too, since its timers are out of the lift's reach.
  */
 import type { WaitOnReplayTime } from './engine-timers'
 
@@ -49,6 +55,12 @@ export interface StubAnswer {
   /** For an answer with an ending, what the buyer would have sent had it arrived whole. */
   body: unknown
   ending?: AnswerEnding
+  /**
+   * The whole answer arrives this long after the request, in replay time (#3128).
+   * The gate lifts each step's own limit, so a step never times out on it; one
+   * late answer stands for the time a slow write takes, its retries included.
+   */
+  arrivesAfterMs?: number
 }
 
 /** A trickling body's pace, in replay time: its last piece arrives at seven times this, past a 20 s limit. */
@@ -146,6 +158,12 @@ const creditTrades = (calc: Record<string, unknown>) => (): StubAnswer => json({
 const engineData = (loanOffers: unknown[]) => ({ uuid: 'engine-gate-uuid-0001', leadUuid: 'engine-gate-lead-0001', loanOffers, specialOffers: [] })
 
 const tripoint = (createLead: Record<string, unknown> | null, ok = true, status = 200) => (): StubAnswer => json({ ok, data: { createLead } }, status)
+
+/** The Pipedream relay Main Flow's outcome writes post to, as its committed definition names it (#3128). */
+export const PIPEDREAM_OUTCOME_RELAY_HOST = 'eocv5xd49efymsn.m.pipedream.net'
+
+/** The answer `whole` gives, arriving whole only after `ms` of replay time (#3128). */
+const late = (ms: number, whole: (r: StubRequest) => StubAnswer) => (r: StubRequest): StubAnswer => ({ ...whole(r), arrivesAfterMs: ms })
 
 /** The answer `whole` gives, failing to arrive whole as `how` says (#3086). */
 const ending = (how: AnswerEnding, whole: (r: StubRequest) => StubAnswer) => (r: StubRequest): StubAnswer => ({ ...whole(r), ending: how })
@@ -294,6 +312,25 @@ export const RULES: Rule[] = [
   },
 
   // ── Pipedream (Main Flow posts its Salesforce writes there) ──
+  // The outcome relay: the Salesforce write each answered arm of Main Flow posts
+  // after the answer (tripoint_sf_post, amone_sf_post and the rest), the step just
+  // before its Achieve step. Its own rule, ahead of the catch all below, so a
+  // variant can slow it without slowing the inquiry relay inside parallel_1, which
+  // runs before the answer. The two late answers (#3128) put the Achieve step on
+  // either side of its cutoff: with the 12 s window, the 500 ms margin and the 4 s
+  // floor, a step starting 7.5 s after the answer sends and one at 7.501 s skips.
+  // In production that time is a write's attempts and the waits between them (a
+  // 3,750 ms attempt timing out, 500 ms, then a slow second attempt).
+  {
+    name: 'pipedream_outcome_post',
+    match: (r) => host(r) === PIPEDREAM_OUTCOME_RELAY_HOST,
+    default: 'ok',
+    scenarios: {
+      ok: () => json({ success: true }),
+      ok_after_7500ms: late(7_500, () => json({ success: true })),
+      ok_after_7501ms: late(7_501, () => json({ success: true })),
+    },
+  },
   {
     name: 'pipedream',
     match: (r) => host(r).endsWith('.m.pipedream.net'),
@@ -508,6 +545,13 @@ const abortReason = (signal: AbortSignal): unknown => signal.reason ?? new DOMEx
  */
 export async function answerFetch(answer: StubAnswer, signal: AbortSignal | undefined, wait: WaitOnReplayTime): Promise<Response> {
   const how = answer.ending
+  if (answer.arrivesAfterMs !== undefined) {
+    if (how) throw new Error(`money gate: an answer cannot both arrive late (arrivesAfterMs) and end ${how}; give it one or the other`)
+    // A request with no signal still waits: only the replay's time ends this wait.
+    const held = signal ?? new AbortController().signal
+    if ((await wait(held, answer.arrivesAfterMs)) === 'aborted') throw abortReason(held)
+    return toResponse(answer)
+  }
   if (!how) return toResponse(answer)
   if (how === 'connection_failed') throw connectionLost()
   if ((how === 'no_headers' || how === 'body_trickles') && !signal) {
@@ -547,9 +591,14 @@ export async function answerFetch(answer: StubAnswer, signal: AbortSignal | unde
  * (#3086). A bundle's requests reach the gate through its outbound service, where
  * a throw arrives as an HTTP 500 rather than as a failed fetch, and its timers are
  * out of the lift's reach, so an answer that does not arrive whole is refused by
- * name rather than played as something else.
+ * name rather than played as something else. So is one that arrives whole but
+ * late (#3128): its wait is on the replay's time, which a bundle cannot be held
+ * on, so it would be answered at once and the clock would never move.
  */
 export function codeBundleRefusal(hit: { rule: string; scenario: string; answer: StubAnswer }, fixture: string): string | null {
+  if (hit.answer.arrivesAfterMs !== undefined) {
+    return `money gate: ${fixture}: a code bundle asked for ${hit.rule}/${hit.scenario}, which arrives ${hit.answer.arrivesAfterMs} ms late; only the engine's own fetch can wait on the replay's time (#3128)`
+  }
   if (!hit.answer.ending) return null
   return `money gate: ${fixture}: a code bundle asked for ${hit.rule}/${hit.scenario}, which ends ${hit.answer.ending}; only the engine's own fetch can be given an answer that does not arrive whole`
 }
