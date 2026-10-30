@@ -71,23 +71,54 @@ const posted = (dir: string): string | null => {
   return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as { text: string }).text : null
 }
 
+/** Queue one target's alert: decide, and hold the text for `send`. Answers the decision. */
+const queue = (
+  dir: string,
+  args: { target: string; kind: string; facts?: string; text?: string; remedy?: string },
+  opts: { now?: number } = {},
+): string => {
+  const argv = [SCRIPT, 'alert', args.target, args.kind, args.facts ?? '', args.text ?? 'TEXT']
+  if (args.remedy !== undefined) argv.push(args.remedy)
+  const r = spawnSync('bash', argv, {
+    encoding: 'utf8',
+    env: { ...process.env, DRIFT_STATE_DIR: dir, DRIFT_NOW: String(opts.now ?? NOW) },
+  })
+  expect(r.status, r.stderr).toBe(0)
+  return r.stdout.trim()
+}
+
+/** Post everything this run queued as one message (#3152). Answers what happened to the post. */
+const send = (
+  dir: string,
+  opts: { curlExit?: number; webhook?: string; cause?: string; link?: string } = {},
+): string => {
+  const r = spawnSync('bash', [SCRIPT, 'send'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      DRIFT_STATE_DIR: dir,
+      CURL_BIN: fakeCurl(dir, opts.curlExit ?? 0),
+      SLACK_WEBHOOK_URL: opts.webhook ?? 'https://hooks.example/x',
+      DRIFT_CAUSE: opts.cause ?? '',
+      DRIFT_RUN_LINK: opts.link ?? '',
+    },
+  })
+  expect(r.status, r.stderr).toBe(0)
+  return r.stdout.trim()
+}
+
+/**
+ * One target alerting alone in a run, as every run did before #3152: the
+ * decision, unless the post itself failed, which is what the run then reports.
+ */
 const alert = (
   dir: string,
   args: { target: string; kind: string; facts?: string; text?: string },
   opts: { now?: number; curlExit?: number; webhook?: string } = {},
 ): string => {
-  const r = spawnSync('bash', [SCRIPT, 'alert', args.target, args.kind, args.facts ?? '', args.text ?? 'TEXT'], {
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      DRIFT_STATE_DIR: dir,
-      DRIFT_NOW: String(opts.now ?? NOW),
-      CURL_BIN: fakeCurl(dir, opts.curlExit ?? 0),
-      SLACK_WEBHOOK_URL: opts.webhook ?? 'https://hooks.example/x',
-    },
-  })
-  expect(r.status, r.stderr).toBe(0)
-  return r.stdout.trim()
+  const decision = queue(dir, args, opts)
+  const sent = send(dir, opts)
+  return sent === 'post-failed' || sent === 'no-webhook' ? sent : decision
 }
 
 const clear = (dir: string, target: string) => {
@@ -188,15 +219,14 @@ describe('drift-alert-state alert: a standing condition backs off on the shared 
     const dir = stateDir({ status: 'none' })
     const r = spawnSync('bash', [SCRIPT, 'alert', 'worker', 'alert', 'aaaa|bbbb', 'TEXT'], {
       encoding: 'utf8',
-      env: {
-        ...process.env,
-        DRIFT_STATE_DIR: dir,
-        DRIFT_NOW: String(NOW),
-        CURL_BIN: fakeCurl(dir),
-        SLACK_WEBHOOK_URL: 'https://hooks.example/x',
-      },
+      env: { ...process.env, DRIFT_STATE_DIR: dir, DRIFT_NOW: String(NOW) },
     })
     expect(r.stdout).toBe('post-first\n')
+    const s = spawnSync('bash', [SCRIPT, 'send'], {
+      encoding: 'utf8',
+      env: { ...process.env, DRIFT_STATE_DIR: dir, CURL_BIN: fakeCurl(dir), SLACK_WEBHOOK_URL: 'https://hooks.example/x' },
+    })
+    expect(s.stdout).toBe('posted\n')
   })
 
   it('carries a held record forward unchanged', () => {
@@ -466,6 +496,106 @@ const artifact = (id: number, created: string, extra: Record<string, unknown> = 
   created_at: created,
   workflow_run: { id: id * 10, head_branch: 'main' },
   ...extra,
+})
+
+/**
+ * One message per drift run (#3152). On 2026-10-30 one failed Deploy posted
+ * "Worker code is committed but not deployed" and "The site is serving an older
+ * build" a second apart, each ending in the same "start Deploy on main". A
+ * Deploy run ships every target, so a strand is one fact about the pipeline:
+ * every target that alerts in a run now goes into one post, with the shared
+ * remedy, the newest Deploy run's outcome and the link to the check once each.
+ */
+describe('drift-alert-state send: one message for the whole run (#3152)', () => {
+  const LINK = '<https://github.com/o/r/actions/runs/7|Open this check>'
+  const REMEDY = 'start Deploy on main.'
+  const CAUSE = 'The newest Deploy run on main, run 9 for `abc1234`, failed at Verify (worker tests).'
+  const worker = { target: 'worker', kind: 'alert', facts: 'aaaa|bbbb', text: `*Worker behind*\n\nWorker detail.\n\n${LINK}`, remedy: REMEDY }
+  const site = { target: 'site', kind: 'alert-behind', facts: 'cccc', text: `*Site behind*\n\nSite detail.\n\n${LINK}`, remedy: REMEDY }
+
+  it('posts every target that alerted in one message, with the shared remedy, the cause and the link once each', () => {
+    const dir = stateDir({ status: 'none' })
+    expect(queue(dir, worker)).toBe('post-first')
+    expect(queue(dir, site)).toBe('post-first')
+    expect(send(dir, { cause: CAUSE, link: LINK })).toBe('posted')
+    expect(posted(dir)).toBe(
+      `*Worker behind*\n\nWorker detail.\n\n*Site behind*\n\nSite detail.\n\n*What happened:* ${CAUSE}\n\n*How to fix:* ${REMEDY}\n\n${LINK}`,
+    )
+    const done = finish(dir, { WORKER: 'failure', PAGES: 'failure' })
+    expect(done.outcome).toBe('reported')
+    expect(done.next.targets.worker.alerts).toBe(1)
+    expect(done.next.targets.site.alerts).toBe(1)
+  })
+
+  it('gives one target alone the same shape: detail, cause, remedy, then the link', () => {
+    const dir = stateDir({ status: 'none' })
+    queue(dir, site)
+    send(dir, { cause: CAUSE, link: LINK })
+    expect(posted(dir)).toBe(`*Site behind*\n\nSite detail.\n\n*What happened:* ${CAUSE}\n\n*How to fix:* ${REMEDY}\n\n${LINK}`)
+  })
+
+  it('leaves out a target its schedule holds, and still posts the one that is due', () => {
+    const held = { ...standing(1, H), key: 'site|alert-behind|cccc' }
+    const dir = stateDir({ status: 'state', targets: { site: held } })
+    expect(queue(dir, worker)).toBe('post-first')
+    expect(queue(dir, site)).toBe('held')
+    send(dir, { link: LINK })
+    expect(posted(dir)).not.toContain('Site behind')
+    expect(posted(dir)).toContain('Worker behind')
+    const done = finish(dir, { WORKER: 'failure', PAGES: 'failure' })
+    expect(done.next.targets.site).toEqual(held)
+    expect(done.outcome).toBe('reported')
+  })
+
+  it('keeps each reminder sentence with the target it is about', () => {
+    const due = { ...standing(1, 6 * H, 6 * H), key: 'site|alert-behind|cccc' }
+    const dir = stateDir({ status: 'state', targets: { site: due } })
+    queue(dir, worker)
+    expect(queue(dir, site)).toBe('post-reminder')
+    send(dir, { link: LINK })
+    const sentence = describeRepeat({ since: due.since, alerts: 1 }, NOW * 1000, true)
+    expect(posted(dir)).toContain(`*Site behind*\n\nSite detail.\n\n${sentence}\n\n*How to fix:*`)
+  })
+
+  it('posts nothing when every target was held or healthy', () => {
+    const dir = stateDir({ status: 'none' })
+    expect(send(dir, { cause: CAUSE, link: LINK })).toBe('nothing')
+    expect(posted(dir)).toBeNull()
+  })
+
+  it('gives no cause when no queued alert is fixed by a deploy, since the outcome of a Deploy explains nothing there', () => {
+    const dir = stateDir({ status: 'none' })
+    queue(dir, { target: 'site', kind: 'alert-unreachable', text: `*Site down*\n\n*How to fix:* open it.\n\n${LINK}` })
+    send(dir, { cause: CAUSE, link: LINK })
+    expect(posted(dir)).toBe(`*Site down*\n\n*How to fix:* open it.\n\n${LINK}`)
+  })
+
+  it('omits the cause line when the cause was not looked up', () => {
+    const dir = stateDir({ status: 'none' })
+    queue(dir, worker)
+    send(dir, { link: LINK })
+    expect(posted(dir)).not.toContain('What happened')
+  })
+
+  it('says once, at the end, that the earlier record could not be read', () => {
+    const dir = stateDir({ status: 'unavailable' })
+    queue(dir, worker)
+    queue(dir, site)
+    send(dir, { link: LINK })
+    const text = posted(dir) ?? ''
+    expect(text.match(/could not be read/g)?.length).toBe(1)
+    expect(text).toMatch(new RegExp(`${LINK.replace(/[|.*?]/g, '\\$&')}\\n\\n.*could not be read`))
+  })
+
+  it('records neither target when Slack refuses the one post, so the next run posts both again', () => {
+    const dir = stateDir({ status: 'none' })
+    queue(dir, worker)
+    queue(dir, site)
+    expect(send(dir, { curlExit: 22, link: LINK })).toBe('post-failed')
+    const done = finish(dir, { WORKER: 'failure', PAGES: 'failure' })
+    expect(done.next.targets).toEqual({})
+    expect(done.outcome).toBe('unreported')
+  })
 })
 
 describe('drift-alert-state read: three answers, never two', () => {
