@@ -55,6 +55,16 @@ describe('executeParallelNode', () => {
     })
   })
 
+  describe('slot handles that do not match the children (#3125)', () => {
+    it('refuses before any child runs, rather than naming a neighbour or one past the end', async () => {
+      const runChild = makeRunChild([fulfilled('a'), fulfilled('b')])
+      const err = await executeParallelNode(makeNode({ wait_for: 'specific', wait_for_slot: 'child-2', timeout_ms: 50 }), [makeChild('a'), makeChild('b')], runChild, ['child-0', 'child-1', 'child-2'])
+        .then(() => null, (e: unknown) => e)
+      expect(String(err)).toMatch(/2 slot step\(s\) but 3 slot handle\(s\)/)
+      expect(runChild).not.toHaveBeenCalled()
+    })
+  })
+
   describe('wait_for: all (default)', () => {
     it('returns all results when every child succeeds', async () => {
       const children = [makeChild('bid_a'), makeChild('bid_b')]
