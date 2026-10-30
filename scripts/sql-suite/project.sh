@@ -5,10 +5,13 @@
 #   main (default)  supabase/migrations and supabase/tests, the bidding database,
 #                   with bootstrap.sql making the image look like that project.
 #   ops             supabase-ops/supabase/migrations and supabase-ops/supabase/tests,
-#                   the separate ops database of the Pipedream move. Its bootstrap
-#                   only creates the suite's bookkeeping: the image's default grants
-#                   already match the new ops project's (measured 2026-10-06,
-#                   TRUNCATE included, unlike the main project's).
+#                   the separate ops database of the Pipedream move, with
+#                   bootstrap-ops.sql giving the image that project's default
+#                   grants as measured 2026-10-06.
+#
+# Both then take the platform's default grants away at the cutover of 2026-10-30
+# (default-grants-cutover.sql, which replay.sh applies, #3097), and both suites
+# load the shared checks in scripts/sql-suite/checks.
 #
 # Each project has its own container and port, so the two never share a database.
 # An unknown name refuses rather than falling back to main (L320).
@@ -34,7 +37,8 @@ case "$SQL_SUITE_PROJECT" in
     # The migrations themselves (#2638), at /sql-suite-fixtures/supabase/, so a
     # test can run a migration again against a state it must refuse, as the ops
     # suite does.
-    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures" "$ROOT/apps/worker/src/partner-delete/labels" "$ROOT/apps/worker/money-gate/fixtures" "$ROOT/supabase/tests/helpers" "$ROOT/supabase/migrations")
+    # The checks both projects share (#3097), at /sql-suite-fixtures/sql-suite/.
+    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures" "$ROOT/apps/worker/src/partner-delete/labels" "$ROOT/apps/worker/money-gate/fixtures" "$ROOT/supabase/tests/helpers" "$ROOT/supabase/migrations" "$ROOT/scripts/sql-suite/checks")
     ;;
   ops)
     SUITE_MIGRATIONS="$ROOT/supabase-ops/supabase/migrations"
@@ -44,7 +48,8 @@ case "$SQL_SUITE_PROJECT" in
     SUITE_PORT_DEFAULT="54330"
     # The ops migrations themselves (#2336), at /sql-suite-fixtures/supabase/,
     # so a test can run a migration again against a state it must refuse.
-    SUITE_FIXTURES=("$ROOT/supabase-ops/supabase/migrations")
+    # The checks both projects share (#3097), at /sql-suite-fixtures/sql-suite/.
+    SUITE_FIXTURES=("$ROOT/supabase-ops/supabase/migrations" "$ROOT/scripts/sql-suite/checks")
     ;;
   *)
     echo "SQL SUITE DID NOT RUN: SQL_SUITE_PROJECT is '$SQL_SUITE_PROJECT'; it must be main or ops" >&2
