@@ -95,30 +95,22 @@ describe('parseServedOpsDefinitions (the ops Worker)', () => {
     })
   })
 
-  it('saves a version an older bidding Worker serves with variables beside it, whatever their shape, and keeps none of them (#3003)', () => {
-    for (const variables of [{ values: { API_BASE: 'https://api.example.test' }, secret_keys: ['TOKEN'] }, 'x', { values: { K: 1 }, secret_keys: [] }]) {
-      const parsed = parseServedOpsDefinitions({ definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: DEF, variables }], unserved: [] }, asked)
-      expect(parsed).toEqual({ definitions: [{ workflowId: WF, organizationId: ORG, versionNumber: 3, definition: DEF }], unserved: [], refused: [] })
+  // The two Workers deploy from one commit, but either can be rolled back alone,
+  // so a field this release does not read is ignored, never a reason to refuse
+  // the answer: whatever its shape, beside the answer or beside a definition.
+  it('ignores a field it does not read, beside the answer or beside a definition, whatever its shape (#3122)', () => {
+    for (const extra of [[{ workflow_id: WF, version_number: 3, reason: 'a reason' }], 'x', { values: { K: 1 } }]) {
+      const parsed = parseServedOpsDefinitions({
+        definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: DEF, variables: extra }],
+        unserved: [{ workflow_id: WF2, version_number: 1 }],
+        refused: extra,
+      }, asked)
+      expect(parsed).toEqual({
+        definitions: [{ workflowId: WF, organizationId: ORG, versionNumber: 3, definition: DEF }],
+        unserved: [{ workflowId: WF2, versionNumber: 1 }],
+        refused: [],
+      })
     }
-  })
-
-  it('passes on, by name and with its reason, a version an older bidding Worker refused to serve (#2702)', () => {
-    const parsed = parseServedOpsDefinitions({
-      definitions: [], unserved: [],
-      refused: [
-        { workflow_id: WF, version_number: 3, reason: 'the variables kept with it hold a row that is not a saved variable' },
-        { workflow_id: WF2, version_number: 9, reason: 'not asked' },
-        { workflow_id: WF2, version_number: 1 },
-      ],
-    }, asked)
-    expect(parsed.refused).toEqual([
-      { workflowId: WF, text: `The bidding Worker could not serve workflow ${WF} version 3 (the variables kept with it hold a row that is not a saved variable), so it was not saved.` },
-      { workflowId: WF2, text: expect.stringMatching(/did not ask about/) },
-      { workflowId: WF2, text: expect.stringMatching(/did not ask about/) },
-    ])
-    // A bidding Worker from before #2702, or from #3003 on, sends no refused list.
-    expect(parseServedOpsDefinitions({ definitions: [], unserved: [] }, asked).refused).toEqual([])
-    expect(() => parseServedOpsDefinitions({ definitions: [], unserved: [], refused: 'x' }, asked)).toThrow(OpsGatewayContractError)
   })
 
   it('refuses a definition it did not ask for, or one that is not an object, and names it', () => {

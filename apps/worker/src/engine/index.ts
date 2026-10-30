@@ -23,6 +23,7 @@ import { executeBuyerClickCheckNode, productionDeps as buyerClickCheckProduction
 import { buildCodeStepInput, resolveCodeProps, unionReferencedSteps, scopeSteps, codeDispatchTarget, bundleUnreachableMessage, bundleMissingForGood, type CodeDispatchTarget } from './nodes/code'
 import { salesforceAnswerOf, type SalesforceAnswer } from './nodes/salesforce'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
+import { parallelStepOrders, slotOrderWidth } from './parallel-step-order'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
 import { LeadValidationConfigFault } from './nodes/lead-validation'
@@ -1775,10 +1776,6 @@ export async function walkGraph(
             .map((id) => findNode(id, definition.nodes))
             .filter((n): n is NodeDefinition => n !== undefined)
 
-      const parallelStartOrder = stepOrder
-      const childOrderBase = stepOrder + 1
-      const parallelEndOrder = childOrderBase + resolvedChildren.length
-
       // Config now lives on the start node. For legacy definitions whose end
       // node still holds wait_for/timeout, merge those in as a fallback.
       // parallel_end is found by checking three sources, in order:
@@ -1811,6 +1808,15 @@ export async function walkGraph(
           }
         }
       }
+      // Each slot gets a range of orders as wide as its chain can walk, so a
+      // slot's later steps never take the next slot's orders or parallel_end's
+      // (#3084). Slot i's step at chain index k is slotBases[i] + k.
+      const chainEndId = endNodePreview?.id
+      const orders = parallelStepOrders(stepOrder, resolvedChildren.map((c) => slotOrderWidth(c, definition, chainEndId)))
+      const parallelStartOrder = orders.start
+      const parallelEndOrder = orders.end
+      const slotOrderBase = (childIndex: number): number => orders.slotBases[childIndex]
+
       const execNode = endNodePreview && endNodePreview.config && Object.keys(endNodePreview.config).length > 0
         ? { ...node, config: { ...endNodePreview.config, ...node.config } }
         : node
@@ -1873,7 +1879,7 @@ export async function walkGraph(
           // start and order and the request it noted last (#3064), the same
           // masked object its own row would have stored. None when that step
           // already wrote its own row: never a second row (#63).
-          const cutOff = slotSteps.cutOff(childIndex, { node: child, stepOrder: childOrderBase + childIndex, startedAt: stepStartedAt })
+          const cutOff = slotSteps.cutOff(childIndex, { node: child, stepOrder: slotOrderBase(childIndex), startedAt: stepStartedAt })
           if (!cutOff) continue
           // What later steps read records the cut-off under that same step
           // (#3082). It used to go under the slot's first step, overwriting the
@@ -1908,7 +1914,7 @@ export async function walkGraph(
           if (childResult.status !== 'timeout') continue
           const childIndex = resolvedChildren.findIndex((c) => c.namespace === childResult.namespace)
           if (childIndex < 0) continue
-          const cutOff = slotSteps.cutOff(childIndex, { node: resolvedChildren[childIndex], stepOrder: childOrderBase + childIndex, startedAt: stepStartedAt })
+          const cutOff = slotSteps.cutOff(childIndex, { node: resolvedChildren[childIndex], stepOrder: slotOrderBase(childIndex), startedAt: stepStartedAt })
           if (!cutOff) continue
           logStep(stepLogQueue, executionId, executionStartedAt, cutOff.node, 'skipped', cutOff.input, null, message, null, 0, cutOff.startedAt, cutOff.stepOrder, node.id, undefined, marker)
         }
@@ -1916,15 +1922,15 @@ export async function walkGraph(
 
       try {
         // Chain-walk children only when a parallel_end is present in the
-        // workflow. Legacy parallel definitions (no parallel_end) rely on
-        // single-node child execution and the parent's last-child-edge
-        // continuation logic; chain walking would double-execute downstream nodes.
-        const chainEndId = endNodePreview?.id
+        // workflow (chainEndId, set above). Legacy parallel definitions (no
+        // parallel_end) rely on single-node child execution and the parent's
+        // last-child-edge continuation logic; chain walking would
+        // double-execute downstream nodes.
         const result = await executeParallelNode(
           execNode,
           resolvedChildren,
           (child, childIndex, abandonSignal) =>
-            runParallelChild(child, ctx, env, supabase, lane, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue, definition, chainEndId, abandonSignal, trackingFor(childIndex)),
+            runParallelChild(child, ctx, env, supabase, lane, executionId, executionStartedAt, slotOrderBase(childIndex), node.id, workflowVersionId, stepLogQueue, definition, chainEndId, abandonSignal, trackingFor(childIndex)),
           slotHandleIds
         )
         blockSettled = true
@@ -2033,8 +2039,8 @@ export async function walkGraph(
         const nextEdge = contEdges.find((e) => evaluateEdge(e, ctx))
         current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
       }
-      // Advance past the whole parallel block (parallel_start + children + parallel_end)
-      stepOrder = parallelEndOrder + 1
+      // Advance past the whole parallel block (parallel_start, each slot's range, parallel_end)
+      stepOrder = orders.next
       continue
     }
 

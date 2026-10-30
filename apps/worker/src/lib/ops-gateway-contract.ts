@@ -181,20 +181,12 @@ export interface ServedOpsDefinition {
  * the tick can tell a version that does not exist from one not yet answered.
  *
  * Served with no variables (#3003): a run reads each variable's current value
- * when it starts (opsRunVariables, #2982), so the variables a version kept at
- * its save are read by nothing. An ops Worker from #2702 to before #3003 reads
- * the field's absence as none kept, and since #2998 runs on its dispatch's
- * values whatever was kept. Nor does the bidding Worker refuse a version any
- * more: its only reason was a kept capture it could not read. The ops Worker
- * still reads a refused list from a bidding Worker from #2702 to before #3003.
+ * when it starts (opsRunVariables, #2982).
  */
 export interface ServedOpsDefinitions {
   definitions: ServedOpsDefinition[]
   unserved: Array<{ workflow_id: string; version_number: number }>
 }
-
-/** The longest reason a refused version carries: a sentence for a page, never a payload. */
-export const MAX_REFUSED_REASON = 300
 
 /**
  * The most runs one opsRunVariables request names (#2997): the tick claims at
@@ -1328,10 +1320,11 @@ export interface ReadOpsDefinition {
 /**
  * The bidding Worker's answer, as the ops Worker reads it (#1950). A row it
  * did not ask for, or whose definition is not an object, is refused by name
- * and not saved: a frozen copy that is wrong stays wrong. The variables an
- * older bidding Worker serves beside a version (#2702 to before #3003) are
- * ignored, whatever their shape, since a run reads its variables when it
- * starts. Throws when the answer is not the shape at all.
+ * and not saved: a frozen copy that is wrong stays wrong. A field it does not
+ * read, beside the answer or beside a definition, is ignored whatever its
+ * shape, so a bidding Worker one release apart (a rollback of either Worker)
+ * is read rather than refused (#3122). Throws when the answer is not the
+ * shape at all.
  */
 export function parseServedOpsDefinitions(
   raw: unknown, asked: ReadonlyArray<{ workflowId: string; versionNumber: number }>,
@@ -1366,20 +1359,6 @@ export function parseServedOpsDefinitions(
     }
     unserved.push({ workflowId, versionNumber: u.version_number })
   })
-  // Sent only by a bidding Worker from #2702 to before #3003, which refused a version whose kept variables it could not read.
-  if (raw.refused !== undefined) {
-    if (!Array.isArray(raw.refused)) throw new OpsGatewayContractError('the bidding Worker answered the definition request with a refused list that is not a list')
-    raw.refused.forEach((r: unknown, i: number) => {
-      const workflowId = isRecord(r) && typeof r.workflow_id === 'string' && UUID.test(r.workflow_id) ? r.workflow_id : null
-      if (!isRecord(r) || workflowId === null || !isVersionNumber(r.version_number) || !wanted.has(`${workflowId}:${r.version_number}`)
-        || typeof r.reason !== 'string' || r.reason === '') {
-        const name = workflowId === null ? `refused row ${i}` : `workflow ${workflowId} version ${String(isRecord(r) ? r.version_number : '')}`
-        refused.push({ workflowId, text: `The bidding Worker said it would not serve ${name}, which the ops tick did not ask about or did not say why, so nothing was saved for it.` })
-        return
-      }
-      refused.push({ workflowId, text: `The bidding Worker could not serve workflow ${workflowId} version ${r.version_number} (${r.reason.slice(0, MAX_REFUSED_REASON)}), so it was not saved.` })
-    })
-  }
   return { definitions, unserved, refused }
 }
 
