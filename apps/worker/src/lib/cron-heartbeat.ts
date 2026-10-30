@@ -715,6 +715,20 @@ export const CRON_JOBS: CronJob[] = [
     dependents:
       'a code node on the Engine Bidding Workflow can be edited without the kept copy in apps/worker/src/engine/scripts/engine-bidding noticing, so the script tests prove a script that no longer runs, and a paste is confirmed by nothing (#1472)',
   },
+  {
+    // The Achieve window skip check (#2862, achieve-window-skips.ts): judges the
+    // last Eastern day once, and an hourly run retries a day it could not judge.
+    id: 'achieve-window-skips',
+    label: 'Achieve window skip check',
+    triggerCron: '0 * * * *',
+    // 1h cadence, 1h slack, matching the other hourly jobs.
+    staleMs: 2 * H,
+    // Two head counts over one Eastern day, 5.1 s cold measured; one KV read
+    // on the hours after the day is judged.
+    maxRunMs: 10 * MIN,
+    dependents:
+      'Achieve leads skipped because too little of the 12 seconds after the answer was left are counted by nobody, so a day when slow steps before Achieve cost it many leads pages nobody (#2862)',
+  },
 ]
 
 export function cronJob(id: string): CronJob {

@@ -1889,15 +1889,18 @@ export async function walkGraph(
       }
 
       // Slots still running when the block stopped waiting for another reason
-      // (#3083): a winner returned under wait_for first, or the block failed on
-      // another slot that failed. Each gets a row on the step it was running,
-      // with the request it noted, written SKIPPED: the slot did not fail, and a
-      // failed row inside a block is what the upstream outage rule reads as the
-      // reason a parallel run failed (failingStepDeadline reads failed rows
-      // only), so the run is still read by the slot it failed on. Marked as the
-      // block's deadline only when that deadline had passed (wait_for all).
-      // Only the row is written: what later steps read of the slot is untouched,
-      // as it was before, so nothing the run resolves or sends changes.
+      // (#3083): a winner returned under wait_for first, wait_for specific's
+      // named slot succeeded (#3119), or the block failed on another slot that
+      // failed. Each gets a row on the step it was running, with the request it
+      // noted, written SKIPPED: the slot did not fail, and a failed row inside a
+      // block is what the upstream outage rule reads as the reason a parallel
+      // run failed (failingStepDeadline reads failed rows only), so the run is
+      // still read by the slot it failed on. Marked as the block's deadline only
+      // when that deadline had passed (wait_for all). Only the row is written:
+      // what later steps read of the slot is untouched, alike in every one of
+      // these cases, so a step the slot was still on holds nothing there.
+      // Under wait_for specific that used to be a failure the block made up
+      // (#3119); a step the slot finished keeps the output it recorded.
       const writeLeftRunningRows = (left: LeftRunning): void => {
         const message = leftRunningMessage(left)
         const marker = left.afterTimeoutMs === null ? null : timeoutMarker(PARALLEL_BLOCK_DEADLINE, left.afterTimeoutMs)
@@ -1928,8 +1931,14 @@ export async function walkGraph(
         output = result.output
         lastOutput = output
         forwardBlockSightings(result)
-        if (Array.isArray(output)) writeCutOffRows(output as ParallelChildResult[], true)
+        // A slot the block left running for a reason other than its timeout
+        // (#3083, #3119: a winner under wait_for first, or wait_for specific's
+        // named slot succeeding) still shows as timeout in the output, but no
+        // deadline cut it off, so it gets the left running row and nothing on
+        // the context, never the deadline's failed row.
         const leftRunning = leftRunningOf(result)
+        const leftNamespaces = new Set(leftRunning?.results.filter((c) => c.status === 'timeout').map((c) => c.namespace) ?? [])
+        if (Array.isArray(output)) writeCutOffRows((output as ParallelChildResult[]).filter((c) => !leftNamespaces.has(c.namespace)), true)
         if (leftRunning) writeLeftRunningRows(leftRunning)
       } catch (err) {
         blockSettled = true
