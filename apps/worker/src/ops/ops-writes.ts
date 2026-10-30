@@ -511,6 +511,7 @@ export async function purgeTerminalRunRequests(
   }
 }
 
+/** The nightly purge of dedup tombstones whose window has ended (#3052). */
 export async function purgeExpiredDedupTombstones(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
   const name = 'purge_expired_dedup_tombstones'
   const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
@@ -1989,6 +1990,20 @@ export async function readVariableCopies(
 /** The nightly purge of copies past the age a fallback refuses, and of workflows gone from the lane. */
 export async function purgeVariableCopies(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
   const name = 'purge_variable_copies'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+/** The nightly purge of the slots fired more than 6 months ago, never a workflow's latest (#3052, ops migration 20261030210000). */
+export async function purgeScheduleFires(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_schedule_fires'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+/** The nightly purge of sends recorded more than a year ago, never of a kept, unended or chained run (#3052). */
+export async function purgeSendLedger(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_send_ledger'
   const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
   return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
 }

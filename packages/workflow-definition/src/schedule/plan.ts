@@ -33,10 +33,20 @@
  */
 import { fnv1a32 } from '@bidspoke/buyer-profile'
 import { firesBetween, latestFireAtOrBefore } from './fires'
-import { scheduleTiming, type ScheduleConfig } from './schedule'
+import { MAX_CATCH_UP_WINDOW_SECONDS, scheduleTiming, type ScheduleConfig } from './schedule'
 
 /** How far back from the database's now a tick still fires a slot (D8). */
 export const DUE_WINDOW_MS = 5 * 60_000
+/**
+ * The furthest before the database clock any plan fires a slot: a due fire is
+ * inside DUE_WINDOW_MS, and a catch up inside the schedule's catch up window,
+ * which validateSchedule holds to MAX_CATCH_UP_WINDOW_SECONDS (a stored
+ * schedule past it throws here rather than planning). No fire is at or before
+ * the last served slot either. So a schedule_fires row older than this whose
+ * workflow has a later slot is never asked about again, which is what lets the
+ * ops database purge slots 6 months old (#3052, purge_schedule_fires).
+ */
+export const MAX_FIRE_AGE_MS = Math.max(DUE_WINDOW_MS, MAX_CATCH_UP_WINDOW_SECONDS * 1000)
 /** At most this many slots can fall in the window (one a minute over five minutes, with room). */
 const MAX_DUE_FIRES = 10
 

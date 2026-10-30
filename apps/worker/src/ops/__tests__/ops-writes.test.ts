@@ -68,6 +68,9 @@ import {
   purgeRunVariables,
   purgeTerminalRunRequests,
   purgeVariableCopies,
+  purgeSendLedger,
+  purgeScheduleFires,
+  purgeExpiredDedupTombstones,
   readVariableCopies,
   saveVariableCopies,
   recordRunCheckpoint,
@@ -1099,6 +1102,22 @@ describe('the step record wrappers (#2703)', () => {
     await expect(purgeTerminalRunRequests(rpcFetch([]).client, new Date('2026-07-19T07:15:00.000Z'), 1000)).rejects.toThrow(/purge_terminal_run_requests/)
     await expect(purgeTerminalRunRequests(rpcFetch([{ purged: '7', tombstoned: 0, more: false }]).client, new Date('2026-07-19T07:15:00.000Z'), 1000))
       .rejects.toThrow(/purged/)
+  })
+
+  // #3052: the nightly purges of the sends past a year, the slots past 6 months and the expired dedup tombstones.
+  it.each([
+    ['purge_send_ledger', purgeSendLedger],
+    ['purge_schedule_fires', purgeScheduleFires],
+    ['purge_expired_dedup_tombstones', purgeExpiredDedupTombstones],
+  ] as const)('%s reads its page, and throws on a refusal or an answer it cannot read, never reading either as nothing purged', async (name, purge) => {
+    const { client, calls } = rpcFetch([{ purged: 5, more: true }])
+    expect(await purge(client, 1000)).toEqual({ purged: 5, more: true })
+    expect(calls[0]).toEqual({ path: `/rest/v1/rpc/${name}`, body: { p_limit: 1000 } })
+    const refused = rpcFetch({ code: '22023', message: `${name}: limit must be 1 to 1000, not 0` }, { status: 400 })
+    await expect(purge(refused.client, 0)).rejects.toThrow(/limit must be 1 to 1000/)
+    await expect(purge(rpcFetch([]).client, 1000)).rejects.toThrow(new RegExp(name))
+    await expect(purge(rpcFetch([{ purged: '5', more: true }]).client, 1000)).rejects.toThrow(/purged/)
+    await expect(purge(rpcFetch([{ purged: 5, more: 'yes' }]).client, 1000)).rejects.toThrow(/more/)
   })
 
   it('purge_ops_step_records reads its page', async () => {

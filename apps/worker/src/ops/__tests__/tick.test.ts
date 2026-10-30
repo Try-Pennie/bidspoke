@@ -34,10 +34,14 @@ import { RUN_LEASE_SECONDS, type RunInvocationReport } from '../run-invocation'
 import type { DispatchedRunVariables } from '../run-variables'
 import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
 import { RUN_DISPATCH_DEADLINE_MS } from '../tick-live'
+import { MAX_FIRE_AGE_MS } from '@bidspoke/workflow-definition'
+// Read through Vite's raw import rather than node:fs, because the worker tsconfig targets the Workers runtime and carries no Node types.
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text; there is no ambient declaration for it in this package.
+import RETENTION_MIGRATION from '../../../../../supabase-ops/supabase/migrations/20261030210000_retention_purges_3052.sql?raw'
 import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
 import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
 import {
-  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, FINISHED_RUN_KEPT_DAYS, NIGHTLY_PURGE, NIGHTLY_PURGE_DESIGN, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
+  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, FINISHED_RUN_KEPT_DAYS, NIGHTLY_PURGE, SCHEDULE_FIRES_KEPT_MONTHS, SEND_LEDGER_KEPT_MONTHS, NIGHTLY_PURGE_DESIGN, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -234,6 +238,10 @@ function fake(opts: {
   variableCopies?: readonly VariableCopy[]
   /** What each page of the variable copy purge answers (#2999). */
   variableCopiesPurge?: PurgeAnswer
+  /** What each page of the send ledger, schedule fires and dedup tombstone purges answers (#3052). */
+  sendLedgerPurge?: PurgeAnswer
+  scheduleFiresPurge?: PurgeAnswer
+  dedupTombstonesPurge?: PurgeAnswer
   /** What each page of the finished run purge answers (#3018), by page from 1; none purged by default. */
   finishedRunsPurge?: (page: number) => { purged: number; tombstoned: number; more: boolean }
 } = {}): Fake {
@@ -310,6 +318,9 @@ function fake(opts: {
     async purgeRunVariables(limit: number) { return purgePage('purgeRunVariables', limit, opts.runVariablesPurge) },
     savedVariableCopies: [] as VariableCopyInput[][],
     async purgeVariableCopies(limit: number) { return purgePage('purgeVariableCopies', limit, opts.variableCopiesPurge) },
+    async purgeSendLedger(limit: number) { return purgePage('purgeSendLedger', limit, opts.sendLedgerPurge) },
+    async purgeScheduleFires(limit: number) { return purgePage('purgeScheduleFires', limit, opts.scheduleFiresPurge) },
+    async purgeDedupTombstones(limit: number) { return purgePage('purgeDedupTombstones', limit, opts.dedupTombstonesPurge) },
     async purgeFinishedRuns(terminalBefore: Date, limit: number) {
       fail('purgeFinishedRuns'); calls.push(`purgeFinishedRuns:${terminalBefore.toISOString()}:${limit}`)
       const page = calls.filter((c) => c.startsWith('purgeFinishedRuns:')).length
@@ -1417,6 +1428,9 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
     schedule_observations: { call: 'purgeObservations', count: 'observations_purged' },
     step_test_results: { call: 'purgeStepTests', count: 'step_tests_purged' },
     variable_copies: { call: 'purgeVariableCopies', count: 'variable_copies_purged' },
+    send_ledger: { call: 'purgeSendLedger', count: 'send_ledger_purged' },
+    schedule_fires: { call: 'purgeScheduleFires', count: 'schedule_fires_purged' },
+    dedup_tombstones: { call: 'purgeDedupTombstones', count: 'dedup_tombstones_purged' },
   }
   /** The fake's option making one purge answer each page with `answer`. */
   const answering = (s: Subject, answer: (page: number) => { purged: number; more: boolean }) => {
@@ -1427,6 +1441,9 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
       case 'schedule_observations': return { observationsPurge: answer }
       case 'step_test_results': return { stepTestsPurge: answer }
       case 'variable_copies': return { variableCopiesPurge: answer }
+      case 'send_ledger': return { sendLedgerPurge: answer }
+      case 'schedule_fires': return { scheduleFiresPurge: answer }
+      case 'dedup_tombstones': return { dedupTombstonesPurge: answer }
     }
   }
   const always = () => ({ purged: 1000, more: true })
@@ -1438,7 +1455,9 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
   })
 
   it('names every purge the nightly sweep runs, each with its own page cap', () => {
-    expect(SUBJECTS.sort()).toEqual(['finished_runs', 'run_variables', 'schedule_observations', 'step_records', 'step_test_results', 'variable_copies'])
+    expect(SUBJECTS.sort()).toEqual([
+      'dedup_tombstones', 'finished_runs', 'run_variables', 'schedule_fires', 'schedule_observations', 'send_ledger', 'step_records', 'step_test_results', 'variable_copies',
+    ])
   })
 
   // The arithmetic, as code: the designed rows a day come from the run volume
@@ -1452,6 +1471,14 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
     expect(d.rowsPerDay.step_records).toBe(d.runsPerDay * d.stepRecordsPerRun)
     expect(d.stepRecordsPerRun).toBeGreaterThanOrEqual(20)
     expect(d.rowsPerDay.schedule_observations).toBe(68 * 1440)
+    // #3052: a send ledger row a send, half the steps of the 20 step run; a schedule fire a fired slot, as an observation is.
+    expect(d.sendsPerRun).toBe(d.stepRecordsPerRun / 2)
+    expect(d.rowsPerDay.send_ledger).toBe(d.runsPerDay * d.sendsPerRun)
+    expect(d.rowsPerDay.schedule_fires).toBe(d.rowsPerDay.schedule_observations)
+    // The nightly run purge writes a tombstone only for a run whose 30 day dedup
+    // window outlives its FINISHED_RUN_KEPT_DAYS (retention_purges.test.sql case C proves none does).
+    expect(d.rowsPerDay.dedup_tombstones).toBe(0)
+    expect(FINISHED_RUN_KEPT_DAYS).toBeGreaterThan(30)
   })
 
   it.each(SUBJECTS)('%s: its page cap removes at least twice its designed rows a day in one night', (s) => {
@@ -1466,9 +1493,10 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
 
   // A minute cron may make 10,000 subrequests and run 15 minutes of wall clock
   // (docs/ops-ceilings-spike.md P1, P3), and every page is one subrequest.
-  it('keeps every page it may take inside a quarter of the tick\'s subrequests, and its budget inside a run dispatch\'s deadline', () => {
+  // Half, since #3052: the rest of a tick asks at most a few hundred (NIGHTLY_PURGE says which).
+  it('keeps every page it may take inside half the tick\'s subrequests, and its budget inside a run dispatch\'s deadline', () => {
     const pages = SUBJECTS.reduce((n, s) => n + NIGHTLY_PURGE.maxPages[s], 0)
-    expect(pages).toBeLessThanOrEqual(10_000 / 4)
+    expect(pages).toBeLessThanOrEqual(10_000 / 2)
     expect(NIGHTLY_PURGE.budgetMs + 10 * NIGHTLY_PURGE_DESIGN.assumedPageMs).toBeLessThan(RUN_DISPATCH_DEADLINE_MS)
   })
 
@@ -1547,6 +1575,65 @@ describe('the nightly purges keep up with the designed run volume (#3053)', () =
     expect(report.counts.nightly_purge_pages).toBe(SUBJECTS.length)
     expect(report.counts.nightly_purge_ms).toBeGreaterThan(0)
     expect(report.problem_keys).toEqual([])
+  })
+})
+
+// #3052: Dan decided on 2026-10-30 that the record of each schedule slot fired
+// is kept 6 months, the record of what each run sent 1 year, and a purged run's
+// dedup tombstone until its window ends. Each is a nightly purge of its own.
+describe('the retention of schedule fires, sends and dedup tombstones (#3052)', () => {
+  const NIGHT = '2026-10-17T07:15:00.000Z' // 03:15 EDT
+  const DAY = 24 * 3600 * 1000
+
+  it('keeps a fired slot 6 months and a send 1 year, the windows the database functions hold', () => {
+    expect(SCHEDULE_FIRES_KEPT_MONTHS).toBe(6)
+    expect(SEND_LEDGER_KEPT_MONTHS).toBe(12)
+    expect(RETENTION_MIGRATION).toContain(`v_cutoff timestamptz := now() - interval '${SCHEDULE_FIRES_KEPT_MONTHS} months';`)
+    expect(RETENTION_MIGRATION).toContain(`v_cutoff timestamptz := now() - interval '${SEND_LEDGER_KEPT_MONTHS / 12} year';`)
+  })
+
+  // A slot older than any fire the tick can plan is never asked for again, so
+  // its row guards nothing (planFires, MAX_FIRE_AGE_MS). Six months is at least
+  // 181 days, many times past that.
+  it('keeps a fired slot far longer than the furthest back the tick ever fires a slot', () => {
+    expect(181 * DAY).toBeGreaterThan(50 * MAX_FIRE_AGE_MS)
+  })
+
+  it.each([
+    ['send_ledger', 'purgeSendLedger', 'send_ledger_purged', 'sendLedgerPurge'],
+    ['schedule_fires', 'purgeScheduleFires', 'schedule_fires_purged', 'scheduleFiresPurge'],
+    ['dedup_tombstones', 'purgeDedupTombstones', 'dedup_tombstones_purged', 'dedupTombstonesPurge'],
+  ] as const)('%s: purged in the nightly sweep a page of 1,000 at a time, counted, and never outside its hour', async (_subject, call, count, option) => {
+    const f = fake({ dbNow: NIGHT, [option]: (page: number) => ({ purged: page < 3 ? 1000 : 7, more: page < 3 }) })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls.filter((c) => c === `${call}:1000`)).toHaveLength(3)
+    expect(report.counts[count]).toBe(2007)
+    expect(report.problem_keys).toEqual([])
+    const quiet = fake({})
+    await runOpsTick(quiet.ports)
+    expect(quiet.db.calls.filter((c) => c.startsWith(call))).toEqual([])
+  })
+
+  // Fail loud: a purge erroring is its own purge_failed, with the error and what
+  // it removed first, and stops none of the others.
+  it.each([
+    ['send_ledger', 'sendLedgerPurge', /sends recorded more than a year ago .*failed after removing 1,000: .*statement timeout/],
+    ['schedule_fires', 'scheduleFiresPurge', /schedule slots fired more than 6 months ago .*failed after removing 1,000: .*statement timeout/],
+    ['dedup_tombstones', 'dedupTombstonesPurge', /dedup tombstones past their window .*failed after removing 1,000: .*statement timeout/],
+  ] as const)('%s: a page erroring is purge_failed for it alone, and the other purges run that night', async (subject, option, words) => {
+    const f = fake({
+      dbNow: NIGHT,
+      [option]: (page: number) => {
+        if (page === 2) throw new Error('canceling statement due to statement timeout')
+        return { purged: 1000, more: true }
+      },
+      stepRecordsPurge: { purged: 4, more: false },
+    })
+    const report = await runOpsTick(f.ports)
+    expect((report.problem_keys ?? []).filter((k) => k.startsWith('purge_'))).toEqual([`purge_failed:${subject}`])
+    expect(report.problems.join(' ')).toMatch(words)
+    expect(report.counts.step_records_purged).toBe(4)
+    expect(OPS_TICK_PROBLEM_RULES.purge_failed).toBe('two_in_a_row')
   })
 })
 
