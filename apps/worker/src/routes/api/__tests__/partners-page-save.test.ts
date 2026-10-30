@@ -11,7 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
-import type { BuyerProfileDocument } from '@bidspoke/buyer-profile'
+import { ACCEPT_RULE_READS_NO_FIELD_MESSAGE, ACCEPT_RULES_MET_BY_EMPTY_ANSWER_MESSAGE, type BuyerProfileDocument } from '@bidspoke/buyer-profile'
 
 vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
@@ -270,6 +270,37 @@ describe('PUT /partners/:id/page: the whole page in one save (#2133)', () => {
     const rpc = saved()
     supabaseWith(rpc, { partner_configs: { single: { ...STORED, accept_signals: [] } } })
     const res = await put(page({ patch: { accept_signals: ACCEPT } }))
+    expect(res.status).toBe(200)
+    expect(pageCalls(rpc)).toHaveLength(1)
+  })
+
+  // #3093: an accept rule an empty answer could meet records a sale on the status alone.
+  it('refuses accept rules an empty answer meets with the profile, on the accept rules, and calls nothing', async () => {
+    const rpc = saved()
+    supabaseWith(rpc)
+    const res = await put(page({ patch: { accept_signals: [{ field: 'error', present: false }] } }))
+    expect(res.status).toBe(422)
+    const body = await res.json() as { error: string; errors: Array<{ code: string; path: string; field: string; message: string }> }
+    expect(body.error).toBe('profile_invalid')
+    expect(body.errors).toEqual([{ code: 'accept_rules_met_by_empty_answer', path: 'acceptSignals', field: 'accept_signals', message: ACCEPT_RULES_MET_BY_EMPTY_ANSWER_MESSAGE }])
+    expect(pageCalls(rpc)).toEqual([])
+  })
+
+  it('refuses an accept rule with no field in a save of the partner alone, on the accept rules, and reads and calls nothing', async () => {
+    const rpc = saved({ profile: null })
+    supabaseWith(rpc)
+    const res = await put(page({ patch: { accept_signals: [{ field: 'ok', equals: true }, { field: '', equals: true }] }, profile: null, expected_profile_version: null }))
+    expect(res.status).toBe(422)
+    const body = await res.json() as { error: string; errors: Array<{ code: string; path: string; field: string; message: string }> }
+    expect(body.error).toBe('accept_rules_invalid')
+    expect(body.errors).toEqual([{ code: 'accept_rule_reads_no_field', path: 'acceptSignals', field: 'accept_signals', message: ACCEPT_RULE_READS_NO_FIELD_MESSAGE(2) }])
+    expect(pageCalls(rpc)).toEqual([])
+  })
+
+  it('saves the partner alone with accept rules that read the answer\'s fields', async () => {
+    const rpc = saved({ profile: null })
+    supabaseWith(rpc)
+    const res = await put(page({ patch: { accept_signals: ACCEPT }, profile: null, expected_profile_version: null }))
     expect(res.status).toBe(200)
     expect(pageCalls(rpc)).toHaveLength(1)
   })

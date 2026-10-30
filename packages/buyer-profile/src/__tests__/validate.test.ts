@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { BuyerProfile } from '../eligibility'
 import { CLICK_URL_NO_PROSPECT_ID_MESSAGE, isCap } from '../click-send'
-import { validateProfile, type PartnerRulesForValidation, type ProfileError, type StoredKind } from '../validate'
+import { evaluateSaleOutcome, type Signal } from '../outcome'
+import { ACCEPT_RULE_READS_NO_FIELD_MESSAGE, ACCEPT_RULES_MET_BY_EMPTY_ANSWER_MESSAGE, acceptRuleErrors, validateProfile, type PartnerRulesForValidation, type ProfileError, type StoredKind } from '../validate'
 
 const base: BuyerProfile = {
   partnerId: 'liberty-one',
@@ -287,5 +288,85 @@ describe('the sold_on kind', () => {
     expect(codes(click, clickPartner, { soldOn: 'offer', tierCount: 0, acceptRuleCount: 0 })).toEqual([])
     // The same kind as stored is never a switch.
     expect(codes(base, partnerWithRules, { soldOn: 'offer', tierCount: 3, acceptRuleCount: 2 })).toEqual([])
+  })
+})
+
+/**
+ * #3093: since #3091 a complete answer with no body (a 204, a 200 with nothing
+ * in it, or text that is not JSON) is still judged by the accept rules, and it
+ * reaches them as null. An accept rule that reads no field of the answer, or a
+ * set of accept rules an empty answer meets, would then record a sale on the
+ * status alone, with nothing from the buyer confirming it. Both are refused at
+ * save, by name, beside the accept rules.
+ */
+describe('accept rules an empty answer could satisfy (#3093)', () => {
+  const tripoint: Signal[] = [
+    { field: 'ok', equals: true },
+    { field: 'data.createLead.resultCode', in: [1000, 1001, 1013, 1014, 1015, 1016, 1017] },
+  ]
+  const withRules = (acceptSignals: Signal[]): PartnerRulesForValidation => ({ ...partnerWithRules, acceptSignals })
+  const errorsOf = (acceptSignals: Signal[], profile: BuyerProfile = base): ProfileError[] => {
+    const r = validateProfile(profile, withRules(acceptSignals))
+    return r.ok ? [] : r.errors
+  }
+
+  it('accepts the live Tripoint rules, which read two fields an empty answer does not carry', () => {
+    expect(validateProfile(base, withRules(tripoint))).toEqual({ ok: true })
+  })
+
+  it.each([
+    ['blank', ''],
+    ['only spaces', '   '],
+    ['only dots, which reads the whole answer rather than a field of it', '.'],
+    ['a bare list mark', '[]'],
+  ])('refuses an accept rule whose field is %s, naming the rule by its number on the accept rules', (_label, field) => {
+    const errors = errorsOf([tripoint[0], { field, equals: true }])
+    expect(errors).toEqual([{ code: 'accept_rule_reads_no_field', path: 'acceptSignals', message: ACCEPT_RULE_READS_NO_FIELD_MESSAGE(2) }])
+  })
+
+  it('refuses an accept rule with no field at all, as the API could send one', () => {
+    const errors = errorsOf([{ equals: true } as unknown as Signal])
+    expect(errors.map((e) => e.code)).toContain('accept_rule_reads_no_field')
+  })
+
+  it('refuses accept rules that an empty answer meets, on the accept rules', () => {
+    const errors = errorsOf([{ field: 'error', present: false }])
+    expect(errors).toEqual([{ code: 'accept_rules_met_by_empty_answer', path: 'acceptSignals', message: ACCEPT_RULES_MET_BY_EMPTY_ANSWER_MESSAGE }])
+    // The words Dan approved (#3093), asserted as written so a change to them is seen.
+    expect(ACCEPT_RULES_MET_BY_EMPTY_ANSWER_MESSAGE).toBe('An empty answer from the buyer would count as a sale. Add a rule that checks a field the buyer sends back.')
+  })
+
+  it('allows an absence rule beside a rule an empty answer cannot meet', () => {
+    expect(errorsOf([{ field: 'error', present: false }, tripoint[1]])).toEqual([])
+  })
+
+  it('refuses them on a disabled draft too, because the rules are the partner\'s and are saved whatever the profile', () => {
+    const draft: BuyerProfile = { ...base, isEnabled: false }
+    expect(errorsOf([{ field: '', equals: true }], draft).map((e) => e.code)).toEqual(['accept_rule_reads_no_field'])
+  })
+
+  it('holds a click buyer\'s accept rules to the same rule, so a save with the profile and one without it agree', () => {
+    const clickBuyer: BuyerProfile = { ...base, soldOn: 'click', priority: null, tiers: [], hourlyLeadCap: null }
+    const clickRules = (acceptSignals: Signal[]): PartnerRulesForValidation => ({ ...withRules(acceptSignals), clickUrl: 'https://liberty.example/apply/{prospect_id}' })
+    expect(validateProfile(clickBuyer, clickRules([]))).toEqual({ ok: true })
+    const r = validateProfile(clickBuyer, clickRules([{ field: 'error', present: false }]))
+    expect(r.ok ? [] : r.errors).toEqual(acceptRuleErrors([{ field: 'error', present: false }]))
+  })
+
+  it('acceptRuleErrors is the same judgement on its own, for a save that changes the rules without the profile', () => {
+    expect(acceptRuleErrors(tripoint)).toEqual([])
+    expect(acceptRuleErrors([])).toEqual([])
+    expect(acceptRuleErrors([{ field: 'error', present: false }]).map((e) => e.code)).toEqual(['accept_rules_met_by_empty_answer'])
+    expect(acceptRuleErrors([{ field: '', equals: true }]).map((e) => e.code)).toEqual(['accept_rule_reads_no_field'])
+  })
+
+  it('every rule set it lets through is never a sale on an empty answer: a 204 and an empty 200 are judged unknown', () => {
+    const allowed: Signal[][] = [tripoint, [{ field: 'error', present: false }, tripoint[1]], [{ field: 'ok', not_in: [false] }], [{ field: 'ok', equals: null }], [{ field: 'ok', in: [null] }]]
+    for (const rules of allowed) {
+      expect(acceptRuleErrors(rules)).toEqual([])
+      for (const status of [200, 204]) {
+        for (const empty of [null, {}]) expect(evaluateSaleOutcome(rules, [], status, empty, false, true).outcome).not.toBe('accepted')
+      }
+    }
   })
 })
