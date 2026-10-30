@@ -33,6 +33,8 @@ const THREE_IN_A_ROW = [
   'reseal_state_failed',
   // The runs waiting to start (#3039): read again next tick.
   'runs_unstarted_unread',
+  // #3000: the plan's "the refresh failing three ticks running".
+  'variable_copy_refresh_failing',
 ]
 // The nightly purges (#3018): two runs of the observation_purge sweep in a row,
 // so the second failed night pages (Dan, 2026-10-29, on #3051).
@@ -44,6 +46,8 @@ const AT_ONCE = [
   'copies_stale', 'run_outcome_unknown', 'runs_lapsed_after_send',
   // Runs that cannot start (#3039): the 15 minutes they waited is the hold.
   'runs_unstarted', 'runs_unstarted_limit',
+  // #3000: runs on the copy while bidding answered, an unreadable answer, a missing variable.
+  'runs_on_variable_copy', 'run_variables_unreadable', 'runs_variable_missing',
   // #3046: a no-retry run of a live workflow whose lease lapsed ended failed; nothing reruns it.
   'runs_lapsed_no_retry',
   'db_not_configured', 'not_configured', 'secrets_unchecked', 'agreement_check_failed', 'queue_disagreement', 'workflow_refused',

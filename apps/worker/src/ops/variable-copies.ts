@@ -22,11 +22,14 @@
  * it, no further request is started, and none of its answers is written that
  * tick (the claimed runs' versions still are). A claimed run's own answer
  * reaches this module through copySourceOf, its secrets by name only. The tick
- * skips the refresh when its own workflow fetch failed or its claimed ask did,
- * so a bidding outage costs one failed request a minute, not one per workflow;
- * one that begins after those succeeded costs at most the
- * VARIABLE_COPY_REFRESH_AT_ONCE requests already in flight, all ended by the
- * one deadline. The names a version reads are taken from its
+ * skips the refresh when its own workflow fetch failed (#3000: the plan's
+ * "skips when its workflow fetch already failed this tick", and only then), so
+ * a bidding outage costs one failed request a minute, not one per workflow;
+ * one that begins after the fetch succeeded, the claimed runs' own ask failing
+ * included, costs at most the VARIABLE_COPY_REFRESH_AT_ONCE requests already
+ * in flight, all ended by the one deadline. Running beside a claimed ask that
+ * failed is what tells runs that fell back to the copy while bidding was up
+ * (runs_on_variable_copy) from a bidding outage. The names a version reads are taken from its
  * copy once held, otherwise from its frozen definition (envReferences, the one
  * reading of that question), at most VARIABLE_COPY_DEFINITIONS_PER_TICK
  * definitions a tick; a version whose names cannot be told is not asked for.
@@ -246,6 +249,25 @@ type RefreshOutcome =
   | { kind: 'failed'; request: OpsRunVariableNamesRequest | null; error: string }
 
 /**
+ * How the refresh went this tick, for the tick's pages (#3000): skipped (no
+ * switched on workflow it could ask about, nothing asked), answered (every
+ * request answered), or failed (the first failure or the deadline ended it).
+ * answeredRequests counts the requests bidding answered at all, readable or
+ * not, and unreadable says, one per request, why an answer could not be read
+ * whole or in part.
+ */
+export type VariableCopyRefresh =
+  | { kind: 'nothing_asked'; answeredRequests: 0; unreadable: [] }
+  | { kind: 'answered'; workflows: number; answeredRequests: number; unreadable: string[] }
+  | { kind: 'failed'; workflows: number; error: string; answeredRequests: number; unreadable: string[] }
+
+/** What the copies' write did: its counts, and how its refresh went. */
+export interface VariableCopiesWritten {
+  counts: Record<string, number>
+  refresh: VariableCopyRefresh
+}
+
+/**
  * The refresh's requests (#3034): at most VARIABLE_COPY_REFRESH_AT_ONCE in
  * flight, all under one VARIABLE_COPY_REFRESH_DEADLINE_MS deadline. The first
  * failure (a throw, or an answer that is not the shape at all) or the deadline
@@ -253,17 +275,31 @@ type RefreshOutcome =
  * included, is dropped, so a refresh is written whole or not at all. A late
  * answer after the end is ignored.
  */
-async function refreshAnswers(w: WriteVariableCopies, requests: readonly OpsRunVariableNamesRequest[]): Promise<RefreshOutcome> {
+async function refreshAnswers(
+  w: WriteVariableCopies, requests: readonly OpsRunVariableNamesRequest[], heard: { answered: number; unreadable: string[] },
+): Promise<RefreshOutcome> {
   const answers: Extract<RefreshOutcome, { kind: 'answered' }>['answers'] = []
   let failure: Extract<RefreshOutcome, { kind: 'failed' }> | null = null
   let next = 0
   const sender = async () => {
     while (failure === null && next < requests.length) {
       const request = requests[next++]
+      let raw: unknown
       try {
-        const read = parseServedOpsRunVariableNames(await w.fetchRunVariables(request), request)
+        raw = await w.fetchRunVariables(request)
+      } catch (err) {
+        failure ??= { kind: 'failed', request, error: formatErr(err) }
+        continue
+      }
+      // Answered, so whatever follows is about the answer's shape, never about reaching bidding (#3000).
+      heard.answered++
+      try {
+        const read = parseServedOpsRunVariableNames(raw, request)
+        // One reason per request (#3000): the page counts requests, and names the first reason of each.
+        if (read.unreadable.length > 0) heard.unreadable.push(read.unreadable[0])
         if (failure === null) answers.push({ request, read })
       } catch (err) {
+        heard.unreadable.push(formatErr(err))
         failure ??= { kind: 'failed', request, error: formatErr(err) }
       }
     }
@@ -286,14 +322,15 @@ async function refreshAnswers(w: WriteVariableCopies, requests: readonly OpsRunV
  * written and when). Never throws: each failure is counted, and logged without
  * a value, and the rest goes on, since nothing here may cost a run.
  */
-export async function writeVariableCopies(w: WriteVariableCopies): Promise<Record<string, number>> {
+export async function writeVariableCopies(w: WriteVariableCopies): Promise<VariableCopiesWritten> {
   const counts: Record<string, number> = {}
+  let refresh: VariableCopyRefresh = { kind: 'nothing_asked', answeredRequests: 0, unreadable: [] }
   const served = new Map<string, { organizationId: OrganizationId; read: CopySource }>()
   for (const s of w.served) served.set(versionKey(s.organizationId, s.read.workflowId, s.read.versionNumber), s)
   const wanted = new Map<string, CopyTarget>()
   for (const s of w.served) wanted.set(versionKey(s.organizationId, s.read.workflowId, s.read.versionNumber), { organizationId: s.organizationId, workflowId: s.read.workflowId, versionNumber: s.read.versionNumber })
   for (const t of w.refresh) wanted.set(versionKey(t.organizationId, t.workflowId, t.versionNumber), t)
-  if (wanted.size === 0) return counts
+  if (wanted.size === 0) return { counts, refresh }
   const byOrganization = new Map<OrganizationId, CopyTarget[]>()
   for (const t of wanted.values()) byOrganization.set(t.organizationId, [...(byOrganization.get(t.organizationId) ?? []), t])
   const organizations = [...byOrganization.keys()].sort()
@@ -349,7 +386,12 @@ export async function writeVariableCopies(w: WriteVariableCopies): Promise<Recor
     }
   }
   if (requests.length > 0) {
-    const outcome = await refreshAnswers(w, requests)
+    const heard = { answered: 0, unreadable: [] as string[] }
+    const outcome = await refreshAnswers(w, requests, heard)
+    const workflows = requests.reduce((n, r) => n + r.runs.length, 0)
+    refresh = outcome.kind === 'failed'
+      ? { kind: 'failed', workflows, error: outcome.error, answeredRequests: heard.answered, unreadable: heard.unreadable }
+      : { kind: 'answered', workflows, answeredRequests: heard.answered, unreadable: heard.unreadable }
     if (outcome.kind === 'failed') {
       // The bidding Worker is likely down, or one answer could not be read at all: nothing of this refresh is written.
       bump(counts, 'variable_copies_refresh_failed')
@@ -411,5 +453,5 @@ export async function writeVariableCopies(w: WriteVariableCopies): Promise<Recor
       w.log('variable_copies_save_failed', { versions: save.length, error: formatErr(err) })
     }
   }
-  return counts
+  return { counts, refresh }
 }
