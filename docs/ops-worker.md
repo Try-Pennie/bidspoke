@@ -147,15 +147,21 @@ included ("Any secret, no exceptions").
 - **What pages** (#3000, phase 4 of #2982). Each run reports where the
   variables it ran on came from and how old they were at its start
   (`RunInvocationReport.variables`), and the tick pages, each on a page of its
-  own (`OPS_OWN_PAGES` in `lib/ops-gateway-contract.ts`, `judgeVariables` in
-  `src/ops/tick.ts`): runs that started on the copy while bidding answered the
+  own (`OPS_OWN_PAGES` in `lib/ops-gateway-contract.ts`, `judgeVariableRuns`
+  in `src/ops/tick.ts`): runs that started on the copy while bidding answered the
   copy's refresh in the same tick; the refresh failing three ticks in a row;
   an answer from bidding ops cannot read; a switched on workflow's runs
   failing with `variable_unavailable`; and a switched on workflow's runs
   that bidding refused their variables (`refusedRunEnd`, status reason
   `variables_refused`, #3131), named from the refusal's fields, at once,
   except a refusal because the workflow is off the ops lane, which pages
-  three ticks in a row. The refresh is skipped only when the tick's own
+  only once a refused run comes 3 minutes or more after the workflow's first
+  refused run, with no successful run of the workflow between: a workflow
+  refused every minute pages after 3 minutes, an hourly one on its second
+  refused run, and a successful run starts the wait again (Dan, 2026-10-30).
+  The bidding Worker keeps that first time per workflow id, expiring 7 days
+  after the last refusal, and the tick's report names the workflows whose
+  runs succeeded (`succeeded_workflows`). The refresh is skipped only when the tick's own
   workflow fetch failed, so it runs beside a claimed ask that failed.
   Each page is in reference/observability.md.
 - **Retired.** The version capture #2702 added (`capture_version_env_variables`,

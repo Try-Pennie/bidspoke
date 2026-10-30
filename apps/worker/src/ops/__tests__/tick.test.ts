@@ -18,7 +18,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import {
-  MAX_DEFINITIONS_PER_REQUEST, OPS_TICK_PROBLEM_RULES, OpsGatewayContractError, missingVariableText, refreshFailingText, refusedVariablesSubject, refusedVariablesText,
+  MAX_DEFINITIONS_PER_REQUEST, MAX_SUCCEEDED_WORKFLOWS, OPS_TICK_PROBLEM_RULES, OpsGatewayContractError, missingVariableText, refreshFailingText, refusedVariablesSubject, refusedVariablesText,
   runVariablesUnreadableText, runsOnVariableCopyText,
 } from '../../lib/ops-gateway-contract'
 import { OPS_UNSTARTED_WAIT_MAX_MS } from '../run-vocabulary'
@@ -3080,7 +3080,32 @@ describe('runs whose variables bidding refused (#3131)', () => {
     expect(keysOf(report, 'runs_refused_variables')).toEqual([])
     expect(keysOf(report, 'runs_refused_off_lane')).toEqual([`runs_refused_off_lane:${WF_A}`])
     expect(problemOf(report, `runs_refused_off_lane:${WF_A}`)).toBe(refusedVariablesText([LANE, LANE]))
-    expect(OPS_TICK_PROBLEM_RULES.runs_refused_off_lane).toBe('three_in_a_row')
+    // Reported at once; the bidding Worker holds its page until a refused run comes 3 minutes after the first (Dan, 2026-10-30).
+    expect(OPS_TICK_PROBLEM_RULES.runs_refused_off_lane).toBe('at_once')
+  })
+
+  it('names the workflows whose runs ended done, each once, so the bidding Worker can start a lane refusal\'s wait again', async () => {
+    const f = fake({
+      mode: 'live', copies: [copy(), copy({ workflowId: WF_B })],
+      claimed: [claimedRun(WF_B, 1), claimedRun(WF_A, 2), claimedRun(WF_A, 3), claimedRun(WF_B, 4)],
+      runReport: async (run) => (run.runRequestId === claimedRun(WF_B, 4).runRequestId
+        ? { outcome: 'completed', end: { outcome: 'failed', error: 'boom' }, runStatus: 'failed' }
+        : { outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' }),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(report.succeeded_workflows).toEqual([WF_A, WF_B].sort())
+    const none = await runOpsTick(fake({ mode: 'live', claimed: [] }).ports)
+    expect(none.succeeded_workflows).toEqual([])
+  })
+
+  it('names none, as not known, when it judged no run: observe mode, or a claim that failed', async () => {
+    expect((await runOpsTick(fake({}).ports)).succeeded_workflows).toBeNull()
+    const failed = await runOpsTick(fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)], failing: { claimRuns: new Error('statement timeout') } }).ports)
+    expect(failed.succeeded_workflows).toBeNull()
+  })
+
+  it('can always name every workflow a tick claims', () => {
+    expect(TICK_CLAIM_LIMIT).toBeLessThanOrEqual(MAX_SUCCEEDED_WORKFLOWS)
   })
 
   it('reports the other reason at once and the lane one apart, by its own rule, when one tick has both', async () => {

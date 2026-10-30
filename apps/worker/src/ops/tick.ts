@@ -97,7 +97,7 @@
  *     (#3034) and concurrently under one deadline, skipped only when the tick's
  *     own workflow fetch failed. Each run reports where the variables it ran on
  *     came from and how old they were (RunInvocationReport.variables), and the
- *     tick pages, each on a page of its own (#3000, phase 4, judgeVariables):
+ *     tick pages, each on a page of its own (#3000, phase 4, judgeVariableRuns):
  *     runs that started on the copy while bidding answered the refresh in the
  *     same tick (runs_on_variable_copy), the refresh failing three ticks in a
  *     row (variable_copy_refresh_failing), an answer it cannot read
@@ -1291,8 +1291,10 @@ function judgeRunOutcomes(
  *    their variables, named from each end's refusal and refusedVariables, and
  *    keyed by the workflow and the fixes they need (refusedVariablesSubject).
  *    Runs refused because the workflow is off the ops lane are
- *    runs_refused_off_lane instead, held three ticks in a row (Dan,
- *    2026-10-30). Only a run of a workflow that may start is asked for, so
+ *    runs_refused_off_lane instead, which the bidding Worker pages only once
+ *    a refused run comes 3 minutes or more after the workflow's first, with no
+ *    successful run between (Dan, 2026-10-30; the report's
+ *    succeeded_workflows). Only a run of a workflow that may start is asked for, so
  *    each is a switched on workflow's; one whose end could not be written is
  *    not paged (it lapses, and the next tick asks again).
  * judged is whether this tick's claim ran and answered, so the runs it
@@ -1300,7 +1302,7 @@ function judgeRunOutcomes(
  * a tick whose claim failed, or that could not claim (held, no database clock,
  * the copies unread), judges none of them, and stands none of their pages down.
  */
-function judgeVariables(
+function judgeVariableRuns(
   judged: boolean, results: readonly RunResult[], asked: { answered: number; unreadable: readonly string[] }, refresh: VariableCopyRefresh | null, nowMs: number,
   problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void, counts: Record<string, number>,
 ): void {
@@ -1834,8 +1836,11 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   for (const [key, n] of Object.entries(written?.counts ?? {})) bump(counts, key, n)
   // The pages about the runs' variables (#3000), in live mode with the database only.
   if (live && db !== null) {
-    judgeVariables(claimAnswered, results, asked, fetchError !== null ? null : (written?.refresh ?? null), ports.now(), problem, counts)
+    judgeVariableRuns(claimAnswered, results, asked, fetchError !== null ? null : (written?.refresh ?? null), ports.now(), problem, counts)
   }
+  // The workflows a run of ended done (#3131), so the bidding Worker starts a
+  // lane refusal's wait again; null when this tick judged no run.
+  const succeededWorkflows = live && db !== null && claimAnswered ? [...new Set(results.filter((r) => r.tally === 'done').map((r) => r.workflowId))].sort() : null
   sent.forEach((r, i) => {
     if (r.status === 'fulfilled') {
       bump(counts, 'dispatched')
@@ -1920,6 +1925,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     write_backs: writeBacks,
     sweeps_run: sweepsRun,
     reseal: resealWatch.report,
+    succeeded_workflows: succeededWorkflows,
   }
   log('finished', { tick_id: ports.tickId, outcome, problems: problems.length, ...counts })
   for (const p of problems) log('problem', { tick_id: ports.tickId, key: p.key, problem: p.text })

@@ -35,8 +35,6 @@ const THREE_IN_A_ROW = [
   'runs_unstarted_unread',
   // #3000: the plan's "the refresh failing three ticks running".
   'variable_copy_refresh_failing',
-  // #3131: a refusal because the workflow is off the ops lane, so a workflow mid move does not page (Dan, 2026-10-30).
-  'runs_refused_off_lane',
 ]
 // The nightly purges (#3018): two runs of the observation_purge sweep in a row,
 // so the second failed night pages (Dan, 2026-10-29, on #3051).
@@ -50,8 +48,9 @@ const AT_ONCE = [
   'runs_unstarted', 'runs_unstarted_limit',
   // #3000: runs on the copy while bidding answered, an unreadable answer, a missing variable.
   'runs_on_variable_copy', 'run_variables_unreadable', 'runs_variable_missing',
-  // #3131: a switched on workflow's runs failed because bidding refused their variables.
-  'runs_refused_variables',
+  // #3131: a switched on workflow's runs failed because bidding refused their variables; the
+  // lane one is held by its page, until a refused run comes 3 minutes after the first (Dan, 2026-10-30).
+  'runs_refused_variables', 'runs_refused_off_lane',
   // #3046: a no-retry run of a live workflow whose lease lapsed ended failed; nothing reruns it.
   'runs_lapsed_no_retry',
   'db_not_configured', 'not_configured', 'secrets_unchecked', 'agreement_check_failed', 'queue_disagreement', 'workflow_refused',

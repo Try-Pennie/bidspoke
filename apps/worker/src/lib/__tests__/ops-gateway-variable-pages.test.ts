@@ -2,15 +2,16 @@
  * The bidding Worker pages the variables problems the ops tick reports: the
  * four of #3000 (phase 4 of #2982), cases (a) to (d), and the two pages for
  * runs whose variables bidding refused (#3131), cases (e), at once with a fix
- * per reason, and (f), off the ops lane, three ticks in a row. Each is on a page of its own as Ops runs can't start
+ * per reason, and (f), off the ops lane, once a refused run comes 3 minutes
+ * or more after the workflow's first with no successful run between. Each is on a page of its own as Ops runs can't start
  * is (#3039): due by its kind's rule, under its own title and fix, never on
  * the minute cron's shared page, and stood down only by a report that judged
  * its kind and no longer names it.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { OPS_TICK_JOB, opsOwnPagePrefix, recordOpsTickCompleted, runOpsTickReportCheck } from '../ops-gateway'
+import { OFF_LANE_FIRST_REFUSED_PREFIX, OPS_TICK_JOB, opsOwnPagePrefix, recordOpsTickCompleted, runOpsTickReportCheck } from '../ops-gateway'
 import {
-  MISSING_VARIABLE_PAGE, REFUSED_OFF_LANE_PAGE, REFUSED_VARIABLES_PAGE, refusedVariablesFix, refusedVariablesText, RUN_VARIABLES_UNREADABLE_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, missingVariableText,
+  MISSING_VARIABLE_PAGE, OFF_LANE_FIRST_REFUSED_TTL_SECONDS, REFUSED_OFF_LANE_PAGE, REFUSED_VARIABLES_PAGE, refusedVariablesFix, refusedVariablesText, RUN_VARIABLES_UNREADABLE_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, missingVariableText,
   refreshFailingText, runVariablesUnreadableText, runsOnVariableCopyText,
 } from '../ops-gateway-contract'
 
@@ -30,20 +31,23 @@ const ALL_JUDGED = { variable_copy_use_judged: 1, variable_copy_refresh_judged: 
 
 function kv() {
   const m = new Map<string, string>()
+  /** The expiry each put asked for, by key (#3131: the first refused time must expire). */
+  const ttl = new Map<string, number | undefined>()
   return {
     m,
+    ttl,
     get: async (k: string) => m.get(k) ?? null,
-    put: async (k: string, v: string) => { m.set(k, v) },
+    put: async (k: string, v: string, o?: { expirationTtl?: number }) => { m.set(k, v); ttl.set(k, o?.expirationTtl) },
     delete: async (k: string) => { m.delete(k) },
     list: async (o: { prefix: string }) => ({ keys: [...m.keys()].filter((k) => k.startsWith(o.prefix)).sort().map((name) => ({ name })), list_complete: true }),
   }
 }
 
-const report = (n: number, problems: Array<[string, string]>, counts: Record<string, number> = ALL_JUDGED) => ({
+const report = (n: number, problems: Array<[string, string]>, counts: Record<string, number> = ALL_JUDGED, succeeded: string[] | undefined = undefined) => ({
   tick_id: `t${n}`, mode: 'live', scheduled_time: null,
   started_at: new Date(NOW + n * MIN).toISOString(), finished_at: new Date(NOW + n * MIN + 1000).toISOString(),
   db_now: null, outcome: problems.length > 0 ? 'problems' : 'ok', problems: problems.map(([, t]) => t), problem_keys: problems.map(([k]) => k),
-  counts, start_stamp_failed: false,
+  counts, start_stamp_failed: false, ...(succeeded === undefined ? {} : { succeeded_workflows: succeeded }),
 })
 
 function deps(opts: { names?: Record<string, string>; failJob?: string } = {}) {
@@ -129,38 +133,100 @@ describe('the pages about a run\'s variables (#3000)', () => {
     expect(store.m.has(`${opsOwnPagePrefix('runs_refused_variables')}${WF}`)).toBe(true)
   })
 
-  // Dan, 2026-10-30: a workflow mid move off the ops lane must not page.
-  it('(f) holds a refusal because the workflow is off the ops lane for two ticks, pages the third in a row on its own page, and stands down after', async () => {
+  // Dan, 2026-10-30 ("Second refused run"): a refusal because the workflow is
+  // off the ops lane pages once a refused run comes 3 minutes or more after
+  // the workflow's first, with no successful run of it between, so a workflow
+  // mid move does not page, one running every minute pages after 3 minutes,
+  // and an hourly one pages on its second refused run.
+  const LANE = `runs_refused_off_lane:${WF}`
+  const FIRST = `${OFF_LANE_FIRST_REFUSED_PREFIX}${WF}`
+  const lanePage = {
+    job: `ops-runs-variables-refused-off-lane:${WF}`, errors: [OFF_LANE], title: 'Ops runs failed because bidding refused their variables: Lead intake',
+    fixHint: REFUSED_OFF_LANE_PAGE.fix, context: undefined,
+  }
+
+  it('(f) pages a workflow refused every minute once its refused run comes 3 minutes after its first, and records the first with an expiry', async () => {
     const store = kv()
     const d = deps()
-    expect(await tick(store, d, 1, report(1, [[`runs_refused_off_lane:${WF}`, OFF_LANE]]))).toBe('held')
-    expect(await tick(store, d, 2, report(2, [[`runs_refused_off_lane:${WF}`, OFF_LANE]]))).toBe('held')
+    expect(await tick(store, d, 1, report(1, [[LANE, OFF_LANE]]))).toBe('held')
+    expect(store.m.get(FIRST)).toBe(new Date(NOW + MIN).toISOString())
+    expect(store.ttl.get(FIRST)).toBe(OFF_LANE_FIRST_REFUSED_TTL_SECONDS)
+    expect(await tick(store, d, 2, report(2, [[LANE, OFF_LANE]]))).toBe('held')
+    expect(await tick(store, d, 3, report(3, [[LANE, OFF_LANE]]))).toBe('held')
     expect(d.sent).toEqual([])
-    expect(await tick(store, d, 3, report(3, [[`runs_refused_off_lane:${WF}`, OFF_LANE]]))).toBe('alerted')
-    expect(d.sent).toEqual([{
-      job: `ops-runs-variables-refused-off-lane:${WF}`, errors: [OFF_LANE], title: 'Ops runs failed because bidding refused their variables: Lead intake',
-      fixHint: REFUSED_OFF_LANE_PAGE.fix, context: 'Reported by 3 or more ticks in a row.',
-    }])
-    await tick(store, d, 4, report(4, []))
+    // The first refused time is kept, its expiry renewed, while the refusals go on.
+    expect(store.m.get(FIRST)).toBe(new Date(NOW + MIN).toISOString())
+    expect(await tick(store, d, 4, report(4, [[LANE, OFF_LANE]]))).toBe('alerted')
+    expect(d.sent).toEqual([lanePage])
+    expect(REFUSED_OFF_LANE_PAGE.pagesAfterFirstMs).toBe(3 * MIN)
+  })
+
+  it('(f) pages an hourly workflow on its second refused run, the ticks between naming nothing', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 1, report(1, [[LANE, OFF_LANE]]))).toBe('held')
+    for (const n of [2, 30, 59]) await tick(store, d, n, report(n, [], ALL_JUDGED, []))
+    expect(store.m.has(FIRST)).toBe(true)
+    expect(await tick(store, d, 61, report(61, [[LANE, OFF_LANE]]))).toBe('alerted')
+    expect(d.sent).toEqual([lanePage])
+  })
+
+  it('(f) starts again from a successful run of the workflow between its refused runs', async () => {
+    const store = kv()
+    const d = deps()
+    await tick(store, d, 1, report(1, [[LANE, OFF_LANE]]))
+    await tick(store, d, 2, report(2, [], ALL_JUDGED, [OTHER, WF]))
+    expect(store.m.has(FIRST)).toBe(false)
+    expect(await tick(store, d, 5, report(5, [[LANE, OFF_LANE]]))).toBe('held')
+    expect(store.m.get(FIRST)).toBe(new Date(NOW + 5 * MIN).toISOString())
+    expect(await tick(store, d, 8, report(8, [[LANE, OFF_LANE]]))).toBe('alerted')
+  })
+
+  it('(f) takes a refused run in the same report as a successful one as the first again', async () => {
+    const store = kv()
+    const d = deps()
+    await tick(store, d, 1, report(1, [[LANE, OFF_LANE]]))
+    expect(await tick(store, d, 5, report(5, [[LANE, OFF_LANE]], ALL_JUDGED, [WF]))).toBe('held')
+    expect(store.m.get(FIRST)).toBe(new Date(NOW + 5 * MIN).toISOString())
+    expect(d.sent).toEqual([])
+  })
+
+  it('(f) keeps the first refused time through a report that says nothing of successful runs', async () => {
+    const store = kv()
+    const d = deps()
+    await tick(store, d, 1, report(1, [[LANE, OFF_LANE]]))
+    // An ops release before #3131, or a tick that judged no run: not known, never read as a successful run.
+    await tick(store, d, 2, report(2, []))
+    expect(store.m.has(FIRST)).toBe(true)
+    expect(await tick(store, d, 4, report(4, [[LANE, OFF_LANE]]))).toBe('alerted')
+  })
+
+  it('(f) pages when the first refused time cannot be read, and raises the failure', async () => {
+    const store = kv()
+    const d = deps()
+    await tick(store, d, 1, report(1, [[LANE, OFF_LANE]]))
+    const failing = { ...store, get: async (k: string) => { if (k === FIRST) throw new Error('KV did not answer'); return store.get(k) } }
+    await recordOpsTickCompleted(failing as unknown as KVNamespace, report(2, [[LANE, OFF_LANE]]), NOW + 2 * MIN + 2000)
+    await expect(runOpsTickReportCheck({} as never, failing as unknown as KVNamespace, NOW + 2 * MIN + 30_000, d))
+      .rejects.toThrow(/when workflow .* runs were first refused could not be read: KV did not answer/)
+    expect(d.sent).toEqual([lanePage])
+  })
+
+  it('(f) stands the lane page down on a report that judged it and no longer names it, keeping the first refused time', async () => {
+    const store = kv()
+    const d = deps()
+    await tick(store, d, 1, report(1, [[LANE, OFF_LANE]]))
+    await tick(store, d, 4, report(4, [[LANE, OFF_LANE]]))
+    await tick(store, d, 5, report(5, []))
     expect(d.recovered).toContain(`ops-runs-variables-refused-off-lane:${WF}`)
+    expect(store.m.has(FIRST)).toBe(true)
   })
 
   it('(f) pages the other reason at once and holds the lane one, when one report names both', async () => {
     const store = kv()
     const d = deps()
-    await tick(store, d, 1, report(1, [[`runs_refused_off_lane:${WF}`, OFF_LANE], [`runs_refused_variables:${WF}.secret`, REFUSED]]))
+    await tick(store, d, 1, report(1, [[LANE, OFF_LANE], [`runs_refused_variables:${WF}.secret`, REFUSED]]))
     expect(d.sent.map((p) => p.job)).toEqual([`ops-runs-variables-refused:${WF}`])
-  })
-
-  it('(f) a lane refusal broken by one tick without it starts its count again', async () => {
-    const store = kv()
-    const d = deps()
-    await tick(store, d, 1, report(1, [[`runs_refused_off_lane:${WF}`, OFF_LANE]]))
-    await tick(store, d, 2, report(2, [[`runs_refused_off_lane:${WF}`, OFF_LANE]]))
-    await tick(store, d, 3, report(3, []))
-    await tick(store, d, 4, report(4, [[`runs_refused_off_lane:${WF}`, OFF_LANE]]))
-    await tick(store, d, 5, report(5, [[`runs_refused_off_lane:${WF}`, OFF_LANE]]))
-    expect(d.sent).toEqual([])
   })
 
   it('(a) pages runs that ran on the copy while bidding answered the refresh at once, per workflow', async () => {

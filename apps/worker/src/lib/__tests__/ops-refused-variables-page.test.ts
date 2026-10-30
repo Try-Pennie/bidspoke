@@ -6,14 +6,15 @@
  * (#3000). The page names each refused variable and why bidding refused it in
  * plain words, from the refusal's typed fields, never a code and never the
  * run's error text, and its fix changes with the reason. A refusal because
- * the workflow is no longer on the ops lane pages only three ticks in a row,
- * on a page of its own, so a workflow mid move does not page; every other
- * reason pages at once. The words are Dan's, approved on 2026-10-30 on #3131;
+ * the workflow is no longer on the ops lane pages, on a page of its own, only
+ * once a refused run comes 3 minutes or more after the workflow's first with
+ * no successful run between, so a workflow mid move does not page; every
+ * other reason pages at once. The words are Dan's, approved on 2026-10-30 on #3131;
  * these tests pin what each renders.
  */
 import { describe, expect, it } from 'vitest'
 import {
-  MAX_PROBLEM_LENGTH, OPS_OWN_PAGES, OPS_TICK_PROBLEM_RULES, PROBLEM_KEY_PATTERN, REFUSED_OFF_LANE_PAGE, REFUSED_VARIABLES_PAGE, RUN_VARIABLES_REFUSALS,
+  MAX_PROBLEM_LENGTH, MAX_SUCCEEDED_WORKFLOWS, OFF_LANE_FIRST_REFUSED_TTL_SECONDS, OPS_OWN_PAGES, parseOpsTickReport, OPS_TICK_PROBLEM_RULES, PROBLEM_KEY_PATTERN, REFUSED_OFF_LANE_PAGE, REFUSED_VARIABLES_PAGE, RUN_VARIABLES_REFUSALS,
   inARowToPage, problemRuleOf, refusedVariablesFix, refusedVariablesSubject, refusedVariablesText, type FailingRunVariablesRefusal,
 } from '../ops-gateway-contract'
 
@@ -33,10 +34,16 @@ describe('the rules the refused variables pages page by (#3131)', () => {
     expect(problemRuleOf(`runs_refused_variables:${WF}`)).toBe('at_once')
   })
 
-  // Dan, 2026-10-30: a workflow mid move off the ops lane must not page.
-  it('pages a refusal because the workflow is off the ops lane only three ticks in a row', () => {
-    expect(OPS_TICK_PROBLEM_RULES.runs_refused_off_lane).toBe('three_in_a_row')
-    expect(inARowToPage(`runs_refused_off_lane:${WF}`)).toBe(3)
+  // Dan, 2026-10-30 ("Second refused run"): a workflow mid move off the ops
+  // lane must not page. The tick reports it at once; its page holds it until a
+  // refused run comes 3 minutes after the first, by its own state, not by ticks.
+  it('pages a refusal because the workflow is off the ops lane once a refused run comes 3 minutes after its first', () => {
+    expect(OPS_TICK_PROBLEM_RULES.runs_refused_off_lane).toBe('at_once')
+    expect(inARowToPage(`runs_refused_off_lane:${WF}`)).toBeNull()
+    expect(REFUSED_OFF_LANE_PAGE.pagesAfterFirstMs).toBe(3 * 60_000)
+    expect(REFUSED_VARIABLES_PAGE).not.toHaveProperty('pagesAfterFirstMs')
+    // The first refused time outlives a daily workflow's gap between runs, and is renewed while refusals go on.
+    expect(OFF_LANE_FIRST_REFUSED_TTL_SECONDS).toBe(7 * 24 * 3600)
   })
 
   it('gives each its own page, job and count of the reports that judged it', () => {
@@ -156,5 +163,30 @@ describe('the fix of the refused variables page, by reason (#3131)', () => {
     expect(refusedVariablesFix('')).toBe(all)
     expect(refusedVariablesFix('version-nonsense')).toBe(all)
     expect(REFUSED_VARIABLES_PAGE.fix).toBe(all)
+  })
+})
+
+// The bidding Worker starts the lane page's wait again on a successful run of
+// the workflow (Dan, 2026-10-30), so the tick's report names the workflows
+// whose runs ended done; absent or null is not known, never none.
+describe('the workflows whose runs succeeded, in the tick\'s report (#3131)', () => {
+  const base = {
+    tick_id: 't1', mode: 'live', scheduled_time: null, started_at: '2026-10-30T10:00:00.000Z', finished_at: '2026-10-30T10:00:01.000Z',
+    db_now: null, outcome: 'ok', problems: [], counts: {}, start_stamp_failed: false, problem_keys: [],
+  }
+  const OTHER = '00000000-0000-4000-8000-0000000019b2'
+
+  it('reads the list, and absent or null as not known', () => {
+    expect(parseOpsTickReport({ ...base, succeeded_workflows: [WF, OTHER] }).succeeded_workflows).toEqual([WF, OTHER])
+    expect(parseOpsTickReport({ ...base, succeeded_workflows: [] }).succeeded_workflows).toEqual([])
+    expect(parseOpsTickReport(base).succeeded_workflows).toBeNull()
+    expect(parseOpsTickReport({ ...base, succeeded_workflows: null }).succeeded_workflows).toBeNull()
+  })
+
+  it('refuses a list that is not of workflow ids, or longer than a tick can claim', () => {
+    expect(() => parseOpsTickReport({ ...base, succeeded_workflows: ['not-a-workflow'] })).toThrow(/succeeded workflows/)
+    expect(() => parseOpsTickReport({ ...base, succeeded_workflows: WF })).toThrow(/succeeded workflows/)
+    const many = Array.from({ length: MAX_SUCCEEDED_WORKFLOWS + 1 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`)
+    expect(() => parseOpsTickReport({ ...base, succeeded_workflows: many })).toThrow(/succeeded workflows/)
   })
 })

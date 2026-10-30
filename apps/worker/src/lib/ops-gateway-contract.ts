@@ -683,7 +683,18 @@ export interface OpsTickReport {
    * read as off.
    */
   reseal: OpsResealReport | null
+  /**
+   * The workflows at least one of whose runs this tick ended done (#3131),
+   * each once: the bidding Worker starts a lane refusal's wait again on one
+   * (REFUSED_OFF_LANE_PAGE). Null when the tick judged no run (observe mode, no
+   * database, a claim that failed or did not run), and absent from an ops
+   * release before #3131: not known, never read as none.
+   */
+  succeeded_workflows?: string[] | null
 }
+
+/** More workflows than a tick claims runs of (tick.ts TICK_CLAIM_LIMIT, held by a test), so a longer list is not one. */
+export const MAX_SUCCEEDED_WORKFLOWS = 100
 
 /**
  * How a kind of tick problem pages (#2506, Dan's decision 2026-10-19).
@@ -781,14 +792,6 @@ export const OPS_TICK_PROBLEM_RULES = {
    */
   variable_copy_refresh_failing: 'three_in_a_row',
   /**
-   * A switched on workflow's runs failed because the bidding Worker says it is
-   * no longer on the ops lane (variables_refused, not_ops_lane, #3131). Held
-   * for three ticks in a row, so a workflow mid move off the lane does not
-   * page (Dan, 2026-10-30); every other refusal is runs_refused_variables, at
-   * once. On a page of its own (REFUSED_OFF_LANE_PAGE).
-   */
-  runs_refused_off_lane: 'three_in_a_row',
-  /**
    * Lost and requeued runs of one workflow reached the rate in a tick (L77,
    * #1950): held for three ticks, so three ticks in a row of the rate pages.
    */
@@ -884,6 +887,17 @@ export const OPS_TICK_PROBLEM_RULES = {
    * (REFUSED_VARIABLES_PAGE).
    */
   runs_refused_variables: 'at_once',
+  /**
+   * A switched on workflow's runs failed because the bidding Worker says it is
+   * no longer on the ops lane (variables_refused, not_ops_lane, #3131).
+   * Reported at once, and held by its page instead of by ticks
+   * (REFUSED_OFF_LANE_PAGE.pagesAfterFirstMs): it pages once a refused run
+   * comes 3 minutes or more after the workflow's first, with no successful
+   * run of it between, so a workflow mid move off the lane does not page, one
+   * refused every minute pages after 3 minutes, and an hourly one on its
+   * second refused run (Dan, 2026-10-30, "Second refused run").
+   */
+  runs_refused_off_lane: 'at_once',
   // Reported once, never again by a later tick.
   /** The agreement check failed after its claim; it is not tried again for 14 minutes. */
   agreement_check_failed: 'at_once',
@@ -981,6 +995,14 @@ export interface OpsOwnPage {
    * detail each tick names; fix is then the fix for a detail it cannot read.
    */
   fixOf?: (detail: string | null) => string
+  /**
+   * For a page held by its own state rather than by ticks (#3131): a problem
+   * of it is due only once the report naming it is this long or more after
+   * the first report that named its subject, with no successful run of the
+   * subject's workflow between (OpsTickReport.succeeded_workflows). The first
+   * time is kept by the bidding Worker (ops-gateway.ts), with an expiry.
+   */
+  pagesAfterFirstMs?: number
 }
 
 /**
@@ -1079,6 +1101,15 @@ export const MISSING_VARIABLE_PAGE = {
 // ── the pages about runs whose variables bidding refused (#3131) ──
 // The words are Dan's, approved on 2026-10-30 on #3131.
 
+/** How long after a workflow's first run refused for being off the ops lane a refused run pages (Dan, 2026-10-30). */
+export const OFF_LANE_PAGE_AFTER_MS = 3 * 60_000
+/**
+ * How long the bidding Worker keeps that first refused time, renewed on every
+ * report that names the refusal again: past a weekly workflow's gap between
+ * runs, and never for ever (the incident rules' expiry).
+ */
+export const OFF_LANE_FIRST_REFUSED_TTL_SECONDS = 7 * 24 * 3600
+
 /**
  * What a person does about each refusal, by the fix it needs (Dan,
  * 2026-10-30): a secret that would not decrypt, a version gone or unreadable,
@@ -1152,12 +1183,14 @@ export const REFUSED_VARIABLES_PAGE = {
 
 /**
  * The same, for runs refused because the workflow is no longer on the ops
- * lane (runs_refused_off_lane), held three ticks in a row so a workflow mid
- * move does not page (Dan, 2026-10-30). judgedCount: every live tick whose
- * claim answered.
+ * lane (runs_refused_off_lane), paged once a refused run comes
+ * OFF_LANE_PAGE_AFTER_MS or more after the workflow's first, with no
+ * successful run between, so a workflow mid move does not page (Dan,
+ * 2026-10-30). judgedCount: every live tick whose claim answered.
  */
 export const REFUSED_OFF_LANE_PAGE = {
   kind: 'runs_refused_off_lane',
+  pagesAfterFirstMs: OFF_LANE_PAGE_AFTER_MS,
   job: (workflowId: string) => `ops-runs-variables-refused-off-lane:${workflowId}`,
   title: REFUSED_VARIABLES_PAGE.title,
   fix: fixSentences([FIX_OF_REFUSAL.not_ops_lane]),
@@ -1769,7 +1802,7 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
   if (!isRecord(raw)) throw new OpsGatewayContractError('the ops tick sent a report that is not an object')
   const {
     tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets, start_stamp_failed, problem_keys,
-    connection_logins, write_backs, sweeps_run, reseal,
+    connection_logins, write_backs, sweeps_run, reseal, succeeded_workflows,
   } = raw
   if (typeof tick_id !== 'string' || tick_id === '' || tick_id.length > 200) throw new OpsGatewayContractError('the ops tick report has no tick id')
   if (!(OPS_TICK_MODES as readonly unknown[]).includes(mode)) throw new OpsGatewayContractError(`the ops tick report names a mode this Worker does not know: ${String(mode)}`)
@@ -1830,6 +1863,14 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     }
     sweepsRun = [...(sweeps_run as string[])]
   }
+  // Absent before #3131, null on a tick that judged no run: not known, never none succeeded.
+  let succeeded: string[] | null = null
+  if (succeeded_workflows !== undefined && succeeded_workflows !== null) {
+    if (!Array.isArray(succeeded_workflows) || succeeded_workflows.length > MAX_SUCCEEDED_WORKFLOWS || succeeded_workflows.some((w) => typeof w !== 'string' || !UUID.test(w))) {
+      throw new OpsGatewayContractError('the ops tick report\'s succeeded workflows are not a list of workflow ids')
+    }
+    succeeded = [...(succeeded_workflows as string[])]
+  }
   return {
     tick_id,
     mode: mode as OpsTickMode,
@@ -1848,6 +1889,7 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     sweeps_run: sweepsRun,
     // Absent before #2486, null on a tick that could not judge it: unjudged, never off.
     reseal: reseal === undefined || reseal === null ? null : parseOpsReseal(reseal),
+    succeeded_workflows: succeeded,
   }
 }
 
