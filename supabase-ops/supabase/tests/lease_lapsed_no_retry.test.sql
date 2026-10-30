@@ -18,8 +18,10 @@
 --   3. a no-retry run whose lease lapses after an idempotent send in that
 --      attempt ends failed the same way, whatever max_attempts would allow;
 --   4. a no-retry run whose lease lapses after a send that cannot be repeated
---      still waits for a person (needs_human, lease_expired_after_send), and
---      is not named among the no-retry failures;
+--      also ends failed, lease_lapsed_no_retry (Dan, 2026-10-30), and the sweep
+--      names its workflow among those whose runs may have landed a send, so the
+--      page can say so; a run on the default setting in the same state still
+--      waits for a person (needs_human, lease_expired_after_send);
 --   5. a run on the default setting, and one started with no setting sent,
 --      are requeued exactly as before; a claim of a no-retry run that never
 --      started is returned to the queue unrun, as before (#3023);
@@ -144,7 +146,7 @@ BEGIN
   PERFORM pg_temp.ln_lapse(v_id);
   SELECT * INTO r FROM public.sweep_expired_leases(100);
   IF r.failed <> 1 OR r.retried <> 0 OR r.requeued <> 0 OR r.dead <> 0 OR r.needs_human <> 0 OR r.more
-     OR r.no_retry_workflow_ids IS DISTINCT FROM ARRAY[v_wf] THEN
+     OR r.no_retry_workflow_ids IS DISTINCT FROM ARRAY[v_wf] OR r.no_retry_after_send_workflow_ids <> '{}'::uuid[] THEN
     RAISE EXCEPTION 'the sweep of a lapsed no-retry run that sent nothing answered %', r;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM public.run_requests WHERE id = v_id AND status = 'failed' AND status_reason = 'lease_lapsed_no_retry'
@@ -182,7 +184,7 @@ BEGIN
   PERFORM pg_temp.ln_lapse(v_second);
   SELECT * INTO r FROM public.sweep_expired_leases(100);
   IF r.failed <> 2 OR r.retried <> 0 OR r.dead <> 0 OR r.needs_human <> 0
-     OR r.no_retry_workflow_ids IS DISTINCT FROM ARRAY[v_wf, v_wf] THEN
+     OR r.no_retry_workflow_ids IS DISTINCT FROM ARRAY[v_wf, v_wf] OR r.no_retry_after_send_workflow_ids <> '{}'::uuid[] THEN
     RAISE EXCEPTION 'the sweep of two lapsed no-retry runs of one workflow answered %', r;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM public.run_requests WHERE id = v_id AND status = 'failed' AND status_reason = 'lease_lapsed_no_retry'
@@ -198,25 +200,38 @@ $do$;
 DO $do$
 DECLARE
   v_org uuid := 'aaaaaaaa-0000-4000-8000-000000003046';
+  v_wf uuid := '00000000-0000-4000-8000-0000000030d1';
   v_id uuid;
+  v_default uuid;
   v_tok uuid;
   v_sv bigint;
   r record;
 BEGIN
   PERFORM pg_temp.ln_reset();
-  v_id := pg_temp.ln_enqueue('00000000-0000-4000-8000-0000000030d1', 'sent-once-only');
+  v_id := pg_temp.ln_enqueue(v_wf, 'sent-once-only');
+  v_default := pg_temp.ln_enqueue('00000000-0000-4000-8000-0000000030d2', 'sent-once-only-default');
   v_tok := pg_temp.ln_claim_start(v_id, true);
   v_sv := (SELECT state_version FROM public.run_requests WHERE id = v_id);
   PERFORM public.record_send_intent(v_org, v_id, v_tok, v_sv, 'post_lead', 1, 'POST', 'partner.example', false, NULL);
+  v_tok := pg_temp.ln_claim_start(v_default, false);
+  v_sv := (SELECT state_version FROM public.run_requests WHERE id = v_default);
+  PERFORM public.record_send_intent(v_org, v_default, v_tok, v_sv, 'post_lead', 1, 'POST', 'partner.example', false, NULL);
   PERFORM pg_temp.ln_lapse(v_id);
+  PERFORM pg_temp.ln_lapse(v_default);
   SELECT * INTO r FROM public.sweep_expired_leases(100);
-  IF r.needs_human <> 1 OR r.failed <> 0 OR r.no_retry_workflow_ids <> '{}'::uuid[] THEN
-    RAISE EXCEPTION 'the sweep of a no-retry run lapsed after a send that cannot be repeated answered %', r;
+  IF r.failed <> 1 OR r.needs_human <> 1 OR r.retried <> 0 OR r.dead <> 0
+     OR r.no_retry_workflow_ids IS DISTINCT FROM ARRAY[v_wf] OR r.no_retry_after_send_workflow_ids IS DISTINCT FROM ARRAY[v_wf] THEN
+    RAISE EXCEPTION 'the sweep of runs lapsed after a send that cannot be repeated answered %', r;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM public.run_requests WHERE id = v_id AND status = 'needs_human' AND status_reason = 'lease_expired_after_send') THEN
+  IF NOT EXISTS (SELECT 1 FROM public.run_requests WHERE id = v_id AND status = 'failed' AND status_reason = 'lease_lapsed_no_retry'
+                 AND terminal_at = now() AND claim_token IS NULL) THEN
     RAISE EXCEPTION 'a no-retry run lapsed after a send that cannot be repeated is %', pg_temp.ln_row(v_id);
   END IF;
-  INSERT INTO ln_cases VALUES ('a no-retry run lapsed after a send that cannot be repeated still waits for a person');
+  IF EXISTS (SELECT 1 FROM public.run_queue WHERE run_request_id = v_id) THEN RAISE EXCEPTION 'the no-retry run that sent once only is still queued'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.run_requests WHERE id = v_default AND status = 'needs_human' AND status_reason = 'lease_expired_after_send') THEN
+    RAISE EXCEPTION 'a run on the default setting lapsed after a send that cannot be repeated is %', pg_temp.ln_row(v_default);
+  END IF;
+  INSERT INTO ln_cases VALUES ('a no-retry run lapsed after a send that cannot be repeated ends failed and is named as one that may have sent; the default still waits for a person');
 END
 $do$;
 
@@ -251,7 +266,8 @@ BEGIN
   PERFORM pg_temp.ln_lapse(v_sent);
   PERFORM pg_temp.ln_lapse(v_unstarted);
   SELECT * INTO r FROM public.sweep_expired_leases(100);
-  IF r.retried <> 3 OR r.requeued <> 1 OR r.failed <> 0 OR r.dead <> 0 OR r.no_retry_workflow_ids <> '{}'::uuid[] THEN
+  IF r.retried <> 3 OR r.requeued <> 1 OR r.failed <> 0 OR r.dead <> 0 OR r.no_retry_workflow_ids <> '{}'::uuid[]
+     OR r.no_retry_after_send_workflow_ids <> '{}'::uuid[] THEN
     RAISE EXCEPTION 'the sweep of runs on the default setting answered %', r;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM public.run_requests WHERE id = v_default AND status = 'queued' AND lapse_refunds = 1 AND resume_reason = 'retry') THEN

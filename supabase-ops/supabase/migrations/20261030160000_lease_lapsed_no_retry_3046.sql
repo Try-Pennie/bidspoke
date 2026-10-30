@@ -33,21 +33,24 @@
 --                 arguments change; it answers as before.
 --   sweep_expired_leases  a running attempt of a run with retry_disabled that
 --                 lapsed ends failed, lease_lapsed_no_retry, refunding and
---                 charging nothing, unless the run made a send that cannot be
---                 repeated: that still waits for a person
---                 (lease_expired_after_send), which is not a requeue either
---                 and already pages at once. A claim that never started is
---                 returned to the queue unrun, as before (#3023): nothing ran.
---                 It answers a new column, no_retry_workflow_ids, the workflow
---                 of each run it ended this way, so the tick can page the
---                 live ones (tick.ts). Dropped and created, since its answer
---                 changes; it takes the same argument.
+--                 charging nothing, whatever it sent. That includes a send that
+--                 cannot be repeated, which on any other run waits for a person
+--                 (lease_expired_after_send): Dan, 2026-10-30, it ends failed by
+--                 the same reason and still pages at once. A claim that never
+--                 started is returned to the queue unrun, as before (#3023):
+--                 nothing ran. It answers two new columns: no_retry_workflow_ids,
+--                 the workflow of each run it ended this way, and
+--                 no_retry_after_send_workflow_ids, the workflow of each of
+--                 those that had made a send that cannot be repeated, since the
+--                 run's own record no longer says a send may have landed; the
+--                 tick pages from both (tick.ts). Dropped and created, since its
+--                 answer changes; it takes the same argument.
 --
 -- APPLIED BEFORE THE CODE THAT USES IT (L640, ADR 0007). Expand only. The ops
 -- Worker running when this is applied (main at f041892d4):
 --   * starts runs with the five arguments it always sent, which leave
 --     retry_disabled false, so every lapse is swept exactly as before;
---   * reads the sweep's six columns by name and ignores the seventh;
+--   * reads the sweep's six columns by name and ignores the two new ones;
 --   * never sends lease_lapsed_no_retry.
 -- lease_lapsed_no_retry.test.sql case 7 checks the deployed calls; cases 1 and
 -- 5 that a start with no setting sweeps as before. The Worker that sends
@@ -140,7 +143,8 @@ $fn$;
 -- ends failed rather than going back to the queue.
 DROP FUNCTION public.sweep_expired_leases(integer);
 CREATE FUNCTION public.sweep_expired_leases(p_limit integer)
-RETURNS TABLE (requeued integer, retried integer, needs_human integer, dead integer, failed integer, more boolean, no_retry_workflow_ids uuid[])
+RETURNS TABLE (requeued integer, retried integer, needs_human integer, dead integer, failed integer, more boolean,
+  no_retry_workflow_ids uuid[], no_retry_after_send_workflow_ids uuid[])
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' SET lock_timeout = '2s'
 AS $fn$
 #variable_conflict use_column
@@ -154,6 +158,7 @@ DECLARE
   v_failed integer := 0;
   v_seen integer := 0;
   v_no_retry uuid[] := '{}';
+  v_no_retry_sent uuid[] := '{}';
   v_status text;
   v_reason text;
   v_queue boolean;
@@ -185,12 +190,17 @@ BEGIN
     ELSE
       UPDATE public.workflow_executions e SET status = 'failed', finished_at = v_now, error = 'lease expired'
       WHERE e.run_request_id = v_run.id AND e.attempt = v_run.attempts AND e.status = 'running';
-      IF EXISTS (SELECT 1 FROM public.send_ledger l WHERE l.run_request_id = v_run.id AND NOT l.idempotent) THEN
-        v_status := 'needs_human'; v_reason := 'lease_expired_after_send'; v_human := v_human + 1;
-      ELSIF v_run.retry_disabled THEN
-        -- Set not to retry (#3046): never requeued, sent or not.
+      IF v_run.retry_disabled THEN
+        -- Set not to retry (#3046): never requeued, sent or not, and never left
+        -- for a person either (Dan, 2026-10-30). A send that cannot be repeated
+        -- is named to the tick, whose page says it may have landed.
         v_status := 'failed'; v_reason := 'lease_lapsed_no_retry'; v_failed := v_failed + 1;
         v_no_retry := v_no_retry || v_run.workflow_id;
+        IF EXISTS (SELECT 1 FROM public.send_ledger l WHERE l.run_request_id = v_run.id AND NOT l.idempotent) THEN
+          v_no_retry_sent := v_no_retry_sent || v_run.workflow_id;
+        END IF;
+      ELSIF EXISTS (SELECT 1 FROM public.send_ledger l WHERE l.run_request_id = v_run.id AND NOT l.idempotent) THEN
+        v_status := 'needs_human'; v_reason := 'lease_expired_after_send'; v_human := v_human + 1;
       ELSIF NOT EXISTS (SELECT 1 FROM public.send_ledger l WHERE l.run_request_id = v_run.id AND l.attempt = v_run.attempts) THEN
         IF v_run.lapse_refunds >= 3 THEN
           v_status := 'failed'; v_reason := 'lease_lapsed_repeatedly'; v_failed := v_failed + 1;
@@ -239,7 +249,7 @@ BEGIN
       FROM public.run_requests r WHERE r.id = v_run.id;
     END IF;
   END LOOP;
-  RETURN QUERY SELECT v_requeued, v_retried, v_human, v_dead, v_failed, v_seen = p_limit, v_no_retry;
+  RETURN QUERY SELECT v_requeued, v_retried, v_human, v_dead, v_failed, v_seen = p_limit, v_no_retry, v_no_retry_sent;
 END
 $fn$;
 
