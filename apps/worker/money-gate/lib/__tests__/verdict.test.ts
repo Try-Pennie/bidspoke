@@ -138,12 +138,25 @@ describe('gateVerdict leftover expected changes (#1836)', () => {
     expect(noteLines(v.output)).toEqual(['note: 3 expected change(s) carried over from the merge base, excusing nothing; delete them (Main Flow, W)'])
   })
 
-  it('fails by name on a leftover entry the live worker already carries, since it can never excuse anything again', () => {
+  // Once the live worker runs the commit that added an entry, the entry has done its
+  // job. It is reported by name for deletion, and never fails an unrelated pull
+  // request (#3151): on 2026-10-30 two did, each for entries a merged change had left.
+  it('reports a leftover entry the live worker already carries as a note naming it, and an unrelated pull request stays green', () => {
     const v = verdict(...same(), { expectedHead: OLD, expectedBase: OLD, expectedLive: { commit: LIVE, text: file(entry('W', 'b')) } })
-    expect(v.exitCode).toBe(1)
-    expect(v.output).toContain('money gate: 1 expected-changes.json entr(ies) already in the live worker\'s copy (abcdef1), so they can never excuse a difference again; delete them: W route node b field "route"')
-    // The two the live worker does not carry yet are still only a note.
+    expect(v.exitCode).toBe(0)
+    expect(v.output).toContain('note: 1 expected-changes.json entr(ies) already in the live worker\'s copy (abcdef1), so they can never excuse a difference again; delete them: W route node b field "route"')
+    expect(v.output).toContain('money gate: no difference between base and head')
+    expect(v.output.split('\n').filter((l) => l.startsWith('money gate: ') && l.includes('live worker'))).toEqual([])
+    // The two the live worker does not carry yet are still the carried over note.
     expect(noteLines(v.output)).toEqual(['note: 2 expected change(s) carried over from the merge base, excusing nothing; delete them (Main Flow, W)'])
+  })
+
+  it('a shipped entry still excuses nothing: the difference it names fails as unexcused (#3151)', () => {
+    const v = verdict(t('base', [fx('yes')]), t('head', [fx('else')]), { expectedHead: EXCUSE, expectedBase: EXCUSE, expectedLive: { commit: LIVE, text: EXCUSE } })
+    expect(v.exitCode).toBe(1)
+    expect(v.output).toContain('money gate: 1 difference(s) between base and head')
+    expect(v.output).not.toContain('excused by expected-changes.json')
+    expect(v.output).toContain('note: 1 expected-changes.json entr(ies) already in the live worker\'s copy (abcdef1)')
   })
 
   it('never fails on an entry new in this change, even one the live worker carries', () => {

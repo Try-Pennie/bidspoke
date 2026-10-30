@@ -2,14 +2,15 @@
  * The money gate's verdict on a pair of transcripts (#1704).
  *
  * Red on any difference between base and head that expected-changes.json does not
- * excuse (lib/expected-changes.ts), on a malformed or stale excuse, and on a run
- * that checked nothing: a transcript with no workflow or no fixture, a committed
- * definition the head did not replay, or a workflow that executed no node.
- * Coverage is always printed by name: the arms each workflow reached and did not,
- * and the nodes it never executed, so green never implies more than was run
- * (L400, L460). Stale fixture shapes warn from day 23 and ask for a reminder from
- * day 30; they never block, because the shapes age whether or not a pull request
- * touched them.
+ * excuse (lib/expected-changes.ts), on a malformed excuse or a new one that matches
+ * nothing, and on a run that checked nothing: a transcript with no workflow or no
+ * fixture, a committed definition the head did not replay, or a workflow that
+ * executed no node. Coverage is always printed by name: the arms each workflow
+ * reached and did not, and the nodes it never executed, so green never implies
+ * more than was run (L400, L460). Stale fixture shapes warn from day 23 and ask
+ * for a reminder from day 30, and entries the live worker already runs are named
+ * for deletion (#3151); neither blocks, because both age whether or not a pull
+ * request touched them.
  */
 import { compareTranscripts, coverageReport, formatDifferences, type Transcript } from './compare'
 import { applyExpectedChanges, canonicalEntry, describeEntry, parseExpectedChanges, shippedEntries, type ExpectedLive } from './expected-changes'
@@ -41,7 +42,8 @@ export interface VerdictInput {
   expectedBase: string | null
   /**
    * The live worker's copy (#1836), asked for only on a pull request. A carried
-   * over entry it also holds can never excuse anything again, and fails by name.
+   * over entry it also holds has shipped: it excuses nothing, as every carried over
+   * entry does, and a note names it for deletion without failing (#3151).
    * Undefined, as on a Deploy, checks nothing against it.
    */
   expectedLive?: ExpectedLive
@@ -79,11 +81,12 @@ export function gateVerdict(input: VerdictInput): { exitCode: number; output: st
   const baseUnreadable = base.failures.length > 0
   const applied = baseUnreadable ? applyExpectedChanges(diffs, [], []) : applyExpectedChanges(diffs, head.entries, base.entries)
 
+  // A shipped entry is one carried over from the merge base, so the base rule has
+  // already kept it from excusing anything. Naming it for deletion is housekeeping,
+  // and a note rather than a failure, so it never turns an unrelated pull request
+  // red (#3151). The note still names every one, so the file cannot quietly regrow.
   const live = input.expectedLive ? shippedEntries(applied.carriedOver, input.expectedLive) : null
   const shipped = new Set((live?.shipped ?? []).map(canonicalEntry))
-  const shippedFailure = live?.shipped.length && input.expectedLive && 'commit' in input.expectedLive
-    ? [`${live.shipped.length} expected-changes.json entr(ies) already in the live worker's copy (${input.expectedLive.commit.slice(0, 7)}), so they can never excuse a difference again; delete them: ${live.shipped.map(describeEntry).join('; ')}`]
-    : []
 
   const failures = [...new Set([
     ...emptinessFailures(input.head, 'head'),
@@ -94,7 +97,6 @@ export function gateVerdict(input: VerdictInput): { exitCode: number; output: st
     ...head.failures,
     ...base.failures.map((f) => `the merge base's ${f}`),
     ...applied.failures,
-    ...shippedFailure,
   ])]
 
   // One line, not one per entry, so a real difference is not lost among them (#1836).
@@ -102,6 +104,9 @@ export function gateVerdict(input: VerdictInput): { exitCode: number; output: st
   if (leftover.length) {
     const workflows = [...new Set(leftover.map((e) => e.workflow))].sort()
     lines.push(`note: ${leftover.length} expected change(s) carried over from the merge base, excusing nothing; delete them (${workflows.join(', ')})`)
+  }
+  if (live?.shipped.length && input.expectedLive && 'commit' in input.expectedLive) {
+    lines.push(`note: ${live.shipped.length} expected-changes.json entr(ies) already in the live worker's copy (${input.expectedLive.commit.slice(0, 7)}), so they can never excuse a difference again; delete them: ${live.shipped.map(describeEntry).join('; ')}`)
   }
   if (live?.unreadable) {
     lines.push(`note: the live worker's expected-changes.json could not be read (${live.unreadable}), so leftover entries were not checked against it`)

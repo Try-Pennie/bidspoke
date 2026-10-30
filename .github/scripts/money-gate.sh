@@ -118,9 +118,16 @@ fi
 if grep -q '^warning: the fixture shapes are' "$WORK/verdict.txt"; then
   echo "::warning::$(grep -m1 '^warning: the fixture shapes are' "$WORK/verdict.txt")"
 fi
+# Entries the live worker already runs (#1836) are named for deletion as a warning
+# on the pull request, never a failure, so they cannot turn an unrelated change
+# red (#3151). They excuse nothing either way: each is carried over from the base.
+SHIPPED_NOTE='^note: [0-9]+ expected-changes\.json entr\(ies\) already in the live worker'
+if grep -q -E "$SHIPPED_NOTE" "$WORK/verdict.txt"; then
+  echo "::warning::$(grep -m1 -E "$SHIPPED_NOTE" "$WORK/verdict.txt")"
+fi
 if [ "$status" -ne 0 ]; then
   # The first reason the verdict gave, of any kind, so the annotation names it.
-  reason="$(grep -m1 -E '^money gate: ([0-9]+ difference\(s\) between|.*(executed no node|holds no|did not replay|matched no difference|already in the live worker|expected-changes\.json (entry|does not|has no|was not|at )))' "$WORK/verdict.txt" || true)"
+  reason="$(grep -m1 -E '^money gate: ([0-9]+ difference\(s\) between|.*(executed no node|holds no|did not replay|matched no difference|expected-changes\.json (entry|does not|has no|was not|at )))' "$WORK/verdict.txt" || true)"
   echo "::error::${reason:-money gate: the verdict failed}"
 fi
 exit "$status"

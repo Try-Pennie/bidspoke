@@ -137,8 +137,11 @@ export function resolveExpectedBase(
  * The live worker's copy of expected-changes.json (#1836). An entry already in the
  * commit production runs was added by a change that has shipped, so it can never
  * excuse a difference again in any comparison: a pull request, a push, or a Deploy
- * dispatched against the live worker. Only the pull request job asks for it
- * (money-gate.sh, MONEY_GATE_LIVE_WORKER_URL), so a Deploy never fails on it.
+ * dispatched against the live worker. The verdict names such entries in a note
+ * for deletion and never fails on them (#3151): each is carried over from the
+ * base, so the base rule already keeps it from excusing anything, and failing
+ * turned unrelated pull requests red. Only the pull request job asks for it
+ * (money-gate.sh, MONEY_GATE_LIVE_WORKER_URL).
  */
 export const ABSENT_AT_LIVE = 'absent-at-live'
 const UNREADABLE = 'unreadable:'

@@ -61,20 +61,24 @@ describe('only a pull request asks the live worker about leftover entries (#1836
   })
 })
 
-describe('the failure annotation names a shipped leftover entry (#1836)', () => {
-  it('the pattern money-gate.sh annotates with matches the line the verdict prints for it', () => {
+describe('a shipped leftover entry is a warning annotation, never a failure (#1836, #3151)', () => {
+  it('money-gate.sh warns with the line the verdict prints for it, and its failure annotation does not pick that line', () => {
     const text = readFileSync(script, 'utf8')
-    const pattern = /reason="\$\(grep -m1 -E '([^']+)'/.exec(text)?.[1]
-    expect(pattern, 'money-gate.sh no longer picks its annotation with grep -m1 -E').toBeDefined()
+    const failurePattern = /reason="\$\(grep -m1 -E '([^']+)'/.exec(text)?.[1]
+    expect(failurePattern, 'money-gate.sh no longer picks its failure annotation with grep -m1 -E').toBeDefined()
+    const pattern = /SHIPPED_NOTE='([^']+)'/.exec(text)?.[1]
+    expect(pattern, 'money-gate.sh no longer names the shipped entry note as SHIPPED_NOTE').toBeDefined()
+    expect(text).toContain('echo "::warning::$(grep -m1 -E "$SHIPPED_NOTE" "$WORK/verdict.txt")"')
     const entry = { workflow: 'W', check: 'route', node: 'b', field: 'route', reason: 'An older change' }
     const file = JSON.stringify({ entries: [entry] })
     const fixture = { id: 'W/x', workflow_id: 'w', workflow_name: 'W', variant: 'x', run_kind: 'live' as const, trigger: {}, routes: [], nodes_executed: ['a'], final_node: 'a', response: { status: 200, body: {} }, outbound: [], code_dispatch: [], supabase_writes: [], do_state: {}, kv_state: {} }
     const kinds = (['live', 'test', 'shadow_dry_run'] as const).map((k) => ({ ...fixture, id: `W/x ${k}`, run_kind: k }))
     const t = (side: 'base' | 'head') => ({ version: 1 as const, side, fixtures: kinds, workflows: [{ workflow_id: 'w', workflow_name: 'W', nodes: ['a'], arms: [] }], unstubbed_hosts: [], unknown_tables: [] })
     const v = gateVerdict({ base: t('base'), head: t('head'), shapesExportedAt: '2026-10-01T00:00:00Z', now: new Date('2026-10-02T00:00:00Z'), committedDefinitionIds: ['w'], expectedHead: file, expectedBase: file, expectedLive: { commit: 'a'.repeat(40), text: file } })
-    expect(v.exitCode).toBe(1)
-    const failureLines = v.output.split('\n').filter((l) => l.startsWith('money gate: ') && l.includes('live worker'))
-    expect(failureLines).toHaveLength(1)
-    expect(new RegExp(pattern!).test(failureLines[0]), `annotation pattern misses: ${failureLines[0]}`).toBe(true)
+    expect(v.exitCode).toBe(0)
+    const noteLines = v.output.split('\n').filter((l) => l.includes('live worker'))
+    expect(noteLines).toHaveLength(1)
+    expect(new RegExp(pattern!).test(noteLines[0]), `warning pattern misses: ${noteLines[0]}`).toBe(true)
+    expect(v.output.split('\n').filter((l) => new RegExp(failurePattern!).test(l))).toEqual([])
   })
 })
