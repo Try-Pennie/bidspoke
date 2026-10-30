@@ -56,10 +56,6 @@ describe('committed money gate fixtures', () => {
     expect(parsed.failures).toEqual([])
   })
 
-  // Every production workflow row carries updated_at, and the definition loader
-  // writes its stored outage copy (#1845) only from a row with a readable stamp.
-  // Without one the outage drill (#1305) would find no copy to serve and blame
-  // the engine for a gap that exists only in the fixtures.
   // The repository is public, so the Achieve screen's limits in the snapshot are
   // invented (#3138): each is the invented value or, where production leaves it
   // blank, the placeholder the screen reads as off. A hand edit or an export from
@@ -73,6 +69,10 @@ describe('committed money gate fixtures', () => {
     expect(rows.filter((r) => Object.hasOwn(INVENTED_ACHIEVE_SCREEN, r.key)).length).toBeGreaterThan(0)
   })
 
+  // Every production workflow row carries updated_at, and the definition loader
+  // writes its stored outage copy (#1845) only from a row with a readable stamp.
+  // Without one the outage drill (#1305) would find no copy to serve and blame
+  // the engine for a gap that exists only in the fixtures.
   it('every workflow row carries an updated_at the definition loader can read', () => {
     for (const w of snapshot.tables.workflows) {
       expect({ id: w.id, stamp: Number.isFinite(postgresTimeMicros(String(w.updated_at))) }).toEqual({ id: w.id, stamp: true })

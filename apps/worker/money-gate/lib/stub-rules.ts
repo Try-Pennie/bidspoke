@@ -57,8 +57,10 @@ export interface StubAnswer {
   ending?: AnswerEnding
   /**
    * The whole answer arrives this long after the request, in replay time (#3128).
-   * The gate lifts each step's own limit, so a step never times out on it; one
-   * late answer stands for the time a slow write takes, its retries included.
+   * The gate lifts each step's own limit, so a step never times out on it unless
+   * the fixture keeps that step's deadline (`timed_steps`, #3138); one late answer
+   * stands for the time a slow write takes, its retries included. To replay the
+   * retries themselves, a scenario leaves the first attempts unanswered instead.
    */
   arrivesAfterMs?: number
 }

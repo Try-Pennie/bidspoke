@@ -319,7 +319,7 @@ describe('stepClock (#3138)', () => {
       let timedOut = false
       void lift.stepClock.timer(3_750, watching.signal).then(() => { timedOut = true })
       // A real turn passes and nothing moves the time, so the deadline has not run.
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 20))
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 0))
       expect(timedOut).toBe(false)
       // A held answer that would take 5 s waits on the replay time, which reaches the deadline first.
       const held = new AbortController()

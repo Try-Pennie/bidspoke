@@ -75,7 +75,7 @@ describe('the outcome relay answering late (#3128)', () => {
     expect(achieveWait(CONTINUATION_WINDOW_MS - 7_501).send).toBe(false)
   })
 
-  it('Main Flow replays a Tripoint win with each late relay answer, as a live run only, with the Achieve screen open', () => {
+  it('Main Flow replays a Tripoint win with each late relay answer, as a live run only, through the Achieve screen as the snapshot has it', () => {
     const late = mainFlow.variants.filter((v) => /^ok_after_/.test(v.stubs?.pipedream_outcome_post ?? ''))
     expect(late.map((v) => [v.name, v.stubs?.pipedream_outcome_post, v.stubs?.tripoint_create])).toEqual([
       ['achieve_starts_7500ms_after_answer', 'ok_after_7500ms', 'accepted'],
