@@ -1298,7 +1298,7 @@ function judgeRunOutcomes(
  * judged is whether this tick's claim ran and answered, so the runs it
  * dispatched are all it could judge, which judges the four per workflow kinds:
  * a tick whose claim failed, or that could not claim (held, no database clock,
- * the copies unread), judges neither, and stands neither page down.
+ * the copies unread), judges none of them, and stands none of their pages down.
  */
 function judgeVariables(
   judged: boolean, results: readonly RunResult[], asked: { answered: number; unreadable: readonly string[] }, refresh: VariableCopyRefresh | null, nowMs: number,
