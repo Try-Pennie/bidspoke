@@ -2546,20 +2546,44 @@ describe('runs returned to the queue unstarted (#3039, Dan\'s decision of 2026-1
     expect(OPS_UNSTARTED_WAIT_MAX_MS).toBe(60 * 60_000)
   })
 
-  it('names each cause the returns named, one run in the singular, and a return that named none', async () => {
+  it('names each cause the returns named, and one run in the singular', async () => {
     const report = await runOpsTick(fake({
       mode: 'live',
       unstartedWaits: [
         wait(16 * 60, { runs: 1, causes: ['variables_unavailable'] }),
         wait(40 * 60, { organizationId: ORG_2, workflowId: WF_B, runs: 2, causes: ['definition_unavailable', 'variables_unavailable'] }),
-        wait(30 * 60, { workflowId: '00000000-0000-4000-8000-0000000019a3', causes: [null] }),
       ],
     }).ports)
     expect(problemOf(report, `runs_unstarted:${WF_A}`)).toMatch(/^1 run has waited 16 minutes to start because its environment variables could not be read from bidding\. Each run is given up after 1 hour of waiting, at /)
     expect(problemOf(report, `runs_unstarted:${WF_B}`)).toMatch(
       /^2 runs have waited 40 minutes to start because the workflow's saved version could not be loaded from bidding or its environment variables could not be read from bidding\. /,
     )
-    expect(problemOf(report, 'runs_unstarted:00000000-0000-4000-8000-0000000019a3')).toMatch(/because the return to the queue did not say why\. /)
+  })
+
+  // Dan's wording for a return that named no cause (#3039, 2026-10-30): the reason was not recorded.
+  it('says the reason was not recorded when no return named one, and lists only the named causes beside a return that named none', async () => {
+    const WF_C = '00000000-0000-4000-8000-0000000019a3'
+    const WF_D = '00000000-0000-4000-8000-0000000019a4'
+    const WF_E = '00000000-0000-4000-8000-0000000019a5'
+    const report = await runOpsTick(fake({
+      mode: 'live',
+      unstartedWaits: [
+        wait(30 * 60, { workflowId: WF_C, runs: 3, causes: [null] }),
+        wait(20 * 60, { workflowId: WF_D, runs: 2, causes: ['definition_unavailable', null] }),
+        wait(15 * 60, { workflowId: WF_E, runs: 1, causes: [null] }),
+      ],
+    }).ports)
+    // Each oldest wait began 30, 20 and 15 minutes before 10:02:30 UTC, so is given up an hour on, in New York time.
+    expect(problemOf(report, `runs_unstarted:${WF_C}`)).toBe(
+      '3 runs have waited 30 minutes to start, and the reason was not recorded. Each run is given up after 1 hour of waiting, at 6:32 AM ET for the oldest.',
+    )
+    expect(problemOf(report, `runs_unstarted:${WF_D}`)).toBe(
+      '2 runs have waited 20 minutes to start because the workflow\'s saved version could not be loaded from bidding. Each run is given up after 1 hour of waiting, at 6:42 AM ET for the oldest.',
+    )
+    expect(problemOf(report, `runs_unstarted:${WF_E}`)).toBe(
+      '1 run has waited 15 minutes to start, and the reason was not recorded. Each run is given up after 1 hour of waiting, at 6:47 AM ET for the oldest.',
+    )
+    expect(report.problems.join(' ')).not.toMatch(/did not say why/)
   })
 
   it('stands down by not reporting it once no run of the workflow has waited 15 minutes', async () => {

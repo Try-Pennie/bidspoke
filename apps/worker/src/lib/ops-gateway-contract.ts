@@ -902,30 +902,34 @@ export const UNSTARTED_RUNS_PAGE = {
   fix: 'Open the workflow in Bidspoke and save it again, or check that the bidding Worker is up.',
 } as const
 
-/** The cause each return names, in Dan's words; a return from an ops release before #3039 names none. */
+/**
+ * The cause each return names, in Dan's words. A return from an ops release
+ * before #3039 names none: beside a named cause it adds no words, and alone
+ * the sentence says the reason was not recorded (Dan, 2026-10-30).
+ */
 export const UNSTARTED_CAUSE_WORDS: Readonly<Record<UnstartedReturnCause, string>> = {
   definition_unavailable: 'the workflow\'s saved version could not be loaded from bidding',
   variables_unavailable: 'its environment variables could not be read from bidding',
 }
-const UNNAMED_CAUSE_WORDS = 'the return to the queue did not say why'
 
 const ET_CLOCK = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })
 
 /**
  * The sentence of the page, with its real values: how many runs have waited at
- * least 15 minutes, how long the oldest has waited (whole minutes), why, and
- * when the oldest is given up (its wait's start plus OPS_UNSTARTED_WAIT_MAX_MS,
- * Eastern time). A single run reads in the singular.
+ * least 15 minutes, how long the oldest has waited (whole minutes), why (each
+ * cause named, or that the reason was not recorded when none was), and when the
+ * oldest is given up (its wait's start plus OPS_UNSTARTED_WAIT_MAX_MS, Eastern
+ * time). A single run reads in the singular.
  */
 export function unstartedRunsText(wait: {
   runs: number; waitedSeconds: number; oldestSince: string; causes: ReadonlyArray<UnstartedReturnCause | null>
 }): string {
   const minutes = Math.floor(wait.waitedSeconds / 60)
   const named = (['definition_unavailable', 'variables_unavailable'] as const).filter((c) => wait.causes.includes(c)).map((c) => UNSTARTED_CAUSE_WORDS[c])
-  const causes = wait.causes.includes(null) || named.length === 0 ? [...named, UNNAMED_CAUSE_WORDS] : named
+  const why = named.length > 0 ? ` because ${named.join(' or ')}` : ', and the reason was not recorded'
   const givenUpAt = ET_CLOCK.format(new Date(Date.parse(wait.oldestSince) + OPS_UNSTARTED_WAIT_MAX_MS))
   const runs = wait.runs === 1 ? '1 run has' : `${wait.runs} runs have`
-  return `${runs} waited ${minutes} minutes to start because ${causes.join(' or ')}. Each run is given up after 1 hour of waiting, at ${givenUpAt} ET for the oldest.`
+  return `${runs} waited ${minutes} minutes to start${why}. Each run is given up after 1 hour of waiting, at ${givenUpAt} ET for the oldest.`
 }
 
 /** One problem as the tick builds it: the key the bidding Worker counts it by, and the sentence a person reads. */
