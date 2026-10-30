@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-utils'
+import { parsedSource } from '../../__tests__/_parsed-source'
 
 /**
  * Every page about an incident is recorded, delivered or not (#3056).
@@ -53,7 +54,7 @@ function recordsOutcomes(code: string): boolean {
 
 /** Each recorder call whose delivered argument cannot be the send's answer, as `line: why`. */
 function misplacedOutcomes(fileName: string, raw: string): string[] {
-  const sf = ts.createSourceFile(fileName, raw, ts.ScriptTarget.Latest, true)
+  const sf = parsedSource(fileName, raw)
   const problems: string[] = []
   const mentions = (cond: ts.Node, arg: ts.Expression): boolean => {
     const text = cond.getText(sf)
