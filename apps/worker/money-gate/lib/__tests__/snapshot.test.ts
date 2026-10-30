@@ -150,12 +150,25 @@ describe('snapshotEnvVar', () => {
       expect(row('ACHIEVE_MIN_AGE', '30', true)).toBe('placeholder-ACHIEVE_MIN_AGE')
     })
 
-    it('invents every numeric screen threshold the Achieve screen reads, each a number in the form production uses', () => {
-      expect(Object.keys(INVENTED_ACHIEVE_SCREEN).sort()).toEqual([
+    it('invents every limit the Achieve screen reads: each threshold a number, the states a list in the form production uses', () => {
+      const { ACHIEVE_ALLOWED_STATES: states, ...thresholds } = INVENTED_ACHIEVE_SCREEN
+      expect(Object.keys(thresholds).sort()).toEqual([
         'ACHIEVE_MAX_CURRENT_DELINQUENCIES', 'ACHIEVE_MAX_DTI', 'ACHIEVE_MAX_INQUIRY_EPISODES_6MO', 'ACHIEVE_MAX_LOAN_AMOUNT',
         'ACHIEVE_MAX_LOAN_TO_INCOME', 'ACHIEVE_MIN_AGE', 'ACHIEVE_MIN_LOAN_AMOUNT', 'ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY', 'ACHIEVE_MIN_VANTAGE_SCORE',
       ])
-      for (const v of Object.values(INVENTED_ACHIEVE_SCREEN)) expect(Number.isFinite(Number(v))).toBe(true)
+      for (const v of Object.values(thresholds)) expect(Number.isFinite(Number(v))).toBe(true)
+      // Two letter codes, comma separated with no spaces, as production writes its list.
+      expect(states).toMatch(/^[A-Z]{2}(,[A-Z]{2})+$/)
+    })
+
+    // The Main Flow fixture lead lives in TX, so the sending fixtures pass the
+    // state criterion; invalid_state's MN is a state Pennie refuses, kept off the
+    // list too, so the screen turns that lead away as state_not_allowed (#3138).
+    it('invents an allowed states list holding the fixture lead\'s state and not the invalid state fixture\'s', () => {
+      const states = INVENTED_ACHIEVE_SCREEN.ACHIEVE_ALLOWED_STATES.split(',')
+      expect(states).toContain('TX')
+      expect(states).not.toContain('MN')
+      expect(row('ACHIEVE_ALLOWED_STATES', 'AL,AK')).toBe(INVENTED_ACHIEVE_SCREEN.ACHIEVE_ALLOWED_STATES)
     })
   })
 
@@ -171,8 +184,8 @@ describe('snapshotEnvVar', () => {
     expect(row('SCOUT_CLIENT_ID', 'abc')).toBe('placeholder-SCOUT_CLIENT_ID')
   })
 
-  it('keeps a comma separated list of short codes, such as allowed states', () => {
-    expect(row('ACHIEVE_ALLOWED_STATES', 'AL, AK,TX')).toBe('AL, AK,TX')
+  it('keeps a comma separated list of short codes', () => {
+    expect(row('SOME_PARTNER_STATES', 'AL, AK,TX')).toBe('AL, AK,TX')
   })
 
   it('replaces any secret, and any other value, with a placeholder', () => {

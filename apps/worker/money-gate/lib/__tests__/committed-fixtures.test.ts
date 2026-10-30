@@ -60,7 +60,7 @@ describe('committed money gate fixtures', () => {
   // invented (#3138): each is the invented value or, where production leaves it
   // blank, the placeholder the screen reads as off. A hand edit or an export from
   // before the invented values fails here, by name.
-  it('every Achieve screen threshold in the snapshot is its invented value, or off', () => {
+  it('every Achieve screen limit in the snapshot, the allowed states included, is its invented value, or off', () => {
     const rows = snapshot.tables.environment_variables as Array<{ key: string; value: string }>
     for (const [key, invented] of Object.entries(INVENTED_ACHIEVE_SCREEN)) {
       const held = rows.filter((r) => r.key === key).map((r) => r.value)

@@ -173,12 +173,14 @@ by name and the nodes never executed. A workflow that executed no node fails.
   structure, synthetic numbers (order of magnitude and position only), env var
   names with placeholders, URL tokens removed. Result codes, routing codes and
   priority are kept: they decide which arm a lead takes, not what it is worth.
-  The Achieve screen's thresholds are not synthesized but invented
-  (`INVENTED_ACHIEVE_SCREEN` in `lib/snapshot.ts`, #3138), never production's:
-  rounded down to a power of ten they refused every lead before the call. The
-  fixture lead passes them, so `achieve_rejects` and the accepted arms reach
-  Achieve through its real screen, and `achieve_screen_turns_away` is refused on
-  its loan to income. A setting production leaves blank stays off.
+  The Achieve screen's limits, its allowed states included, are not synthesized
+  or kept but invented (`INVENTED_ACHIEVE_SCREEN` in `lib/snapshot.ts`, #3138),
+  never production's: rounded down to a power of ten the thresholds refused every
+  lead before the call. The fixture lead (in TX) passes them, so `achieve_rejects`
+  and the accepted arms reach Achieve through its real screen,
+  `achieve_screen_turns_away` is refused on its loan to income, and
+  `invalid_state` (MN, off the invented list) as a state Achieve does not take.
+  A setting production leaves blank stays off.
 * `fixtures/definitions/*.json`: the live definitions, from the
   `Try-Pennie/bidspoke-workflows` backup, refused unless equal to production.
 * `fixtures/variants/*.json`: per workflow, the arms to steer towards (and, by

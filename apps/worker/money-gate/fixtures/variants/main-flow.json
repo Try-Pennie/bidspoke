@@ -29,7 +29,7 @@
     { "name": "high_score_engine_no_offers", "purpose": "a high score and no Engine offers: check_offers pass, then bid_race", "stubs": { "equifax_report": "match_high_score", "engine_proxy": "no_offers", "tripoint_create": "accepted" } },
     { "name": "under_10000", "purpose": "Engine Debt under 10k: estimated_debt_check else, the direct Engine call", "stubs": { "salesforce_credit_trades": "debt_5k" } },
     { "name": "under_10000_engine_failed", "purpose": "under 10k and the direct Engine call fails", "stubs": { "salesforce_credit_trades": "debt_5k", "engine_direct": "failed" } },
-    { "name": "invalid_state", "purpose": "a state in the constants list: state_condition_check else, the invalid state fallback", "set": { "personalInformation.state": "MN" } },
+    { "name": "invalid_state", "purpose": "a state in the constants list: state_condition_check else, the invalid state fallback. MN is off the snapshot's invented Achieve states too, so achieve_invalid_state turns the lead away as state_not_allowed (#3138)", "set": { "personalInformation.state": "MN" } },
     { "name": "invalid_state_engine_failed", "purpose": "the invalid state fallback when Engine fails", "set": { "personalInformation.state": "MN" }, "stubs": { "engine_direct": "failed" } },
     { "name": "no_trades_scout_estimate", "purpose": "no trades on the credit report: Eligibility Scout's estimate becomes the debt", "stubs": { "equifax_report": "no_trades", "eligibility_scout": "estimate_30k", "tripoint_create": "accepted" } },
     { "name": "no_trades_no_estimate", "purpose": "no trades and no estimate: eligibility_success else, the debt missing fallback", "stubs": { "equifax_report": "no_trades", "eligibility_scout": "no_estimate" } },
