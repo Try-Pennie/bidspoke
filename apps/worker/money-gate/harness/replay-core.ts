@@ -13,7 +13,7 @@ import * as deployer from '@money-gate-engine/lib/code-node-deployer'
 import { uuidv7 } from '@bidspoke/uuidv7'
 import { createSupabaseDouble, type RecordedWrite, type Row } from '../lib/supabase-double'
 import { parseBody, redactBody, redactHeaders, redactPathAndQuery } from '../lib/redact'
-import { noRuleAnswer, readBodyText, stubAnswer, toResponse, type Arms } from '../lib/stub-rules'
+import { answerFetch, noRuleAnswer, readBodyText, stubAnswer, type Arms } from '../lib/stub-rules'
 import type { CodeDispatchRecord, FixtureRecord, OutboundRecord, RouteRecord, WorkflowArms } from '../lib/compare'
 import type { ShapesFile, WorkflowShape } from '../lib/shape'
 import type { ConfigSnapshot } from '../lib/snapshot'
@@ -478,7 +478,12 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
       const hit = stubAnswer(stubReq, arms)
       if (!hit) unstubbed.push(`${url.host}${url.pathname} (${id})`)
       const a = hit?.answer ?? noRuleAnswer(stubReq)
-      return toResponse(a)
+      // An answer that does not arrive whole waits only on the replay's time, which
+      // moves on to the engine's own timers, so nothing waits for real (#3086).
+      return answerFetch(a, init?.signal ?? req.signal, (signal, ms) => {
+        if (!lifted) throw new Error(`money gate: ${id}: an answer held on the replay's time was asked for outside the engine run, where no timer is tracked`)
+        return lifted.waitFor(signal, ms)
+      })
     })
 
     // Engine log lines name the step running, which attributes an engine side request.
@@ -544,7 +549,13 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
           : {},
     )
     try {
-      if (hooks.engineTimers !== 'real') lifted = liftEngineTimers(globalThis as unknown as TimerHost)
+      // Real timers keep every length as the engine asked (floorMs 0) but are tracked
+      // all the same, so a held answer can move the replay's time on in the outage
+      // drill too (#3086). Either way the pinned clock moves with the replay's time.
+      lifted = liftEngineTimers(globalThis as unknown as TimerHost, {
+        ...(hooks.engineTimers === 'real' ? { floorMs: 0 } : {}),
+        onAdvance: (replayMs) => { vi.setSystemTime(new Date(FIXED_TIME_MS + replayMs)) },
+      })
       const ctx = createExecutionContext()
       // The runtime the bidding Worker's routes pass, built by the engine under test.
       if (hooks.before) await hooks.before(runEnv, db)
@@ -565,7 +576,8 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
       error = err instanceof Error ? `${err.name}: ${err.message}` : 'non Error thrown'
     }
   } finally {
-    timersFired = lifted?.fired() ?? []
+    // A run that kept real timers lets them fire; only a lifted one that fires is a fault.
+    timersFired = hooks.engineTimers === 'real' ? [] : (lifted?.fired() ?? [])
     lifted?.restore()
     globalThis.fetch = realFetch
     vi.useRealTimers()
@@ -573,7 +585,9 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
     vi.restoreAllMocks()
   }
 
-  const drained = await (await e.GATE_IO.fetch('https://gate/drain')).json<{ outbound: OutboundRecord[]; unstubbed: string[] }>()
+  const drained = await (await e.GATE_IO.fetch('https://gate/drain')).json<{ outbound: OutboundRecord[]; unstubbed: string[]; refused?: string[] }>()
+  // A code bundle that was handed an answer it cannot be given (#3086) ran on something else, so the run is no record.
+  if (drained.refused?.length) throw new Error(drained.refused.join('\n'))
   return {
     db,
     response,

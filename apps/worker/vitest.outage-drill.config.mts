@@ -8,6 +8,7 @@ import { FIXED_TIME_MS } from './money-gate/harness/replay-env'
 import { parseDispatchDelay } from './money-gate/lib/dispatch-delay'
 import { refusingServiceStubs } from './money-gate/lib/service-stubs'
 import { OUTAGE_DRILL_TIMEOUT_MS, isOutageNetworkRejection } from './money-gate/lib/outage'
+import { isReplayedNoAnswerRejection } from './money-gate/lib/stub-rules'
 
 /**
  * The outage drill (#1305), on the money gate's replay harness (#1704). It runs
@@ -77,9 +78,11 @@ export default defineConfig({
   server: { fs: { allow: [repoRoot, engineRoot] } },
   test: {
     include: ['money-gate/harness/outage.workers.test.ts'],
-    // Only the refused shape's own rejection, which workerd reports even when it
-    // was handled (money-gate/lib/outage.ts); any other unhandled error fails.
-    onUnhandledError: (err) => (isOutageNetworkRejection(err) ? false : undefined),
+    // Only the refused shape's own rejection, and a no answer the replay played
+    // out for a buyer call (#3086), which workerd reports even when they were
+    // handled (money-gate/lib/outage.ts, money-gate/lib/stub-rules.ts); any other
+    // unhandled error fails.
+    onUnhandledError: (err) => (isOutageNetworkRejection(err) || isReplayedNoAnswerRejection(err) ? false : undefined),
     testTimeout: OUTAGE_DRILL_TIMEOUT_MS,
     hookTimeout: 120_000,
     env: { TZ: 'UTC', LANG: 'en_US.UTF-8' },

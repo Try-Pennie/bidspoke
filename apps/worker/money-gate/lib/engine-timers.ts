@@ -18,14 +18,32 @@
  *
  * Code node scripts run in the gate's nested workerd, out of reach of this lift:
  * their retry sleeps are meant to fire.
+ *
+ * MOVING THE REPLAY'S TIME ON (#3086). A buyer call that never answers ends only
+ * when the call's own timer aborts it (abortAfter in engine/step-timeout.ts), and
+ * under the lift that timer is GATE_STEP_DEADLINE_MS of real time away. So the
+ * lift keeps every setTimeout still pending, due at the replay time it was set
+ * plus the length the engine asked for, and advanceUntil runs them early, the one
+ * due first each time, until the held call is aborted. The replay's time starts at
+ * zero each run and moves only by an advance, so the order is the same on both
+ * sides whatever the runner's speed. A timer run this way is recorded as
+ * advanced, never as fired: it did not race the runner. AbortSignal.timeout is
+ * native and is not advanced; the engine sets none on the buyer call's path.
  */
 import { GATE_STEP_DEADLINE_MS } from './step-deadlines'
 
 /** What the lift replaces: the global scope in a replay, a plain object in a test. */
 export interface TimerHost {
   setTimeout: typeof setTimeout
+  clearTimeout: typeof clearTimeout
   AbortSignal: { timeout: (ms: number) => AbortSignal }
 }
+
+/** How a held answer waits (#3086): until `signal` aborts, or `ms` of replay time pass when given, whichever is first. */
+export type WaitOnReplayTime = (signal: AbortSignal, ms?: number) => Promise<'aborted' | 'elapsed'>
+
+/** More advances than any real run sets timers, so a run that re-arms a timer for ever stops by name. */
+const ADVANCE_LIMIT = 1_000
 
 export interface FiredTimer {
   kind: 'setTimeout' | 'AbortSignal.timeout'
@@ -36,31 +54,105 @@ export interface FiredTimer {
 }
 
 export interface LiftedTimers {
-  /** Every lifted timer that fired, in the order they fired. */
+  /** Every lifted timer that fired on the real clock, in the order they fired. */
   fired(): FiredTimer[]
+  /** Every timer advanceUntil ran early, in the order it ran them (#3086). */
+  advanced(): FiredTimer[]
+  /**
+   * Moves the replay's time on (#3086): lets the run settle, then runs the
+   * pending timer due first, and again, until `done` holds. Refuses by name when
+   * nothing pending could end the wait.
+   */
+  advanceUntil(done: () => boolean): Promise<void>
+  /** A held answer's wait on the replay's time (#3086), moved on by advanceUntil. */
+  waitFor: WaitOnReplayTime
   /** Puts back exactly what the lift replaced. */
   restore(): void
 }
 
-/** Replaces `host`'s setTimeout and AbortSignal.timeout until `restore`, raising each timer to `floorMs`. */
-export function liftEngineTimers(host: TimerHost, opts: { floorMs?: number } = {}): LiftedTimers {
+export interface LiftOptions {
+  /** The shortest any timer may be; 0 keeps every length as the engine asked and only tracks them. */
+  floorMs?: number
+  /** Told the replay time an advance has reached, before the timer runs, so a pinned clock can move with it. */
+  onAdvance?: (replayMs: number) => void
+}
+
+interface PendingTimer { seq: number; dueMs: number; record: FiredTimer; runEarly: () => void }
+
+/** Replaces `host`'s setTimeout, clearTimeout and AbortSignal.timeout until `restore`, raising each timer to `floorMs`. */
+export function liftEngineTimers(host: TimerHost, opts: LiftOptions = {}): LiftedTimers {
   const floorMs = opts.floorMs ?? GATE_STEP_DEADLINE_MS
   const realSetTimeout = host.setTimeout
+  const realClearTimeout = host.clearTimeout
   const signals = host.AbortSignal
   const realTimeout = signals.timeout
   const fired: FiredTimer[] = []
+  const advanced: FiredTimer[] = []
+  const pending = new Map<unknown, PendingTimer>()
+  let replayNowMs = 0
+  let seq = 0
 
   host.setTimeout = ((handler: unknown, ms?: number, ...args: unknown[]) => {
     // Workers refuse a string handler, so the engine never sets one; one here is a fault, not a timer.
     if (typeof handler !== 'function') throw new TypeError('money gate: a setTimeout handler that is not a function cannot be lifted')
     const run = handler as (...a: unknown[]) => void
     const requestedMs = Number(ms ?? 0) || 0
-    const where = setAt(new Error().stack)
-    return realSetTimeout.call(globalThis, () => {
-      fired.push({ kind: 'setTimeout', requestedMs, where })
+    const record: FiredTimer = { kind: 'setTimeout', requestedMs, where: setAt(new Error().stack) }
+    // Each timer runs once, on the real clock or by an advance, whichever comes first.
+    let ran = false
+    const once = (into: FiredTimer[]) => {
+      if (ran) return
+      ran = true
+      pending.delete(handle)
+      into.push(record)
       run(...args)
-    }, Math.max(requestedMs, floorMs))
+    }
+    const handle = realSetTimeout.call(globalThis, () => once(fired), Math.max(requestedMs, floorMs))
+    pending.set(handle, {
+      seq: seq++,
+      dueMs: replayNowMs + requestedMs,
+      record,
+      runEarly: () => {
+        realClearTimeout.call(globalThis, handle)
+        once(advanced)
+      },
+    })
+    return handle
   }) as typeof setTimeout
+
+  host.clearTimeout = (handle: Parameters<typeof clearTimeout>[0]) => {
+    pending.delete(handle)
+    realClearTimeout.call(globalThis, handle)
+  }
+
+  // One real turn, on the timer the lift found, so work already in flight lands before time moves.
+  const settle = (): Promise<void> => new Promise((resolve) => { realSetTimeout.call(globalThis, resolve, 0) })
+
+  const advanceUntil = async (done: () => boolean): Promise<void> => {
+    for (let advances = 0; ; advances++) {
+      await settle()
+      if (done()) return
+      if (advances >= ADVANCE_LIMIT) throw new Error(`money gate: the replay's time was moved on ${ADVANCE_LIMIT} times and the held answer is still waiting, so something re-arms a timer for ever`)
+      let next: PendingTimer | null = null
+      for (const t of pending.values()) if (!next || t.dueMs < next.dueMs || (t.dueMs === next.dueMs && t.seq < next.seq)) next = t
+      if (!next) throw new Error('money gate: a held answer is waiting on the replay\'s time, but no engine timer is pending that could end the wait, so it would wait for ever')
+      replayNowMs = Math.max(replayNowMs, next.dueMs)
+      opts.onAdvance?.(replayNowMs)
+      next.runEarly()
+    }
+  }
+
+  const waitFor: WaitOnReplayTime = async (signal, ms) => {
+    let elapsed = false
+    // Set through the lift, so it is pending, in order, beside the engine's own timers.
+    const handle = ms === undefined ? null : host.setTimeout(() => { elapsed = true }, ms)
+    try {
+      await advanceUntil(() => signal.aborted || elapsed)
+    } finally {
+      if (handle !== null) host.clearTimeout(handle)
+    }
+    return signal.aborted ? 'aborted' : 'elapsed'
+  }
 
   signals.timeout = (ms: number): AbortSignal => {
     const where = setAt(new Error().stack)
@@ -71,8 +163,12 @@ export function liftEngineTimers(host: TimerHost, opts: { floorMs?: number } = {
 
   return {
     fired: () => [...fired],
+    advanced: () => [...advanced],
+    advanceUntil,
+    waitFor,
     restore: () => {
       host.setTimeout = realSetTimeout
+      host.clearTimeout = realClearTimeout
       signals.timeout = realTimeout
     },
   }
