@@ -203,6 +203,16 @@ function setAt(stack: string | undefined): string {
     .join(' < ')
 }
 
+/**
+ * The replay's refusal for a run that ended with answers still held on its time
+ * (#3137); empty when none were. A step after such an answer would run after the
+ * record closed, through the restored network, and never be recorded.
+ */
+export function describeStillHeld(fixture: string, held: number): string {
+  if (held === 0) return ''
+  return `money gate: ${fixture}: ${held} answer(s) held on the replay's time were still waiting when the run ended, so a step after them would run after the record closed and go unrecorded (#3137)`
+}
+
 /** The replay's refusal for a run whose engine timers fired; empty when none did. */
 export function describeFiredTimers(fixture: string, fired: FiredTimer[]): string {
   if (fired.length === 0) return ''

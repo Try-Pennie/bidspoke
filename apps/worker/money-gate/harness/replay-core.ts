@@ -22,7 +22,7 @@ import { scriptFromUpload } from '../lib/test-bundle-upload'
 import { FIXED_TIME_MS, buildEnv, type VariantFile, type Variant } from './replay-env'
 import type { HostedBundle } from '../lib/hosted-bundle'
 import { liftStepDeadlines } from '../lib/step-deadlines'
-import { liftEngineTimers, type FiredTimer, type LiftedTimers, type TimerHost } from '../lib/engine-timers'
+import { describeStillHeld, liftEngineTimers, type FiredTimer, type LiftedTimers, type TimerHost } from '../lib/engine-timers'
 import { waitAtMost } from '../lib/wait-at-most'
 import { abDefinitions, abModeOf } from '../swap/ab'
 import shapesFile from '../fixtures/shapes.json'
@@ -434,10 +434,11 @@ export interface RunHooks {
 /** One execution of a workflow through the engine under test, with everything it did recorded. */
 export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, payload: unknown, variant: Variant, arms: Arms, shape: WorkflowShape, hooks: RunHooks = {}): Promise<RunResult> {
   const { id, seed } = spec
-  // Refused before anything global is replaced (#1872): waitAtMost cuts post-response
-  // work with a timer the lift would raise to the gate deadline.
+  // Refused before anything global is replaced (#1872). The cut stands behind the
+  // engine's own post-response deadlines, and the lift raises those to the gate
+  // deadline, so under it the cut would end every post-response wait instead of them.
   if (hooks.engineTimers !== 'real' && hooks.postResponseLimitMs !== undefined) {
-    throw new Error('money gate: postResponseLimitMs needs engineTimers: real, because its cut is a timer the lift would raise to the gate deadline')
+    throw new Error('money gate: postResponseLimitMs needs engineTimers: real, because the lift raises the engine\'s own post-response deadlines to the gate deadline, so the cut would decide every wait they decide')
   }
   await e.GATE_IO.fetch('https://gate/begin', { method: 'POST', body: JSON.stringify({ fixture: id, arms }) })
   const unstubbed: string[] = []
@@ -593,9 +594,8 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   const drained = await (await e.GATE_IO.fetch('https://gate/drain')).json<{ outbound: OutboundRecord[]; unstubbed: string[]; refused?: string[] }>()
   // A code bundle that was handed an answer it cannot be given (#3086) ran on something else, so the run is no record.
   if (drained.refused?.length) throw new Error(drained.refused.join('\n'))
-  if (stillHeld > 0) {
-    throw new Error(`money gate: ${id}: ${stillHeld} answer(s) held on the replay's time were still waiting when the run ended, so a step after them would run after the record closed and go unrecorded (#3137)`)
-  }
+  const outlived = describeStillHeld(id, stillHeld)
+  if (outlived) throw new Error(outlived)
   return {
     db,
     response,

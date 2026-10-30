@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { GATE_STEP_DEADLINE_MS } from '../step-deadlines'
-import { describeFiredTimers, liftEngineTimers, type TimerHost } from '../engine-timers'
+import { describeFiredTimers, describeStillHeld, liftEngineTimers, type TimerHost } from '../engine-timers'
 
 /**
  * A host made of the real timers, so these tests never replace a global the test
@@ -284,5 +284,17 @@ describe('describeFiredTimers (#1872)', () => {
 
   it('says nothing when no timer fired', () => {
     expect(describeFiredTimers('x', [])).toBe('')
+  })
+})
+
+describe('describeStillHeld (#3137)', () => {
+  it('names the fixture and how many answers were still held, so a walk that outlived its run stops the replay by name', () => {
+    const text = describeStillHeld('Main Flow/achieve_starts_7500ms_after_answer', 1)
+    expect(text).toContain('Main Flow/achieve_starts_7500ms_after_answer')
+    expect(text).toContain('1 answer(s) held on the replay\'s time were still waiting when the run ended')
+  })
+
+  it('says nothing when no answer was still held', () => {
+    expect(describeStillHeld('x', 0)).toBe('')
   })
 })
