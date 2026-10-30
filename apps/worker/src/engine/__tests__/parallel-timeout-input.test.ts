@@ -505,6 +505,37 @@ describe('a slot still running when its block returns first or fails on another 
     expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(1)
   })
 
+  it('wait_for specific: a slot still running when the named slot succeeded is recorded as skipped, not as timed out (#3119)', async () => {
+    const held = answerSomeHoldTheRest(1)
+    const c = ctx()
+    const queue = await walk(c, inBlock({ wait_for: 'specific', wait_for_slot: 'child-0', timeout_ms: NO_DEADLINE_MS }, [answeredPost('amone_post')], [relayPost('tripoint_sf_post')]))
+    expect(rowsOf(queue, 'amone_post')).toMatchObject([{ status: 'completed' }])
+    // The block carries on, its output as before: the sibling shows as timeout there.
+    const [fan] = rowsOf(queue, 'fan')
+    expect(fan).toMatchObject({ status: 'completed' })
+    expect((fan.output as Array<{ namespace: string; status: string }>).map((r) => [r.namespace, r.status])).toEqual([['amone_post', 'fulfilled'], ['tripoint_sf_post', 'timeout']])
+    expect(rowsOf(queue, 'done')).toHaveLength(1)
+    // No deadline passed: one skipped row, in the words Dan chose, with no deadline marker.
+    const row = leftRow(queue, 'tripoint_sf_post')
+    expect(row).toMatchObject({ status: 'skipped', error_message: 'Stopped waiting: branch amone_post finished.', error_type: null, output: null, parallel_group_id: 'fan' })
+    expect(row).not.toHaveProperty('timeout_kind')
+    expectTheRequestSent(row)
+    expectNoSecret(row)
+    // What later steps read of it is what a wait_for first winner leaves (#3083):
+    // nothing, where it used to be a failure the block made up.
+    expect(c.steps.tripoint_sf_post).toBeUndefined()
+    expect(c.steps.amone_post).toMatchObject({ status: 'completed' })
+    // No marked failed row, so a later block failing on a refusal is not read as a timeout.
+    expect(markedFailedRows(queue)).toEqual([])
+    const laterRefusal: RunFailure = { message: 'Parallel failed: child "lendswift_post" failed: HTTP 400', stepNamespace: 'fan', errorType: 'permanent', suppressAlert: false, childFailure: null, afterAnswer: false }
+    expect(bucketsOf(queue, laterRefusal)).toEqual({ withRows: null, withoutRows: null })
+    held[0].answer(new Response('{"ok":true}', { status: 200 }))
+    await lateStepEnded('tripoint_sf_post', 'step_complete')
+    // Its late finish writes no second row and records nothing (#63).
+    expect(rowsOf(queue, 'tripoint_sf_post')).toHaveLength(1)
+    expect(c.steps.tripoint_sf_post).toBeUndefined()
+  })
+
   it('wait_for all, on_child_error fail: a slot still running at the deadline when the block fails on a refused slot is skipped, marked as the block\'s deadline', async () => {
     const held = answerSomeHoldTheRest()
     const c = ctx()
@@ -514,8 +545,8 @@ describe('a slot still running when its block returns first or fails on another 
     const row = leftRow(queue, 'tripoint_sf_post')
     expect(row).toMatchObject({
       status: 'skipped',
-      // The block's 5 ms limit, in seconds with one decimal (limitInSeconds).
-      error_message: 'Stopped waiting at the 0.0 second limit, then branch lendswift_post failed.',
+      // The block's 5 ms limit is under 0.1 second, so it is named, not given in seconds (#3119).
+      error_message: 'Stopped waiting at the block\'s time limit, then branch lendswift_post failed.',
       error_type: null,
       timeout_kind: 'parallel_block',
       timed_out_after_ms: BLOCK_TIMEOUT_MS,
