@@ -16,9 +16,10 @@
  * (source copy, #2999, variable-copies.ts), never a secret.
  *
  * A REFUSAL. The bidding Worker refuses a run by name (RUN_VARIABLES_REFUSALS).
- * The tick ends it unrun, by an outcome that already exists (refusedRunEnd):
- * a deleted workflow dead as workflow_deleted, any other failed with its
- * reason named first in the error, as a missing variable fails a run.
+ * The tick ends it unrun (refusedRunEnd): a deleted workflow dead as
+ * workflow_deleted, any other failed with the status reason variables_refused
+ * (#3131), its refusal and the secrets it names as fields for the tick's page,
+ * and the refusal named first in the error.
  */
 import { ENV_KEY, namedVariables as named } from '../lib/definition-env-references'
 import type { ReadRunVariables, RunVariablesRefusal } from '../lib/ops-gateway-contract'
@@ -168,13 +169,18 @@ function refusalSaid(reason: RunVariablesRefusal, keys: readonly string[], versi
 }
 
 /**
- * How the tick ends, unrun, a run the bidding Worker refused (#2998). Each by
- * an outcome that already exists: a deleted workflow dead as workflow_deleted,
- * as the tick ends a run its copy says is deleted; any other failed with no
- * status reason and the refusal named first in its error, as a missing
- * variable fails a run. None falls back to another source of values.
+ * How the tick ends, unrun, a run the bidding Worker refused (#2998): a
+ * deleted workflow dead as workflow_deleted, as the tick ends a run its copy
+ * says is deleted; any other failed with the status reason variables_refused
+ * (#3131), the refusal and the secrets it names as fields (a copy, never the
+ * answer's own list), which the tick's page names, and the refusal named
+ * first in its error, for the run's record. None falls back to another source
+ * of values.
  */
 export function refusedRunEnd(refusal: { reason: RunVariablesRefusal; keys: readonly string[] }, version: number): CompleteOutcome {
   if (refusal.reason === 'workflow_deleted') return { outcome: 'dead', reason: 'workflow_deleted' }
-  return { outcome: 'failed', error: `variables_refused (${refusal.reason}): ${refusalSaid(refusal.reason, refusal.keys, version)}, so nothing was run` }
+  return {
+    outcome: 'failed', reason: 'variables_refused', refusal: refusal.reason, refusedVariables: [...refusal.keys],
+    error: `variables_refused (${refusal.reason}): ${refusalSaid(refusal.reason, refusal.keys, version)}, so nothing was run`,
+  }
 }

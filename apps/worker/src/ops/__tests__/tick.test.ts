@@ -18,7 +18,8 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import {
-  MAX_DEFINITIONS_PER_REQUEST, OPS_TICK_PROBLEM_RULES, OpsGatewayContractError, missingVariableText, refreshFailingText, runVariablesUnreadableText, runsOnVariableCopyText,
+  MAX_DEFINITIONS_PER_REQUEST, MAX_SUCCEEDED_WORKFLOWS, OPS_TICK_PROBLEM_RULES, OpsGatewayContractError, missingVariableText, refreshFailingText, refusedVariablesSubject, refusedVariablesText,
+  runVariablesUnreadableText, runsOnVariableCopyText,
 } from '../../lib/ops-gateway-contract'
 import { OPS_UNSTARTED_WAIT_MAX_MS } from '../run-vocabulary'
 import { VARIABLE_COPY_REFRESH_AT_ONCE, VARIABLE_COPY_REFRESH_DEADLINE_MS } from '../variable-copies'
@@ -44,7 +45,7 @@ import RETENTION_MIGRATION from '../../../../../supabase-ops/supabase/migrations
 import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
 import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
 import {
-  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, UNSTARTED_ALERT_AFTER_SECONDS, UNSTARTED_READ_LIMIT, FINISHED_RUN_KEPT_DAYS, NIGHTLY_PURGE, SCHEDULE_FIRES_KEPT_MONTHS, SEND_LEDGER_KEPT_MONTHS, NIGHTLY_PURGE_DESIGN, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
+  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, UNSTARTED_ALERT_AFTER_SECONDS, UNSTARTED_READ_LIMIT, FINISHED_RUN_KEPT_DAYS, NIGHTLY_PURGE, SCHEDULE_FIRES_KEPT_MONTHS, SEND_LEDGER_KEPT_MONTHS, NIGHTLY_PURGE_DESIGN, RUN_VARIABLES_RETRY_MS, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, variableCopiesWriteFailed, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -2261,11 +2262,14 @@ describe('the variables of the runs a live tick claims (#2998, phase 2 of #2982)
     expect(f.ranRuns).toEqual([claimedRun(WF_A, 1).runRequestId])
     const ends = Object.fromEntries(f.db.completed.map((c) => [c.runRequestId, c.end]))
     expect(ends[claimedRun(WF_B, 2).runRequestId]).toEqual({ outcome: 'dead', reason: 'workflow_deleted' })
+    // By name (#3131): the status reason variables_refused, with the refusal as typed fields.
     expect(ends[claimedRun(WF_C, 3).runRequestId]).toEqual({
-      outcome: 'failed', error: 'variables_refused (version_missing): the bidding Worker holds no version 3 of this workflow, so nothing was run',
+      outcome: 'failed', reason: 'variables_refused', refusal: 'version_missing', refusedVariables: [],
+      error: 'variables_refused (version_missing): the bidding Worker holds no version 3 of this workflow, so nothing was run',
     })
     expect(ends[claimedRun(WF_D, 4).runRequestId]).toEqual({
-      outcome: 'failed', error: 'variables_refused (secret_unreadable): the secret variable env.API_TOKEN would not decrypt on the bidding Worker, so nothing was run',
+      outcome: 'failed', reason: 'variables_refused', refusal: 'secret_unreadable', refusedVariables: ['API_TOKEN'],
+      error: 'variables_refused (secret_unreadable): the secret variable env.API_TOKEN would not decrypt on the bidding Worker, so nothing was run',
     })
     expect(report.counts).toMatchObject({ runs_variables_refused: 3, runs_done: 1, runs_ended: 1, runs_failed: 2 })
   })
@@ -3008,5 +3012,151 @@ describe('the pages about a run\'s variables (#3000, phase 4 of #2982)', () => {
       expect((report.problem_keys ?? []).filter((k) => k.startsWith('runs_variable_missing'))).toEqual([])
       expect(report.counts.runs_variable_unavailable).toBeUndefined()
     })
+  })
+})
+
+// #3131: a run of a switched on workflow that bidding refused its variables
+// fails by name (variables_refused), and its workflow is paged on a page of
+// its own, naming each refused variable and why, from the refusal's typed
+// fields, never from the run's error text. A refusal because the workflow is
+// off the ops lane is its own kind, reported at once and paged by bidding only
+// once a refused run comes 3 minutes or more after the workflow's first, with
+// no successful run between (Dan, 2026-10-30), so a workflow mid move does not
+// page; every other reason pages at once.
+describe('runs whose variables bidding refused (#3131)', () => {
+  const keysOf = (report: { problem_keys: string[] | null }, kind: string) => (report.problem_keys ?? []).filter((k) => k.startsWith(`${kind}:`))
+  const problemOf = (report: { problems: string[]; problem_keys: string[] | null }, key: string) => report.problems[(report.problem_keys ?? []).indexOf(key)]
+  const SECRET = { reason: 'secret_unreadable' as const, keys: ['API_TOKEN'] }
+  const LANE = { reason: 'not_ops_lane' as const, keys: [] as string[] }
+  const MISSING_VERSION = { reason: 'version_missing' as const, keys: [] as string[] }
+
+  it('pages each switched on workflow whose runs bidding refused, at once, naming the refused secret from the refusal\'s fields', async () => {
+    const f = fake({
+      mode: 'live', copies: [copy(), copy({ workflowId: WF_B })],
+      claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2), claimedRun(WF_B, 3)],
+      serveRunVariables: async (request) => servedVariables(request, (r) => (r.workflow_id === WF_A ? { refused: 'secret_unreadable', keys: ['API_TOKEN'] } : {})),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.ranRuns).toEqual([claimedRun(WF_B, 3).runRequestId])
+    const key = `runs_refused_variables:${refusedVariablesSubject(WF_A, [SECRET])}`
+    expect(keysOf(report, 'runs_refused_variables')).toEqual([key])
+    expect(key).toBe(`runs_refused_variables:${WF_A}.secret`)
+    const text = problemOf(report, key)
+    expect(text).toBe(refusedVariablesText([SECRET, SECRET]))
+    // Never the error's words: those say env. and decrypt, and name the code.
+    expect(text).not.toMatch(/env\.|decrypt|secret_unreadable|variables_refused/)
+    expect(keysOf(report, 'runs_refused_off_lane')).toEqual([])
+    expect(report.counts).toMatchObject({ runs_variables_refused: 2, variables_refused_judged: 1, variables_refused_off_lane_judged: 1 })
+  })
+
+  it('says each reason when one workflow\'s runs were refused for more than one, keyed by the fixes they need', async () => {
+    const f = fake({
+      mode: 'live',
+      claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2, { workflowVersion: 4 })],
+      serveRunVariables: async (request) => servedVariables(request, (r) => (r.version_number === 3 ? { refused: 'version_missing' } : { refused: 'secret_unreadable', keys: ['API_TOKEN'] })),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(keysOf(report, 'runs_refused_variables')).toEqual([`runs_refused_variables:${WF_A}.version-secret`])
+    expect(problemOf(report, `runs_refused_variables:${WF_A}.version-secret`)).toBe(refusedVariablesText([MISSING_VERSION, SECRET]))
+  })
+
+  it('reports a refusal because the workflow is off the ops lane as its own kind, held by its rule', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2)],
+      serveRunVariables: async (request) => servedVariables(request, () => ({ refused: 'not_ops_lane' })),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(keysOf(report, 'runs_refused_variables')).toEqual([])
+    expect(keysOf(report, 'runs_refused_off_lane')).toEqual([`runs_refused_off_lane:${WF_A}`])
+    expect(problemOf(report, `runs_refused_off_lane:${WF_A}`)).toBe(refusedVariablesText([LANE, LANE]))
+    // Reported at once; the bidding Worker holds its page until a refused run comes 3 minutes after the first (Dan, 2026-10-30).
+    expect(OPS_TICK_PROBLEM_RULES.runs_refused_off_lane).toBe('at_once')
+  })
+
+  it('names the workflows whose runs ended done, each once, so the bidding Worker can start a lane refusal\'s wait again', async () => {
+    const f = fake({
+      mode: 'live', copies: [copy(), copy({ workflowId: WF_B })],
+      claimed: [claimedRun(WF_B, 1), claimedRun(WF_A, 2), claimedRun(WF_A, 3), claimedRun(WF_B, 4)],
+      runReport: async (run) => (run.runRequestId === claimedRun(WF_B, 4).runRequestId
+        ? { outcome: 'completed', end: { outcome: 'failed', error: 'boom' }, runStatus: 'failed' }
+        : { outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' }),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(report.succeeded_workflows).toEqual([WF_A, WF_B].sort())
+    const none = await runOpsTick(fake({ mode: 'live', claimed: [] }).ports)
+    expect(none.succeeded_workflows).toEqual([])
+  })
+
+  it('names none, as not known, when it judged no run: observe mode, or a claim that failed', async () => {
+    expect((await runOpsTick(fake({}).ports)).succeeded_workflows).toBeNull()
+    const failed = await runOpsTick(fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)], failing: { claimRuns: new Error('statement timeout') } }).ports)
+    expect(failed.succeeded_workflows).toBeNull()
+  })
+
+  it('can always name every workflow a tick claims', () => {
+    expect(TICK_CLAIM_LIMIT).toBeLessThanOrEqual(MAX_SUCCEEDED_WORKFLOWS)
+  })
+
+  it('reports the other reason at once and the lane one apart, by its own rule, when one tick has both', async () => {
+    const f = fake({
+      mode: 'live',
+      claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2, { workflowVersion: 4 })],
+      serveRunVariables: async (request) => servedVariables(request, (r) => (r.version_number === 3 ? { refused: 'not_ops_lane' } : { refused: 'secret_unreadable', keys: ['API_TOKEN'] })),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(problemOf(report, `runs_refused_variables:${WF_A}.secret`)).toBe(refusedVariablesText([SECRET]))
+    expect(problemOf(report, `runs_refused_off_lane:${WF_A}`)).toBe(refusedVariablesText([LANE]))
+  })
+
+  it('pages nothing for a deleted workflow\'s run, which is ended, not failed', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1)],
+      serveRunVariables: async (request) => servedVariables(request, () => ({ refused: 'workflow_deleted' })),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.completed[0].end).toEqual({ outcome: 'dead', reason: 'workflow_deleted' })
+    expect(keysOf(report, 'runs_refused_variables')).toEqual([])
+    expect(keysOf(report, 'runs_refused_off_lane')).toEqual([])
+    expect(report.counts).toMatchObject({ variables_refused_judged: 1, variables_refused_off_lane_judged: 1 })
+  })
+
+  it('pages nothing for a refused run whose end could not be written: it did not fail, its lease lapses and the next tick asks again', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1)], failing: { completeRun: new Error('statement timeout') },
+      serveRunVariables: async (request) => servedVariables(request, () => ({ refused: 'version_unreadable' })),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(keysOf(report, 'runs_refused_variables')).toEqual([])
+    expect(report.counts).toMatchObject({ runs_lost: 1 })
+    expect(report.counts.runs_variables_refused).toBeUndefined()
+  })
+
+  it('judges nothing in observe mode, nor when the claim failed, so a page it does not name may still stand', async () => {
+    const observe = await runOpsTick(fake({}).ports)
+    expect(observe.counts.variables_refused_judged).toBeUndefined()
+    expect(observe.counts.variables_refused_off_lane_judged).toBeUndefined()
+    const failed = await runOpsTick(fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)], failing: { claimRuns: new Error('statement timeout') } }).ports)
+    expect(failed.counts.variables_refused_judged).toBeUndefined()
+    expect(failed.counts.variables_refused_off_lane_judged).toBeUndefined()
+  })
+
+  it('judges a live tick whose claim answered, refused runs or none', async () => {
+    const report = await runOpsTick(fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)] }).ports)
+    expect(keysOf(report, 'runs_refused_variables')).toEqual([])
+    expect(report.counts).toMatchObject({ variables_refused_judged: 1, variables_refused_off_lane_judged: 1 })
+  })
+})
+
+// The lessons review of #3131, on #3000's code: when the copies write throws,
+// how many workflows the refresh covers is not known, so the refresh page says
+// no count rather than a false 0.
+describe('a copies write that throws (#3131)', () => {
+  it('fails the refresh with no count of workflows, so its page names none', () => {
+    const written = variableCopiesWriteFailed(new Error('the copies write threw'))
+    expect(written).toEqual({
+      counts: { variable_copies_failed: 1 },
+      refresh: { kind: 'failed', workflows: null, error: 'the copies write threw', answeredRequests: 0, unreadable: [] },
+    })
+    expect(refreshFailingText({ workflows: null, error: 'the copies write threw' })).toMatch(/^Ops could not refresh its copy of the environment variables from bidding: the copies write threw\. /)
   })
 })

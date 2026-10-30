@@ -105,19 +105,31 @@ describe('runVariablesFor: what a run is given', () => {
 })
 
 describe('refusedRunEnd: a run the bidding Worker would not serve variables for', () => {
-  it('ends a run of a deleted workflow dead as workflow_deleted, and every other refusal failed, named, nothing run', () => {
+  // #3131: every refusal but a deleted workflow fails by name, with the status
+  // reason variables_refused and the refusal as typed fields (refusal and
+  // refusedVariables), which the minute tick's page names, never the error text.
+  it('ends a run of a deleted workflow dead as workflow_deleted, and every other refusal failed as variables_refused, named, nothing run', () => {
     expect(refusedRunEnd({ reason: 'workflow_deleted', keys: [] }, 3)).toEqual({ outcome: 'dead', reason: 'workflow_deleted' })
     for (const reason of RUN_VARIABLES_REFUSALS.filter((r) => r !== 'workflow_deleted')) {
-      const end = refusedRunEnd({ reason, keys: reason === 'secret_unreadable' ? ['API_TOKEN', 'PASS'] : [] }, 3)
-      expect(end, reason).toMatchObject({ outcome: 'failed' })
+      const keys = reason === 'secret_unreadable' ? ['API_TOKEN', 'PASS'] : []
+      const end = refusedRunEnd({ reason, keys }, 3)
+      expect(end, reason).toMatchObject({ outcome: 'failed', reason: 'variables_refused', refusal: reason, refusedVariables: keys })
       expect(end.outcome === 'failed' && end.error, reason).toMatch(new RegExp(`^variables_refused \\(${reason}\\): .*nothing was run$`))
-      expect('reason' in end && end.reason, reason).toBeFalsy()
     }
     expect(refusedRunEnd({ reason: 'secret_unreadable', keys: ['API_TOKEN', 'PASS'] }, 3)).toEqual({
-      outcome: 'failed', error: 'variables_refused (secret_unreadable): the secret variables env.API_TOKEN, env.PASS would not decrypt on the bidding Worker, so nothing was run',
+      outcome: 'failed', reason: 'variables_refused', refusal: 'secret_unreadable', refusedVariables: ['API_TOKEN', 'PASS'],
+      error: 'variables_refused (secret_unreadable): the secret variables env.API_TOKEN, env.PASS would not decrypt on the bidding Worker, so nothing was run',
     })
     expect(refusedRunEnd({ reason: 'version_missing', keys: [] }, 3)).toEqual({
-      outcome: 'failed', error: 'variables_refused (version_missing): the bidding Worker holds no version 3 of this workflow, so nothing was run',
+      outcome: 'failed', reason: 'variables_refused', refusal: 'version_missing', refusedVariables: [],
+      error: 'variables_refused (version_missing): the bidding Worker holds no version 3 of this workflow, so nothing was run',
     })
+  })
+
+  it('copies the refused names, so a later change to the answer\'s list cannot change the end', () => {
+    const keys = ['API_TOKEN']
+    const end = refusedRunEnd({ reason: 'secret_unreadable', keys }, 3)
+    keys.push('LATER')
+    expect(end).toMatchObject({ refusedVariables: ['API_TOKEN'] })
   })
 })

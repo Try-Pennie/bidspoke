@@ -54,7 +54,7 @@ import {
   CONNECTION_CHECK_JOB, CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, SF_LIMITS_JOB, TOMBSTONE_SERVE_WINDOW_MS, parseOpsJobId, parseOpsJobReport, parseOpsTickReport,
   inARowToPage, parseSealedEnvelope, sweepOfProblemKey,
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
-  servedConnectionProblem, OPS_OWN_PAGES, UNSTARTED_RUNS_PAGE, ownPageOf, type OpsOwnPage, type OpsTickProblemKind,
+  servedConnectionProblem, OFF_LANE_FIRST_REFUSED_TTL_SECONDS, OPS_OWN_PAGES, REFUSED_OFF_LANE_PAGE, UNSTARTED_RUNS_PAGE, ownPageOf, type OpsOwnPage, type OpsTickProblemKind,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
   type ServedOpsWorkflow, type ServedOpsWorkflowPorting, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer, type OpsDefinitionRequest, type ServedOpsDefinitions,
   MAX_RUN_VARIABLES_PER_REQUEST, type OpsRunVariablesRequest, type RefusedRunVariables, type RunVariablesRefusal, type ServedOpsRunVariableNames, type ServedOpsRunVariables,
@@ -1114,7 +1114,11 @@ async function readWorkflowNames(supabase: SupabaseClient, ids: readonly string[
 
 /** The subjects of one kind whose page is open. Throws when they cannot all be listed. */
 async function listOwnPages(kv: KVNamespace, kind: OpsTickProblemKind): Promise<string[]> {
-  const prefix = opsOwnPagePrefix(kind)
+  return listSubjects(kv, opsOwnPagePrefix(kind))
+}
+
+/** Every subject keyed under a prefix. Throws when they cannot all be listed. */
+async function listSubjects(kv: KVNamespace, prefix: string): Promise<string[]> {
   const subjects: string[] = []
   let cursor: string | undefined
   for (let i = 0; i < MAX_OWN_PAGE_LISTS; i++) {
@@ -1123,12 +1127,89 @@ async function listOwnPages(kv: KVNamespace, kind: OpsTickProblemKind): Promise<
     if (page.list_complete) return subjects
     cursor = page.cursor
   }
-  throw new Error(`more than ${MAX_OWN_PAGE_LISTS} listings of open pages`)
+  throw new Error(`more than ${MAX_OWN_PAGE_LISTS} listings of ${prefix}`)
+}
+
+/**
+ * Where a page held by its own state (OpsOwnPage.pagesAfterFirstMs, #3131)
+ * keeps when each subject was first named, one key per workflow id, written
+ * by runOpsTickReportCheck alone. Each key expires
+ * OFF_LANE_FIRST_REFUSED_TTL_SECONDS after the last report that named it, so a
+ * workflow that stops being refused leaves nothing behind for ever.
+ */
+function firstNamedPrefix(kind: OpsTickProblemKind): string {
+  return `ops-tick:first-named:${kind}:`
+}
+export const OFF_LANE_FIRST_REFUSED_PREFIX = firstNamedPrefix(REFUSED_OFF_LANE_PAGE.kind)
+
+/**
+ * Holds a page's problems until each is old enough (#3131, Dan's decision of
+ * 2026-10-30, "Second refused run"): a problem is due only once the report
+ * naming it started pagesAfterFirstMs or more after the first report that
+ * named its workflow, with no successful run of that workflow between
+ * (succeeded, the report's succeeded_workflows). A successful run starts the
+ * wait again, and a report naming both takes this one as the first. The
+ * first time is renewed, never moved, on every report that names it again.
+ * An unreadable time or first time is due, the side that pages (L50). Never
+ * throws: failures are answered for the caller to raise.
+ */
+async function holdUntilFirstIsOld(
+  kv: KVNamespace, page: OpsOwnPage, own: OwnProblem[], succeeded: readonly string[] | null, reportMs: number, failures: string[],
+): Promise<void> {
+  const hold = page.pagesAfterFirstMs
+  if (hold === undefined) return
+  const prefix = firstNamedPrefix(page.kind)
+  const reset = new Set(succeeded ?? [])
+  const named = new Set(own.map((o) => o.subject))
+  const keep = (subject: string, at: string) => kv.put(`${prefix}${subject}`, at, { expirationTtl: OFF_LANE_FIRST_REFUSED_TTL_SECONDS })
+  if ([...reset].some((w) => !named.has(w))) {
+    try {
+      for (const subject of await listSubjects(kv, prefix)) {
+        if (reset.has(subject) && !named.has(subject)) await kv.delete(`${prefix}${subject}`)
+      }
+    } catch (err) {
+      failures.push(`the first refused times for ${page.about} could not be cleared after a successful run: ${formatErr(err)}`)
+    }
+  }
+  const at = Number.isFinite(reportMs) ? new Date(reportMs).toISOString() : null
+  for (const o of own) {
+    try {
+      if (at === null) {
+        o.due = true
+        continue
+      }
+      if (reset.has(o.subject)) {
+        o.due = false
+        await keep(o.subject, at)
+        continue
+      }
+      let first: string | null
+      try {
+        first = await kv.get(`${prefix}${o.subject}`)
+      } catch (err) {
+        o.due = true
+        failures.push(`when workflow ${o.subject}'s runs were first refused could not be read: ${formatErr(err)}`)
+        continue
+      }
+      if (first === null) {
+        o.due = false
+        await keep(o.subject, at)
+        continue
+      }
+      const firstMs = Date.parse(first)
+      o.due = !Number.isFinite(firstMs) || reportMs - firstMs >= hold
+      await keep(o.subject, first)
+    } catch (err) {
+      failures.push(`when workflow ${o.subject}'s runs were first refused could not be recorded: ${formatErr(err)}`)
+    }
+  }
 }
 
 /** One problem of a kind that pages on its own: its subject, its sentence, and whether its rule has it due now or held. */
 interface OwnProblem {
   subject: string
+  /** What the key carries past the subject, for a page whose fix depends on it (OpsOwnPage.fixOf, #3131). */
+  detail: string | null
   text: string
   key: string
   due: boolean
@@ -1167,7 +1248,7 @@ async function settleOwnPages(
     const held = inARowToPage(o.key) !== null
     try {
       await deps.notifyFailure(supabase, page.job(o.subject), [o.text], kv, {
-        title: page.title(name), fixHint: page.fix, ...(held ? { context: repeatedContext([o.key]) } : {}),
+        title: page.title(name), fixHint: page.fixOf === undefined ? page.fix : page.fixOf(o.detail), ...(held ? { context: repeatedContext([o.key]) } : {}),
       }, nowMs, { repeatsHeldByCaller: true })
       paged = true
     } catch (err) {
@@ -1252,9 +1333,16 @@ export async function runOpsTickReportCheck(
       const pagesAt = inARowToPage(key)
       // Runs that cannot be matched to the problems page every problem (L50).
       const due = pagesAt === null || runs === null || runs[i] === undefined || runs[i].in_a_row >= pagesAt
-      return [{ subject: key.slice(page.kind.length + 1), text, key, due }]
+      // A page whose fix depends on the problem keys it as subject.detail (#3131), and is one page per subject.
+      const rest = key.slice(page.kind.length + 1)
+      const dot = page.fixOf === undefined ? -1 : rest.indexOf('.')
+      return [{ subject: dot === -1 ? rest : rest.slice(0, dot), detail: dot === -1 ? null : rest.slice(dot + 1), text, key, due }]
     }),
   }))
+  // A page held by its own state is due only once its first naming is old enough (#3131).
+  const holdFailures: string[] = []
+  const reportMs = Date.parse(kept.started_at)
+  for (const { page, own } of owned) await holdUntilFirstIsOld(kv, page, own, kept.succeeded_workflows ?? null, reportMs, holdFailures)
   let names = new Map<string, string>()
   const workflowIds = [...new Set(owned.flatMap(({ page, own }) => (page.perWorkflow ? own.filter((o) => o.due).map((o) => o.subject) : [])))]
   if (workflowIds.length > 0) {
@@ -1266,7 +1354,7 @@ export async function runOpsTickReportCheck(
   }
   let ownPaged = false
   let ownHeld = false
-  const ownFailures: string[] = []
+  const ownFailures: string[] = [...holdFailures]
   for (const { page, own } of owned) {
     const settled = await settleOwnPages(supabase, kv, page, own, readable && kept.counts[page.judgedCount] === 1, names, nowMs, deps)
     ownPaged ||= settled.paged
