@@ -174,6 +174,8 @@ export const COPIES_STALE_AFTER_MS = 6 * 60 * 60 * 1000
  * each run treats as expected is still counted, so a systemic failure is not
  * read as ordinary noise. Judged only from RUN_OUTCOME_MIN_RUNS runs of the
  * workflow in the tick (L716), so one unlucky run of a quiet workflow never pages.
+ * A run returned to the queue unstarted is in neither the count nor the runs
+ * judged (#3105): runs_unstarted pages it, from UNSTARTED_ALERT_AFTER_SECONDS.
  * Both are first settings, to be re-measured once live runs exist (L316).
  */
 export const RUN_OUTCOME_MIN_RUNS = 3
