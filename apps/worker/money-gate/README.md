@@ -261,10 +261,18 @@ out), and `reason` says in words why. The rules (`lib/expected-changes.ts`):
 * Once merged, an entry is carried over: it excuses nothing, and the verdict
   counts the carried over entries in one note line, naming their workflows.
 * Once the live worker runs the commit that added it, it has shipped and can
-  never excuse a difference again, so a pull request fails on it by name until it
-  is deleted (#1836). Only the pull request job asks the live worker
-  (`MONEY_GATE_LIVE_WORKER_URL`); a Deploy never fails on this, and a worker that
-  cannot be read is a note, not a failure.
+  never excuse a difference again; it is carried over, so the rule above already
+  keeps it from excusing anything. A pull request that changes
+  `expected-changes.json` itself (its text differs from the merge base's copy)
+  fails by name on each shipped entry, until it deletes them in that same change
+  (#1836). Every other pull request names them in a note and a warning
+  annotation, and stays green (#3151, Dan's rule "fail only when touched"):
+  failing every pull request turned unrelated changes red until somebody deleted
+  another change's entries. Only the pull request job asks the live worker
+  (`MONEY_GATE_LIVE_WORKER_URL`); a Deploy never checks this, and a worker that
+  cannot be read is a note. Deleting the entries is left to a person: a Deploy
+  opening that pull request itself would need a write permission, and a pull
+  request opened by the workflow token starts no CI of its own.
 
 The gate also fails, by name, when it checked nothing: a transcript with no
 workflow or no fixture, a committed definition the head did not replay, or a
