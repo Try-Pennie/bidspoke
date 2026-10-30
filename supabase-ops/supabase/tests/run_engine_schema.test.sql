@@ -166,6 +166,8 @@ BEGIN
     AND p.proname <> ALL (ARRAY['purge_run_variables'])
     -- The last good copy of each ops version's plain variables (#2999), held to the same rules by variable_copies.test.sql.
     AND p.proname <> ALL (ARRAY['save_variable_copies', 'variable_copies', 'purge_variable_copies'])
+    -- The purges of the slots fired and the sends recorded (#3052), held to the same rules by retention_purges.test.sql.
+    AND p.proname <> ALL (ARRAY['purge_schedule_fires', 'purge_send_ledger'])
     -- The runs waiting to start, per workflow (#3039), held to the same rules by unstarted_wait_cap.test.sql.
     AND p.proname <> ALL (ARRAY['unstarted_run_waits'])
     AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') IS FALSE
