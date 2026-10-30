@@ -126,7 +126,7 @@ const unresolved = (detail: string) => ({
 })
 const attempt = (output: Record<string, unknown>) => ({ step_namespace: 'sell_to_buyer.tripoint', output: { partner_slug: 'tripoint', payout_cents: 2190, kind: 'live', ...output } })
 
-describe('an unknown outcome, by whether an answer arrived (#3087)', () => {
+describe('an unknown outcome, by what the buyer answered (#3087, #3129)', () => {
   it('a live buyer call that got no answer reads No answer, in the row and the headline', () => {
     render(<BuyersConsidered step={step(unresolved(timerDetail), { status: 'failed' })} attempts={[attempt({ outcome: 'outcome_unknown', detail: timerDetail, http_status: null, held: true, timing })]} />)
     const row = screen.getAllByRole('row')[2]
