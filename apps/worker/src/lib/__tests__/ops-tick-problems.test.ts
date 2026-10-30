@@ -31,6 +31,8 @@ const THREE_IN_A_ROW = [
   'claim_failed', 'runs_failing',
   // The reseal watch (#2486): its state is read again next tick.
   'reseal_state_failed',
+  // The runs waiting to start (#3039): read again next tick.
+  'runs_unstarted_unread',
 ]
 // The nightly purges (#3018): two runs of the observation_purge sweep in a row,
 // so the second failed night pages (Dan, 2026-10-29, on #3051).
@@ -40,6 +42,10 @@ const AT_ONCE = [
   'definition_conflict', 'definition_unserved', 'definition_refused', 'definitions_backlog',
   // Live mode (#1950): stale copies stop everything; a run waiting for a person waits until one acts.
   'copies_stale', 'run_outcome_unknown', 'runs_lapsed_after_send',
+  // Runs that cannot start (#3039): the 15 minutes they waited is the hold.
+  'runs_unstarted', 'runs_unstarted_limit',
+  // #3046: a no-retry run of a live workflow whose lease lapsed ended failed; nothing reruns it.
+  'runs_lapsed_no_retry',
   'db_not_configured', 'not_configured', 'secrets_unchecked', 'agreement_check_failed', 'queue_disagreement', 'workflow_refused',
   'workflows_too_many', 'copies_read_limit', 'schedule_refused', 'schedule_no_version', 'slot_missed', 'dispatch_failed',
   'connections_list_unreadable', 'connection_refused', 'connections_too_many', 'connection_copies_expired', 'connections_step_failed',

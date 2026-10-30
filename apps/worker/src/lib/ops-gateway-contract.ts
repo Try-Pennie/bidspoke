@@ -47,7 +47,7 @@
  * signed dispatch (ops/run-variables.ts).
  */
 import { CURRENT_OPS_KID, KID_PATTERN } from '@bidspoke/connection-seal'
-import type { OpsSweep } from '../ops/run-vocabulary'
+import { OPS_UNSTARTED_WAIT_MAX_MS, type OpsSweep, type UnstartedReturnCause } from '../ops/run-vocabulary'
 import { ENV_KEY } from './definition-env-references'
 
 /** One ops workflow's state, as the bidding database holds it. */
@@ -757,6 +757,8 @@ export const OPS_TICK_PROBLEM_RULES = {
   claim_failed: 'three_in_a_row',
   /** The reseal watch's state could not be read (#2486); it is read again next tick, and its verdict is unjudged meanwhile. */
   reseal_state_failed: 'three_in_a_row',
+  /** The runs waiting to start could not be read (#3039); they are read again next tick. */
+  runs_unstarted_unread: 'three_in_a_row',
   /**
    * Lost and requeued runs of one workflow reached the rate in a tick (L77,
    * #1950): held for three ticks, so three ticks in a row of the rate pages.
@@ -804,6 +806,25 @@ export const OPS_TICK_PROBLEM_RULES = {
   run_outcome_unknown: 'at_once',
   /** A run lost its lease after a send that cannot be repeated, and waits for a person (lease_expired_after_send). */
   runs_lapsed_after_send: 'at_once',
+  /**
+   * Runs of a live workflow set not to retry lost their lease and the sweep
+   * ended them failed, lease_lapsed_no_retry (#3046, Dan, 2026-10-30): nothing
+   * runs them again, and no later tick reports them again. One that had made a
+   * send that cannot be repeated pages whatever the workflow's state, saying
+   * the send may have landed.
+   */
+  runs_lapsed_no_retry: 'at_once',
+  /**
+   * A workflow's runs have waited 15 minutes to start, returned to the queue
+   * unstarted each time they were claimed (#3039, Dan's decision of
+   * 2026-10-30). The wait itself is the hold, so it pages at once, on a page
+   * of its own per workflow in Dan's approved words (UNSTARTED_RUNS_PAGE), and
+   * stands down on the first report that judged every waiting workflow and no
+   * longer names it (UNSTARTED_RUNS_PAGE.judgedCount).
+   */
+  runs_unstarted: 'at_once',
+  /** More workflows have runs waiting to start than one read lists, so a workflow past them is not paged. */
+  runs_unstarted_limit: 'at_once',
   // Reported once, never again by a later tick.
   /** The agreement check failed after its claim; it is not tried again for 14 minutes. */
   agreement_check_failed: 'at_once',
@@ -867,6 +888,60 @@ export const OPS_TICK_PROBLEM_RULES = {
 } as const satisfies Record<string, OpsTickProblemRule>
 
 export type OpsTickProblemKind = keyof typeof OPS_TICK_PROBLEM_RULES
+
+/**
+ * The page for a workflow whose runs keep returning to the queue unstarted
+ * (#3039), in the words Dan approved on 2026-10-30, recorded on the issue. The
+ * tick writes the sentence (unstartedRunsText) as the problem runs_unstarted,
+ * keyed on the workflow; the bidding Worker pages each one on its own, under
+ * the title naming the workflow and the fix below, never on the shared page of
+ * the minute cron.
+ */
+export const UNSTARTED_RUNS_PAGE = {
+  kind: 'runs_unstarted',
+  /** The bidding Worker's alert job for one workflow's page: its own incident, stood down by its own all clear. */
+  job: (workflowId: string) => `ops-runs-unstarted:${workflowId}`,
+  title: (workflowName: string) => `Ops runs can't start: ${workflowName}`,
+  fix: 'Open the workflow in Bidspoke and save it again, or check that the bidding Worker is up.',
+  /**
+   * The count a tick's report carries, as 1, when it read the waits of every
+   * workflow with runs waiting: the read worked and did not stop at its limit.
+   * Only such a report, with no problem left out, stands a page down; any other
+   * (a failed or full read, observe mode, no database) says nothing about a
+   * workflow it does not name.
+   */
+  judgedCount: 'unstarted_waits_judged',
+} as const
+
+/**
+ * The cause each return names, in Dan's words. A return from an ops release
+ * before #3039 names none: beside a named cause it adds no words, and alone
+ * the sentence says the reason was not recorded (Dan, 2026-10-30).
+ */
+export const UNSTARTED_CAUSE_WORDS: Readonly<Record<UnstartedReturnCause, string>> = {
+  definition_unavailable: 'the workflow\'s saved version could not be loaded from bidding',
+  variables_unavailable: 'its environment variables could not be read from bidding',
+}
+
+const ET_CLOCK = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })
+
+/**
+ * The sentence of the page, with its real values: how many runs have waited at
+ * least 15 minutes, how long the oldest has waited (whole minutes), why (each
+ * cause named, or that the reason was not recorded when none was), and when the
+ * oldest is given up (its wait's start plus OPS_UNSTARTED_WAIT_MAX_MS, Eastern
+ * time). A single run reads in the singular.
+ */
+export function unstartedRunsText(wait: {
+  runs: number; waitedSeconds: number; oldestSince: string; causes: ReadonlyArray<UnstartedReturnCause | null>
+}): string {
+  const minutes = Math.floor(wait.waitedSeconds / 60)
+  const named = (['definition_unavailable', 'variables_unavailable'] as const).filter((c) => wait.causes.includes(c)).map((c) => UNSTARTED_CAUSE_WORDS[c])
+  const why = named.length > 0 ? ` because ${named.join(' or ')}` : ', and the reason was not recorded'
+  const givenUpAt = ET_CLOCK.format(new Date(Date.parse(wait.oldestSince) + OPS_UNSTARTED_WAIT_MAX_MS))
+  const runs = wait.runs === 1 ? '1 run has' : `${wait.runs} runs have`
+  return `${runs} waited ${minutes} minutes to start${why}. Each run is given up after 1 hour of waiting, at ${givenUpAt} ET for the oldest.`
+}
 
 /** One problem as the tick builds it: the key the bidding Worker counts it by, and the sentence a person reads. */
 export interface TickProblem {

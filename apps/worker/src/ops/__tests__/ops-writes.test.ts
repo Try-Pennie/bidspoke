@@ -57,6 +57,7 @@ import {
   takeLookupAllowance,
   purgeScheduleObservations,
   readMissingWorkflowDefinitions,
+  readUnstartedRunWaits,
   readWorkflowDefinition,
   saveWorkflowDefinition,
   recordStepTest,
@@ -78,7 +79,7 @@ import {
   observeOpsReseal,
   recordOpsResealRun,
 } from '../ops-writes'
-import type { ResourceWaitCause } from '../run-vocabulary'
+import type { ResourceWaitCause, UnstartedReturnCause } from '../run-vocabulary'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const RUN = '0199f0a0-0000-7000-8000-000000000001'
@@ -121,7 +122,7 @@ afterEach(() => {
 
 describe('callOpsRpc', () => {
   it('calls the named function with its arguments', async () => {
-    const { client, calls } = rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 0, more: false }])
+    const { client, calls } = rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 0, more: false, no_retry_workflow_ids: [], no_retry_after_send_workflow_ids: [] }])
     await sweepExpiredLeases(client, 500)
     expect(calls).toEqual([{ path: '/rest/v1/rpc/sweep_expired_leases', body: { p_limit: 500 } }])
   })
@@ -282,11 +283,11 @@ describe('the typed wrappers', () => {
   })
 
   it('start: answers the run\'s continuations (#1951), and refuses a start answered without them, never reading it as none', async () => {
-    const started = await startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 1, run_variables: null }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null)
+    const started = await startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 1, run_variables: null }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null, false)
     expect(started).toEqual({ outcome: 'started', stateVersion: 5, attempt: 2, continuations: 1, runVariables: null })
-    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, run_variables: null }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null))
+    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, run_variables: null }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null, false))
       .rejects.toThrow(/continuations/)
-    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: -1, run_variables: null }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null))
+    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: -1, run_variables: null }]).client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null, false))
       .rejects.toThrow(/continuations/)
   })
 
@@ -295,24 +296,36 @@ describe('the typed wrappers', () => {
     const sent = { source: 'bidding' as const, servedAt: '2026-10-29T14:00:00.000Z', values: { API_BASE: 'https://api.example.test' }, secretKeys: ['API_TOKEN'] }
     const first = { source: 'bidding', served_at: '2026-10-29T13:55:00.000Z', values: { API_BASE: 'first' }, secret_keys: ['API_TOKEN'] }
     const { client, calls } = rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 0, run_variables: first }])
-    const started = await startRunExecution(client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', sent)
+    const started = await startRunExecution(client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', sent, false)
     expect(calls[0]).toEqual({
       path: '/rest/v1/rpc/start_run_execution',
       body: {
         p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_execution_id: '0199f0a0-0000-7000-8000-0000000000e1',
         p_variables: { source: 'bidding', served_at: '2026-10-29T14:00:00.000Z', values: { API_BASE: 'https://api.example.test' }, secret_keys: ['API_TOKEN'] },
+        p_retry_disabled: false,
       },
     })
     // A retry's start: the run answers the record its first start kept.
     expect(started.runVariables).toEqual({ source: 'bidding', servedAt: '2026-10-29T13:55:00.000Z', values: { API_BASE: 'first' }, secretKeys: ['API_TOKEN'] })
   })
 
+  // #3046: the database keeps the run's retry setting, so the lease sweep can end a no-retry run rather than requeue it.
+  it('start: sends whether the run\'s workflow is set not to retry, every start', async () => {
+    const answer = [{ outcome: 'started', state_version: 5, attempt: 1, continuations: 0, run_variables: null }]
+    const on = rpcFetch(answer)
+    await startRunExecution(on.client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null, true)
+    expect(on.calls[0].body.p_retry_disabled).toBe(true)
+    const off = rpcFetch(answer)
+    await startRunExecution(off.client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null, false)
+    expect(off.calls[0].body.p_retry_disabled).toBe(false)
+  })
+
   it('start: refuses a start answered without run_variables, or with one of another shape, by name (#2998)', async () => {
     const exec = '0199f0a0-0000-7000-8000-0000000000e1'
-    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 0 }]).client, ORG, RUN, TOKEN, exec, null))
+    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 0 }]).client, ORG, RUN, TOKEN, exec, null, false))
       .rejects.toThrow(/start_run_execution returned no run_variables/)
     const bad = { source: 'bidding', served_at: '2026-10-29T13:55:00.000Z', values: {}, secret_keys: [], secret_values: { A: 'x' } }
-    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 0, run_variables: bad }]).client, ORG, RUN, TOKEN, exec, null))
+    await expect(startRunExecution(rpcFetch([{ outcome: 'started', state_version: 5, attempt: 2, continuations: 0, run_variables: bad }]).client, ORG, RUN, TOKEN, exec, null, false))
       .rejects.toThrow(/run_variables/)
   })
 
@@ -324,7 +337,7 @@ describe('the typed wrappers', () => {
 
   it('start: a lost claim is an error, never a start', async () => {
     const { client } = rpcFetch([{ outcome: 'claim_lost', state_version: null, attempt: null }])
-    await expect(startRunExecution(client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null)).rejects.toBeInstanceOf(OpsClaimLostError)
+    await expect(startRunExecution(client, ORG, RUN, TOKEN, '0199f0a0-0000-7000-8000-0000000000e1', null, false)).rejects.toBeInstanceOf(OpsClaimLostError)
   })
 
   it('extend: false is a lost claim, and anything but a boolean is refused', async () => {
@@ -395,11 +408,65 @@ describe('the typed wrappers', () => {
     expect(calls).toEqual([])
   })
 
+  it('complete: a return unstarted names its cause as p_reason, and one past the hour reads as failed (#3039)', async () => {
+    const { client, calls } = rpcFetch([{ outcome: 'completed', run_status: 'queued', state_version: 10 }])
+    expect(await completeRunRequest(client, ORG, RUN, TOKEN, {
+      outcome: 'retry', unstartedCause: 'variables_unavailable', error: 'the run\'s variables could not be had', notBefore: new Date('2026-10-30T13:05:00Z'),
+    })).toEqual({ outcome: 'completed', runStatus: 'queued' })
+    expect(calls[0].body).toEqual({
+      p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_outcome: 'retry', p_reason: 'variables_unavailable',
+      p_error: 'the run\'s variables could not be had', p_not_before: '2026-10-30T13:05:00.000Z',
+    })
+    // The database gave it up: the status it chose is read, never assumed queued.
+    const gaveUp = rpcFetch([{ outcome: 'completed', run_status: 'failed', state_version: 11 }])
+    expect(await completeRunRequest(gaveUp.client, ORG, RUN, TOKEN, { outcome: 'retry', unstartedCause: 'definition_unavailable' }))
+      .toEqual({ outcome: 'completed', runStatus: 'failed' })
+    // A retry of a run that started names no cause, so its call is the one it always was.
+    const plain = rpcFetch([{ outcome: 'completed', run_status: 'queued', state_version: 12 }])
+    await completeRunRequest(plain.client, ORG, RUN, TOKEN, { outcome: 'retry', error: 'a step failed' })
+    expect(plain.calls[0].body).toEqual({ p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_outcome: 'retry', p_error: 'a step failed' })
+    // A cause the database does not take is refused before anything is sent.
+    const odd = rpcFetch([])
+    await expect(completeRunRequest(odd.client, ORG, RUN, TOKEN, { outcome: 'retry', unstartedCause: 'gateway_down' as UnstartedReturnCause }))
+      .rejects.toThrow(/gateway_down is not a cause a run is returned unstarted for/)
+    expect(odd.calls).toEqual([])
+  })
+
+  it('reads the waits to start per workflow, and refuses an answer it cannot read by name (#3039)', async () => {
+    const row = {
+      organization_id: ORG, workflow_id: WF, runs: 3, oldest_since: '2026-10-30T13:00:00+00:00', waited_seconds: 1260,
+      causes: ['definition_unavailable', null],
+    }
+    const { client, calls } = rpcFetch([row])
+    expect(await readUnstartedRunWaits(client, 900, 2)).toEqual({
+      waits: [{ organizationId: ORG, workflowId: WF, runs: 3, oldestSince: '2026-10-30T13:00:00+00:00', waitedSeconds: 1260, causes: ['definition_unavailable', null] }],
+      reachedLimit: false,
+    })
+    expect(calls[0].body).toEqual({ p_min_wait_seconds: 900, p_limit: 2 })
+    expect((await readUnstartedRunWaits(rpcFetch([row, row]).client, 900, 2)).reachedLimit).toBe(true)
+    await expect(readUnstartedRunWaits(rpcFetch([{ ...row, causes: ['gateway_down'] }]).client, 900, 2)).rejects.toThrow(/unstarted_run_waits returned causes that is not causes/)
+    await expect(readUnstartedRunWaits(rpcFetch([{ ...row, runs: 0 }]).client, 900, 2)).rejects.toThrow(/unstarted_run_waits returned runs that is not a count of one or more/)
+    await expect(readUnstartedRunWaits(rpcFetch([{ ...row, organization_id: 'nope' }]).client, 900, 2)).rejects.toThrow(/organization is not a uuid/)
+  })
+
   it('the lease sweep reads the runs it ended failed, and refuses an answer without that count', async () => {
-    expect(await sweepExpiredLeases(rpcFetch([{ requeued: 1, retried: 2, needs_human: 0, dead: 0, failed: 1, more: false }]).client, 100))
-      .toEqual({ requeued: 1, retried: 2, needsHuman: 0, dead: 0, failed: 1, more: false })
-    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, more: false }]).client, 100))
+    expect(await sweepExpiredLeases(rpcFetch([{ requeued: 1, retried: 2, needs_human: 0, dead: 0, failed: 1, more: false, no_retry_workflow_ids: [], no_retry_after_send_workflow_ids: [] }]).client, 100))
+      .toEqual({ requeued: 1, retried: 2, needsHuman: 0, dead: 0, failed: 1, more: false, noRetryWorkflowIds: [], noRetryAfterSendWorkflowIds: [] })
+    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, more: false, no_retry_workflow_ids: [], no_retry_after_send_workflow_ids: [] }]).client, 100))
       .rejects.toThrow(/sweep_expired_leases returned failed that is not a count/)
+  })
+
+  // #3046: the workflow of each run the sweep ended failed because it is set not to retry.
+  it('the lease sweep reads the workflows of the no-retry runs it ended, and refuses an answer without them, never reading it as none', async () => {
+    expect(await sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 2, more: false, no_retry_workflow_ids: [WF, WF], no_retry_after_send_workflow_ids: [WF] }]).client, 100))
+      .toEqual({ requeued: 0, retried: 0, needsHuman: 0, dead: 0, failed: 2, more: false, noRetryWorkflowIds: [WF, WF], noRetryAfterSendWorkflowIds: [WF] })
+    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 0, more: false, no_retry_after_send_workflow_ids: [] }]).client, 100))
+      .rejects.toThrow(/sweep_expired_leases returned no_retry_workflow_ids that is not a list of workflow ids/)
+    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 1, more: false, no_retry_workflow_ids: ['not-a-uuid'], no_retry_after_send_workflow_ids: [] }]).client, 100))
+      .rejects.toThrow(/no_retry_workflow_ids that is not a list of workflow ids/)
+    // The runs among them that may have landed a send that cannot be repeated: absent is refused, never read as none.
+    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 1, more: false, no_retry_workflow_ids: [WF] }]).client, 100))
+      .rejects.toThrow(/sweep_expired_leases returned no_retry_after_send_workflow_ids that is not a list of workflow ids/)
   })
 
   it('send intent: stale comes back as stale, so the caller can refuse to send', async () => {

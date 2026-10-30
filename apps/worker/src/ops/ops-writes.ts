@@ -52,6 +52,7 @@ import {
   OPS_STEP_RECORD_OUTCOMES, OPS_STEP_RECORD_STATUSES, type OpsStepRecordOutcome, type OpsStepRecordStatus,
   CHECKPOINT_ACK_OUTCOMES, type CheckpointAckOutcome,
   UNCHARGED_RESUME_REASONS,
+  UNSTARTED_RETURN_CAUSES, type UnstartedReturnCause,
 } from './run-vocabulary'
 import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
@@ -361,16 +362,21 @@ export interface StartedRun {
 /**
  * Starts the claimed run. variables is what it records at its first start
  * (#2998), kept only then: start_run_execution answers the record the run
- * holds. Throws OpsClaimLostError when the claim is no longer this caller's.
+ * holds. retryDisabled is whether the run's workflow is set not to retry, as
+ * read from the run's version (run-live.ts), sent on every start and kept on
+ * the run (#3046), so the lease sweep ends a lapsed no-retry run failed rather
+ * than requeuing it. Throws OpsClaimLostError when the claim is no longer this
+ * caller's.
  */
 export async function startRunExecution(
   client: OpsSupabaseClient, organizationId: OrganizationId, runRequestId: string, claimToken: string, executionId: string,
-  variables: RunVariablesRecord | null, options?: OpsRpcOptions,
+  variables: RunVariablesRecord | null, retryDisabled: boolean, options?: OpsRpcOptions,
 ): Promise<StartedRun> {
   const name = 'start_run_execution'
   const row = oneRow(name, await callOpsRpc(client, name, {
     p_organization_id: organizationId, p_run_request_id: runRequestId, p_claim_token: claimToken, p_execution_id: executionId,
     p_variables: variables === null ? null : recordRow(variables),
+    p_retry_disabled: retryDisabled,
   }, options))
   const outcome = field(name, row, 'outcome', oneOf(['started', 'already_started', 'claim_lost'] as const), 'a start outcome')
   if (outcome === 'claim_lost') throw new OpsClaimLostError(`${name}: run ${runRequestId} is not held by this claim`)
@@ -419,12 +425,17 @@ export async function extendRunLease(
  * asked (p_error); the database ends the run failed with requeue_cap_reached
  * instead once that step reaches the requeue cap (OPS_STEP_REQUEUE_MAX waits,
  * or OPS_STEP_REQUEUE_WAIT_MAX_MS after its first). A holder cannot fail a run
- * for an engine only reason (ENGINE_FAILED_REASONS, finding F122).
+ * for an engine only reason (ENGINE_FAILED_REASONS, finding F122). A retry of
+ * a run not yet started (a return unstarted, #3023) names why it could not
+ * start (unstartedCause, sent as p_reason, #3039); the database ends the run
+ * failed with unstarted_wait_exceeded instead once it has waited
+ * OPS_UNSTARTED_WAIT_MAX_MS to start, so read runStatus rather than assuming
+ * queued.
  */
 export type CompleteOutcome =
   | { outcome: 'done' }
   | { outcome: 'failed'; reason?: HolderFailedReason; error?: string }
-  | { outcome: 'retry'; error?: string; notBefore?: Date }
+  | { outcome: 'retry'; error?: string; notBefore?: Date; unstartedCause?: UnstartedReturnCause }
   | { outcome: 'suspend'; reason: 'continue' | 'wake'; notBefore: Date }
   | { outcome: 'suspend'; reason: 'resource_wait'; cause: ResourceWaitCause; notBefore: Date }
   | { outcome: 'suspend'; reason: 'rate_limit_wait'; step: string; status: number | null; notBefore: Date; error: string }
@@ -448,12 +459,15 @@ export async function completeRunRequest(
   if ('cause' in end && !(RESOURCE_WAIT_CAUSES as readonly string[]).includes(end.cause)) {
     throw new OpsWriteError(`${name}: ${end.cause} is not a resource wait cause`)
   }
+  if ('unstartedCause' in end && end.unstartedCause !== undefined && !(UNSTARTED_RETURN_CAUSES as readonly string[]).includes(end.unstartedCause)) {
+    throw new OpsWriteError(`${name}: ${end.unstartedCause} is not a cause a run is returned unstarted for`)
+  }
   const row = oneRow(name, await callOpsRpc(client, name, withoutUndefined({
     p_organization_id: organizationId,
     p_run_request_id: runRequestId,
     p_claim_token: claimToken,
     p_outcome: end.outcome,
-    p_reason: 'reason' in end ? end.reason : undefined,
+    p_reason: 'reason' in end ? end.reason : 'unstartedCause' in end ? end.unstartedCause : undefined,
     p_error: 'cause' in end ? end.cause : 'error' in end ? end.error : undefined,
     p_not_before: 'notBefore' in end ? iso(end.notBefore) : undefined,
     // Sent only for a rate limit wait, so every other outcome's call is the one it always was.
@@ -473,11 +487,30 @@ export interface SweepResult {
   retried: number
   needsHuman: number
   dead: number
-  /** Ended failed: a fourth lapse with no send, lease_lapsed_repeatedly (#2334). */
+  /**
+   * Ended failed: a fourth lapse with no send, lease_lapsed_repeatedly (#2334),
+   * or a lapse of a run set not to retry, sent or not, lease_lapsed_no_retry (#3046).
+   */
   failed: number
   /** A full page was taken: call again until false. */
   more: boolean
+  /**
+   * The workflow of each run ended lease_lapsed_no_retry (#3046), once per run,
+   * so the tick can page the live ones. Required once ops migration
+   * 20261030160000 is applied: its absence is refused by name, never read as
+   * none, which would let such a run end without a page.
+   */
+  noRetryWorkflowIds: string[]
+  /**
+   * The workflow of each of those runs that had made a send that cannot be
+   * repeated (#3046, Dan, 2026-10-30): such a run ends failed too, so this is
+   * the only record that a send may have landed. Required and refused by name
+   * when absent, as noRetryWorkflowIds is.
+   */
+  noRetryAfterSendWorkflowIds: string[]
 }
+
+const isUuidList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string' && UUID_SHAPE.test(x))
 
 export async function sweepExpiredLeases(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<SweepResult> {
   const name = 'sweep_expired_leases'
@@ -489,6 +522,8 @@ export async function sweepExpiredLeases(client: OpsSupabaseClient, limit: numbe
     dead: field(name, row, 'dead', isInt, 'a count'),
     failed: field(name, row, 'failed', isInt, 'a count'),
     more: field(name, row, 'more', isBool, 'true or false'),
+    noRetryWorkflowIds: field(name, row, 'no_retry_workflow_ids', isUuidList, 'a list of workflow ids'),
+    noRetryAfterSendWorkflowIds: field(name, row, 'no_retry_after_send_workflow_ids', isUuidList, 'a list of workflow ids'),
   }
 }
 
@@ -1626,6 +1661,55 @@ export async function readMissingWorkflowDefinitions(
     }
   })
   return { missing, reachedLimit: missing.length === limit }
+}
+
+// ── the waits to start (#3039, ops migration 20261030190000) ─────────────────
+
+/** One workflow's runs waiting to start, as unstarted_run_waits answers it. */
+export interface UnstartedRunWait {
+  organizationId: OrganizationId
+  workflowId: string
+  /** The runs whose wait has lasted at least the minimum asked. */
+  runs: number
+  /** When the oldest of their waits began, on the database clock. */
+  oldestSince: string
+  /** How long the oldest has waited, on the database clock. */
+  waitedSeconds: number
+  /** The causes their latest returns named; null for a return that named none (an ops release before #3039). */
+  causes: Array<UnstartedReturnCause | null>
+}
+
+const isCauses = (v: unknown): v is Array<UnstartedReturnCause | null> =>
+  Array.isArray(v) && v.length > 0 && v.every((c) => c === null || (UNSTARTED_RETURN_CAUSES as readonly unknown[]).includes(c))
+const isPositiveCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1
+
+/**
+ * Per workflow, the runs returned to the queue unstarted whose wait to start
+ * has lasted at least minWaitSeconds, oldest wait first, at most limit
+ * workflows (unstarted_run_waits, lane wide).
+ */
+export async function readUnstartedRunWaits(
+  client: OpsSupabaseClient, minWaitSeconds: number, limit: number, options?: OpsRpcOptions,
+): Promise<{ waits: UnstartedRunWait[]; reachedLimit: boolean }> {
+  const name = 'unstarted_run_waits'
+  const all = rows(name, await callOpsRpc(client, name, { p_min_wait_seconds: minWaitSeconds, p_limit: limit }, options))
+  const waits = all.map((row) => {
+    let organizationId: OrganizationId
+    try {
+      organizationId = organizationIdFrom(row.organization_id)
+    } catch {
+      throw new OpsWriteError(`${name} returned a workflow whose organization is not a uuid`)
+    }
+    return {
+      organizationId,
+      workflowId: field(name, row, 'workflow_id', isString, 'an id'),
+      runs: field(name, row, 'runs', isPositiveCount, 'a count of one or more'),
+      oldestSince: field(name, row, 'oldest_since', isTime, 'a time'),
+      waitedSeconds: field(name, row, 'waited_seconds', isCount, 'a count'),
+      causes: field(name, row, 'causes', isCauses, 'causes'),
+    }
+  })
+  return { waits, reachedLimit: waits.length === limit }
 }
 
 // ── a step's test result (#2339, ops migration 20261024010000) ──────────────

@@ -35,7 +35,9 @@
  *     checkpoint to OPS_CHECKPOINTS and names it on the run; and the
  *     workflow's retry setting from that same version (#1693, retryPolicyOf
  *     below), which sets the wait before a retry after a real failure, or ends
- *     the run at its first one.
+ *     the run at its first one, and which its start tells the database, so a
+ *     lease that lapses ends a no-retry run failed rather than requeuing it
+ *     (#3046).
  */
 import { uuidv7 } from '@bidspoke/uuidv7'
 import { DEFAULT_RETRY_POLICY, readRetryPolicy, type RetryPolicy } from '@bidspoke/workflow-definition'
@@ -67,7 +69,8 @@ export const RUN_DEFINITION_FETCH_DEADLINE_MS = 15_000
 /** What OpsInternal.run answers: the run's report, a run returned for want of its definition, or a refusal by name. */
 export type RunDispatchAnswer =
   | RunInvocationReport
-  | { outcome: 'definition_unavailable'; error: string }
+  /** runStatus is the database's: queued, or failed once the run has waited an hour to start (#3039). */
+  | { outcome: 'definition_unavailable'; error: string; runStatus: string | null }
   | { refused: string }
 
 export interface RunLiveDeps {
@@ -94,11 +97,12 @@ export const realRunClock: RunClock = {
 /**
  * The ops database as a run uses it: each call one of the ops functions, in the
  * run's organization. Its start sends the variables record the run keeps at its
- * first start (#2998).
+ * first start (#2998), and whether the workflow is set not to retry (#3046), so
+ * the lease sweep ends a lapsed no-retry run failed rather than requeuing it.
  */
-export function liveRunDb(client: OpsSupabaseClient, variables: RunVariablesRecord | null): RunDb {
+export function liveRunDb(client: OpsSupabaseClient, variables: RunVariablesRecord | null, retry: RetryPolicy): RunDb {
   return {
-    start: (run, executionId) => startRunExecution(client, run.organizationId, run.runRequestId, run.claimToken, executionId, variables),
+    start: (run, executionId) => startRunExecution(client, run.organizationId, run.runRequestId, run.claimToken, executionId, variables, retry.mode === 'none'),
     extend: (run, leaseSeconds) => extendRunLease(client, run.organizationId, run.runRequestId, run.claimToken, leaseSeconds),
     recordIntent: (run, intent) => recordSendIntent(client, run.organizationId, { ...intent, runRequestId: run.runRequestId, claimToken: run.claimToken }),
     recordResult: (run, ledgerId, result) => recordSendResult(client, run.organizationId, ledgerId, result),
@@ -189,21 +193,25 @@ export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveD
     version = await definitionOf(env, client, run, deps.delay)
   } catch (err) {
     const why = `the run's definition (workflow ${run.workflowId} version ${run.workflowVersion}) could not be had: ${formatErr(err)}`
-    const end = { outcome: 'retry' as const, error: why, notBefore: new Date(deps.nowMs + RUN_DEFINITION_RETRY_MS) }
-    // Not started, so this spends no attempt; the claim ends and the run waits a minute.
+    const end = { outcome: 'retry' as const, unstartedCause: 'definition_unavailable' as const, error: why, notBefore: new Date(deps.nowMs + RUN_DEFINITION_RETRY_MS) }
+    // Not started, so this spends no attempt; the claim ends and the run waits a
+    // minute, unless it has waited an hour to start, when the database gives it up (#3039).
+    let completed: { runStatus: string | null }
     try {
-      await completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, end)
+      completed = await completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, end)
     } catch (completeErr) {
       // Not started, so no ledger row: the lease lapses and the sweep returns the run to the queue.
       console.log(JSON.stringify({ event: 'ops_run', step: 'definition_unavailable_complete_failed', run_request_id: run.runRequestId, workflow_id: run.workflowId, error: formatErr(completeErr) }))
       return { outcome: 'complete_failed', end, error: `${why}; and the return to the queue could not be recorded: ${formatErr(completeErr)}` }
     }
-    console.log(JSON.stringify({ event: 'ops_run', step: 'definition_unavailable', run_request_id: run.runRequestId, workflow_id: run.workflowId }))
-    return { outcome: 'definition_unavailable', error: why }
+    console.log(JSON.stringify({ event: 'ops_run', step: 'definition_unavailable', run_request_id: run.runRequestId, workflow_id: run.workflowId, run_status: completed.runStatus }))
+    return { outcome: 'definition_unavailable', error: why, runStatus: completed.runStatus }
   }
 
+  // Read once: the same setting decides the run's own retries and what the database is told for its lease sweep (#3046).
+  const retry = retryPolicyOf(run, version.definition)
   return invokeRun({
-    db: liveRunDb(client, recordOf(variables)),
+    db: liveRunDb(client, recordOf(variables), retry),
     clock: deps.clock ?? realRunClock,
     newExecutionId: deps.newExecutionId ?? (() => uuidv7()),
     log: (fields) => console.log(JSON.stringify(fields)),
@@ -214,7 +222,7 @@ export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveD
       const live = liveOpsConnectionsDeps(env, { opensLogins: true, ...(deps.opsFetch ? { opsFetch: deps.opsFetch } : {}) })
       return { ...live.connection, rulesFor: (service) => live.services(service)?.rules }
     }),
-  }), { continuation: liveContinuation(env, deps.continuationBudget) }), { retry: retryPolicyOf(run, version.definition) })
+  }), { continuation: liveContinuation(env, deps.continuationBudget) }), { retry })
 }
 
 /**

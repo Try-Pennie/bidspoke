@@ -92,6 +92,7 @@ function opsDb() {
     readCopies: async () => ({ copies: [], reachedLimit: false }),
     recordObservation: async () => 'recorded',
     dueQueueDepth: async () => ({ dueRuns: 0, dueWorkflows: 0, oldestDue: null }),
+    unstartedWaits: async () => ({ waits: [], reachedLimit: false }),
     async saveConnectionCopies(servedAt, _complete, list): Promise<SaveConnectionCopiesResult> {
       const r = { inserted: 0, updated: 0, confirmed: 0, refusedOlder: 0, refusedExpired: 0, refusedRemoved: 0, withdrawn: 0 }
       for (const c of list) {

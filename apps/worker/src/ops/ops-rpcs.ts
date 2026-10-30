@@ -115,6 +115,8 @@ export const OPS_LANE_READ_ONLY_RPCS = [
   'connection_check_targets',
   // The saved copies whose current version has no definition held yet (#1950), each row carrying its organization.
   'missing_workflow_definitions',
+  // The runs waiting to start, per workflow (#3039), each row carrying its organization.
+  'unstarted_run_waits',
 ] as const
 export const OPS_ORGANIZATION_READ_ONLY_RPCS = [
   'connection_copy', 'connection_status', 'google_delegation_check', 'list_google_delegation_subjects',

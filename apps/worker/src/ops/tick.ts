@@ -118,7 +118,7 @@ import { easternParts } from '@bidspoke/buyer-profile'
 import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type MissedReason, type PlannedFire, type ScheduleConfig } from '@bidspoke/workflow-definition'
 import {
   CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, MAX_RUN_VARIABLES_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsRunVariables,
-  parseServedOpsWorkflows, tickProblem,
+  parseServedOpsWorkflows, tickProblem, unstartedRunsText, UNSTARTED_RUNS_PAGE,
   type ConnectionLoginsReport, type OpsDefinitionRequest, type OpsRunVariablesRequest, type RunVariablesRefusal, type OpsGatewayJob, type OpsJobReport,
   type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem, type WriteBacksReport,
 } from '../lib/ops-gateway-contract'
@@ -134,7 +134,7 @@ import type { OrganizationId } from './ops-db'
 import { RUN_LEASE_SECONDS, type RunInvocationReport } from './run-invocation'
 import {
   MAX_COPIES_PER_SAVE, type ClaimRunRequests, type ClaimedRun, type CompleteOutcome, type CompletedRun, type ScheduleFire, type ScheduleFireResult, type ConnectionCheckTarget, type QueueDisagreement, type SaveCopiesResult, type ScheduleObservation, type SfLimitsTarget, type SweepClaim,
-  type OpsResealMode, type OpsResealState, type SweepResult, type WorkflowCopy, type WorkflowCopyInput,
+  type OpsResealMode, type OpsResealState, type SweepResult, type WorkflowCopy, type WorkflowCopyInput, type UnstartedRunWait,
 } from './ops-writes'
 import { resealSwitchFrom, watchReseal } from './reseal-watch'
 import { dispatchedFrom, refusedRunEnd, type DispatchedRunVariables } from './run-variables'
@@ -178,6 +178,16 @@ export const COPIES_STALE_AFTER_MS = 6 * 60 * 60 * 1000
  */
 export const RUN_OUTCOME_MIN_RUNS = 3
 export const RUN_OUTCOME_FAILING_RATE = 0.5
+
+/**
+ * A workflow's runs returned to the queue unstarted page once the oldest has
+ * waited this long to start (#3039, Dan's decision of 2026-10-30), judged on
+ * the database clock by unstarted_run_waits, in live mode every tick. Each such
+ * run is given up OPS_UNSTARTED_WAIT_MAX_MS into its wait (complete_run_request).
+ */
+export const UNSTARTED_ALERT_AFTER_SECONDS = 15 * 60
+/** The workflows one read lists: fewer than a report's problems, so each one listed can be paged (MAX_REPORT_PROBLEMS). */
+export const UNSTARTED_READ_LIMIT = 15
 
 /** The copies one tick reads: every ops workflow, within PostgREST's 1,000 rows (L24). */
 const COPIES_READ_LIMIT = 1000
@@ -513,6 +523,8 @@ export interface OpsTickDb extends ConnectionServeDb, VariableCopyDb {
   readCopies(limit: number): Promise<{ copies: WorkflowCopy[]; reachedLimit: boolean }>
   recordObservation(organizationId: OrganizationId, obs: ScheduleObservation): Promise<'recorded' | 'already_recorded'>
   dueQueueDepth(): Promise<{ dueRuns: number; dueWorkflows: number; oldestDue: string | null }>
+  /** Per workflow, the runs whose wait to start has lasted at least minWaitSeconds (unstarted_run_waits, #3039). */
+  unstartedWaits(minWaitSeconds: number, limit: number): Promise<{ waits: UnstartedRunWait[]; reachedLimit: boolean }>
   /** The sf_limits sweep's measured orgs (sf_limits_targets, #2336). */
   sfLimitsTargets(limit: number): Promise<{ targets: SfLimitsTarget[]; reachedLimit: boolean }>
   /** A measured org's reading from its /limits read (record_sf_budget_reading, source limits). */
@@ -932,7 +944,8 @@ function tallyOf(report: RunInvocationReport): RunTally {
   if (report.outcome !== 'completed') return 'lost'
   switch (report.end.outcome) {
     case 'done': return 'done'
-    case 'retry': return 'requeued'
+    // A return unstarted the database gave up (#3039) ended the run.
+    case 'retry': return report.runStatus === 'failed' ? 'failed' : 'requeued'
     // A wait is what the database made of it: failed when it ended the run instead.
     case 'suspend':
       if (report.runStatus !== 'failed') return 'requeued'
@@ -953,6 +966,58 @@ function refreshTargets(copies: readonly WorkflowCopy[]): CopyTarget[] {
   return copies
     .filter((c) => copyMayStart(c) && c.versionNumber !== null)
     .map((c) => ({ organizationId: c.organizationId, workflowId: c.workflowId, versionNumber: c.versionNumber as number }))
+}
+
+/**
+ * The runs the lease sweep ended failed because their workflow is set not to
+ * retry (lease_lapsed_no_retry, #3046, Dan's decision of 2026-10-30). Each live
+ * workflow's pages at once, keyed by the workflow: nothing reruns such a run,
+ * and no later tick reports it again. Live is the rule a run starts by
+ * (copyMayStart), so a workflow switched off, deleted, withdrawn or named by no
+ * copy is counted, not paged. With no copies read, or none for a workflow when
+ * the read stopped at its limit, whether it is live is not known, so it pages
+ * and says so: a run nothing reruns and nobody hears of is the failure this
+ * exists to stop.
+ *
+ * A run that had made a send that cannot be repeated ends failed too (Dan,
+ * 2026-10-30), where any other run would wait for a person
+ * (lease_expired_after_send, which pages whatever the workflow's state). Its
+ * record no longer says a send may have landed, so the page does, and it pages
+ * whether or not the workflow is live, as that page did.
+ */
+function judgeNoRetryLapses(
+  workflowIds: readonly string[],
+  afterSendIds: readonly string[],
+  read: { copies: readonly WorkflowCopy[]; complete: boolean } | null,
+  problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void,
+  counts: Record<string, number>,
+): void {
+  if (workflowIds.length === 0) return
+  bump(counts, 'leases_lapsed_no_retry', workflowIds.length)
+  if (afterSendIds.length > 0) bump(counts, 'leases_lapsed_no_retry_after_send', afterSendIds.length)
+  const tally = (ids: readonly string[]) => {
+    const m = new Map<string, number>()
+    for (const id of ids) m.set(id, (m.get(id) ?? 0) + 1)
+    return m
+  }
+  const byWorkflow = tally(workflowIds)
+  const sentBy = tally(afterSendIds)
+  for (const [workflowId, n] of byWorkflow) {
+    const sent = sentBy.get(workflowId) ?? 0
+    const copy = read?.copies.find((c) => c.workflowId === workflowId)
+    // Known only from a copy, or from a complete read that holds none for it.
+    const known = read !== null && (copy !== undefined || read.complete)
+    if (sent === 0 && known && (copy === undefined || !copyMayStart(copy))) {
+      bump(counts, 'leases_lapsed_no_retry_not_live', n)
+      continue
+    }
+    const runs = n === 1 ? '1 run' : `${n} runs`
+    const landed = sent === 0 ? '' : n === 1 ? ' It made a send that may have landed. Check it.' : ` ${sent} of them made a send that may have landed. Check ${sent === 1 ? 'it' : 'them'}.`
+    const live = read === null
+      ? ' The saved workflow copies could not be read, so whether the workflow is switched on is not known.'
+      : !known ? ' Its saved copy was past the limit one read carries, so whether the workflow is switched on is not known.' : ''
+    problem('runs_lapsed_no_retry', `${runs} of workflow ${workflowId} lost ${n === 1 ? 'its' : 'their'} lease mid run and ended failed, because the workflow is set not to retry, so nothing runs ${n === 1 ? 'it' : 'them'} again (lease_lapsed_no_retry).${landed}${live}`, workflowId)
+  }
 }
 
 /** The one rule a workflow's copy starts runs by: not deleted, not withdrawn, and may_start. */
@@ -1071,8 +1136,13 @@ async function dispatchOneRun(
       if (db === null) throw new Error('no ops database to return the run to the queue in')
       // Not started, so this spends no attempt; the claim ends and the run waits a minute.
       const error = `the run's variables could not be had from the bidding Worker (${given.why}), so it was returned to the queue unstarted`
-      await db.completeRun(run, { outcome: 'retry', error, notBefore: retryAt })
+      const done = await db.completeRun(run, { outcome: 'retry', unstartedCause: 'variables_unavailable', error, notBefore: retryAt })
       bump(counts, 'runs_variables_unavailable')
+      // An hour into its wait to start, the database gives the run up instead (#3039).
+      if (done.runStatus === 'failed') {
+        bump(counts, 'runs_unstarted_given_up')
+        return { workflowId: run.workflowId, tally: 'failed', error }
+      }
       return { workflowId: run.workflowId, tally: 'requeued', error }
     }
     const report = await ports.dispatchRun(run, given.variables)
@@ -1143,6 +1213,10 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   let nightlyPurgeRun: Promise<NightlyPurgeResult> | null = null
   let connectionLogins: ConnectionLoginsReport | null = null
   let writeBacksRun: Promise<WriteBacksRun> | null = null
+  /** The workflow of each run the lease sweep ended lease_lapsed_no_retry this tick (#3046), once per run. */
+  const lapsedNoRetry: string[] = []
+  /** Those among them that had made a send that cannot be repeated, which may have landed. */
+  const lapsedNoRetryAfterSend: string[] = []
 
   // 1. Started. A miss is reported under start_stamp, which the bidding Worker
   // holds until three ticks in a row miss (#2506), and flagged as before (#2410).
@@ -1237,6 +1311,9 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
               if (r.requeued > 0) bump(counts, 'leases_lapsed_requeued', r.requeued)
               if (r.retried > 0) bump(counts, 'leases_lapsed_retried', r.retried)
               if (r.needsHuman > 0) bump(counts, 'leases_lapsed_needs_human', r.needsHuman)
+              // Judged against the copies once they are read (step 4): only a live workflow's page (#3046).
+              lapsedNoRetry.push(...r.noRetryWorkflowIds)
+              lapsedNoRetryAfterSend.push(...r.noRetryAfterSendWorkflowIds)
               return r.more
             }
             case 'run_expiry': {
@@ -1314,16 +1391,20 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   let copies: WorkflowCopy[] = []
   /** The copies were read: a claimed run is judged against them, so with none read nothing is claimed. */
   let copiesRead = false
+  /** The read stopped at its limit, so a workflow with no copy in it may still have one. */
+  let copiesFull = false
   if (db) {
     try {
       const read = await db.readCopies(COPIES_READ_LIMIT)
       copies = read.copies
       copiesRead = true
+      copiesFull = read.reachedLimit
       if (read.reachedLimit) problem('copies_read_limit', `The ops tick read ${COPIES_READ_LIMIT} workflow copies, its limit, so any past it were not planned.`)
     } catch (err) {
       problem('copies_read_failed', `The ops tick could not read the saved workflow copies (${formatErr(err)}), so it planned no fires.`)
     }
   }
+  judgeNoRetryLapses(lapsedNoRetry, lapsedNoRetryAfterSend, copiesRead ? { copies, complete: !copiesFull } : null, problem, counts)
   if (fetchError !== null) {
     if (copies.length > 0) {
       bump(counts, 'copies_used_saved')
@@ -1580,6 +1661,24 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     if (item.kind === 'probe') problem('probe_failed', `The probe through the dispatch path failed: ${formatErr(r.reason)}.`)
     else if (item.kind === 'would_fire') problem('dispatch_failed', `The dispatch of workflow ${item.workflowId}'s ${slotLabel(Date.parse(item.scheduledFor))} slot failed: ${formatErr(r.reason)}.`, item.workflowId)
   })
+
+  // 7a. The runs waiting to start (#3039), live mode only, after this tick's
+  // returns: each workflow whose oldest has waited 15 minutes pages on its own.
+  if (db && live) {
+    try {
+      const { waits, reachedLimit } = await db.unstartedWaits(UNSTARTED_ALERT_AFTER_SECONDS, UNSTARTED_READ_LIMIT)
+      for (const w of waits) problem(UNSTARTED_RUNS_PAGE.kind, unstartedRunsText(w), w.workflowId)
+      if (waits.length > 0) bump(counts, 'workflows_runs_unstarted', waits.length)
+      // Every workflow with runs waiting was judged, so one this report does not
+      // name has none waiting that long: only such a report stands a page down.
+      if (!reachedLimit) bump(counts, UNSTARTED_RUNS_PAGE.judgedCount)
+      if (reachedLimit) {
+        problem('runs_unstarted_limit', `${UNSTARTED_READ_LIMIT} or more workflows have runs that have waited ${UNSTARTED_ALERT_AFTER_SECONDS / 60} minutes to start, as many as one read lists, so any past them is not paged; the ops Worker's logs and the run_requests table have every one.`)
+      }
+    } catch (err) {
+      problem('runs_unstarted_unread', `The ops tick could not read which runs are waiting to start (${formatErr(err)}), so a workflow whose runs keep returning to the queue unstarted is not paged this tick.`)
+    }
+  }
 
   // 7b. The sf_limits sweep, if this tick owns it, settled before the report carries its problems.
   if (sfLimitsRun !== null) {
