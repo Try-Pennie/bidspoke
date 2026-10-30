@@ -22,7 +22,8 @@
  * once; soft deleted ones left out, since they cannot run). Every day while it
  * stands. The signal is
  * ops-connection-owner (incident-signals.ts), keyed on the connection id: the
- * marker is armed only on a delivered page (markAlerted, then recordPaged), and
+ * marker is armed only on a delivered page (markAlerted), every page is
+ * recorded delivered or not (recordPageOutcome, #3056), and
  * the all clear is sent once a complete read no longer finds it (the owner is
  * back on the list, or the connection is gone or no longer person bound).
  * That bookkeeping, and the workflows read, are shared with the HTTP money

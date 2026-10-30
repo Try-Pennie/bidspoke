@@ -42,7 +42,8 @@ import {
   announceRecovery,
   markAlerted,
   markSpikeSeen,
-  recordPaged,
+  pageTried,
+  recordPageOutcome,
   RECOVERY_REARM_MINUTES,
   RECOVERY_TTL_SECONDS,
   type IncidentContext,
@@ -284,12 +285,13 @@ export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: 
         },
       })
       if (posted === 'claimed_elsewhere') console.log(`[database-reachability] database unreachable alert claimed by another reporter org=${orgId}`)
+      // The marker before the cooldown (#2058): a cut between them then costs at
+      // worst a repeated page, never a lost all-clear.
+      if (posted === 'sent') await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId, incident(orgId), nowMs)
+      // Delivered or not, a page this tick tried is recorded (#3056).
+      if (pageTried(posted)) await recordPageOutcome(kv, DB_UNREACHABLE_PREFIX, orgId, incident(orgId), nowMs, posted === 'sent')
       if (posted === 'sent') {
         outcome.told.push(orgId)
-        // The marker before the cooldown (#2058): a cut between them then costs at
-        // worst a repeated page, never a lost all-clear.
-        await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId, incident(orgId), nowMs)
-        await recordPaged(kv, DB_UNREACHABLE_PREFIX, orgId, incident(orgId), nowMs)
         await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: DB_UNREACHABLE_STEPS, conditionTtlSeconds: CONDITION_TTL_SECONDS })
       }
     } catch (e) {

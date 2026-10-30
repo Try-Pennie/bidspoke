@@ -103,6 +103,23 @@ describe('the page', () => {
     expect(marker(h.kv)).toBe(iso(NOW + MIN))
   })
 
+  it('records a page every organization refused as not delivered, and nothing when every send threw or nobody could be told (#3056)', async () => {
+    const refused = harness()
+    refused.sendAlert.mockResolvedValue(false)
+    await refused.run(judged(verdict()))
+    expect(transitions(refused.kv.store)).toEqual([`undelivered ${OPS_KEY_RESEAL_SUBJECT}`])
+    const threw = harness(fakeKv(), [ORG_A, ORG_B])
+    threw.sendAlert.mockRejectedValue(new Error('Slack is down'))
+    await threw.run(judged(verdict()))
+    expect(transitions(threw.kv.store)).toEqual([])
+    const nobody = harness(fakeKv(), [])
+    await nobody.run(judged(verdict()))
+    expect(transitions(nobody.kv.store)).toEqual([])
+    const unread = harness(fakeKv(), null)
+    await unread.run(judged(verdict()))
+    expect(transitions(unread.kv.store)).toEqual([])
+  })
+
   it('arms nothing when a send throws for every organization, says so, and never throws itself', async () => {
     const h = harness()
     h.sendAlert.mockRejectedValue(new Error('Slack is down'))

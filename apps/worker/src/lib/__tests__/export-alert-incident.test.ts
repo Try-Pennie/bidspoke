@@ -106,12 +106,23 @@ describe('opening and paging', () => {
     expect(transitions(kv.store)).toEqual([`opened ${JOB}`, `paged ${JOB}`])
   })
 
-  it('records nothing for a page Slack refused, since nobody was paged', async () => {
+  it('records a page Slack refused as not delivered, keeping the incident that was due without arming its marker (#3056)', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(false)
     const kv = makeKv()
     await fail(kv, T0, PERMANENT, ['org-1', 'org-2'])
-    expect(transitions(kv.store)).toEqual([])
+    expect(transitions(kv.store)).toEqual([`undelivered ${JOB}`])
+    expect(outboxEvents(kv.store)[0]).toMatchObject({ unannounced: true, startedAt: iso(T0) })
     expect(kv.store.has(MARKER)).toBe(false)
+  })
+
+  it('records nothing for a round whose every send threw, or with no organization to tell, since neither was a refused page (#3056)', async () => {
+    vi.mocked(sendExportFailureAlert).mockRejectedValue(new Error('Network connection lost.'))
+    const threw = makeKv()
+    await fail(threw, T0, PERMANENT, ['org-1', 'org-2'])
+    expect(transitions(threw.store)).toEqual([])
+    const nobody = makeKv()
+    await fail(nobody, T0, PERMANENT, [])
+    expect(transitions(nobody.store)).toEqual([])
   })
 
   it('records a different problem posted while the first stands as another page of the same incident', async () => {

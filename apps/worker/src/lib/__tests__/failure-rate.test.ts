@@ -507,7 +507,7 @@ describe('runFailureRateCheck and the incident record (#2099)', () => {
     })
   })
 
-  it('records nothing for an alert Slack refused', async () => {
+  it('records an alert Slack refused as not delivered, arming no marker (#3056)', async () => {
     vi.mocked(sendFailureSpikeAlert).mockResolvedValue(null as never)
     const kv = makeKv()
     const sb = makeSupabase({
@@ -516,7 +516,8 @@ describe('runFailureRateCheck and the incident record (#2099)', () => {
       workflow_executions: [failRow('ACRO_GATEWAY 1'), failRow('ACRO_GATEWAY 2'), failRow('ACRO_GATEWAY 3')],
     })
     await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
-    expect(transitions(kv.store)).toEqual([])
+    expect(transitions(kv.store)).toEqual(['undelivered wf-1:ACRO_GATEWAY'])
+    expect([...kv.store.keys()].some((k) => k.startsWith('failure-rate-recovery:'))).toBe(false)
   })
 })
 

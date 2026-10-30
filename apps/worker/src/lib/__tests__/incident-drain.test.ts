@@ -116,6 +116,22 @@ async function seedIncident(kv: ReturnType<typeof fakeKv>, clock: { now: number 
   return startedAt
 }
 
+describe('a page that did not reach Slack (#3056)', () => {
+  it('writes it through record_alert_incident_undelivered, saying whether an incident was open', async () => {
+    const h = harness()
+    const startedAt = new Date(T0).toISOString()
+    await writeIncidentEvent(h.kv, { type: 'undelivered', signal: 'lead-validation-rejection-rate', subject: 'wf-1', startedAt, unannounced: true }, ORG, T0 + MIN)
+    const s = await runIncidentDrain(h.deps())
+    expect(h.db.calls.map((c) => c.fn)).toEqual(['record_alert_incident_undelivered'])
+    expect(h.db.calls[0].args).toEqual({
+      p_signal: 'lead-validation-rejection-rate', p_subject: 'wf-1', p_subject_label: 'Main Flow', p_scope: 'org', p_organization_id: ORG_ID,
+      p_started_at: startedAt, p_at: new Date(T0 + MIN).toISOString(), p_event_id: expect.any(String), p_unannounced: true, p_window_minutes: 120,
+    })
+    expect(outboxKeys(h.kv)).toEqual([])
+    expect(s).toMatchObject({ applied: 1, failed: 0 })
+  })
+})
+
 describe('moving events into the record', () => {
   it('writes each event through its transition function, in the order written, and removes it once the row came back', async () => {
     const h = harness()

@@ -12,7 +12,7 @@ import { buildSandboxEnv } from '../lib/sandbox-env'
 import { loadPartnerConstants } from '../lib/partner-constants-loader'
 import { buildContext, recordStepOutput, resolveValue } from './context'
 import { executeNode, createNodeExecutor, type ExecuteNode } from './nodes/index'
-import { continuingSlots, deadlineResultsOf, executeParallelNode } from './nodes/parallel'
+import { continuingSlots, deadlineResultsOf, executeParallelNode, leftRunningMessage, leftRunningOf, type LeftRunning } from './nodes/parallel'
 import type { ParallelChildResult, ParallelFailureCause } from './nodes/parallel'
 import { executeBidGroupNode } from './nodes/bid-group'
 import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
@@ -1888,6 +1888,29 @@ export async function walkGraph(
         }
       }
 
+      // Slots still running when the block stopped waiting for another reason
+      // (#3083): a winner returned under wait_for first, or the block failed on
+      // another slot that failed. Each gets a row on the step it was running,
+      // with the request it noted, written SKIPPED: the slot did not fail, and a
+      // failed row inside a block is what the upstream outage rule reads as the
+      // reason a parallel run failed (failingStepDeadline reads failed rows
+      // only), so the run is still read by the slot it failed on. Marked as the
+      // block's deadline only when that deadline had passed (wait_for all).
+      // Only the row is written: what later steps read of the slot is untouched,
+      // as it was before, so nothing the run resolves or sends changes.
+      const writeLeftRunningRows = (left: LeftRunning): void => {
+        const message = leftRunningMessage(left)
+        const marker = left.afterTimeoutMs === null ? null : timeoutMarker(PARALLEL_BLOCK_DEADLINE, left.afterTimeoutMs)
+        for (const childResult of left.results) {
+          if (childResult.status !== 'timeout') continue
+          const childIndex = resolvedChildren.findIndex((c) => c.namespace === childResult.namespace)
+          if (childIndex < 0) continue
+          const cutOff = slotSteps.cutOff(childIndex, { node: resolvedChildren[childIndex], stepOrder: childOrderBase + childIndex, startedAt: stepStartedAt })
+          if (!cutOff) continue
+          logStep(stepLogQueue, executionId, executionStartedAt, cutOff.node, 'skipped', cutOff.input, null, message, null, 0, cutOff.startedAt, cutOff.stepOrder, node.id, undefined, marker)
+        }
+      }
+
       try {
         // Chain-walk children only when a parallel_end is present in the
         // workflow. Legacy parallel definitions (no parallel_end) rely on
@@ -1906,6 +1929,8 @@ export async function walkGraph(
         lastOutput = output
         forwardBlockSightings(result)
         if (Array.isArray(output)) writeCutOffRows(output as ParallelChildResult[], true)
+        const leftRunning = leftRunningOf(result)
+        if (leftRunning) writeLeftRunningRows(leftRunning)
       } catch (err) {
         blockSettled = true
         stepStatus = 'failed'
@@ -1915,9 +1940,12 @@ export async function walkGraph(
         // it left (#3072): each one still running gets the same row as when the
         // block carries on, before the block's failure ends the run. A block that
         // failed on a slot that failed carries none, so a slot still running then
-        // is not recorded as the deadline the run did not fail on.
+        // is not recorded as the deadline the run did not fail on: it carries
+        // those as left running instead, written skipped (#3083).
         const leftAtDeadline = deadlineResultsOf(err)
         if (leftAtDeadline) writeCutOffRows(leftAtDeadline, false)
+        const leftRunning = leftRunningOf(err)
+        if (leftRunning) writeLeftRunningRows(leftRunning)
         // A parallel failure the children didn't reach a verdict on (a timeout, a
         // structural error, a mix of outcomes) is operational, never a clean
         // business rejection, so give it a real type and let the failure alert

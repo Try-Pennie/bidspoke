@@ -176,7 +176,8 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
     // deployed, and a parallel block that fails on its own deadline ('did not
     // complete in time', 20 runs), whose cut off children get a row marked
     // 'parallel_block' since #3072 (only when the deadline is what failed the
-    // block, so a block that failed on a refused slot is not read as one).
+    // block, so a block that failed on a refused slot is not read as one: the
+    // slots it left running are written skipped since #3083, never failed).
     // Removing the fallback before the rows written before that have aged out
     // moves those runs out of this bucket.
     unmarkedFallback: [
@@ -543,7 +544,10 @@ export interface MarkedFailedStep {
  * fails on the child it was waiting for.
  *
  * Only `failed` rows are read: a step the walk recovered from is `skipped` or
- * `failed_with_fallback`, never `failed`. A marked row of another type outside
+ * `failed_with_fallback`, never `failed`, and so is a slot a block stopped
+ * waiting for while it still ran, when a winner returned or the block failed on
+ * another slot (#3083), even when the block's deadline marks it, so the slot
+ * the block failed on is still the one read. A marked row of another type outside
  * a block is a failure the run did not stop on (a partner bid a bid group
  * absorbed, a slot marked to continue), so it is not the run's failure. Nor is
  * a node's own attempt row (#3068): a bid group's or buyer select's partner

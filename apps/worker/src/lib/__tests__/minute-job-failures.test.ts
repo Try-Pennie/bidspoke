@@ -158,6 +158,32 @@ describe('the slower cadences (#2526)', () => {
   })
 })
 
+describe('recordMinuteJobRun: what a page that did not deliver records (#3056)', () => {
+  const third = async (h: ReturnType<typeof harness>) => {
+    for (let m = 0; m < 3; m++) {
+      h.at(T0 + m * MIN)
+      await recordMinuteJobRun(h.d, JOB, FAILED)
+    }
+  }
+
+  it('records a page every organization refused as not delivered', async () => {
+    const h = harness({ sendAlert: vi.fn(async () => false) })
+    await third(h)
+    expect(outbox(h.kv).map((e) => e.type)).toEqual(['undelivered'])
+    expect(marker(h.kv)).toBeUndefined()
+  })
+
+  it('records nothing when every send threw, or there was no organization to tell', async () => {
+    const threw = harness({ sendAlert: vi.fn(async () => { throw new Error('Network connection lost.') }) })
+    await third(threw)
+    expect(threw.sendAlert).toHaveBeenCalled()
+    expect(outbox(threw.kv)).toEqual([])
+    const nobody = harness({ orgsToTell: async () => [] })
+    await third(nobody)
+    expect(outbox(nobody.kv)).toEqual([])
+  })
+})
+
 describe('recordMinuteJobRun', () => {
   it('pages on the third run of a job that fails every minute, and not before', async () => {
     const h = harness()

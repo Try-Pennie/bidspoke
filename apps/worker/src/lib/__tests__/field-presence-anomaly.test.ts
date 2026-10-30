@@ -1124,6 +1124,19 @@ describe('field-presence alerting', () => {
       expect(postMessage).toHaveBeenCalledTimes(1)
       expect(ending(drought.jobRuns)).toMatchObject({ outcome: 'ok' })
     })
+
+    it('a page Slack refused is recorded on the run as not delivered, and in the incident record (#3056)', async () => {
+      vi.mocked(postMessage).mockResolvedValueOnce(null)
+      const kv = makeKv()
+      const drought = recordingSupabase(collapsedWindow('scout.final', 500, 0, today), { data: [] })
+      await runFieldPresenceDroughtCheck(drought as never, kv, APP_URL)
+      expect(postMessage).toHaveBeenCalledTimes(1)
+      expect(ending(drought.jobRuns)).toMatchObject({ outcome: 'page_not_delivered', summary: { paged: 0, undelivered: 1 } })
+      // The stretch of refused pages it starts (this double's organization is not a
+      // uuid, so the outbox itself refuses the event; recordPageOutcome's tests hold that half).
+      expect(kv.store.has('field-presence-drought-due:wf-1 scout.final')).toBe(true)
+      expect(kv.store.has('field-presence-drought-recovery:wf-1 scout.final')).toBe(false)
+    })
   })
 
   it('does not start a cooldown for any field when the group send failed', async () => {

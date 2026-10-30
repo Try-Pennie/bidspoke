@@ -34,6 +34,11 @@ const FAULT: LeadValidationEvent = {
 const EVALUATED: LeadValidationEvent = { kind: 'evaluated', namespace: 'validate_bidding_and_state' }
 const SUBJECT = leadValidationSubject(WF, 'validate_bidding_and_state')
 
+/** The incident outbox's event types, in the order written. */
+function outboxTypes(store: Map<string, string>): string[] {
+  return [...store.entries()].filter(([k]) => k.startsWith(INCIDENT_OUTBOX_PREFIX)).sort(([a], [b]) => a.localeCompare(b)).map(([, v]) => (JSON.parse(v) as { type: string }).type)
+}
+
 function makeKv() {
   const store = new Map<string, string>()
   const puts: string[] = []
@@ -159,12 +164,14 @@ describe('a configuration fault pages once per incident, never once per lead', (
     expect(h.sendPage).toHaveBeenCalledTimes(2)
   })
 
-  it('a page Slack refused is not an incident: the claim is freed and the next lead tries again', async () => {
+  it('a page Slack refused opens no marker but is recorded as not delivered: the claim is freed and the next lead tries again', async () => {
     const h = harness()
     h.sendPage.mockResolvedValueOnce(false)
     expect(await reportLeadValidationEvent(h.deps, RUN, FAULT)).toBe('post_failed')
     expect(h.store.get(recoveryKey(LEAD_VALIDATION_CONFIG_SIGNAL, SUBJECT))).toBeUndefined()
+    expect(outboxTypes(h.store)).toEqual(['undelivered'])
     expect(await reportLeadValidationEvent(h.deps, RUN, FAULT)).toBe('paged')
+    expect(outboxTypes(h.store)).toEqual(['undelivered', 'opened', 'paged'])
   })
 
   it('a page that threw may have reached Slack, so its claim is kept and the next lead does not repeat it', async () => {
@@ -175,7 +182,7 @@ describe('a configuration fault pages once per incident, never once per lead', (
     expect(h.sendPage).toHaveBeenCalledTimes(1)
   })
 
-  it('an organization with no Slack is logged, not marked', async () => {
+  it('an organization with no Slack is logged, not marked, and records nothing, since no page was tried', async () => {
     const h = harness({ resolveSlack: async () => null })
     expect(await reportLeadValidationEvent(h.deps, RUN, FAULT)).toBe('no_slack')
     expect(h.store.size).toBe(0)

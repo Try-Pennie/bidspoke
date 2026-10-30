@@ -48,7 +48,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
-import type { AllClearClaim } from './alert-recovery'
+import type { AllClearClaim, PostAttempt } from './alert-recovery'
 import { logReadFailure } from './scheduled-read'
 import { onlySlackAlertRow, resolveSlackConnection, slackAlertAmbiguityLine, slackAlertRowsByOrg, slackTokenProblemLine, type SlackConnection, type SlackConnectionRow } from './slack-connection'
 import { slackKeyRingFor } from './slack-key-ring'
@@ -341,7 +341,8 @@ export function minuteAllClearClaim(claims: AlertClaims | undefined, signal: str
   return { claims, key: minuteAlertClaimKey('all-clear', signal, id), ttlSeconds: MINUTE_ALERT_CLAIM_TTL_SECONDS }
 }
 
-export type MinutePageOutcome = 'sent' | 'not_sent' | 'in_cooldown' | 'claimed_elsewhere'
+/** What a minute page came to; pageTried (alert-recovery.ts) says whether it has an outcome to record. */
+export type MinutePageOutcome = PostAttempt
 
 /** What claiming a minute page decided: this tick posts it, or another tick or the cooldown already has it. */
 export type MinutePageClaim = 'claimed' | 'in_cooldown' | 'claimed_elsewhere'

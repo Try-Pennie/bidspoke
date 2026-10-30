@@ -14,7 +14,7 @@ import { etTime, getSlackConnection, postMessage, sendGroupedRecoveryAlert } fro
 import type { SlackAlertKind } from './slack-post-outcome'
 import { notifyExportFailure, notifyExportRecovery, type TitledRemedy } from './export-alerts'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
-import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, recordPaged, refreshAlerted, type IncidentContext, type RecoveryDue, type RecoveryKv } from './alert-recovery'
+import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, recordPageOutcome, refreshAlerted, type IncidentContext, type RecoveryDue, type RecoveryKv } from './alert-recovery'
 import type { IncidentEndReason, IncidentSignal, RecoveryMarkerSignal } from './incident-signals'
 import { deriveWatchedFields } from '../engine/watched-fields'
 import type { WorkflowDefinition } from '../types'
@@ -937,13 +937,18 @@ export const FIELD_PRESENCE_DROUGHT_JOB = 'field-presence-drought'
 export const FIELD_PRESENCE_DEAD_JOB = 'field-presence-dead'
 
 /** What one run of either tier reports to job_runs. */
-interface PresenceRunResult {
+export interface PresenceRunResult {
   /** Set when the run judged nothing, saying why. */
   unmeasured?: string
+  /** Fields whose page was due this run and did not reach Slack (#3056). */
+  undelivered?: number
   summary: Record<string, unknown>
 }
 
-function presenceRunEnding(r: PresenceRunResult): JobRunEnding {
+/** What the run's job_runs row says. Exported for its tests. */
+export function presenceRunEnding(r: PresenceRunResult): JobRunEnding {
+  // A page that was due and reached nobody is the run's first fact (#3056), never ok.
+  if (r.undelivered) return { outcome: 'page_not_delivered', summary: r.summary }
   return r.unmeasured
     ? { outcome: 'unmeasured', detail: r.unmeasured, summary: r.summary }
     : { outcome: 'ok', summary: r.summary }
@@ -1419,6 +1424,11 @@ interface TierConfig {
    */
   measuredWindowMinutes: number
   /**
+   * How often this tier runs, in minutes, so the refused pages of consecutive
+   * runs about one field are recorded as one incident (#3056).
+   */
+  runsEveryMinutes: number
+  /**
    * What this tier's all-clear says the subject is doing again, when the shared
    * "back within normal range" would overclaim (#1336). Optional: a tier that
    * omits it keeps the default.
@@ -1474,7 +1484,7 @@ async function alertOnStates(
   states: FieldState[],
   silenced: Set<string>,
   cfg: TierConfig,
-): Promise<{ paged: number; recovered: number; unwatchable: number }> {
+): Promise<{ paged: number; undelivered: number; recovered: number; unwatchable: number }> {
   const byId = new Map(workflows.map((w) => [w.id, w]))
   // One clock reading for the pass, so every record about an incident carries
   // the same time and they sort in the order they happened.
@@ -1488,6 +1498,7 @@ async function alertOnStates(
   const pageable: Pageable[] = []
   const recoverable: (Pageable & { due: RecoveryDue })[] = []
   let paged = 0
+  let undelivered = 0
   let recovered = 0
 
   for (const state of states) {
@@ -1563,16 +1574,19 @@ async function alertOnStates(
       workflowId: i.wf.id,
       state: i.state,
     }))
-    const sent = await cfg.send(group.slack, group.channel, fields, appUrl)
+    const sent = Boolean(await cfg.send(group.slack, group.channel, fields, appUrl))
     // Only start the cooldowns once the alert actually delivered: a kicked bot
     // must not suppress the retry for 12 hours while the fields stay empty. It
     // is all or nothing per group, because one message covers all of them.
-    if (!sent) continue
     for (const item of group.items) {
-      await kv.put(item.cooldownKey, '1', { expirationTtl: FIELD_COOLDOWN_TTL_SECONDS })
-      await markAlerted(kv, cfg.prefix, item.id, fieldIncident(item), nowMs)
-      await recordPaged(kv, cfg.prefix, item.id, fieldIncident(item), nowMs)
-      paged++
+      if (sent) {
+        await kv.put(item.cooldownKey, '1', { expirationTtl: FIELD_COOLDOWN_TTL_SECONDS })
+        await markAlerted(kv, cfg.prefix, item.id, fieldIncident(item), nowMs)
+      }
+      // Delivered or not, each field's page is recorded (#3056).
+      await recordPageOutcome(kv, cfg.prefix, item.id, fieldIncident(item), nowMs, sent, { sameIncidentWithinMinutes: 2 * cfg.runsEveryMinutes })
+      if (sent) paged++
+      else undelivered++
     }
   }
 
@@ -1601,7 +1615,7 @@ async function alertOnStates(
       recovered++
     }
   }
-  return { paged, recovered, unwatchable }
+  return { paged, undelivered, recovered, unwatchable }
 }
 
 /**
@@ -1640,11 +1654,12 @@ async function droughtRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: stri
       console.log(JSON.stringify({ event: 'field_presence_drought', ...s.drought }))
     }
   }
-  const { paged, recovered, unwatchable } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
+  const { paged, undelivered, recovered, unwatchable } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
     prefix: 'field-presence-drought',
     signal: 'output field stopped',
     allClearKind: 'field-presence-drought-all-clear',
     measuredWindowMinutes: DROUGHT_WINDOW_MINUTES,
+    runsEveryMinutes: 60,
     send: (slack, channel, fields, url) => sendFieldDroughtAlert(slack, channel, fields, url),
   })
   const summary = {
@@ -1653,16 +1668,17 @@ async function droughtRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: stri
     healthy: states.filter((s) => s.verdict === 'healthy').length,
     unjudged: states.filter((s) => s.verdict === 'insufficient').length,
     paged,
+    undelivered,
     recovered,
     unwatchable,
   }
   console.log(
     `[field-presence-drought] workflows=${summary.workflows} ` +
       `alerting=${summary.alerting} healthy=${summary.healthy} unjudged=${summary.unjudged} ` +
-      `paged=${paged} recovered=${recovered} unwatchable=${unwatchable}` +
+      `paged=${paged} undelivered=${undelivered} recovered=${recovered} unwatchable=${unwatchable}` +
       (unmeasured ? ' silences=unreadable' : ''),
   )
-  return { unmeasured, summary }
+  return { unmeasured, undelivered, summary }
 }
 
 /**
@@ -1729,6 +1745,7 @@ async function deadRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: string)
     allClearKind: 'field-presence-dead-all-clear',
     recoveredPhrase: DEAD_RECOVERED_PHRASE,
     measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
+    runsEveryMinutes: 24 * 60,
     send: sendFieldDeadAlert,
   }
   const d = await alertOnStates(supabase, kv, appUrl, workflows, dead, silenced, deadCfg)
@@ -1746,6 +1763,7 @@ async function deadRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: string)
     allClearKind: 'field-presence-wrong-path-all-clear',
     recoveredPhrase: WRONG_PATH_RECOVERED_PHRASE,
     measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
+    runsEveryMinutes: 24 * 60,
     send: sendFieldWrongPathAlert,
   })
   const summary = {
@@ -1755,6 +1773,7 @@ async function deadRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: string)
     by_design: byDesign.length,
     unjudged: dead.filter((s) => s.verdict === 'insufficient').length,
     paged: d.paged + w.paged,
+    undelivered: d.undelivered + w.undelivered,
     recovered: d.recovered + w.recovered,
     stood_down_by_design: b.recovered,
     handed_over: h.recovered,
@@ -1763,9 +1782,9 @@ async function deadRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: string)
   console.log(
     `[field-presence-dead] workflows=${summary.workflows} alerting=${summary.alerting} wrong_path=${summary.wrong_path} ` +
       `by_design=${summary.by_design} unjudged=${summary.unjudged} ` +
-      `paged=${summary.paged} recovered=${summary.recovered} stood_down_by_design=${summary.stood_down_by_design} handed_over=${summary.handed_over} ` +
+      `paged=${summary.paged} undelivered=${summary.undelivered} recovered=${summary.recovered} stood_down_by_design=${summary.stood_down_by_design} handed_over=${summary.handed_over} ` +
       `unwatchable=${summary.unwatchable}` +
       (unmeasured ? ' silences=unreadable' : ''),
   )
-  return { unmeasured, summary }
+  return { unmeasured, undelivered: summary.undelivered, summary }
 }

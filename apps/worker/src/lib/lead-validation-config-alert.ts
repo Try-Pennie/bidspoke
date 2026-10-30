@@ -23,7 +23,7 @@
  */
 import type { AlertClaims } from './alert-claim'
 import { releaseClaimQuietly } from './alert-claim'
-import { activeKey, announceRecovery, markAlerted, markSpikeSeen, recordPaged, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { activeKey, announceRecovery, markAlerted, markSpikeSeen, recordPageOutcome, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { sendLeadValidationConfigAlert, sendRecoveryAlert, type LeadValidationConfigAlertPayload } from './slack'
 import { formatErr } from './format-error'
@@ -149,36 +149,38 @@ export async function reportLeadValidationEvent(
   const release = () => releaseClaimQuietly(deps.claims, pageClaimKey(subject))
 
   const slack = await deps.resolveSlack()
+  let delivered = false
   if (!slack) {
     log(`[lead-validation] no Slack connection for org ${run.orgId}, so the setting fault on ${subject} was logged but not paged`)
-    await release()
-    return 'no_slack'
-  }
-
-  let delivered: boolean
-  try {
-    delivered = await (deps.sendPage ?? sendLeadValidationConfigAlert)(slack, run.slackChannel ?? slack.default_channel, {
-      workflow_id: run.workflowId,
-      workflow_name: run.workflowName,
-      namespace: event.namespace,
-      faults: event.faults,
-      app_url: deps.appUrl,
-    })
-  } catch (e) {
-    // A throw cannot say whether Slack took it, so the claim is kept for its TTL:
-    // at worst the page is repeated once it lapses, never sent by every lead.
-    log(`[lead-validation] page threw for ${subject}, keeping its claim: ${formatErr(e)}`)
-    return 'post_failed'
-  }
-  if (!delivered) {
-    await release()
-    return 'post_failed'
+  } else {
+    try {
+      delivered = await (deps.sendPage ?? sendLeadValidationConfigAlert)(slack, run.slackChannel ?? slack.default_channel, {
+        workflow_id: run.workflowId,
+        workflow_name: run.workflowName,
+        namespace: event.namespace,
+        faults: event.faults,
+        app_url: deps.appUrl,
+      })
+    } catch (e) {
+      // A throw cannot say whether Slack took it, so the claim is kept for its TTL:
+      // at worst the page is repeated once it lapses, never sent by every lead.
+      // Nor is it recorded either way, since it may have landed.
+      log(`[lead-validation] page threw for ${subject}, keeping its claim: ${formatErr(e)}`)
+      return 'post_failed'
+    }
   }
 
   // The marker before anything else (#2058): a cut after the page costs at worst a
   // repeated page once the claim lapses, never a lost all clear.
-  await markAlerted(deps.kv, LEAD_VALIDATION_CONFIG_SIGNAL, subject, incident, nowMs)
-  await recordPaged(deps.kv, LEAD_VALIDATION_CONFIG_SIGNAL, subject, incident, nowMs)
+  if (delivered) await markAlerted(deps.kv, LEAD_VALIDATION_CONFIG_SIGNAL, subject, incident, nowMs)
+  // Delivered or refused, the page is recorded (#3056): one Slack refused keeps
+  // the incident that was due, at most once a minute however many leads retry it.
+  // With no Slack connection no page was tried, so nothing is recorded.
+  if (slack) await recordPageOutcome(deps.kv, LEAD_VALIDATION_CONFIG_SIGNAL, subject, incident, nowMs, delivered)
+  if (!delivered) {
+    await release()
+    return slack ? 'post_failed' : 'no_slack'
+  }
   await markSpikeSeen(deps.kv, LEAD_VALIDATION_CONFIG_SIGNAL, subject, nowMs)
   return 'paged'
 }
