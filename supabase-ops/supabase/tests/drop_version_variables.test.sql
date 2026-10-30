@@ -1,5 +1,5 @@
 -- The variables kept beside an ops version's definition are dropped (#3003),
--- the contract step of #2982. Migration 20261030220000_drop_version_variables_3003.sql.
+-- the contract step of #2982. Migration 20261030230000_drop_version_variables_3003.sql.
 --
 -- Since #2982 a run reads each variable's current value when it starts, carried
 -- in its dispatch, so nothing reads ops_workflow_definitions.variables, and
@@ -135,7 +135,7 @@ $do$;
 -- ── E. a rerun on a database without them is clean ───────────────────────────
 DO $do$
 DECLARE
-  v_file text := pg_read_file('/sql-suite-fixtures/supabase/20261030220000_drop_version_variables_3003.sql');
+  v_file text := pg_read_file('/sql-suite-fixtures/supabase/20261030230000_drop_version_variables_3003.sql');
   v_count integer;
 BEGIN
   EXECUTE v_file;

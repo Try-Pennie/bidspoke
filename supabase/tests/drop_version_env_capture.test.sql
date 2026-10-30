@@ -1,5 +1,5 @@
 -- The variables a version kept at its save are dropped (#3003), the contract
--- step of #2982. Migration 20261030220000_drop_version_env_capture_3003.sql.
+-- step of #2982. Migration 20261030230000_drop_version_env_capture_3003.sql.
 --
 -- Since #2982 an ops run reads each variable's current value when it starts,
 -- so nothing reads workflow_versions.env_capture, and its writer, the trigger
@@ -123,7 +123,7 @@ $do$;
 -- ── C. A rerun on a database without them is clean ───────────────────────────
 DO $do$
 DECLARE
-  v_file text := pg_read_file('/sql-suite-fixtures/supabase/20261030220000_drop_version_env_capture_3003.sql');
+  v_file text := pg_read_file('/sql-suite-fixtures/supabase/20261030230000_drop_version_env_capture_3003.sql');
 BEGIN
   EXECUTE v_file;
   INSERT INTO dvec_cases VALUES ('C a rerun is clean');

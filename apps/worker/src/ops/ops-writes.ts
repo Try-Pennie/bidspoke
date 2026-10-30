@@ -1607,7 +1607,7 @@ export async function purgeScheduleObservations(client: OpsSupabaseClient, limit
  * is the bidding side breaking its own rule, so the caller pages. no_copy: no
  * saved copy names the workflow yet. A run reads its variables when it
  * starts, so none are kept beside a version (#3003, ops migration
- * 20261030220000 dropped the column and p_variables).
+ * 20261030230000 dropped the column and p_variables).
  */
 export async function saveWorkflowDefinition(
   client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, versionNumber: number, definition: Record<string, unknown>,
