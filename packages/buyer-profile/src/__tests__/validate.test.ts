@@ -343,10 +343,12 @@ describe('accept rules an empty answer could satisfy (#3093)', () => {
     expect(errorsOf([{ field: '', equals: true }], draft).map((e) => e.code)).toEqual(['accept_rule_reads_no_field'])
   })
 
-  it('does not judge a click buyer by accept rules, as it is never judged by them', () => {
+  it('holds a click buyer\'s accept rules to the same rule, so a save with the profile and one without it agree', () => {
     const clickBuyer: BuyerProfile = { ...base, soldOn: 'click', priority: null, tiers: [], hourlyLeadCap: null }
-    const r = validateProfile(clickBuyer, { ...withRules([{ field: '', present: false }]), clickUrl: 'https://liberty.example/apply/{prospect_id}' })
-    expect(r).toEqual({ ok: true })
+    const clickRules = (acceptSignals: Signal[]): PartnerRulesForValidation => ({ ...withRules(acceptSignals), clickUrl: 'https://liberty.example/apply/{prospect_id}' })
+    expect(validateProfile(clickBuyer, clickRules([]))).toEqual({ ok: true })
+    const r = validateProfile(clickBuyer, clickRules([{ field: 'error', present: false }]))
+    expect(r.ok ? [] : r.errors).toEqual(acceptRuleErrors([{ field: 'error', present: false }]))
   })
 
   it('acceptRuleErrors is the same judgement on its own, for a save that changes the rules without the profile', () => {

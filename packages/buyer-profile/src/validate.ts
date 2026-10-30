@@ -220,10 +220,12 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
 
   checkTiers(profile, err)
 
-  // The partner's accept rules are stored by this save whether or not the
-  // profile is enabled, so a rule an empty answer could meet is refused on a
-  // draft too (#3093). A click buyer is never judged by them (#1541).
-  if (!click) errors.push(...acceptRuleErrors(partner.acceptSignals))
+  // The partner's accept rules are stored by this save whatever the profile, so
+  // a rule an empty answer could meet is refused on a draft too (#3093). A click
+  // buyer is never judged by its rules (#1541), but they are held to the same
+  // rule: the page save judges rules sent without the profile without knowing
+  // the kind, and one rule with no exemption cannot disagree with itself.
+  errors.push(...acceptRuleErrors(partner.acceptSignals))
 
   if (profile.isEnabled) {
     // A click buyer is never ranked, priced or judged by accept rules (#1541).
