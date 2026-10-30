@@ -251,8 +251,9 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
       const answer = await bounded('OpsInternal.run', () => self.run(signed), left, options.delay)
       const a = (typeof answer === 'object' && answer !== null ? answer : {}) as { refused?: unknown; outcome?: unknown; error?: unknown }
       if (typeof a.refused === 'string') throw new Error(`OpsInternal refused the run: ${a.refused}`)
-      // Returned to the queue for want of its definition: counted as requeued, or
-      // as failed when the database gave it up an hour into its wait (#3039).
+      // Returned to the queue for want of its definition: counted as returned
+      // unstarted (left out of runs_failing, #3105), or as failed when the
+      // database gave it up an hour into its wait (#3039).
       if (a.outcome === 'definition_unavailable') {
         const runStatus = (a as { runStatus?: unknown }).runStatus === 'failed' ? 'failed' : 'queued'
         return { outcome: 'completed', end: { outcome: 'retry', unstartedCause: 'definition_unavailable', error: String(a.error) }, runStatus }
