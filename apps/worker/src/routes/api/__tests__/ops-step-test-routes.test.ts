@@ -263,13 +263,13 @@ describe('POST test-node: the current variables an ops step test is given (#3002
   const row = (key: string, value: string, over: Record<string, unknown> = {}) => ({
     id: `00000000-0000-4000-9000-${String(++seq).padStart(12, '0')}`, organization_id: ORG, key, value, is_secret: false, scope: 'global', workflow_id: null, ...over,
   })
-  /** The organization's saved rows, in saved order, and a saved version whose kept copy is OLD, which must never be read. */
+  /** The organization's saved rows, in saved order, and a saved version, which must never be read. */
   const withRows = (variables: { list?: Record<string, unknown>[]; listError?: { message: string; code?: string } }) => {
     const sb = makeSupabase({
       users: { single: testUser },
       workflows: { single: { id: WF, lane: 'ops' } },
       environment_variables: variables,
-      workflow_versions: { list: [{ version_number: 7, env_capture: [{ key: 'API_BASE', value: 'https://old.example.test', is_secret: false, scope: 'global', workflow_id: null }] }] },
+      workflow_versions: { list: [{ version_number: 7, definition: envDefinition }] },
     })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     return sb
@@ -277,7 +277,7 @@ describe('POST test-node: the current variables an ops step test is given (#3002
   const test = (ops: ReturnType<typeof opsBinding>, body: Record<string, unknown> = { namespace: 'notify', definition: envDefinition, confirm_send: true }) =>
     call('POST', `/workflows/${WF}/test-node`, { OPS_CONNECTIONS: ops.binding, SECRET_ENCRYPTION_KEY: KEY } as never, body)
 
-  it('gives the step the current value of each variable it reads after a change, never the saved version\'s kept copy', async () => {
+  it('gives the step the current value of each variable it reads after a change, never reading a saved version', async () => {
     const token = await encryptSecret('tok-live-value', KEY)
     const sb = withRows({ list: [
       row('API_BASE', 'https://changed-once.example.test'),

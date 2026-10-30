@@ -156,8 +156,10 @@ included ("Any secret, no exceptions").
   Each page is in reference/observability.md.
 - **Retired.** The version capture #2702 added (`capture_version_env_variables`,
   `workflow_versions.env_capture`, `ops_workflow_definitions.variables`,
-  `save_workflow_definition`'s `p_variables`) is read by nothing since #3003 and
-  is dropped by its contract migration.
+  `save_workflow_definition`'s `p_variables`) is dropped (#3003: bidding
+  migration `20261030230000_drop_version_env_capture_3003.sql`, ops migration
+  `20261030230000_drop_version_variables_3003.sql`). Switching an ops workflow
+  on writes no version (Dan, 2026-10-30).
 
 The ops Worker's own secrets are a separate list: see CLAUDE.md, Worker secrets.
 
