@@ -591,7 +591,9 @@ export async function answerFetch(answer: StubAnswer, signal: AbortSignal | unde
  * (#3086). A bundle's requests reach the gate through its outbound service, where
  * a throw arrives as an HTTP 500 rather than as a failed fetch, and its timers are
  * out of the lift's reach, so an answer that does not arrive whole is refused by
- * name rather than played as something else.
+ * name rather than played as something else. So is one that arrives whole but
+ * late (#3128): its wait is on the replay's time, which a bundle cannot be held
+ * on, so it would be answered at once and the clock would never move.
  */
 export function codeBundleRefusal(hit: { rule: string; scenario: string; answer: StubAnswer }, fixture: string): string | null {
   if (hit.answer.arrivesAfterMs !== undefined) {
