@@ -24,6 +24,7 @@ import { buildCodeStepInput, resolveCodeProps, unionReferencedSteps, scopeSteps,
 import { salesforceAnswerOf, type SalesforceAnswer } from './nodes/salesforce'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { parallelStepOrders, slotOrderWidth } from './parallel-step-order'
+import { parallelSlots } from './parallel-slots'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
 import { LeadValidationConfigFault } from './nodes/lead-validation'
@@ -1754,27 +1755,14 @@ export async function walkGraph(
     if (node.type === 'parallel') {
       const stepStartedAt = new Date().toISOString()
       log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
-      // Resolve children from edges off the start node — sourceHandle starting
-      // with `child-` indicates a slot. Sort by slot index so logs stay ordered.
-      const slotEdges = outgoingEdges(node.id, definition.edges)
-        .filter((e) => (e.source_handle ?? '').startsWith('child-'))
-        .sort((a, b) => {
-          const ai = parseInt((a.source_handle ?? '').replace('child-', ''), 10)
-          const bi = parseInt((b.source_handle ?? '').replace('child-', ''), 10)
-          return ai - bi
-        })
-      const slotChildren = slotEdges
-        .map((e) => findNode(e.target, definition.nodes))
-        .filter((n): n is NodeDefinition => n !== undefined && n.type !== 'parallel_end')
-
-      // Backwards-compat: pre-2026-04-30 definitions stored child ids on
-      // `NodeDef.children` (top-level) and wait_for/timeout on the matching
-      // parallel_end node. If no slot edges exist, fall back to the legacy form.
-      const resolvedChildren: NodeDefinition[] = slotChildren.length > 0
-        ? slotChildren
-        : ((node.children ?? []) as string[])
-            .map((id) => findNode(id, definition.nodes))
-            .filter((n): n is NodeDefinition => n !== undefined)
+      // The block's slots, as ONE list (#3125): the children it runs, the
+      // handle each slot is named by (wait_for specific, on_failure continue)
+      // and the step order ranges (#3084) are all read from it by the same
+      // index, so an empty slot, which it skips, cannot shift one against
+      // another. A legacy block (pre-2026-04-30, child ids on `children`, its
+      // wait_for/timeout on the parallel_end) has no handles.
+      const slots = parallelSlots(node, definition)
+      const resolvedChildren: NodeDefinition[] = slots.map((s) => s.node)
 
       // Config now lives on the start node. For legacy definitions whose end
       // node still holds wait_for/timeout, merge those in as a fallback.
@@ -1827,10 +1815,11 @@ export async function walkGraph(
       let errorType: ErrorType = null
       let parallelSuppressAlert = false
 
-      // Slot handle ids parallel to resolvedChildren: needed when wait_for='specific',
-      // and to find the slots marked on_failure: 'continue' (#2832).
-      const slotHandleIds = slotChildren.length > 0
-        ? slotEdges.map((e) => e.source_handle ?? '')
+      // Slot handle ids, from the same slot list as resolvedChildren (#3125):
+      // needed when wait_for='specific', and to find the slots marked
+      // on_failure: 'continue' (#2832). A legacy block names none.
+      const slotHandleIds = slots.some((s) => s.handleId !== null)
+        ? slots.map((s) => s.handleId ?? '')
         : []
       // The steps the children are on, so a cut-off names them rather than the
       // block (#2832), and the step each failed child failed on.
