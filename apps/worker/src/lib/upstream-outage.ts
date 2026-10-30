@@ -171,8 +171,11 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
     // to 2026-10-29): a node's own request timer ('the operation was aborted',
     // 41 Salesforce runs), marked 'request' since #3068 on rows written after it
     // deployed, and a parallel block that fails on its own deadline ('did not
-    // complete in time', 20 runs, whose children get no row, #3072). Removing
-    // the fallback before the second is marked moves those out of this bucket.
+    // complete in time', 20 runs), whose cut off children get a row marked
+    // 'parallel_block' since #3072 (only when the deadline is what failed the
+    // block, so a block that failed on a refused slot is not read as one).
+    // Removing the fallback before the rows written before that have aged out
+    // moves those runs out of this bucket.
     unmarkedFallback: [
       'the operation was aborted',
       'canceled via abort signal',

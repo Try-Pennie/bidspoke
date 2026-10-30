@@ -7,7 +7,7 @@
  * alone (L290, L524). Each test now advances time itself.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { continuingSlots, executeParallelNode } from '../parallel'
+import { continuingSlots, deadlineResultsOf, executeParallelNode } from '../parallel'
 import type { ParallelChildResult } from '../parallel'
 import type { NodeDefinition } from '../../../types'
 
@@ -286,5 +286,79 @@ describe('a slot marked on_failure: continue', () => {
     expect([...continuingSlots(marked().config)]).toEqual(['child-1'])
     expect([...continuingSlots({ children: [{ id: 'child-0', on_failure: 'fail' }, { id: 'child-1' }] })]).toEqual([])
     expect([...continuingSlots({})]).toEqual([])
+  })
+})
+
+describe('a block that fails on its own deadline says which slots it stopped waiting for (#3072)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const children = [makeChild('inquiry'), makeChild('collections'), makeChild('offers')]
+  const slots = ['child-0', 'child-1', 'child-2']
+  /** inquiry answers, collections fails, offers never answers. */
+  const oneHangs = () => vi.fn().mockImplementation(async (child: NodeDefinition) => {
+    if (child.namespace === 'offers') return new Promise(() => {})
+    return child.namespace === 'collections' ? rejected('collections', 'Salesforce API error (500)') : fulfilled('inquiry')
+  })
+
+  async function failure(config: Record<string, unknown>, runChild: Parameters<typeof executeParallelNode>[2]): Promise<unknown> {
+    const pending = executeParallelNode(makeNode({ timeout_ms: 50, ...config }), children, runChild, slots).then(() => null, (err: unknown) => err)
+    await vi.advanceTimersByTimeAsync(50)
+    const err = await pending
+    if (err === null) throw new Error('the block did not fail')
+    return err
+  }
+
+  it('wait_for all, on_timeout fail: every slot as the block left it, the one still running as timeout', async () => {
+    const err = await failure({ wait_for: 'all', on_timeout: 'fail', on_child_error: 'continue' }, oneHangs())
+    expect(String(err)).toMatch(/did not settle within 50ms/)
+    expect(deadlineResultsOf(err)?.map((c) => [c.namespace, c.status])).toEqual([['inquiry', 'fulfilled'], ['collections', 'rejected'], ['offers', 'timeout']])
+  })
+
+  it('wait_for all, on_child_error fail, failing on the slot still running at the deadline', async () => {
+    const answers = vi.fn().mockImplementation(async (child: NodeDefinition) =>
+      child.namespace === 'offers' ? new Promise(() => {}) : fulfilled(child.namespace))
+    const err = await failure({ wait_for: 'all', on_timeout: 'partial', on_child_error: 'fail' }, answers)
+    expect(String(err)).toMatch(/child "offers" did not complete in time/)
+    expect(deadlineResultsOf(err)?.map((c) => c.status)).toEqual(['fulfilled', 'fulfilled', 'timeout'])
+  })
+
+  it('wait_for all, on_child_error fail, failing on a slot that failed: not the deadline, so nothing is said', async () => {
+    const err = await failure({ wait_for: 'all', on_timeout: 'partial', on_child_error: 'fail' }, oneHangs())
+    expect(String(err)).toMatch(/child "collections" failed/)
+    expect(deadlineResultsOf(err)).toBeNull()
+  })
+
+  it('wait_for specific, the named slot still running at the deadline', async () => {
+    const err = await failure({ wait_for: 'specific', wait_for_slot: 'child-2' }, oneHangs())
+    expect(String(err)).toMatch(/slot "offers" did not complete in time/)
+    expect(deadlineResultsOf(err)?.map((c) => c.status)).toEqual(['fulfilled', 'rejected', 'timeout'])
+  })
+
+  it('wait_for specific, the named slot failed: not the deadline, so nothing is said', async () => {
+    const err = await failure({ wait_for: 'specific', wait_for_slot: 'child-1' }, oneHangs())
+    expect(String(err)).toMatch(/slot "collections" failed/)
+    expect(deadlineResultsOf(err)).toBeNull()
+  })
+
+  it('wait_for first, no slot succeeded by the deadline', async () => {
+    const noneWin = vi.fn().mockImplementation(async (child: NodeDefinition) =>
+      child.namespace === 'offers' ? new Promise(() => {}) : rejected(child.namespace))
+    const err = await failure({ wait_for: 'first' }, noneWin)
+    expect(String(err)).toMatch(/no child succeeded within 50ms/)
+    expect(deadlineResultsOf(err)?.map((c) => c.status)).toEqual(['rejected', 'rejected', 'timeout'])
+  })
+
+  it('wait_for first, every slot failed before the deadline: nothing is said', async () => {
+    const all = makeRunChild([rejected('inquiry'), rejected('collections'), rejected('offers')])
+    const err = await executeParallelNode(makeNode({ wait_for: 'first', timeout_ms: 50 }), children, all, slots).then(() => null, (e: unknown) => e)
+    expect(String(err)).toMatch(/All parallel children failed/)
+    expect(deadlineResultsOf(err)).toBeNull()
+  })
+
+  it('anything that is not a block failing on its deadline carries nothing', () => {
+    expect(deadlineResultsOf(new Error('Parallel node timed out'))).toBeNull()
+    expect(deadlineResultsOf(null)).toBeNull()
+    expect(deadlineResultsOf('a string')).toBeNull()
   })
 })

@@ -134,7 +134,8 @@ export async function executeParallelNode(
           ? `slot "${named.namespace}" did not complete in time`
           : `slot "${named.namespace}" failed: ${named.error ?? 'unknown error'}`
         // Only the named slot decides this group's fate, so only it is consulted.
-        throw withFailureCause(new Error(`Parallel failed: ${reason}`), classifyParallelFailure([named]))
+        const err = withFailureCause(new Error(`Parallel failed: ${reason}`), classifyParallelFailure([named]))
+        throw named.status === 'timeout' ? withDeadlineResults(err, output) : err
       }
       return { output }
     }
@@ -154,7 +155,8 @@ export async function executeParallelNode(
           : `child "${failed.namespace}" failed: ${failed.error ?? 'unknown error'}`
         // Every child ran, so every failure is consulted: the group is only a
         // business rejection if all of them were.
-        throw withFailureCause(new Error(`Parallel failed: ${reason}`), classifyParallelFailure(output))
+        const err = withFailureCause(new Error(`Parallel failed: ${reason}`), classifyParallelFailure(output))
+        throw failed.status === 'timeout' ? withDeadlineResults(err, output) : err
       }
     }
 
@@ -191,12 +193,11 @@ async function runAll(
   if (winner === 'timeout') {
     const unsettled = settled.filter((r) => r === null).length
     if (onTimeout === 'fail') {
-      throw new Error(`Parallel node timed out — ${unsettled} child(ren) did not settle within ${timeoutMs}ms`)
+      // The same message as ever, now carrying the slots as the block left them (#3072).
+      throw withDeadlineResults(new Error(`Parallel node timed out \u2014 ${unsettled} child(ren) did not settle within ${timeoutMs}ms`), asTheBlockLeftThem(childNodes, settled))
     }
     // 'partial': continue with whatever settled, mark the rest as timeout
-    return childNodes.map((child, i) =>
-      settled[i] ?? ({ namespace: child.namespace, status: 'timeout' } as ParallelChildResult)
-    )
+    return asTheBlockLeftThem(childNodes, settled)
   }
 
   // All children settled within the timeout
@@ -242,9 +243,7 @@ async function runSpecific(
     settled[targetIdx] = settled[targetIdx] ?? { namespace: targetChild.namespace, status: 'timeout' }
   }
 
-  return childNodes.map((child, i) =>
-    settled[i] ?? ({ namespace: child.namespace, status: 'timeout' } as ParallelChildResult)
-  )
+  return asTheBlockLeftThem(childNodes, settled)
 }
 
 // ── wait_for: 'first' ─────────────────────────────────────────────────────────
@@ -257,8 +256,12 @@ async function runFirst(
 ): Promise<ParallelOutput> {
   // Each child is started; Promise.any resolves with the first fulfilled (status='fulfilled') result.
   // Rejected / timeout children are logged by runChild internally and discarded here.
+  // What each child settled as, for a block that fails at its deadline to say
+  // which it stopped waiting for (#3072).
+  const settled: Array<ParallelChildResult | null> = childNodes.map(() => null)
   const racePromises = childNodes.map(async (child, i) => {
     const result = await runChild(child, i, abandonSignal)
+    settled[i] = result
     if (result.status === 'rejected') {
       // Rethrow so Promise.any sees it as a rejection
       throw Object.assign(new Error(result.error ?? 'child rejected'), { childResult: result })
@@ -278,7 +281,7 @@ async function runFirst(
     return [winner]
   } catch (err) {
     if (err instanceof Error && (err as { isParallelTimeout?: boolean }).isParallelTimeout) {
-      throw new Error(`Parallel node timed out — no child succeeded within ${timeoutMs}ms`)
+      throw withDeadlineResults(new Error(`Parallel node timed out \u2014 no child succeeded within ${timeoutMs}ms`), asTheBlockLeftThem(childNodes, settled))
     }
     // AggregateError from Promise.any: all children rejected. Each rejection
     // carries the child result it came from (attached above), so the group can
@@ -299,4 +302,27 @@ async function runFirst(
 // which the engine reads as "operational, classify it yourself".
 function withFailureCause(err: Error, cause: ParallelFailureCause | null): Error {
   return cause ? Object.assign(err, { parallelFailureCause: cause }) : err
+}
+
+/** Each slot as the block left it: what it settled as, or 'timeout' when it was still running. */
+function asTheBlockLeftThem(childNodes: NodeDefinition[], settled: Array<ParallelChildResult | null>): ParallelOutput {
+  return childNodes.map((child, i) => settled[i] ?? { namespace: child.namespace, status: 'timeout' })
+}
+
+/**
+ * A block that fails because its own deadline passed (#3072) carries its slots
+ * as it left them on the error it throws, so the engine can write the row of
+ * each slot it stopped waiting for, as it does when such a block carries on
+ * (#3047, #3064). Only a failure the deadline decided carries them: a block that
+ * failed on a slot that failed says nothing about the ones still running.
+ */
+function withDeadlineResults(err: Error, results: ParallelOutput): Error {
+  return Object.assign(err, { parallelDeadlineResults: results })
+}
+
+/** The slots a block that failed at its own deadline left (withDeadlineResults), or null for any other error. */
+export function deadlineResultsOf(err: unknown): ParallelOutput | null {
+  if (!err || typeof err !== 'object') return null
+  const results = (err as { parallelDeadlineResults?: unknown }).parallelDeadlineResults
+  return Array.isArray(results) ? (results as ParallelOutput) : null
 }
