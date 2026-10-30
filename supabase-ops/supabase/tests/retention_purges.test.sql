@@ -24,8 +24,15 @@
 --      leaves no tombstone at all at today's windows (a run's dedup window is
 --      30 days from its creation, and a run is purged 90 days after it ends),
 --      which is why the tick sizes this purge at no rows a day.
---   D. Each page of both new purges walks an index: with history seeded and
---      analysed, a page reads neither table, nor run_requests, sequentially.
+--   D. Every lookup a page of either new purge makes has an index that keeps
+--      it near the page, so a page's cost does not grow with the table: with
+--      100,000 rows seeded and analysed and sequential scans priced out
+--      (enable_seqscan off), a page of 1,000 reads under 20,000 rows and index
+--      entries of schedule_fires and of send_ledger, and under 5,000 of the
+--      20,000 run_requests, where a walk of a table reads all of it. At the suite's sizes the planner may
+--      rightly prefer a scan, so this does not measure which plan production
+--      gets, only that the near plan exists; without schedule_fires_age_idx
+--      the only index path walks the whole unique key, and it fails.
 --   E. Both refuse a limit outside 1 to 1000 by name, and answer more only
 --      for a full page.
 --   F. Both are SECURITY DEFINER with a fixed search_path, VOLATILE, and
@@ -208,15 +215,22 @@ BEGIN
 END
 $do$;
 
--- ── D. each page walks an index, never a scan of the table ───────────────────
+-- ── D. each page reads near the page, never the whole table ──────────────────
+-- Rows and index entries a table has given up in this transaction so far.
+CREATE FUNCTION pg_temp.rp_read(p_rel regclass)
+RETURNS bigint LANGUAGE sql AS $f$
+  SELECT coalesce((SELECT seq_tup_read FROM pg_stat_xact_user_tables WHERE relid = p_rel), 0)
+    + coalesce((SELECT sum(pg_stat_get_xact_tuples_returned(i.indexrelid)) FROM pg_index i WHERE i.indrelid = p_rel), 0);
+$f$;
+
 DO $do$
 DECLARE
-  v_fires_before bigint;
-  v_ledger_before bigint;
-  v_runs_before bigint;
+  v_fires bigint;
+  v_ledger bigint;
+  v_runs bigint;
   r record;
 BEGIN
-  -- A year of slots of 100 workflows every 5 minutes (about 105,000 rows), half past 6 months.
+  -- A year of slots of 100 workflows every 5 minutes (105,000 rows), half past 6 months.
   INSERT INTO public.schedule_fires (organization_id, workflow_id, scheduled_for, outcome)
   SELECT 'aaaaaaaa-0000-4000-8000-000000003052', ('00000000-0000-4000-8000-' || lpad(to_hex(20000 + g % 100), 12, '0'))::uuid,
     now() - g * interval '5 minutes', 'enqueued'
@@ -236,25 +250,30 @@ BEGIN
   ANALYZE public.send_ledger;
   ANALYZE public.run_requests;
 
-  SELECT coalesce(seq_scan, 0) INTO v_fires_before FROM pg_stat_xact_user_tables WHERE relid = 'public.schedule_fires'::regclass;
-  SELECT coalesce(seq_scan, 0) INTO v_ledger_before FROM pg_stat_xact_user_tables WHERE relid = 'public.send_ledger'::regclass;
-  SELECT coalesce(seq_scan, 0) INTO v_runs_before FROM pg_stat_xact_user_tables WHERE relid = 'public.run_requests'::regclass;
-
+  -- Sequential scans priced out, so the planner takes an index path wherever one
+  -- serves; what it then reads says whether that path stays near the page.
+  PERFORM set_config('enable_seqscan', 'off', true);
+  v_fires := pg_temp.rp_read('public.schedule_fires');
   SELECT * INTO r FROM public.purge_schedule_fires(1000);
   IF r.purged <> 1000 OR NOT r.more THEN RAISE EXCEPTION 'a full page of slots answered %', r; END IF;
+  v_fires := pg_temp.rp_read('public.schedule_fires') - v_fires;
+
+  v_ledger := pg_temp.rp_read('public.send_ledger');
+  v_runs := pg_temp.rp_read('public.run_requests');
   SELECT * INTO r FROM public.purge_send_ledger(1000);
   IF r.purged <> 1000 OR NOT r.more THEN RAISE EXCEPTION 'a full page of sends answered %', r; END IF;
+  v_ledger := pg_temp.rp_read('public.send_ledger') - v_ledger;
+  v_runs := pg_temp.rp_read('public.run_requests') - v_runs;
+  PERFORM set_config('enable_seqscan', 'on', true);
 
-  IF (SELECT coalesce(seq_scan, 0) FROM pg_stat_xact_user_tables WHERE relid = 'public.schedule_fires'::regclass) <> v_fires_before THEN
-    RAISE EXCEPTION 'a page of the schedule_fires purge scanned schedule_fires sequentially';
-  END IF;
-  IF (SELECT coalesce(seq_scan, 0) FROM pg_stat_xact_user_tables WHERE relid = 'public.send_ledger'::regclass) <> v_ledger_before THEN
-    RAISE EXCEPTION 'a page of the send_ledger purge scanned send_ledger sequentially';
-  END IF;
-  IF (SELECT coalesce(seq_scan, 0) FROM pg_stat_xact_user_tables WHERE relid = 'public.run_requests'::regclass) <> v_runs_before THEN
-    RAISE EXCEPTION 'a page of the send_ledger purge scanned run_requests sequentially';
-  END IF;
-  INSERT INTO rp_cases VALUES ('D: a page of either purge walks an index, never a scan of schedule_fires, send_ledger or run_requests');
+  -- A page of 1,000 reads a few entries a row (its candidates, one probe each,
+  -- its deletes); a walk of the whole table reads 100,000 or more.
+  IF v_fires > 20000 THEN RAISE EXCEPTION 'a page of 1,000 slots read % entries of schedule_fires, a walk of the table', v_fires; END IF;
+  IF v_ledger > 20000 THEN RAISE EXCEPTION 'a page of 1,000 sends read % entries of send_ledger, a walk of the table', v_ledger; END IF;
+  -- run_requests holds 20,000 here, so a walk of it reads 20,000; a probe that finds no run reads none.
+  IF v_runs > 5000 THEN RAISE EXCEPTION 'a page of 1,000 sends read % entries of run_requests, a walk of the table', v_runs; END IF;
+  RAISE NOTICE 'retention_purges D: a page read % schedule_fires entries, % send_ledger and % run_requests', v_fires, v_ledger, v_runs;
+  INSERT INTO rp_cases VALUES ('D: a page of either purge reads near the page through an index, never the whole of schedule_fires, send_ledger or run_requests');
 END
 $do$;
 

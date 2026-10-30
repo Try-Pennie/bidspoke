@@ -40,17 +40,23 @@
 --   project's 8 s statement timeout, as every run engine function does.
 --
 -- INDEXES. schedule_fires had no index its age could be read through: its
--- unique (workflow_id, scheduled_for) key leads with the workflow, so each page
--- would scan the whole table. schedule_fires_age_idx (scheduled_for, id) is
--- the order the purge reads in; the latest slot check is a probe of the unique
--- key. send_ledger_intent_idx (intent_at, 20261016200000) is already the
--- order its purge reads in, and the run checks are a probe of run_requests'
--- key and of run_requests_live_chain_idx. Each page then deletes its rows by
--- key (id = ANY of the page's ids): written as DELETE ... USING the page, the
--- planner joined the page to a sequential scan of the whole table (measured on
--- 105,000 seeded slots). No table has a foreign key INTO schedule_fires or
--- send_ledger, so a delete sets off no other lookup. Measured on the suite's
--- container: retention_purges.test.sql case D.
+-- unique (workflow_id, scheduled_for) key leads with the workflow, so the only
+-- index path for a page walked the whole key (measured: 312,894 entries read
+-- for a page of 1,000 out of 105,000 slots). schedule_fires_age_idx
+-- (scheduled_for, id) is the order the purge reads in; the latest slot check
+-- is a probe of the unique key. send_ledger_intent_idx (intent_at,
+-- 20261016200000) is already the order its purge reads in, and the run checks
+-- are a probe of run_requests' key and of run_requests_live_chain_idx. Each
+-- check is a correlated scalar subquery rather than EXISTS, so it always runs
+-- as one probe per candidate row: Postgres turns an EXISTS into a join it may
+-- plan as a hash over a scan of the other table, and at the suite's 20,000
+-- runs it did. Each page then deletes its rows by key (id = ANY of the page's
+-- ids), which the primary key serves. Postgres still chooses by cost, and at
+-- the suite's sizes a scan can be the cheaper plan; what matters, and
+-- retention_purges.test.sql case D proves with scans priced out, is that a
+-- plan reading near the page exists for every step (about 4,000 entries read
+-- for a page of 1,000). No table has a foreign key INTO schedule_fires or
+-- send_ledger, so a delete sets off no other lookup.
 --
 -- WHAT IT DOES TO PRODUCTION ROWS: none when applied. It builds one index and
 -- creates two functions; rows are deleted only when the tick calls them. While
@@ -88,13 +94,13 @@ BEGIN
     SELECT f.id FROM public.schedule_fires f
     WHERE f.scheduled_for < v_cutoff
       -- Never a workflow's latest slot: the tick plans the schedule from it.
-      AND EXISTS (SELECT 1 FROM public.schedule_fires n WHERE n.workflow_id = f.workflow_id AND n.scheduled_for > f.scheduled_for)
+      -- A scalar subquery, probed row by row (see INDEXES above).
+      AND (SELECT 1 FROM public.schedule_fires n WHERE n.workflow_id = f.workflow_id AND n.scheduled_for > f.scheduled_for LIMIT 1) IS NOT NULL
     ORDER BY f.scheduled_for, f.id
     LIMIT p_limit
     FOR UPDATE SKIP LOCKED
   ) old;
-  -- By key, so the delete probes the primary key rather than joining the page
-  -- to the whole table (which the planner chose for DELETE ... USING the page).
+  -- By key, through the primary key (see INDEXES above).
   DELETE FROM public.schedule_fires f WHERE f.id = ANY (v_ids);
   GET DIAGNOSTICS v_rows = ROW_COUNT;
   RETURN QUERY SELECT v_rows, v_rows = p_limit;
@@ -120,10 +126,11 @@ BEGIN
   SELECT array_agg(old.id) INTO v_ids FROM (
     SELECT l.id FROM public.send_ledger l
     WHERE l.intent_at < v_cutoff
-      -- Never the send of a run a person kept, or of one not ended.
-      AND NOT EXISTS (SELECT 1 FROM public.run_requests r WHERE r.id = l.run_request_id AND (r.kept_by IS NOT NULL OR r.terminal_at IS NULL))
+      -- Never the send of a run a person kept, or of one not ended. Scalar
+      -- subqueries, probed row by row (see INDEXES above).
+      AND (SELECT 1 FROM public.run_requests r WHERE r.id = l.run_request_id AND (r.kept_by IS NOT NULL OR r.terminal_at IS NULL) LIMIT 1) IS NULL
       -- Nor of a chain with a run still going.
-      AND NOT EXISTS (SELECT 1 FROM public.run_requests live WHERE live.execution_chain_id = l.execution_chain_id AND live.terminal_at IS NULL)
+      AND (SELECT 1 FROM public.run_requests live WHERE live.execution_chain_id = l.execution_chain_id AND live.terminal_at IS NULL LIMIT 1) IS NULL
     ORDER BY l.intent_at
     LIMIT p_limit
     FOR UPDATE SKIP LOCKED
