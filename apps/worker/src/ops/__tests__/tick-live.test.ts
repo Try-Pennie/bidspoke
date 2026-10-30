@@ -40,6 +40,8 @@ function opsDatabase(extra: Record<string, unknown> = {}) {
     }],
     record_schedule_observation: [{ outcome: 'recorded', observation_id: '11111111-2222-4333-8444-555555555555' }],
     due_queue_depth: [{ due_runs: 0, due_workflows: 0, oldest_due: null }],
+    // The runs waiting to start (#3039): none.
+    unstarted_run_waits: [],
     save_connection_copies: [{ inserted: 1, updated: 0, confirmed: 0, refused_older: 0, refused_expired: 0, refused_removed: 0, withdrawn: 0 }],
     // The measured identities of connections bidding never stored (#2573): none, as today.
     remove_unserved_measured_identities: [],
@@ -589,6 +591,31 @@ describe('the bindings', () => {
     } as unknown as Parameters<typeof ports.dispatchRun>[0]
     expect(await ports.dispatchRun(run, VARIABLES)).toMatchObject({ outcome: 'completed' })
     expect(seen).toEqual([VARIABLES])
+  })
+
+  // #3039: a run returned for want of its definition names that cause, and keeps the status the database chose.
+  it('reads a run returned for want of its definition as a retry naming that cause, failed when the database gave it up', async () => {
+    const run = {
+      runRequestId: '0192f4a0-0000-7000-8000-000000000001', organizationId: ORG, workflowId: WF, workflowVersion: 3, triggerKind: 'schedule',
+      claimToken: '11111111-2222-4333-8444-555555555555', claimExpiresAt: '2026-10-17T10:06:30+00:00', stateVersion: 2, attempts: 0, unchargedAttempts: 0,
+      maxAttempts: 3, resumeReason: null, executionChainId: '0192f4a0-0000-7000-9000-000000000001', resumedFromExecutionId: null, payload: null, payloadRef: null,
+    }
+    for (const [answered, runStatus] of [[{ outcome: 'definition_unavailable', error: 'no definition', runStatus: 'failed' }, 'failed'], [{ outcome: 'definition_unavailable', error: 'no definition' }, 'queued']] as const) {
+      const { env } = configured(gateway(), { ...self(), run: async () => answered })
+      const ports = liveTickPorts(env, null, { sealRegistry, now: () => NOW })
+      expect(await ports.dispatchRun(run as unknown as Parameters<typeof ports.dispatchRun>[0], VARIABLES)).toEqual({
+        outcome: 'completed', end: { outcome: 'retry', unstartedCause: 'definition_unavailable', error: 'no definition' }, runStatus,
+      })
+    }
+  })
+
+  it('reads the waits to start through unstarted_run_waits (#3039)', async () => {
+    const db = opsDatabase()
+    const { env } = configured()
+    const ports = liveTickPorts(env, null, { sealRegistry, now: () => NOW, fetch: db.fetch })
+    if (!('unstartedWaits' in ports.db)) throw new Error('the live tick has no ops database')
+    await ports.db.unstartedWaits(900, 15)
+    expect(db.called).toContain('unstarted_run_waits')
   })
 
   it('a connection list that never answers is given up on at its deadline, and no copy is saved (#2335)', async () => {

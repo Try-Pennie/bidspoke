@@ -35,6 +35,8 @@ import {
   OPS_STEP_REQUEUE_MAX,
   OPS_STEP_REQUEUE_WAIT_MAX_MS,
   OPS_SWEEPS,
+  OPS_UNSTARTED_WAIT_MAX_MS,
+  UNSTARTED_RETURN_CAUSES,
   OVERLAP_RULES,
   RESOURCE_WAIT_CAUSES,
   RESUME_REASONS,
@@ -118,6 +120,8 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     ['run_requests_run_variables_check', RUN_VARIABLE_SOURCES],
     // What the last good copy holds of each name a version reads (#2999).
     ['ops_variable_copies_kind_check', VARIABLE_COPY_KINDS],
+    // Why a run went back to the queue before it started (#3039).
+    ['run_requests_unstarted_cause_check', UNSTARTED_RETURN_CAUSES],
   ] as const)('%s', (name, values) => {
     expect(sorted(constraintValues(SQL, name))).toEqual(sorted(values))
   })
@@ -267,6 +271,23 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     expect(Number(max![1])).toBe(OPS_STEP_REQUEUE_MAX)
     expect(Number(wait![1]) * 1000).toBe(OPS_STEP_REQUEUE_WAIT_MAX_MS)
     expect(body).toContain("v_reason := 'requeue_cap_reached'")
+  })
+
+  /**
+   * The wait to start (#3039, Dan's decision of 2026-10-30): a run returned to
+   * the queue unstarted is given up an hour into its wait, by
+   * complete_run_request alone, which names the hour and takes from a retry only
+   * the causes the Worker sends.
+   */
+  it('complete_run_request gives up a run returned unstarted at the hour the code names, for the causes it names (#3039)', () => {
+    const body = functionBody(SQL, 'complete_run_request')
+    const wait = /v_unstarted_wait_max CONSTANT interval := interval '(\d+) seconds';/.exec(body)
+    expect(wait, 'complete_run_request names its wait to start cap').not.toBeNull()
+    expect(Number(wait![1]) * 1000).toBe(OPS_UNSTARTED_WAIT_MAX_MS)
+    expect(OPS_UNSTARTED_WAIT_MAX_MS).toBe(60 * 60_000)
+    expect(body).toContain("v_reason := 'unstarted_wait_exceeded'")
+    expect(ENGINE_FAILED_REASONS).toContain('unstarted_wait_exceeded')
+    expect(sorted(guardIn(body, 'retry', 'p_reason'))).toEqual(sorted(UNSTARTED_RETURN_CAUSES))
   })
 
   it('a resource wait\'s causes are acquire_sf_lease\'s refusals of a step and an acquire error', () => {

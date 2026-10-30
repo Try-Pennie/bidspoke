@@ -443,6 +443,99 @@ describe('runOpsTickReportCheck', () => {
   })
 })
 
+// #3039 (Dan's decision, 2026-10-30): a workflow whose runs keep returning to
+// the queue unstarted pages on its own, in Dan's approved words, and stands down
+// on the first report that no longer names it.
+describe('the page for runs that cannot start (#3039)', () => {
+  const MIN = 60_000
+  const TEXT = '3 runs have waited 21 minutes to start because the workflow\'s saved version could not be loaded from bidding. Each run is given up after 1 hour of waiting, at 6:41 AM ET for the oldest.'
+  const SWEEP = 'The lease_expiry sweep failed: lock timeout.'
+  const report = (n: number, problems: Array<[string, string]>) => ({
+    tick_id: `t${n}`, mode: 'live', scheduled_time: null,
+    started_at: new Date(NOW + n * MIN).toISOString(), finished_at: new Date(NOW + n * MIN + 1000).toISOString(),
+    db_now: null, outcome: problems.length > 0 ? 'problems' : 'ok', problems: problems.map(([, t]) => t), problem_keys: problems.map(([k]) => k),
+    counts: {}, start_stamp_failed: false,
+  })
+
+  function deps(names: Record<string, string> | Error = { [WF]: 'Lead intake' }) {
+    const sent: Array<{ job: string; errors: string[]; title: string; fixHint?: string; context?: string }> = []
+    const recovered: string[] = []
+    const asked: string[][] = []
+    return {
+      sent,
+      recovered,
+      asked,
+      notifyFailure: async (_s: unknown, job: string, errors: string[], _k: unknown, remedy: { title: string; fixHint?: string; context?: string }) => {
+        sent.push({ job, errors, title: remedy.title, fixHint: remedy.fixHint, context: remedy.context })
+      },
+      notifyRecovery: async (_k: unknown, job: string) => { recovered.push(job) },
+      workflowNames: async (_s: unknown, ids: readonly string[]) => {
+        asked.push([...ids])
+        if (names instanceof Error) throw names
+        return new Map(Object.entries(names).filter(([id]) => ids.includes(id)))
+      },
+    }
+  }
+
+  async function tick(store: ReturnType<typeof kv>, d: ReturnType<typeof deps>, n: number, r: Record<string, unknown>) {
+    await recordOpsTickCompleted(store as unknown as KVNamespace, r, NOW + n * MIN + 2000)
+    return runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + n * MIN + 30_000, d)
+  }
+
+  it('pages at once under its own title and fix, word for word, naming the workflow, and never on the minute cron\'s page', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 1, report(1, [[`runs_unstarted:${WF}`, TEXT]]))).toBe('alerted')
+    expect(d.sent).toEqual([{
+      job: `ops-runs-unstarted:${WF}`,
+      errors: [TEXT],
+      title: 'Ops runs can\'t start: Lead intake',
+      fixHint: 'Open the workflow in Bidspoke and save it again, or check that the bidding Worker is up.',
+      context: undefined,
+    }])
+    expect(d.asked).toEqual([[WF]])
+    // The minute cron's own page has nothing else to say, so it stands down.
+    expect(d.recovered).toEqual([OPS_TICK_JOB])
+  })
+
+  it('stands down on the first report that no longer names the workflow, and only then', async () => {
+    const store = kv()
+    const d = deps()
+    await tick(store, d, 1, report(1, [[`runs_unstarted:${WF}`, TEXT]]))
+    await tick(store, d, 2, report(2, [[`runs_unstarted:${WF}`, TEXT.replace('21 minutes', '22 minutes')]]))
+    expect(d.recovered).not.toContain(`ops-runs-unstarted:${WF}`)
+    expect(await tick(store, d, 3, report(3, []))).toBe('healthy')
+    expect(d.recovered).toContain(`ops-runs-unstarted:${WF}`)
+    // Stood down once: a later clean report does not stand it down again.
+    const before = d.recovered.filter((j) => j === `ops-runs-unstarted:${WF}`).length
+    await tick(store, d, 4, report(4, []))
+    expect(d.recovered.filter((j) => j === `ops-runs-unstarted:${WF}`).length).toBe(before)
+  })
+
+  it('pages the minute cron\'s other problems on its own page beside it, without the runs that cannot start', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 1, report(1, [['queue_disagreement', SWEEP], [`runs_unstarted:${WF}`, TEXT]]))).toBe('alerted')
+    expect(d.sent.map((p) => [p.job, p.title, p.errors])).toEqual([
+      [`ops-runs-unstarted:${WF}`, 'Ops runs can\'t start: Lead intake', [TEXT]],
+      [OPS_TICK_JOB, 'The ops minute cron reported a problem', [SWEEP]],
+    ])
+    expect(d.recovered).toEqual([])
+  })
+
+  it('names the workflow by its id when its name cannot be read, rather than not paging', async () => {
+    const store = kv()
+    const d = deps(new Error('the database did not answer'))
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      expect(await tick(store, d, 1, report(1, [[`runs_unstarted:${WF}`, TEXT]]))).toBe('alerted')
+    } finally {
+      errors.mockRestore()
+    }
+    expect(d.sent[0].title).toBe(`Ops runs can't start: workflow ${WF}`)
+  })
+})
+
 // #2506 (Dan's decision, 2026-10-19). On 2026-10-18 and 2026-10-19 the page
 // fired on one tick each (a start stamp past its deadline, then the run_expiry
 // sweep's claim_ops_sweep past its 9000 ms deadline), and each recovered by

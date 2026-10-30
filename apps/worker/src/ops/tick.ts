@@ -118,7 +118,7 @@ import { easternParts } from '@bidspoke/buyer-profile'
 import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type MissedReason, type PlannedFire, type ScheduleConfig } from '@bidspoke/workflow-definition'
 import {
   CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, MAX_RUN_VARIABLES_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsRunVariables,
-  parseServedOpsWorkflows, tickProblem,
+  parseServedOpsWorkflows, tickProblem, unstartedRunsText, UNSTARTED_RUNS_PAGE,
   type ConnectionLoginsReport, type OpsDefinitionRequest, type OpsRunVariablesRequest, type RunVariablesRefusal, type OpsGatewayJob, type OpsJobReport,
   type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem, type WriteBacksReport,
 } from '../lib/ops-gateway-contract'
@@ -134,7 +134,7 @@ import type { OrganizationId } from './ops-db'
 import { RUN_LEASE_SECONDS, type RunInvocationReport } from './run-invocation'
 import {
   MAX_COPIES_PER_SAVE, type ClaimRunRequests, type ClaimedRun, type CompleteOutcome, type CompletedRun, type ScheduleFire, type ScheduleFireResult, type ConnectionCheckTarget, type QueueDisagreement, type SaveCopiesResult, type ScheduleObservation, type SfLimitsTarget, type SweepClaim,
-  type OpsResealMode, type OpsResealState, type SweepResult, type WorkflowCopy, type WorkflowCopyInput,
+  type OpsResealMode, type OpsResealState, type SweepResult, type WorkflowCopy, type WorkflowCopyInput, type UnstartedRunWait,
 } from './ops-writes'
 import { resealSwitchFrom, watchReseal } from './reseal-watch'
 import { dispatchedFrom, refusedRunEnd, type DispatchedRunVariables } from './run-variables'
@@ -178,6 +178,16 @@ export const COPIES_STALE_AFTER_MS = 6 * 60 * 60 * 1000
  */
 export const RUN_OUTCOME_MIN_RUNS = 3
 export const RUN_OUTCOME_FAILING_RATE = 0.5
+
+/**
+ * A workflow's runs returned to the queue unstarted page once the oldest has
+ * waited this long to start (#3039, Dan's decision of 2026-10-30), judged on
+ * the database clock by unstarted_run_waits, in live mode every tick. Each such
+ * run is given up OPS_UNSTARTED_WAIT_MAX_MS into its wait (complete_run_request).
+ */
+export const UNSTARTED_ALERT_AFTER_SECONDS = 15 * 60
+/** The workflows one read lists: fewer than a report's problems, so each one listed can be paged (MAX_REPORT_PROBLEMS). */
+export const UNSTARTED_READ_LIMIT = 15
 
 /** The copies one tick reads: every ops workflow, within PostgREST's 1,000 rows (L24). */
 const COPIES_READ_LIMIT = 1000
@@ -447,6 +457,8 @@ export interface OpsTickDb extends ConnectionServeDb, VariableCopyDb {
   readCopies(limit: number): Promise<{ copies: WorkflowCopy[]; reachedLimit: boolean }>
   recordObservation(organizationId: OrganizationId, obs: ScheduleObservation): Promise<'recorded' | 'already_recorded'>
   dueQueueDepth(): Promise<{ dueRuns: number; dueWorkflows: number; oldestDue: string | null }>
+  /** Per workflow, the runs whose wait to start has lasted at least minWaitSeconds (unstarted_run_waits, #3039). */
+  unstartedWaits(minWaitSeconds: number, limit: number): Promise<{ waits: UnstartedRunWait[]; reachedLimit: boolean }>
   /** The sf_limits sweep's measured orgs (sf_limits_targets, #2336). */
   sfLimitsTargets(limit: number): Promise<{ targets: SfLimitsTarget[]; reachedLimit: boolean }>
   /** A measured org's reading from its /limits read (record_sf_budget_reading, source limits). */
@@ -863,7 +875,8 @@ function tallyOf(report: RunInvocationReport): RunTally {
   if (report.outcome !== 'completed') return 'lost'
   switch (report.end.outcome) {
     case 'done': return 'done'
-    case 'retry': return 'requeued'
+    // A return unstarted the database gave up (#3039) ended the run.
+    case 'retry': return report.runStatus === 'failed' ? 'failed' : 'requeued'
     // A wait is what the database made of it: failed when it ended the run instead.
     case 'suspend':
       if (report.runStatus !== 'failed') return 'requeued'
@@ -1002,8 +1015,13 @@ async function dispatchOneRun(
       if (db === null) throw new Error('no ops database to return the run to the queue in')
       // Not started, so this spends no attempt; the claim ends and the run waits a minute.
       const error = `the run's variables could not be had from the bidding Worker (${given.why}), so it was returned to the queue unstarted`
-      await db.completeRun(run, { outcome: 'retry', error, notBefore: retryAt })
+      const done = await db.completeRun(run, { outcome: 'retry', unstartedCause: 'variables_unavailable', error, notBefore: retryAt })
       bump(counts, 'runs_variables_unavailable')
+      // An hour into its wait to start, the database gives the run up instead (#3039).
+      if (done.runStatus === 'failed') {
+        bump(counts, 'runs_unstarted_given_up')
+        return { workflowId: run.workflowId, tally: 'failed', error }
+      }
       return { workflowId: run.workflowId, tally: 'requeued', error }
     }
     const report = await ports.dispatchRun(run, given.variables)
@@ -1511,6 +1529,21 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     if (item.kind === 'probe') problem('probe_failed', `The probe through the dispatch path failed: ${formatErr(r.reason)}.`)
     else if (item.kind === 'would_fire') problem('dispatch_failed', `The dispatch of workflow ${item.workflowId}'s ${slotLabel(Date.parse(item.scheduledFor))} slot failed: ${formatErr(r.reason)}.`, item.workflowId)
   })
+
+  // 7a. The runs waiting to start (#3039), live mode only, after this tick's
+  // returns: each workflow whose oldest has waited 15 minutes pages on its own.
+  if (db && live) {
+    try {
+      const { waits, reachedLimit } = await db.unstartedWaits(UNSTARTED_ALERT_AFTER_SECONDS, UNSTARTED_READ_LIMIT)
+      for (const w of waits) problem(UNSTARTED_RUNS_PAGE.kind, unstartedRunsText(w), w.workflowId)
+      if (waits.length > 0) bump(counts, 'workflows_runs_unstarted', waits.length)
+      if (reachedLimit) {
+        problem('runs_unstarted_limit', `${UNSTARTED_READ_LIMIT} or more workflows have runs that have waited ${UNSTARTED_ALERT_AFTER_SECONDS / 60} minutes to start, as many as one read lists, so any past them is not paged; the ops Worker's logs and the run_requests table have every one.`)
+      }
+    } catch (err) {
+      problem('runs_unstarted_unread', `The ops tick could not read which runs are waiting to start (${formatErr(err)}), so a workflow whose runs keep returning to the queue unstarted is not paged this tick.`)
+    }
+  }
 
   // 7b. The sf_limits sweep, if this tick owns it, settled before the report carries its problems.
   if (sfLimitsRun !== null) {

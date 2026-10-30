@@ -100,6 +100,20 @@ fails the run as `requeue_cap_reached` (#2859). The bounds are
 `complete_run_request`'s constants; Dan kept these values on 2026-10-27. How a
 429 is read per service is in ops-connections-logins.md.
 
+## Runs that cannot start
+
+A claimed run whose definition (`definition_unavailable`, `src/ops/run-live.ts`)
+or variables (`variables_unavailable`, `src/ops/tick.ts`) could not be had is
+returned to the queue unstarted, spending no attempt (#3023), and names that
+cause. `complete_run_request` counts each such return (`unstarted_returns`) and
+gives the run up an hour into its wait, measured on the database clock from its
+first unstarted return since it last started (`unstarted_since`): the return an
+hour or more on fails the run as `unstarted_wait_exceeded` (#3039, Dan's
+decision of 2026-10-30). The hour is `OPS_UNSTARTED_WAIT_MAX_MS` in
+`src/ops/run-vocabulary.ts`, which a test holds equal to the function's
+constant. Once a workflow's oldest such run has waited 15 minutes, the tick
+pages it on a page of its own, Ops runs can't start (reference/observability.md).
+
 ## A run's environment variables
 
 Dan's decisions of 2026-10-28 and 29 (#2982), reversing #2702's "frozen with the
