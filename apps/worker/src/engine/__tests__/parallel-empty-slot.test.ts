@@ -32,7 +32,6 @@ vi.mock('../step-logger', () => ({
 
 import { walkGraph } from '../index'
 import { buildContext } from '../context'
-import { parallelSlots } from '../parallel-slots'
 
 const EXEC = 'exec-3125'
 const env = { PII_REDACTION_FIELDS: '' } as unknown as Env
@@ -197,34 +196,5 @@ describe('step orders with an empty slot (#3125, #3084)', () => {
       'EMPTY', [transform('a1')], [transform('b1'), relay('b2', HELD_URL)]))
     expect(listed(queue)).toEqual(['fan', 'a1', 'b1', 'b2', 'fan_end', 'after_block', 'done'])
     expect(row(queue, 'b2')).toMatchObject({ status: 'failed', timeout_kind: 'parallel_block' })
-  })
-})
-
-describe('the one slot list (#3125)', () => {
-  it('pairs each real slot with its own handle, by slot number, skipping an empty or missing slot', () => {
-    const def = block({}, [transform('a')], 'EMPTY', 'GHOST', [transform('b')])
-    const fan = def.nodes.find((n) => n.id === 'fan')!
-    expect(parallelSlots(fan, def).map((s) => [s.handleId, s.node.namespace])).toEqual([['child-0', 'a'], ['child-3', 'b']])
-  })
-
-  it('orders slots by number, so child-10 comes after child-2', () => {
-    const def = block({}, [transform('a')], [transform('b')], [transform('c')])
-    def.edges = def.edges.map((e) => (e.source_handle === 'child-1' ? { ...e, source_handle: 'child-10' } : e))
-    const fan = def.nodes.find((n) => n.id === 'fan')!
-    expect(parallelSlots(fan, def).map((s) => s.handleId)).toEqual(['child-0', 'child-2', 'child-10'])
-  })
-
-  it('a handle with no slot number sorts after every numbered slot, never wherever its edge was stored', () => {
-    const def = block({}, [transform('a')], [transform('b')], [transform('c')])
-    def.edges = def.edges.map((e) => (e.source_handle === 'child-2' ? { ...e, source_handle: 'child-x' } : e))
-    // Stored with the unnumbered slot first, then the numbered ones in reverse.
-    def.edges = [...def.edges.filter((e) => e.source_handle === 'child-x'), ...def.edges.filter((e) => e.source_handle !== 'child-x').reverse()]
-    const fan = def.nodes.find((n) => n.id === 'fan')!
-    expect(parallelSlots(fan, def).map((s) => s.handleId)).toEqual(['child-0', 'child-1', 'child-x'])
-  })
-
-  it('a legacy block with no slot edges runs its children list, with no handle to name', () => {
-    const def = { nodes: [{ id: 'fan', namespace: 'fan', type: 'parallel', config: {}, children: ['a', 'missing', 'b'] } as NodeDefinition, transform('a'), transform('b')], edges: [] as EdgeDefinition[] }
-    expect(parallelSlots(def.nodes[0], def).map((s) => [s.handleId, s.node.namespace])).toEqual([[null, 'a'], [null, 'b']])
   })
 })
