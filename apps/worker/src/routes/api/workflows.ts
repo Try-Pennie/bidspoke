@@ -891,7 +891,7 @@ workflows.post('/:id/draft-changelog', async (c) => {
   }
 })
 
-// PATCH /api/workflows/:id: lightweight field updates (is_active, folder_id); only switching an ops workflow on writes a version (#2702)
+// PATCH /api/workflows/:id: lightweight field updates (is_active, folder_id); none writes a version
 workflows.patch('/:id', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id')
@@ -945,34 +945,9 @@ workflows.patch('/:id', async (c) => {
   // whose definition was checked above: a save landing in between makes it
   // stale, so a definition nobody checked is never switched on. A switch off or
   // a move needs no version. The function refuses a folder of another
-  // organization as folder not found.
-  //
-  // Switching an ops workflow on writes a new version of it first (#2702),
-  // through the same save a canvas makes, sending no definition: the version
-  // snapshots the stored one. It was written so the version kept that day's
-  // variable values; since #2982 a run reads each variable's current value when
-  // it starts, so nothing reads those any more, and whether to keep this
-  // version write is decided with the contract step of #3003. First, so a
-  // switch on whose version cannot be written switches nothing on; and the
-  // switch on is then made from the version that save left.
-  let fromVersion = owner.version
-  if (body.is_active === true && owner.lane === 'ops' && owner.is_active !== true) {
-    const snapshot = await writeWorkflow(supabase, {
-      op: 'save',
-      orgId,
-      workflowId: id,
-      expectedVersion: owner.version,
-      fields: { message: 'Switched on' },
-      saveId: null,
-      actor: actorOf(c),
-      backup: backupOf(c),
-      storedDefinition: null,
-    })
-    if (snapshot.kind !== 'written') {
-      return answerUnwritten(c, snapshot, 'Not switched on. This workflow was saved by someone else while it was being switched on, so the definition checked is no longer the one stored. Nothing was changed. Try again.')
-    }
-    fromVersion = snapshot.workflow.version
-  }
+  // organization as folder not found. Switching an ops workflow on writes no
+  // version either (Dan, 2026-10-30, #3003): a run reads each variable's
+  // current value when it starts (#2982), so a version has nothing to keep.
   const fields: Record<string, unknown> = {}
   if (body.is_active !== undefined) fields.is_active = body.is_active
   if ('folder_id' in body && (body.folder_id === null || typeof body.folder_id === 'string')) fields.folder_id = body.folder_id
@@ -980,7 +955,7 @@ workflows.patch('/:id', async (c) => {
     op: 'patch',
     orgId,
     workflowId: id,
-    expectedVersion: body.is_active === true ? fromVersion : null,
+    expectedVersion: body.is_active === true ? owner.version : null,
     fields,
     saveId: null,
     actor: actorOf(c),

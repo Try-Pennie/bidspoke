@@ -63,23 +63,8 @@ describe('readOpsWorkflowDefinitions (the bidding Worker)', () => {
     expect(q.searchParams.get('version_number')).toBe('eq.3')
     expect(q.searchParams.get('workflows.lane')).toBe('eq.ops')
     expect(q.searchParams.get('select')).toMatch(/workflows!inner\(organization_id,\s*lane\)/)
-    // The variables a version kept at its save are read by nothing (#3003).
+    // The capture a version kept at its save (env_capture) is dropped (#3003), so naming it would fail every read.
     expect(q.searchParams.get('select')).not.toMatch(/env_capture/)
-  })
-
-  it('serves a version whatever the variables it kept at its save, which no run reads, and never refuses one over them (#3003)', async () => {
-    const reads = { ...DEF, nodes: [{ id: 'a', type: 'transform', config: { mappings: [{ source: 'env.API_BASE', target: 'b' }] } }] }
-    const { client } = versionsDb((url) => (url.searchParams.get('workflow_id') === `eq.${WF}`
-      ? [versionRow({ definition: reads, env_capture: [{ key: 'K', value: 7 }] })]
-      : [versionRow({ workflow_id: WF2, version_number: 1, env_capture: [{ key: 'API_BASE', value: 'kept-at-save', is_secret: false, scope: 'global', workflow_id: null }] })]))
-    const served = await readOpsWorkflowDefinitions(client, { versions: [{ workflow_id: WF, version_number: 3 }, { workflow_id: WF2, version_number: 1 }] })
-    expect(served).toEqual({
-      definitions: [
-        { workflow_id: WF, organization_id: ORG, version_number: 3, definition: reads },
-        { workflow_id: WF2, organization_id: ORG, version_number: 1, definition: DEF },
-      ],
-      unserved: [],
-    })
   })
 
   it('names a version it has no row for, and a row of another lane the filter let through, as unserved', async () => {
