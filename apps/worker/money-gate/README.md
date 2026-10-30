@@ -78,6 +78,21 @@ Engine Bidding variants `buyer_select_live_no_answer_timeout`,
 getting no answer this way: outcome_unknown, the held reservation and claim,
 the failed step, the breaker's error and the bid row.
 
+An answer can also arrive whole but late (#3128): a stub scenario's
+`arrivesAfterMs` holds it that long on the replay's own time, by the same
+`waitFor`, so the pinned clock moves on with it and nothing waits for real. A
+code bundle is refused one by name, like an `ending`. The Main Flow variants
+`achieve_starts_7500ms_after_answer` and `achieve_starts_7501ms_after_answer`
+slow the Salesforce write through the Pipedream outcome relay
+(`pipedream_outcome_post`, the step before `achieve_tripoint_win`), so the
+Achieve step starts on either side of its cutoff (the 12 s window less the
+500 ms margin and the 4 s floor, `achieve-offers.ts`): the first sends, the
+second skips as `answer_window_spent`. Each turns off the Achieve screen
+criteria the synthetic snapshot refuses this lead on, and gives it a phone
+Achieve takes, so the window alone decides. A change to the floor, the margin or
+the window moves one of them across the cutoff and the gate reports it;
+`slow-answer-stubs.test.ts` fails when the two no longer straddle it.
+
 The replay also runs one lead twice, once as usual and once with every table
 read (rpc calls are not held) held past the click check's budget (`dbReadDelayMs`), and fails on any
 difference between the two records. It is the fixture that flipped on 2026-10-07,
