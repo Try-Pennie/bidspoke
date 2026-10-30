@@ -236,8 +236,11 @@ describe('which deadline stopped a step, from the marker alone (#3069)', () => {
 
   // #3068: the outage check counts a run as an upstream timeout by this read, so
   // each of our other deadlines must be named by it too, not only the first two.
+  // Read from the one list, so a kind added later (click_post, #3079) cannot be
+  // left out here; the list itself is pinned by the test that names each kind.
   it('names every one of our deadlines, the ones #3068 added included', () => {
-    for (const kind of [CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE, BUYER_CALL_DEADLINE, ACHIEVE_OFFERS_DEADLINE]) {
+    expect(TIMEOUT_KINDS).toContain(CLICK_POST_DEADLINE)
+    for (const kind of TIMEOUT_KINDS) {
       expect(deadlineKindOf({ timeout_kind: kind })).toBe(kind)
     }
   })
