@@ -9,6 +9,7 @@ import type { Env } from '../../index'
 import { PartnerApiError } from '../../engine/partner-bid-error'
 import { noAnswerOf, postToPartner } from '../post-to-partner'
 import { stepTimeoutMarkerOf } from '../../engine/step-timeout'
+import { PAST_THE_LIMIT, tricklingFetch } from './_trickling-fetch'
 
 const TARGET = { slug: 'tripoint', api_endpoint: 'https://tripoint-proxy.trypennie.dev/leads/create', cf_secret_key: 'TRIPOINT_PROXY_SECRET' }
 const env = { TRIPOINT_PROXY_SECRET: 'secret-value' } as unknown as Env
@@ -218,5 +219,88 @@ describe('postToPartner records why a call that threw got no answer (#3080)', ()
     expect(noAnswerOf(platformAbort())).toBeNull()
     expect(noAnswerOf('reset')).toBeNull()
     expect(noAnswerOf(null)).toBeNull()
+  })
+})
+
+/**
+ * #3089: the call's own timer runs until the body is read, so its limit covers
+ * the whole answer, connect to last byte. Before, it stopped when the headers
+ * arrived, and a buyer that sent headers and then trickled its body was bounded
+ * only by whatever the caller wrapped around the call (nothing, for buyer
+ * select's live buyer call). A body our timer cuts off is no complete answer:
+ * the call throws the abort, marked buyer_call exactly as a timeout before the
+ * headers is, so every caller handles it as it already handles that. Every other
+ * ending of the body read is what it was.
+ */
+describe('postToPartner keeps its own timer running until the body is read (#3089)', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it.each([
+    ['a body that honours the abort', true],
+    ['a body that ignores the abort', false],
+  ] as const)('%s, trickling past the limit, is cut off at it: the abort, marked buyer_call, and no answer by our timer', async (_label, honoursAbort) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { fetchImpl, signals } = tricklingFetch(PAST_THE_LIMIT, 5_000, honoursAbort)
+    let settled = false
+    const run = postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, fetchImpl }).then(
+      (value) => { settled = true; return value },
+      (e: unknown) => { settled = true; return e },
+    )
+    await vi.advanceTimersByTimeAsync(19_999)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(settled).toBe(true)
+    const err = await run
+    expect(err).toMatchObject({ name: 'AbortError' })
+    expect(stepTimeoutMarkerOf(err)).toEqual({ timeout_kind: 'buyer_call', timed_out_after_ms: 20_000 })
+    expect(noAnswerOf(err)).toEqual({ cause: 'our_timer', after_ms: 20_000 })
+    expect(signals[0].aborted).toBe(true)
+  })
+
+  it('a body that finishes just inside the limit is the answer, unmarked, and the call is never aborted afterwards', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    // Four chunks 4,999.75 ms apart: the last byte arrives at 19,999 ms.
+    const { fetchImpl, signals } = tricklingFetch(['{"ok"', ':true', ',"id":', '"L1"}'], 4_999.75, true)
+    const run = postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, fetchImpl }).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(19_999)
+    const result = await run
+    expect(result).toEqual({ status: 200, text: '{"ok":true,"id":"L1"}', json: { ok: true, id: 'L1' }, isHtml: false, headers: { 'content-type': 'application/json' } })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(signals[0].aborted).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('an abort from the step signal during the body read is not our timer: unmarked, and the body read ends as it did before', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const step = new AbortController()
+    const { fetchImpl } = tricklingFetch(PAST_THE_LIMIT, 5_000, true)
+    const run = postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, signal: step.signal, fetchImpl }).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(7_000)
+    step.abort()
+    const result = await run
+    await vi.advanceTimersByTimeAsync(30_000)
+    // A body read that ends for any reason but our timer leaves the text empty,
+    // as it always has: #3089 changes only what our timer cuts off.
+    expect(result).toEqual({ status: 200, text: '', json: null, isHtml: false, headers: { 'content-type': 'application/json' } })
+    expect(stepTimeoutMarkerOf(result)).toBeNull()
+    expect(noAnswerOf(result)).toBeNull()
+  })
+
+  it('an abort from the step signal ends a body that ignores it too, never waiting out the trickle', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const step = new AbortController()
+    const { fetchImpl } = tricklingFetch(PAST_THE_LIMIT, 5_000, false)
+    let settled = false
+    const run = postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, signal: step.signal, fetchImpl }).then(
+      (value) => { settled = true; return value },
+      (e: unknown) => { settled = true; return e },
+    )
+    await vi.advanceTimersByTimeAsync(7_000)
+    step.abort()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(settled).toBe(true)
+    const result = await run
+    expect(result).toMatchObject({ status: 200, text: '' })
+    expect(stepTimeoutMarkerOf(result)).toBeNull()
   })
 })

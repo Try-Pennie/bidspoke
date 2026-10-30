@@ -14,7 +14,8 @@
  * (#3075), never by its text, so the row it cut short (a buyer select
  * attempt's, or since #3079 the buyer_click_send node's) can say our deadline
  * stopped it. The error thrown is the platform's abort,
- * unchanged, so every caller's handling of it is what it was.
+ * unchanged, so every caller's handling of it is what it was. Since #3089 the
+ * timer runs until the body is read, so a body it cuts off throws the same way.
  *
  * A fetch that throws for any other reason is marked too (#3080), with what
  * this function saw happen: the call was cancelled (our signal was aborted
@@ -136,14 +137,27 @@ export async function postToPartner(target: PartnerCallTarget, body: unknown, en
   try {
     res = await doFetch(target.api_endpoint, { method: 'POST', headers, body: payload, signal: controller.signal })
   } catch (err) {
+    timer.clear()
     // Why no answer arrived (#3080): our timer marks its own abort below; any
     // other abort was a cancel; a fetch that failed with nothing aborted is the connection.
     if (!timer.fired()) markNoAnswer(err, controller.signal.aborted || isPlatformAbort(err) ? 'cancelled' : 'connection')
     throw timer.mark(err)
+  }
+  // The timer runs on through the body (#3089), so its limit is the whole
+  // answer, connect to last byte: headers followed by a trickling body end at
+  // it too. A body our timer cut off is no complete answer, since the rules
+  // judge the body, so the call throws as a timeout before the headers does,
+  // marked buyer_call, and every caller handles it exactly as that. A body read
+  // that ends any other way leaves the text empty, as it always has.
+  let text: string
+  try {
+    text = await readText(res, controller.signal)
+  } catch (err) {
+    if (timer.fired()) throw timer.mark(err)
+    text = ''
   } finally {
     timer.clear()
   }
-  const text = await res.text().catch(() => '')
   let json: unknown = null
   try {
     json = text ? JSON.parse(text) : null
@@ -155,4 +169,21 @@ export async function postToPartner(target: PartnerCallTarget, body: unknown, en
     if (!HEADER_DENYLIST.has(key.toLowerCase())) responseHeaders[key.toLowerCase()] = value
   })
   return { status: res.status, text, json, isHtml: containsHtmlDocument(text), headers: responseHeaders }
+}
+
+/**
+ * The body as text, ending the moment `signal` aborts (#3089). The platform's
+ * fetch errors the body when its signal aborts, but the wait must not depend on
+ * that: a body that went on arriving would hold the call past its own limit.
+ * Rejects with the signal's abort, which the caller marks when its timer caused it.
+ */
+function readText(res: Response, signal: AbortSignal): Promise<string> {
+  const abortOf = (): Error => (signal.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted.', 'AbortError'))
+  if (signal.aborted) return Promise.reject(abortOf())
+  let onAbort: () => void = () => undefined
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(abortOf())
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  return Promise.race([res.text(), aborted]).finally(() => signal.removeEventListener('abort', onAbort))
 }

@@ -67,9 +67,11 @@ export const ACHIEVE_OFFERS_DEADLINE = 'achieve_offers'
 /**
  * buyer_click_send stopped waiting for its post (CLICK_POST_DEADLINE_MS, #3079),
  * a second past the post's own timer. Not BUYER_CALL_DEADLINE: that timer aborts
- * the call, and this one fires only when the post did not end at its abort (a
- * fetch that ignored it, or an answer whose body was still being read), so the
- * call may still be running. Marked on the node's row.
+ * the call, and this one fires only when the post did not end at its abort, so
+ * the call may still be running. Since #3089 the post's own timer covers the
+ * body too, so that is only a fetch that does not settle when its signal aborts
+ * before the headers arrive; the platform's fetch does settle, so this is
+ * defence, kept because nothing proves every fetch does. Marked on the node's row.
  */
 export const CLICK_POST_DEADLINE = 'click_post'
 /** Every value a step row's `timeout_kind` can hold. */
