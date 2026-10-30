@@ -15,16 +15,19 @@
  * after the screen), how many were skipped for lack of time. Live runs only; a
  * test run has no window and never skips this way.
  *
- * The rule, measured on 2026-10-30. The rate a skip would have had: of 14,621
- * live Achieve steps from Oct 22 to 30, 25 (0.17%) started more than 9 s after the
- * answer, where under 3 s is left and the step now skips, by the step's start
- * against its run's response step. They fell on two days: Oct 28 (8 of 2,026) and
- * Oct 29 (16 of 1,837, 0.87%, the worst day); the other seven had none or one. The
+ * The rule, measured on 2026-10-30 for the 4 s floor (a skip under 4.5 s left,
+ * so a step starting more than 7.5 s after the answer), by each live Achieve
+ * step's start against its run's response step. Of 14,683 from Oct 22 to 30, 44
+ * (0.30%) started that late, on three days: Oct 26 (1 of 1,607), Oct 28 (13 of
+ * 2,026, 0.64%) and Oct 29 (30 of 1,837, 1.63%, a slowdown and the worst day). The
+ * other six had none, so on a normal day far fewer than 1 in 100 are skipped. The
  * leads the screen lets through: 62 to 198 a day, median 146, over the 42 days
  * from Sep 1 to Oct 22 with exports in Snowflake. A day pages when at least
  * `minSkips` were skipped and more than `maxShare` of those leads: at the median
- * that is 8 skips, where the worst measured day expects about 1.3 (Poisson, about
- * 6 in 100,000 to reach 8), and at the thinnest day 4 of 62, about 2 in 1,000.
+ * that is 8 skips. At the whole period's rate a day reaches that about 2 times in
+ * 100 million (Poisson), and 4 of 62 at the thinnest day about 4 in 100,000. Even
+ * at Oct 29's rate it is about 3 in 1,000 at the median and 2 in 100 at the
+ * thinnest, so the rule pages a slowdown well past Oct 29's, not one like it.
  * Every lead skipped pages from 3 (L139). A day nothing passed the screen (Achieve
  * paused, as from Oct 23) is unmeasured: it neither raises nor clears a page.
  *
@@ -76,10 +79,7 @@ const EXECUTION_START_SLACK_MS = 10 * 60 * 1000
 const SECONDS_A_SEND_NEEDS = (ACHIEVE_WINDOW_MARGIN_MS + ACHIEVE_MIN_WAIT_MS) / 1000
 const WINDOW_SECONDS = CONTINUATION_WINDOW_MS / 1000
 
-/**
- * The page (#2862). DRAFT wording, awaiting Dan's approval on the issue: the
- * check observes for its first measured week, so nothing is sent before then.
- */
+/** The page (#2862), in the words Dan approved on 2026-10-30. */
 export const ACHIEVE_WINDOW_SKIPS_REMEDY: TitledRemedy = {
   title: 'Achieve is missing leads because steps before it run slowly',
   context:
@@ -117,7 +117,7 @@ function dayLabel(etDay: string): string {
   return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' }).format(Date.UTC(y, m - 1, d))
 }
 
-/** The page's finding, with the day's real numbers. DRAFT wording, as the remedy above. */
+/** The page's finding, with the day's real numbers and the threshold read from the constants (Dan, 2026-10-30). */
 export function windowSkipsLine(etDay: string, c: WindowSkipCounts): string {
   const passed = c.sent + c.skipped
   return (

@@ -237,16 +237,21 @@ describe('the worst case after the answer fits the 12 s window', () => {
       ends[write.namespace] = { achieve: achieve?.namespace ?? null, startsAtMs, endsAtMs: achieve ? await achieveEndsAtMs(achieve, startsAtMs) : startsAtMs }
     }
     for (const [write, e] of Object.entries(ends)) expect({ write, ...e, fits: e.endsAtMs <= CONTINUATION_WINDOW_MS }).toEqual({ write, ...e, fits: true })
-    // Achieve starts 9.5 s after the answer at worst, with 2.5 s left: under the 3 s
-    // a send needs (its 500 ms margin and the 2.5 s shortest wait set from measured
-    // replies, #2862), so it sends nothing and ends where it started. The skip is
-    // counted by the Achieve window skip check. A start just inside 9 s still waits
-    // the 2.5 s and ends 11.5 s after the answer, the latest any branch ends.
+    // Achieve starts 9.5 s after the answer at worst, with 2.5 s left: under the 4.5 s
+    // a send needs (its 500 ms margin and the 4 s shortest wait, the fastest accept
+    // measured, #2862), so it sends nothing and ends where it started. The skip is
+    // counted by the Achieve window skip check.
     expect(Object.fromEntries(Object.entries(ends).map(([w, e]) => [w, [e.achieve, e.endsAtMs]]))).toEqual({
       tripoint_sf_post: ['achieve_tripoint_win', 9_500], amone_sf_post: ['achieve_amone_win', 9_500], engine_no_bids_sf_post: ['achieve_no_bids', 9_500],
       under_10000_sf_post: ['achieve_under_10k', 9_500], invalid_state_sf_post: ['achieve_invalid_state', 9_500], debt_missing_sf_post: ['achieve_debt_missing', 9_500],
       send_salesforce: [null, 11_450], send_fallback_salesforce: [null, 9_500], send_fallback_salesforce_1: [null, 9_500],
     })
+    // #2862: the latest start that still sends is 7.5 s after the answer. It waits
+    // the 4 s floor and ends 11.5 s after the answer, the latest any branch ends;
+    // a millisecond later it sends nothing.
+    const achieveNode = ported.nodes.find((n) => n.type === 'achieve_offers')!
+    expect(await achieveEndsAtMs(achieveNode, 7_500)).toBe(11_500)
+    expect(await achieveEndsAtMs(achieveNode, 7_501)).toBe(7_501)
   })
 
   it('the model of a step is the engine: withRetry waits exactly the backoffs it adds up', async () => {

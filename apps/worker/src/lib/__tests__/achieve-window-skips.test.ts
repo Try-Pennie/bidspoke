@@ -94,7 +94,7 @@ describe('runAchieveWindowSkips', () => {
     expect(notify).toHaveBeenCalledTimes(1)
     const lines = (notify as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[]
     expect(lines).toEqual([
-      'On Thu, Oct 29, 12 of the 140 leads that passed the Achieve screen (9%) were not sent to Achieve. Each reached the Achieve step with under 3 seconds left of the 12 seconds a run keeps working after it answers the lead, too little for Achieve to reply.',
+      'On Thu, Oct 29, 12 of the 140 leads that passed the Achieve screen (9%) were not sent to Achieve. Each reached the Achieve step with under 4.5 seconds left of the 12 seconds a run keeps working after it answers the lead, too little for Achieve to reply.',
     ])
     expect(kv.store.get(judgedDayKey('2026-10-29'))).toBeDefined()
   })
