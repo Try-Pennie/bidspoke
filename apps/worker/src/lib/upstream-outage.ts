@@ -151,6 +151,9 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
     // parallel block's, or, since #3068, a code chain's, a node's own request
     // timer, the partner bid's timer, a bid group's race or the buyer select
     // budget. Read from the marker, so no message is matched for a marked run.
+    // The two #3075 added never bring a run here: a live buyer call its timer
+    // stopped is marked on the buyer's attempt row, which failingStepDeadline
+    // skips as the node's own, and achieve_offers marks a completed row.
     //
     // A gateway timeout (an upstream answering 504) is the upstream's answer, not
     // our deadline: it carries no marker and nothing below names it, so it is

@@ -4,10 +4,11 @@
  * rule, the trace header and the body are the resolver's; the timeout is the
  * caller's. No network here: the fetch is injected.
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
 import { PartnerApiError } from '../../engine/partner-bid-error'
 import { postToPartner } from '../post-to-partner'
+import { stepTimeoutMarkerOf } from '../../engine/step-timeout'
 
 const TARGET = { slug: 'tripoint', api_endpoint: 'https://tripoint-proxy.trypennie.dev/leads/create', cf_secret_key: 'TRIPOINT_PROXY_SECRET' }
 const env = { TRIPOINT_PROXY_SECRET: 'secret-value' } as unknown as Env
@@ -77,5 +78,61 @@ describe('postToPartner', () => {
       })
     ) as unknown as typeof fetch
     await expect(postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 5, fetchImpl })).rejects.toMatchObject({ name: 'AbortError' })
+  })
+})
+
+/**
+ * #3075: the call's own timer marks the abort it causes as the buyer call's
+ * deadline, so the buyer select attempt row it cut short can say so. The error
+ * itself is exactly the platform's abort, so the node's outcome_unknown
+ * handling, the breaker and every send are unchanged. Only the abort this timer
+ * caused is marked: never one from the step's signal, never one that merely
+ * says the same words.
+ */
+describe('postToPartner marks the abort its own timer caused (#3075)', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  const platformAbort = () => new DOMException('The operation was aborted.', 'AbortError')
+  const hanging = () => vi.fn((_url: string | URL | Request, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      if (init?.signal?.aborted) return reject(platformAbort())
+      init?.signal?.addEventListener('abort', () => reject(platformAbort()), { once: true })
+    })
+  ) as unknown as typeof fetch
+
+  it('its own timer firing: the same AbortError, marked buyer_call at the call\'s length', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const run = postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, fetchImpl: hanging() }).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(20_000)
+    const err = await run
+    expect(err).toBeInstanceOf(DOMException)
+    expect(err).toMatchObject({ name: 'AbortError', message: 'The operation was aborted.' })
+    expect(stepTimeoutMarkerOf(err)).toEqual({ timeout_kind: 'buyer_call', timed_out_after_ms: 20_000 })
+  })
+
+  it('an abort from the step signal first is not the call\'s timer: unmarked', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const step = new AbortController()
+    const run = postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, signal: step.signal, fetchImpl: hanging() }).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(1)
+    step.abort()
+    const err = await run
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(err).toMatchObject({ name: 'AbortError' })
+    expect(stepTimeoutMarkerOf(err)).toBeNull()
+  })
+
+  it('an abort nobody here caused, with the same words, is unmarked', async () => {
+    const fetchImpl = vi.fn(async () => { throw platformAbort() }) as unknown as typeof fetch
+    const err = await postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, fetchImpl }).catch((e: unknown) => e)
+    expect(err).toMatchObject({ name: 'AbortError' })
+    expect(stepTimeoutMarkerOf(err)).toBeNull()
+  })
+
+  it('a dropped connection is a failure, never a timeout', async () => {
+    const fetchImpl = vi.fn(async () => { throw new TypeError('fetch failed') }) as unknown as typeof fetch
+    const err = await postToPartner(TARGET, {}, env, { traceId: 't', timeoutMs: 20_000, fetchImpl }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(TypeError)
+    expect(stepTimeoutMarkerOf(err)).toBeNull()
   })
 })

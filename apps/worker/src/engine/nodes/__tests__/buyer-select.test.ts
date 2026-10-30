@@ -17,6 +17,7 @@ import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
 import { canaryBucket, canonicalBodySha256 } from '@bidspoke/buyer-profile'
 import { summariseParityDay } from '../../../lib/buyer-select-parity'
 import { ENGINE_TRIPOINT_SALE_PAYLOAD } from '../buyer-select-payload'
+import { markDeadline, stepTimeoutMarkerOf, BUYER_CALL_DEADLINE } from '../../step-timeout'
 import { createLeadSupabaseClient, noteLeadWriteUnanswered } from '../../../lib/lead-read-budget'
 import { BUYER_CALL_TIMEOUT_MS, BUYER_SALE_MIRROR_DEADLINE_MS, BUYER_SELECT_DECIDE_ONLY_DEADLINE_MS, BUYER_SELECT_LIVE_PRE_CALL_BUDGET_MS, MEASURED_OBJECT_CALL_P99_MS, executeBuyerSelectNode, productionDeps, type BuyerSelectDeps, type BuyerSelectOutput } from '../buyer-select'
 
@@ -1483,3 +1484,77 @@ describe('the budget that ended the walk is marked on the result (#3068)', () =>
     expect(r.deadline).toBeUndefined()
   })
 })
+
+/**
+ * #3075: the live buyer call's own timer (BUYER_CALL_TIMEOUT_MS, postToPartner)
+ * is one of our deadlines. When it fires, the buyer's attempt row carries the
+ * 'buyer_call' marker: the buyer call is that attempt's work, and the attempt
+ * row is the one the timer cut short. The node's own row is not marked: the
+ * node stopped because its rule holds and pages on an unknown outcome, the same
+ * as for a bare 504, and the budget marker it carries is #3068's alone. The
+ * route, the reason, the failure, the breaker, the hold and every send are what
+ * they were before the marker.
+ */
+describe('the live buyer call\'s own timer is marked on the buyer\'s attempt row (#3075)', () => {
+  const platformAbort = () => new DOMException('The operation was aborted.', 'AbortError')
+  const timedOut = () => markDeadline(platformAbort(), BUYER_CALL_DEADLINE, BUYER_CALL_TIMEOUT_MS)
+
+  it('marks the attempt row, and fails, holds and pages exactly as an unmarked abort does', async () => {
+    const marked = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [timedOut()] } })
+    const plain = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [platformAbort()] } })
+    const r = await run(marked)
+    const before = await run(plain)
+
+    expect(r.attempts).toHaveLength(1)
+    expect(r.attempts[0]).toMatchObject({ status: 'failed', error_type: 'transient', timeout: { timeout_kind: 'buyer_call', timed_out_after_ms: BUYER_CALL_TIMEOUT_MS } })
+    // The node's own row carries no marker: the budget marker is #3068's alone.
+    expect(r.deadline).toBeUndefined()
+
+    // Everything else is what the same abort without a marker produces.
+    const { timeout: _timeout, ...markedRow } = r.attempts[0]
+    expect(markedRow).toEqual(before.attempts[0])
+    expect(r.failure).toEqual(before.failure)
+    expect(r.output).toEqual(before.output)
+    expect(marked.buyerCalls).toEqual(plain.buyerCalls)
+    expect(marked.breakerCalls).toEqual(plain.breakerCalls)
+    expect(marked.bidRows).toEqual(plain.bidRows)
+    expect(marked.sales[0].state).toBe('in_flight')
+  })
+
+  it('an abort the call\'s timer did not cause leaves the attempt row unmarked', async () => {
+    const r = await run(harness({ answers: { tripoint: [platformAbort()] } }))
+    expect(r.attempts[0].status).toBe('failed')
+    expect(r.attempts[0]).not.toHaveProperty('timeout')
+  })
+
+  it('a buyer that answers, sells or declines, or a 504, leaves every row unmarked', async () => {
+    const cases: Record<string, PartnerCallResult[]>[] = [{}, { tripoint: [DUPLICATE] }, { tripoint: [BARE_504] }]
+    for (const answers of cases) {
+      const r = await run(harness({ answers }))
+      for (const attempt of r.attempts) expect(attempt).not.toHaveProperty('timeout')
+    }
+  })
+
+  it('the production buyer call marks its own timer\'s abort, at BUYER_CALL_TIMEOUT_MS', async () => {
+    const hung = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(platformAbort()), { once: true })
+    }))
+    vi.stubGlobal('fetch', hung)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const objects = { idFromName: () => 'id', get: () => ({}) }
+      const production = productionDeps(ctx(), { BUYER_LEDGER: objects, LEAD_SALE: objects, CIRCUIT_BREAKER: objects } as unknown as Env, {} as never)
+      const target = { slug: 'tripoint', api_endpoint: 'https://tripoint.example/leads', cf_secret_key: null }
+      const call = production.callBuyer(target, {}, { traceId: 't', timeoutMs: BUYER_CALL_TIMEOUT_MS }).catch((e: unknown) => e)
+      await vi.advanceTimersByTimeAsync(BUYER_CALL_TIMEOUT_MS)
+      const err = await call
+      expect(hung).toHaveBeenCalledTimes(1)
+      expect(err).toMatchObject({ name: 'AbortError' })
+      expect(stepTimeoutMarkerOf(err)).toEqual({ timeout_kind: 'buyer_call', timed_out_after_ms: BUYER_CALL_TIMEOUT_MS })
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+})
+

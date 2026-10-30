@@ -19,6 +19,8 @@ import {
   PARTNER_BID_DEADLINE,
   BID_GROUP_DEADLINE,
   BUYER_SELECT_DEADLINE,
+  BUYER_CALL_DEADLINE,
+  ACHIEVE_OFFERS_DEADLINE,
   TIMEOUT_KINDS,
   abortAfter,
   carryDeadline,
@@ -65,7 +67,7 @@ describe('the step deadline error carries its own classification', () => {
   })
 
   it('names each of our deadlines as its own kind (#3068)', () => {
-    expect([...TIMEOUT_KINDS]).toEqual([STEP_DEADLINE, PARALLEL_BLOCK_DEADLINE, CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE])
+    expect([...TIMEOUT_KINDS]).toEqual([STEP_DEADLINE, PARALLEL_BLOCK_DEADLINE, CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE, BUYER_CALL_DEADLINE, ACHIEVE_OFFERS_DEADLINE])
     expect(STEP_DEADLINE).toBe('step')
     expect(PARALLEL_BLOCK_DEADLINE).toBe('parallel_block')
     expect(CODE_CHAIN_DEADLINE).toBe('code_chain')
@@ -73,6 +75,9 @@ describe('the step deadline error carries its own classification', () => {
     expect(PARTNER_BID_DEADLINE).toBe('partner_bid')
     expect(BID_GROUP_DEADLINE).toBe('bid_group')
     expect(BUYER_SELECT_DEADLINE).toBe('buyer_select')
+    // #3075: the buyer select live buyer call's timer and the achieve_offers node's own wait.
+    expect(BUYER_CALL_DEADLINE).toBe('buyer_call')
+    expect(ACHIEVE_OFFERS_DEADLINE).toBe('achieve_offers')
     // Only the step's own deadline is what the audit and the daily report count.
     expect(TIMEOUT_KINDS.filter((k) => k === 'step')).toEqual([STEP_DEADLINE])
   })
@@ -186,6 +191,28 @@ describe('our own timers mark the error they caused, and only that one', () => {
     expect(stepTimeoutMarkerOf(timer.mark(platformAbort()))).toBeNull()
   })
 
+  // #3075: a node that does not fail when its own timer fires (achieve_offers
+  // records the timeout in its output and completes) has no error to mark, so
+  // it asks the timer for the marker its row should carry.
+  it('a timer that fired gives the marker for the row it cut short; one that did not gives none', () => {
+    vi.useFakeTimers()
+    const fired = abortAfter(new AbortController(), 9_000, ACHIEVE_OFFERS_DEADLINE)
+    expect(fired.marker()).toBeNull()
+    vi.advanceTimersByTime(9_000)
+    expect(fired.marker()).toEqual({ timeout_kind: ACHIEVE_OFFERS_DEADLINE, timed_out_after_ms: 9_000 })
+
+    const elsewhere = new AbortController()
+    const notOurs = abortAfter(elsewhere, 9_000, ACHIEVE_OFFERS_DEADLINE)
+    elsewhere.abort()
+    vi.advanceTimersByTime(9_000)
+    expect(notOurs.marker()).toBeNull()
+
+    const cleared = abortAfter(new AbortController(), 9_000, ACHIEVE_OFFERS_DEADLINE)
+    cleared.clear()
+    vi.advanceTimersByTime(9_000)
+    expect(cleared.marker()).toBeNull()
+  })
+
   it('a timer cleared before it ran never fires and marks nothing', () => {
     vi.useFakeTimers()
     const controller = new AbortController()
@@ -207,7 +234,7 @@ describe('which deadline stopped a step, from the marker alone (#3069)', () => {
   // #3068: the outage check counts a run as an upstream timeout by this read, so
   // each of our other deadlines must be named by it too, not only the first two.
   it('names every one of our deadlines, the ones #3068 added included', () => {
-    for (const kind of [CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE]) {
+    for (const kind of [CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_SELECT_DEADLINE, BUYER_CALL_DEADLINE, ACHIEVE_OFFERS_DEADLINE]) {
       expect(deadlineKindOf({ timeout_kind: kind })).toBe(kind)
     }
   })

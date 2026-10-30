@@ -10,6 +10,7 @@ export type { NodeType, NodeTraits } from '@bidspoke/node-types'
 import type { NodeType, WorkflowLane } from '@bidspoke/node-types'
 import type { ConditionOperator, HttpWebhookTrigger } from '@bidspoke/workflow-definition'
 import type { RetryTiming } from './lib/post-response-budget'
+import type { StepTimeoutMarker } from './engine/step-timeout'
 
 export interface WorkflowDefinition {
   id: string
@@ -326,6 +327,13 @@ export interface StepExecutionResult {
    * `logs` and `resolvedInput` do) and the engine reports it from one place.
    */
   blockSightings?: PartnerBlockSighting[]
+  /**
+   * Set only when the node's own timer cut its call short and the node completed
+   * anyway, recording the timeout in its output (#3075, achieve_offers): the
+   * marker the walk writes on the step's row. A node that fails instead marks
+   * the error it throws (engine/step-timeout.ts).
+   */
+  deadline?: StepTimeoutMarker
 }
 
 /**

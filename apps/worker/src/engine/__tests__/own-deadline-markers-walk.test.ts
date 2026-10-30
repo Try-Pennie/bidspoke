@@ -36,6 +36,7 @@ import { stepTimeoutMarkerOf, stepTimedOut } from '../step-timeout'
 import { getSalesforceToken, SALESFORCE_TOKEN_TIMEOUT_MS } from '../nodes/salesforce'
 import { resolveBid } from '../bid-resolver'
 import { executePartnerBidNode } from '../nodes/partner-bid'
+import { ACHIEVE_FETCH_TIMEOUT_MS } from '../nodes/achieve-offers'
 
 const INSTANCE = 'https://trypennie.my.salesforce.com'
 const RELAY_URL = 'https://relay.example.test/hook'
@@ -329,3 +330,58 @@ describe('a code chain\'s own deadline (#3068)', () => {
     expect(queue.filter((r) => r.timeout_kind !== undefined)).toHaveLength(1)
   })
 })
+
+/**
+ * #3075: the achieve_offers node's own wait. It never fails the step: it records
+ * the timeout in its output and the step completes. So the completed row is the
+ * one the wait cut short, and it carries 'achieve_offers'. Only the walk's row
+ * writing is new: the output, the status and the retry count are as before.
+ */
+describe('the achieve_offers node\'s own wait (#3075)', () => {
+  const achieve = (over: Record<string, unknown> = {}): NodeDefinition => ({ id: 'ach', namespace: 'achieve', type: 'achieve_offers', config: { retries: 0, ...over } })
+  // A lead with what the node needs to send (an email, a phone and a loan amount).
+  const achieveCtx = () => {
+    const c = buildContext({
+      Submission__c: 'a0XUi00000AbCdEFGH',
+      personalInformation: { email: 'lead@example.com', primaryPhone: '(646) 770-6541', firstName: 'Joseph', lastName: 'Guerrera', state: 'NY' },
+      loanInformation: { purpose: 'debt_consolidation', loanAmount: 7500 },
+    }, 'website_form', 'wf-1', 'trace-3075', { ACHIEVE_USERNAME: 'user', ACHIEVE_PASSWORD: 'pass' }, 'org-1', 'exec-3075')
+    c.retrySleep = async () => {}
+    c.stepDeadline = (_ms, signal) => new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
+    return c
+  }
+
+  it('marks the completed row at the wait\'s length, and its output says what it said', async () => {
+    fetchMock.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => hangUntilAborted(init))
+    const row = rowOf(await walk(sequential(achieve()), envWith(), achieveCtx()), 'achieve')
+    expect(row).toMatchObject({ status: 'completed', retries_used: 0, timeout_kind: 'achieve_offers', timed_out_after_ms: ACHIEVE_FETCH_TIMEOUT_MS })
+    expect(row.output).toMatchObject({ ok: false, response_status: 'error', response_reason: `Achieve API timed out after ${ACHIEVE_FETCH_TIMEOUT_MS}ms` })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(stepTimedOut(row)).toBe(false)
+  })
+
+  it('inside a parallel block: the child row is marked the same', async () => {
+    fetchMock.mockImplementation((_url: string, init?: { signal?: AbortSignal }) => hangUntilAborted(init))
+    const row = rowOf(await walk(inParallel(achieve()), envWith(), achieveCtx()), 'achieve')
+    expect(row).toMatchObject({ status: 'completed', timeout_kind: 'achieve_offers', timed_out_after_ms: ACHIEVE_FETCH_TIMEOUT_MS })
+  })
+
+  it('an abort the wait did not cause, though it reads as a timeout, leaves the row unmarked', async () => {
+    fetchMock.mockRejectedValue(platformAbort())
+    const row = rowOf(await walk(sequential(achieve()), envWith(), achieveCtx()), 'achieve')
+    expect(row.status).toBe('completed')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(row.output).toMatchObject({ response_reason: `Achieve API timed out after ${ACHIEVE_FETCH_TIMEOUT_MS}ms` })
+    expect(row).not.toHaveProperty('timeout_kind')
+  })
+
+  it('an answer in time leaves the row unmarked', async () => {
+    fetchMock.mockResolvedValue(response(200, { response: 'accepted', offers: [] }))
+    const row = rowOf(await walk(sequential(achieve()), envWith(), achieveCtx()), 'achieve')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(row.status).toBe('completed')
+    expect(row.output).toMatchObject({ ok: true, response_status: 'accepted' })
+    expect(row).not.toHaveProperty('timeout_kind')
+  })
+})
+
