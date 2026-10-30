@@ -19,15 +19,32 @@
  * step in it is an ordinary half edited block on the canvas. A
  * `wait_for_slot` naming an empty slot is refused when the block runs, as one
  * naming an unwired slot always has been.
+ *
+ * It lives in this package, not the engine, so the save time lead validation
+ * placement check (#3142) reads the same slots the engine runs: the two once
+ * fell back to a legacy `children` list on different conditions, so a block
+ * whose every slot was empty ran children the check never saw.
  */
-import type { EdgeDefinition, NodeDefinition } from '../types'
-import { findNode, outgoingEdges } from './graph'
 
-export interface ParallelSlot {
+/** What the slot list reads of a node: its id and type, and a legacy block's `children`. */
+export interface SlotNodeLike {
+  id: string
+  type: string
+  children?: string[]
+}
+
+/** What the slot list reads of an edge. */
+export interface SlotEdgeLike {
+  source: string
+  target: string
+  source_handle?: string | null
+}
+
+export interface ParallelSlot<N extends SlotNodeLike = SlotNodeLike> {
   /** The slot's handle id (`child-N`), or null for a legacy block's `children` entry, which has none. */
   handleId: string | null
   /** The slot's first step. */
-  node: NodeDefinition
+  node: N
 }
 
 const SLOT_HANDLE_PREFIX = 'child-'
@@ -57,22 +74,23 @@ function compareSlotHandles(a: string, b: string): number {
  * before 2026-04-30 kept its child ids on the node's `children` list with no
  * slot edges; when no slot holds a step, that list is read instead.
  */
-export function parallelSlots(
-  node: NodeDefinition,
-  definition: { nodes: NodeDefinition[]; edges: EdgeDefinition[] },
-): ParallelSlot[] {
-  const slots: ParallelSlot[] = []
-  const slotEdges = outgoingEdges(node.id, definition.edges)
-    .filter((e) => (e.source_handle ?? '').startsWith(SLOT_HANDLE_PREFIX))
+export function parallelSlots<N extends SlotNodeLike>(
+  node: SlotNodeLike,
+  definition: { nodes: readonly N[]; edges: readonly SlotEdgeLike[] },
+): ParallelSlot<N>[] {
+  const findNode = (id: string): N | undefined => definition.nodes.find((n) => n.id === id)
+  const slots: ParallelSlot<N>[] = []
+  const slotEdges = definition.edges
+    .filter((e) => e.source === node.id && (e.source_handle ?? '').startsWith(SLOT_HANDLE_PREFIX))
     .sort((a, b) => compareSlotHandles(a.source_handle ?? '', b.source_handle ?? ''))
   for (const e of slotEdges) {
-    const first = findNode(e.target, definition.nodes)
+    const first = findNode(e.target)
     if (first === undefined || first.type === 'parallel_end') continue
     slots.push({ handleId: e.source_handle ?? null, node: first })
   }
   if (slots.length > 0) return slots
   return (node.children ?? [])
-    .map((id) => findNode(id, definition.nodes))
-    .filter((n): n is NodeDefinition => n !== undefined)
+    .map((id) => findNode(id))
+    .filter((n): n is N => n !== undefined)
     .map((n) => ({ handleId: null, node: n }))
 }

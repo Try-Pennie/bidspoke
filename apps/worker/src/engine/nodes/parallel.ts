@@ -110,9 +110,9 @@ export async function executeParallelNode(
     return { output: [] as ParallelOutput }
   }
   // Slot i of one list must be slot i of the other (#3125): the engine builds
-  // both from one slot list (engine/parallel-slots.ts). Lists that disagree
-  // would make wait_for_slot and on_failure name a neighbour's slot, so they
-  // are refused before any child runs.
+  // both from one slot list (parallelSlots, packages/workflow-definition).
+  // Lists that disagree would make wait_for_slot and on_failure name a
+  // neighbour's slot, so they are refused before any child runs.
   if (slotHandleIds.length > 0 && slotHandleIds.length !== childNodes.length) {
     throw new Error(`Parallel block has ${childNodes.length} slot step(s) but ${slotHandleIds.length} slot handle(s); they must be read from one slot list`)
   }
