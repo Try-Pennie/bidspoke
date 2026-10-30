@@ -312,9 +312,13 @@ describe('the first run after deploy', () => {
 
 describe('a failed post', () => {
   it.each([
-    ['Slack refused it (ok:false)', async (): Promise<NoticePost> => ({ kind: 'failed', reason: 'Slack did not accept the post' })],
-    ['the network failed (it threw)', async (): Promise<NoticePost> => { throw new Error('Network connection lost.') }],
-  ])('is not marked sent when %s, and is posted on the next tick', async (_label, failing) => {
+    // Slack's refusal is recorded as not delivered, against the miss's open incident (#3056).
+    ['Slack refused it (ok:false)', async (): Promise<NoticePost> => ({ kind: 'failed', reason: 'Slack did not accept the post', refused: true }), ['opened', 'undelivered']],
+    // A connection that could not be read was never tried, so it records nothing either.
+    ['its Slack connection could not be read', async (): Promise<NoticePost> => ({ kind: 'failed', reason: 'the Slack connection could not be read: timeout' }), []],
+    // A post that threw may have landed, so it is recorded as neither.
+    ['the network failed (it threw)', async (): Promise<NoticePost> => { throw new Error('Network connection lost.') }, []],
+  ])('is not marked sent when %s, and is posted on the next tick', async (_label, failing, recorded) => {
     const row = miss()
     let fail = true
     const sent: string[] = []
@@ -330,7 +334,7 @@ describe('a failed post', () => {
     expect(h.kv.store.has(liveMissSentKey(row.id))).toBe(false)
     expect(h.kv.store.has(LIVE_MISS_WATERMARK_KEY)).toBe(false)
     expect(h.claims.held.size).toBe(0)
-    expect(transitions(h.kv.store)).toEqual([])
+    expect(transitions(h.kv.store).map((t) => t.split(' ')[0])).toEqual(recorded)
     expect(h.records[0].outcome).toBe('post_failed')
     expect(isFailedRun(liveMissNoticeRunFailure(s1))).toBe(true)
 

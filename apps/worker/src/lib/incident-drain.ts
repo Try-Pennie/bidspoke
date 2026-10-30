@@ -15,6 +15,10 @@
  *    event cannot hold the drain or its alert for ever. Set aside events are
  *    reported at once.
  *
+ * A page that did not reach Slack (#3056) arrives as an `undelivered` event:
+ * counted against its open incident, or, when nobody was ever told of it, kept
+ * as a row already closed as unannounced, which the lapse check below never reads.
+ *
  * Then, on a run that left nothing waiting, every open incident in the record
  * has its KV marker read directly, under the key the registry names for its
  * signal (incidentMarkerKey: alert-recovery's marker, or the check's own state
@@ -135,6 +139,12 @@ function callFor(e: IncidentEvent): { fn: string; args: Record<string, unknown> 
   }
   if (e.type === 'paged') {
     return { fn: 'record_alert_incident_paged', args: { ...base, p_paged_at: e.at, p_event_id: e.id, p_window_minutes: e.windowMinutes } }
+  }
+  if (e.type === 'undelivered') {
+    return {
+      fn: 'record_alert_incident_undelivered',
+      args: { ...base, p_at: e.at, p_event_id: e.id, p_unannounced: e.unannounced, p_window_minutes: e.windowMinutes },
+    }
   }
   return {
     fn: 'record_alert_incident_ended',

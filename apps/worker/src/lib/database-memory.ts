@@ -38,8 +38,8 @@
 import type { AlertClaims } from './alert-claim'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { backoffCooldownKey, clearCondition, type BackoffKv } from './alert-backoff'
-import { keepAlerted, markSpikeSeen, recordPaged, recoveryDue, recoveryKey, settleRecovery, RECOVERY_REARM_MINUTES, type IncidentContext, type RecoveryKv } from './alert-recovery'
-import { deliverAll, postStanding, type SlackTarget } from './standing-alert'
+import { keepAlerted, markSpikeSeen, pageTried, recordPageOutcome, recoveryDue, recoveryKey, settleRecovery, RECOVERY_REARM_MINUTES, type IncidentContext, type PostAttempt, type RecoveryKv } from './alert-recovery'
+import { deliverAll, postStandingOutcome, type SlackTarget } from './standing-alert'
 import { sendDatabaseMemoryShortAlert, sendDatabaseMemoryUnreadableAlert, sendGroupedRecoveryAlert } from './slack'
 import { recordMemoryReading, type StoredMemoryReading } from './database-memory-readings'
 import { formatErr } from './format-error'
@@ -399,9 +399,11 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
    * Keep the all-clear marker alive only for an incident that was actually posted (L12),
    * and record the page once the marker it belongs to stands.
    */
-  const keepIfAlerted = async (id: string, posted: boolean, since: string) => {
+  const keepIfAlerted = async (id: string, attempt: PostAttempt | null, since: string) => {
+    const posted = attempt === 'sent'
     if (posted || (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, id))) !== null) await keepAlerted(deps.kv, RECOVERY_PREFIX, id, since, incident(id), nowMs)
-    if (posted) await recordPaged(deps.kv, RECOVERY_PREFIX, id, incident(id), nowMs)
+    // Delivered or not, a page this run tried is recorded (#3056); null is a run that tried none.
+    if (attempt !== null && pageTried(attempt)) await recordPageOutcome(deps.kv, RECOVERY_PREFIX, id, incident(id), nowMs, posted)
   }
 
   const allClear = async (id: string, key: string, subject: string, signal: string, recoveredPhrase: string) => {
@@ -434,13 +436,13 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, MEMORY_ID, nowMs)
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, FEED_ID, nowMs)
     if (nowMs - Date.parse(feedSince) >= FEED_UNREADABLE_ALERT_AFTER_MS) {
-      const posted = await postStanding({
+      const posted = await postStandingOutcome({
         kv: deps.kv, key: DATABASE_MEMORY_UNREADABLE_KEY, claim, release, targets, nowMs,
         alert: { problem: 'feed-unreadable', details: [reason] },
         conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[database-memory]', log: deps.log,
         send: (s, repeat) => deps.senders.unreadable(s, s.default_channel, { reason, since: feedSince, repeat, at: nowMs }),
       })
-      if (posted) summary.alerts.push('unreadable')
+      if (posted === 'sent') summary.alerts.push('unreadable')
       await keepIfAlerted(FEED_ID, posted, feedSince)
     }
     return summary
@@ -462,13 +464,13 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
         since: state.since,
         at: nowMs,
       }
-      const posted = await postStanding({
+      const posted = await postStandingOutcome({
         kv: deps.kv, key: DATABASE_MEMORY_KEY, claim, release, targets, nowMs,
         alert: { problem: 'memory-short', details: [String(payload.lowFree), String(payload.swapping), String(Math.round(payload.lowestAvailableBytes / MB))] },
         conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[database-memory]', log: deps.log,
         send: (s, repeat) => deps.senders.short(s, s.default_channel, { ...payload, repeat }),
       })
-      if (posted) summary.alerts.push('short')
+      if (posted === 'sent') summary.alerts.push('short')
       await keepIfAlerted(MEMORY_ID, posted, state.since)
     }
     return summary

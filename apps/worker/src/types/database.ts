@@ -285,6 +285,7 @@ export type Database = {
           organization_id: string | null
           paged_event_ids: string[]
           pages_sent: number
+          pages_undelivered: number
           previous_starts: string[]
           scope: string
           signal: string
@@ -292,6 +293,7 @@ export type Database = {
           subject: string
           subject_label: string | null
           successor_signal: string | null
+          undelivered_event_ids: string[]
           updated_at: string
           window_minutes: number | null
         }
@@ -307,6 +309,7 @@ export type Database = {
           organization_id?: string | null
           paged_event_ids?: string[]
           pages_sent?: number
+          pages_undelivered?: number
           previous_starts?: string[]
           scope: string
           signal: string
@@ -314,6 +317,7 @@ export type Database = {
           subject: string
           subject_label?: string | null
           successor_signal?: string | null
+          undelivered_event_ids?: string[]
           updated_at?: string
           window_minutes?: number | null
         }
@@ -329,6 +333,7 @@ export type Database = {
           organization_id?: string | null
           paged_event_ids?: string[]
           pages_sent?: number
+          pages_undelivered?: number
           previous_starts?: string[]
           scope?: string
           signal?: string
@@ -336,6 +341,7 @@ export type Database = {
           subject?: string
           subject_label?: string | null
           successor_signal?: string | null
+          undelivered_event_ids?: string[]
           updated_at?: string
           window_minutes?: number | null
         }
@@ -3613,6 +3619,21 @@ export type Database = {
           p_started_at: string
           p_subject: string
           p_subject_label: string
+          p_window_minutes: number
+        }
+        Returns: string
+      }
+      record_alert_incident_undelivered: {
+        Args: {
+          p_at: string
+          p_event_id: string
+          p_organization_id: string
+          p_scope: string
+          p_signal: string
+          p_started_at: string
+          p_subject: string
+          p_subject_label: string
+          p_unannounced: boolean
           p_window_minutes: number
         }
         Returns: string

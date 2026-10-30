@@ -34,10 +34,11 @@
  * RESEND_INTERVAL_MS, never every minute.
  *
  * THE INCIDENT (`slack-post-refused` in incident-signals.ts) opens with the
- * run's first refusal, before any page (keepAlerted), and `recordPaged` is
- * written only once Better Stack has taken a page. A page Better Stack does not
- * take (refused, unanswered, its secrets unset) writes a distinct line and no
- * paged record, is tried again the next minute, records the run as failed in
+ * run's first refusal, before any page (keepAlerted), and `recordPageOutcome`
+ * records each page Better Stack answered: paged once it has taken one, and not
+ * delivered when it refused one or its secrets are unset (#3056). A page Better
+ * Stack does not take (refused, unanswered, its secrets unset) writes a distinct
+ * line and no paged record, is tried again the next minute, records the run as failed in
  * job_runs, and fails the run (failedRun), so three such minutes page through
  * the failing scheduled job alert as well. The all clear says it failed and when.
  *
@@ -60,7 +61,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
-import { activeKey, announceRecovery, keepAlerted, markSpikeSeen, recordPaged, recoveryKey, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { activeKey, announceRecovery, keepAlerted, markSpikeSeen, recordPageOutcome, recoveryKey, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { MINUTE_ALERT_CLAIM_TTL_SECONDS, minuteAlertClaimKey, minuteAllClearClaim, readEverySlackConnection } from './alert-fanout'
 import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 import { sendBetterStackLine, type BetterStackLineOptions, type BetterStackSendOutcome } from './better-stack-line'
@@ -443,9 +444,14 @@ export async function runSlackRefusalWatch(deps: SlackRefusalWatchDeps): Promise
     } catch (e) {
       out = { outcome: 'threw', error: formatErr(e) }
     }
+    const delivered = out.outcome === 'sent'
+    // Recorded delivered or not (#3056). A page Better Stack refused, or one with no
+    // secrets to send it with, reached nobody; an unanswered or throwing one may
+    // have landed, so it is recorded as neither.
+    const answered = delivered || out.outcome === 'refused' || out.outcome === 'not_configured'
+    if (orgId && ctx && answered) await recordPageOutcome(deps.kv, SLACK_REFUSED_SIGNAL, orgId, ctx, now, delivered)
     if (out.outcome === 'sent') {
       await writeState(subject, { ...state, lastSentAt: nowIso, firstSentAt: state.firstSentAt ?? nowIso })
-      if (orgId && ctx) await recordPaged(deps.kv, SLACK_REFUSED_SIGNAL, orgId, ctx, now)
       console.warn(`[slack-refusal-watch] paged Better Stack for ${who}: ${refused} ${kind} refusals since ${since}, the commonest ${reason}`)
       summary.paged.push(subject)
       return

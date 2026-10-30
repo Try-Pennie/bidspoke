@@ -89,6 +89,22 @@ describe('runPgCronWatch: a failing job', () => {
     expect(sendPgCronAlert).toHaveBeenCalledTimes(2)
   })
 
+  it('records a page Slack refused as not delivered, and nothing when no organization was told or the send threw (#3056)', async () => {
+    vi.mocked(sendPgCronAlert).mockResolvedValue(false)
+    const refused = fakeKv()
+    await runPgCronWatch(fakeSupabase([failing]), refused, NOW)
+    expect(transitions(refused.store)).toEqual([`undelivered ${failing.jobname}`])
+
+    const nobody = fakeKv()
+    await runPgCronWatch(fakeSupabase([failing], { orgs: [] }), nobody, NOW)
+    expect(transitions(nobody.store)).toEqual([])
+
+    vi.mocked(sendPgCronAlert).mockRejectedValue(new Error('Network connection lost.'))
+    const threw = fakeKv()
+    await runPgCronWatch(fakeSupabase([failing]), threw, NOW)
+    expect(transitions(threw.store)).toEqual([])
+  })
+
   it('stays quiet on the next run while the cooldown holds', async () => {
     const kv = fakeKv()
     const supabase = fakeSupabase([failing])

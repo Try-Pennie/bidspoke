@@ -29,7 +29,7 @@ import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { formatErr } from './format-error'
 import { sendPgCronAlert, sendPgCronRecoveryAlert } from './slack'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, pageTried, recordPageOutcome, roundAttempt, type IncidentContext, type SendAnswer } from './alert-recovery'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -475,10 +475,13 @@ async function checkOne(
 
   if (await kv.get(cooldownKey(verdict.jobname))) return { ...verdict, alerted: false }
 
-  let alerted = false
+  // A send that throws ends this job's check, as it always has, and records nothing.
+  const answers: SendAnswer[] = []
   for (const orgId of orgIds) {
-    if (await sendPgCronAlert(supabase, orgId, verdict, row.schedule)) alerted = true
+    answers.push(Boolean(await sendPgCronAlert(supabase, orgId, verdict, row.schedule)))
   }
+  const attempt = roundAttempt(answers)
+  const alerted = attempt === 'sent'
   // Armed only on delivery, so a Slack outage during the first bad run does not
   // buy six hours of silence about something nobody was told. The same rule for
   // the delivered-failure stamp and the recovery start marker: remembering an
@@ -486,10 +489,13 @@ async function checkOne(
   if (alerted) {
     await kv.put(cooldownKey(verdict.jobname), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
     await recoveryBookkeeping(verdict.jobname, 'start marker', () => markAlerted(kv, RECOVERY_PREFIX, verdict.jobname, pgCronIncident(verdict.jobname), nowMs))
-    await recoveryBookkeeping(verdict.jobname, 'page record', () => recordPaged(kv, RECOVERY_PREFIX, verdict.jobname, pgCronIncident(verdict.jobname), nowMs))
-    if (verdict.status === 'failing' && row.last_failure_at !== null) {
-      await kv.put(alertedFailureKey(row.jobname), row.last_failure_at, { expirationTtl: ALERTED_FAILURE_TTL_SECONDS })
-    }
+  }
+  // Delivered or refused, the page is recorded (#3056): one nobody received keeps
+  // the incident that was due. With no organization to tell, nothing is. The
+  // watch runs hourly.
+  if (pageTried(attempt)) await recoveryBookkeeping(verdict.jobname, 'page record', () => recordPageOutcome(kv, RECOVERY_PREFIX, verdict.jobname, pgCronIncident(verdict.jobname), nowMs, alerted, { sameIncidentWithinMinutes: 2 * 60 }))
+  if (alerted && verdict.status === 'failing' && row.last_failure_at !== null) {
+    await kv.put(alertedFailureKey(row.jobname), row.last_failure_at, { expirationTtl: ALERTED_FAILURE_TTL_SECONDS })
   }
   return { ...verdict, alerted }
 }

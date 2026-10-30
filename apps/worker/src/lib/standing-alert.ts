@@ -10,6 +10,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { readEverySlackConnection, type SlackListUse } from './alert-fanout'
 import { describeCopyAge } from './scheduled-slack'
+import { noteSend, roundAttempt, type PostAttempt, type SendAnswer } from './alert-recovery'
 import { describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, touchCondition, type BackoffKv } from './alert-backoff'
 
 export type SlackTarget = { bot_token: string; default_channel: string }
@@ -49,16 +50,21 @@ export async function resolveSlackForEveryOrg(deps: {
 
 /** Deliver one message to every connection; true if any accepted it. */
 export async function deliverAll(targets: SlackTarget[], send: (s: SlackTarget) => Promise<string | boolean | null>): Promise<boolean> {
-  let delivered = false
+  return (await deliverAllAttempt(targets, send)) === 'sent'
+}
+
+/**
+ * deliverAll, saying what the round came to (#3056): `sent` when any connection
+ * accepted it, `not_sent` when none did and at least one refused, `not_tried`
+ * when there was no connection or every send threw (and may have landed).
+ */
+export async function deliverAllAttempt(targets: SlackTarget[], send: (s: SlackTarget) => Promise<string | boolean | null>): Promise<'sent' | 'not_sent' | 'not_tried'> {
+  const answers: SendAnswer[] = []
   for (const s of targets) {
-    try {
-      const r = await send(s)
-      if (r !== null && r !== false) delivered = true
-    } catch {
-      // A throwing send counts as not delivered; the caller keeps its state and retries next tick.
-    }
+    // A throwing send counts as not delivered; the caller keeps its state and retries next tick.
+    await noteSend(answers, () => send(s), () => {})
   }
-  return delivered
+  return roundAttempt(answers)
 }
 
 /** What one standing post is about (#1768): the problem, and the details it shows beside it. */
@@ -91,29 +97,40 @@ export interface StandingPost {
  * Returns whether a post went out.
  */
 export async function postStanding(p: StandingPost): Promise<boolean> {
+  return (await postStandingOutcome(p)) === 'sent'
+}
+
+/**
+ * postStanding, saying what it came to (#3056): `sent`; `not_sent` when every
+ * connection it went to refused it; `not_tried` when there was no connection or
+ * every send threw; `in_cooldown` or `claimed_elsewhere` when this tick did not
+ * try it. A check that records its pages (recordPageOutcome) records only a post
+ * sent or refused (pageTried).
+ */
+export async function postStandingOutcome(p: StandingPost): Promise<PostAttempt> {
   const standing = await readCondition(p.kv, p.key)
   if (standing) await touchCondition(p.kv, p.key, standing, p.conditionTtlSeconds)
   const print = await fingerprintAlert({ title: p.key, findings: [p.alert.problem], alsoShown: p.alert.details })
   const recurrence = recurrenceOf(standing, print)
   const different = recurrence.kind === 'new' && standing !== null
-  if (!different && (await inCooldown(p.kv, p.key))) return false
-  if (!(await p.claim(p.key))) return false
+  if (!different && (await inCooldown(p.kv, p.key))) return 'in_cooldown'
+  if (!(await p.claim(p.key))) return 'claimed_elsewhere'
   const targets = typeof p.targets === 'function' ? await p.targets() : p.targets
   if (targets.length === 0) {
     p.log(`${p.logPrefix} no Slack connection, so ${p.key} was logged but not posted`)
     await p.release(p.key)
-    return false
+    return 'not_tried'
   }
   const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
   const repeat = describeRepeat(reminderOf, p.nowMs, recurrence.kind === 'reminder' && recurrence.unchanged)
-  const delivered = await deliverAll(targets, (s) => p.send(s, repeat))
-  if (!delivered) {
+  const attempt = await deliverAllAttempt(targets, (s) => p.send(s, repeat))
+  if (attempt !== 'sent') {
     await p.release(p.key)
-    return false
+    return attempt
   }
   await recordAlert(p.kv, p.key, reminderOf, p.nowMs, {
     conditionTtlSeconds: p.conditionTtlSeconds,
     fingerprint: nextFingerprint(standing, print),
   })
-  return true
+  return 'sent'
 }

@@ -47,8 +47,8 @@ import { isIdleShutdownRefusal, parsePartnerPageNotice, partnerPageTopic } from 
 import type { AlertClaims } from './alert-claim'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { backoffCooldownKey, clearCondition, type BackoffKv } from './alert-backoff'
-import { keepAlerted, markSpikeSeen, recordPaged, recoveryDue, recoveryKey, settleRecovery, RECOVERY_REARM_MINUTES, type IncidentContext, type RecoveryKv } from './alert-recovery'
-import { deliverAll, postStanding, type SlackTarget } from './standing-alert'
+import { keepAlerted, markSpikeSeen, pageTried, recordPageOutcome, recoveryDue, recoveryKey, settleRecovery, RECOVERY_REARM_MINUTES, type IncidentContext, type PostAttempt, type RecoveryKv } from './alert-recovery'
+import { deliverAll, postStandingOutcome, type SlackTarget } from './standing-alert'
 import type { sendGroupedRecoveryAlert, sendPartnerPageLiveAlert } from './slack'
 import { formatErr } from './format-error'
 
@@ -397,9 +397,11 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
     subjectLabel: id === CHANNEL_ID ? 'The partners page channel' : 'The partners page delivery check',
     onRecordError: (message) => summary.errors.push(`incident record: ${message}`),
   })
-  const keepIfAlerted = async (id: string, posted: boolean, since: string) => {
+  const keepIfAlerted = async (id: string, attempt: PostAttempt | null, since: string) => {
+    const posted = attempt === 'sent'
     if (posted || (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, id))) !== null) await keepAlerted(deps.kv, RECOVERY_PREFIX, id, since, incident(id), nowMs)
-    if (posted) await recordPaged(deps.kv, RECOVERY_PREFIX, id, incident(id), nowMs)
+    // Delivered or not, a page this run tried is recorded (#3056); null is a run that tried none.
+    if (attempt !== null && pageTried(attempt)) await recordPageOutcome(deps.kv, RECOVERY_PREFIX, id, incident(id), nowMs, posted)
   }
   /** True once this run delivered the all-clear and settled the incident. */
   const allClear = async (id: string, key: string, subject: string, signal: string, recoveredPhrase: string): Promise<boolean> => {
@@ -446,13 +448,13 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, MONITOR_ID, nowMs)
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, CHANNEL_ID, nowMs)
     if (nowMs - Date.parse(since) >= UNMEASURED_ALERT_AFTER_MS) {
-      const posted = await postStanding({
+      const posted = await postStandingOutcome({
         kv: deps.kv, key: PARTNER_PAGE_MONITOR_UNMEASURED_KEY, claim, release, targets, nowMs,
         alert: { problem: 'monitor-cannot-run', details: [outcome.reason] },
         conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[partner-page-monitor]', log: deps.log,
         send: (s, repeat) => deps.senders.live(s, s.default_channel, { problem: 'monitor', reason: outcome.reason, since, repeat, at: nowMs }),
       })
-      if (posted) summary.alerts.push(MONITOR_ID)
+      if (posted === 'sent') summary.alerts.push(MONITOR_ID)
       await keepIfAlerted(MONITOR_ID, posted, since)
     }
     return summary
@@ -499,7 +501,7 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
     const firstMissOnly = streak.consecutive >= CONSECUTIVE_MISSES_TO_PAGE ? undefined : !stateRead ? 'unread' as const : !saved ? 'unsaved' as const : undefined
     if (streak.consecutive < CONSECUTIVE_MISSES_TO_PAGE && !firstMissOnly) {
       deps.log(`[partner-page-monitor] miss ${streak.consecutive} in a row, pages if the next run misses too`)
-      await keepIfAlerted(CHANNEL_ID, false, since)
+      await keepIfAlerted(CHANNEL_ID, null, since)
       return summary
     }
     const checks = { runs: streak.runs, misses: streak.misses }
@@ -507,13 +509,13 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
       ? `the monitor could not join the channel: ${outcome.reason}`
       : `no notice arrived within ${RECEIPT_DEADLINE_MS / 1000} seconds of the first ping, after ${outcome.pings} ${outcome.pings === 1 ? 'ping' : 'pings'}` +
         (outcome.rounds > 1 ? ', on a fresh connection as on the first' : '')
-    const posted = await postStanding({
+    const posted = await postStandingOutcome({
       kv: deps.kv, key: PARTNER_PAGE_LIVE_KEY, claim, release, targets, nowMs,
       alert: { problem: `channel-${outcome.kind}`, details: [reason] },
       conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[partner-page-monitor]', log: deps.log,
       send: (s, repeat) => deps.senders.live(s, s.default_channel, { problem: 'channel', reason, since: streak.since, checks, ...(firstMissOnly ? { firstMissOnly } : {}), repeat, at: nowMs }),
     })
-    if (posted) summary.alerts.push(CHANNEL_ID)
+    if (posted === 'sent') summary.alerts.push(CHANNEL_ID)
     await keepIfAlerted(CHANNEL_ID, posted, since)
     return summary
   }

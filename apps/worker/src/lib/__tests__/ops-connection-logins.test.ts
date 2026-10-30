@@ -97,6 +97,19 @@ describe('the page', () => {
     expect(h.kv.store.get(recoveryKey(OPS_CONNECTION_LOGIN_SIGNAL, CONN_A))).toBe(iso(NOW))
   })
 
+  it('records a page held by the reminder interval as nothing, and one Slack refused as not delivered (#3056)', async () => {
+    const h = harness()
+    await h.run(judged(list([needs()])))
+    await h.run(judged(list([needs()])), NOW + MIN)
+    // The second run tried no page: it was inside the interval, never refused.
+    expect(transitions(h.kv.store)).toEqual([`opened ${CONN_A}`, `paged ${CONN_A}`])
+
+    const refused = harness()
+    refused.sendAlert.mockResolvedValue(false)
+    await refused.run(judged(list([needs()])))
+    expect(transitions(refused.kv.store)).toEqual([`undelivered ${CONN_A}`])
+  })
+
   it('pages at once when a connection in refresh_failing goes on to needs_reauth, the same incident', async () => {
     const h = harness()
     await h.run(judged(list([failing()])))
