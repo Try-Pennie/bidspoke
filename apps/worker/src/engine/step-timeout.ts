@@ -10,17 +10,22 @@
  * Our other deadlines are marked where they pass too (#3068), each as its own
  * kind: a code chain's dispatch, a node's own request timer, the partner bid's
  * bid request, a bid group that stops waiting for a partner, and the buyer
- * select budget. A timer marks the error its own abort caused (abortAfter,
- * markDeadline), never by its text: "The operation was aborted" is what every
- * abort says. Every other step row carries neither column.
+ * select budget; and since #3075 the buyer select live buyer call and the
+ * achieve_offers node's own wait. A timer marks the error its own abort caused
+ * (abortAfter, markDeadline), never by its text: "The operation was aborted" is
+ * what every abort says. A node that records its timeout in its output and
+ * completes has no error to mark, so it asks its timer for the row's marker
+ * (OwnTimer.marker). Every other step row carries neither column.
  *
  * WHICH ROW CARRIES IT. The row of the step whose work the deadline cut short,
  * whatever status it ends in, as the step's own deadline already marks a
  * skipped or failed_with_fallback row. A parent that absorbed a child's
  * deadline and carried on is not marked, since nothing stopped it: a bid group
  * that stopped waiting for one partner marks that partner's attempt row, never
- * its own. Only STEP_DEADLINE is what the step timeout audit and the daily
- * writes report count, so a new kind changes neither.
+ * its own, and a buyer select whose live buyer call its own timer stopped
+ * marks that buyer's attempt row, never its own, which failed by its rule on an
+ * unknown outcome. Only STEP_DEADLINE is what the step timeout audit and the
+ * daily writes report count, so a new kind changes neither.
  *
  * `error_type` stays `transient` for a timeout: it decides whether a step is
  * retried (withRetry retries only `transient`) and how an alert labels it, so a
@@ -46,6 +51,15 @@ export const PARTNER_BID_DEADLINE = 'partner_bid'
 export const BID_GROUP_DEADLINE = 'bid_group'
 /** The buyer select node's budget ran out and ended its walk. */
 export const BUYER_SELECT_DEADLINE = 'buyer_select'
+/**
+ * A buyer post's own timer aborted it (postToPartner, #3075): the buyer select
+ * live buyer call (BUYER_CALL_TIMEOUT_MS), marked on that buyer's attempt row.
+ * buyer_click_send's post runs under the same timer, but its node records no
+ * marker on a row.
+ */
+export const BUYER_CALL_DEADLINE = 'buyer_call'
+/** The achieve_offers node's own wait aborted its call to Achieve (#3075), marked on its completed row. */
+export const ACHIEVE_OFFERS_DEADLINE = 'achieve_offers'
 /** Every value a step row's `timeout_kind` can hold. */
 export const TIMEOUT_KINDS = [
   STEP_DEADLINE,
@@ -55,6 +69,8 @@ export const TIMEOUT_KINDS = [
   PARTNER_BID_DEADLINE,
   BID_GROUP_DEADLINE,
   BUYER_SELECT_DEADLINE,
+  BUYER_CALL_DEADLINE,
+  ACHIEVE_OFFERS_DEADLINE,
 ] as const
 export type TimeoutKind = (typeof TIMEOUT_KINDS)[number]
 
@@ -137,6 +153,12 @@ export interface OwnTimer {
   clear(): void
   /** Marks `err` with this timer's kind and deadline when this timer fired, and returns it either way. */
   mark<T>(err: T): T
+  /**
+   * The marker for the row of a step this timer cut short, or null when it did
+   * not fire (#3075). For a node that does not fail when its timer fires, and so
+   * has no error to mark: it carries this on its result instead.
+   */
+  marker(): StepTimeoutMarker | null
 }
 
 /**
@@ -159,6 +181,7 @@ export function abortAfter(controller: AbortController, ms: number, kind: Timeou
     fired: () => fired,
     clear: () => clearTimeout(handle),
     mark: (err) => (fired ? markDeadline(err, kind, ms) : err),
+    marker: () => (fired ? timeoutMarker(kind, ms) : null),
   }
 }
 

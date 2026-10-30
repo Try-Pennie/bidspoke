@@ -30,7 +30,7 @@ import {
   DEFAULT_OUTAGE_THRESHOLD,
   type MarkedFailedStep,
 } from '../upstream-outage'
-import { STEP_DEADLINE, PARALLEL_BLOCK_DEADLINE, CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, stepTimeoutMessage } from '../../engine/step-timeout'
+import { STEP_DEADLINE, PARALLEL_BLOCK_DEADLINE, CODE_CHAIN_DEADLINE, REQUEST_DEADLINE, PARTNER_BID_DEADLINE, BID_GROUP_DEADLINE, BUYER_CALL_DEADLINE, stepTimeoutMessage } from '../../engine/step-timeout'
 import { sendUpstreamOutageAlert } from '../slack'
 
 // A message no text matcher of any cause recognises, so only the marker can
@@ -121,6 +121,16 @@ describe('failingStepDeadline binds a marker to the step the run failed on (#306
   // group named by the node itself (step_node_id equals parallel_group_id). Such a
   // row is never a parallel block's child, so a run that failed on a block is not
   // read as timed out because a bid group earlier in it stopped waiting for a partner.
+  // #3075 marks a live buyer call its own timer stopped on the buyer's attempt
+  // row, never on the buyer_select row the run failed on. The attempt sits in the
+  // node's own group, so a run a buyer call timed out is read exactly as before:
+  // not our deadline. A buyer that does not answer is that buyer's, not a shared
+  // upstream, so the check's meaning is unchanged.
+  it('a buyer select run whose buyer call timed out is not read as our deadline: the marker is on the attempt row', () => {
+    const attempt: MarkedFailedStep = { ...marked('e1', 'partner_bid', BUYER_CALL_DEADLINE, 'select-node'), step_node_id: 'select-node' }
+    expect(failingStepDeadline({ id: 'e1', failed_step_type: 'buyer_select' }, [attempt])).toBeNull()
+  })
+
   it('never takes a node\'s own attempt row for the child its parallel block failed on', () => {
     const attempt = (kind: string): MarkedFailedStep => ({ ...marked('e1', 'partner_bid', kind, 'group-node'), step_node_id: 'group-node' })
     expect(failingStepDeadline({ id: 'e1', failed_step_type: 'parallel' }, [attempt(BID_GROUP_DEADLINE)])).toBeNull()

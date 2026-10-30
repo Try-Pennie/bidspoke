@@ -127,6 +127,97 @@ describe('executeAchieveOffersNode', () => {
     }
   })
 
+  // #3075: the node's own wait is one of our deadlines. It does not fail the step
+  // (the timeout is recorded in the output and the step completes), so the result
+  // carries the marker the walk writes on the row; the output is what it was.
+  describe('its own wait is marked on the result when it fires (#3075)', () => {
+    const aborted = () => Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' })
+    const hangUntilAborted = () => vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      if (init.signal?.aborted) return reject(aborted())
+      init.signal?.addEventListener('abort', () => reject(aborted()), { once: true })
+    })))
+
+    it('a reply that never came: marked achieve_offers at the wait, the output unchanged', async () => {
+      vi.useFakeTimers()
+      try {
+        hangUntilAborted()
+        const pending = executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)
+        await vi.advanceTimersByTimeAsync(ACHIEVE_FETCH_TIMEOUT_MS)
+        const result = await pending
+        expect(result.deadline).toEqual({ timeout_kind: 'achieve_offers', timed_out_after_ms: ACHIEVE_FETCH_TIMEOUT_MS })
+        expect(result.output).toMatchObject({ _achieve_evaluation: true, ok: false, response_status: 'error', response_reason: `Achieve API timed out after ${ACHIEVE_FETCH_TIMEOUT_MS}ms` })
+        expect(result).not.toHaveProperty('error')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('a shortened wait is marked at the length it actually waited', async () => {
+      vi.useFakeTimers({ now: 0 })
+      try {
+        hangUntilAborted()
+        const pending = executeAchieveOffersNode(makeNode(), Object.assign(makeCtx(), { continuationMsLeft: () => 2_500 }), {} as Env)
+        await vi.runAllTimersAsync()
+        expect((await pending).deadline).toEqual({ timeout_kind: 'achieve_offers', timed_out_after_ms: 2_000 })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('a body the wait cut short is marked too: the timer stopped the read', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          text: () => new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(aborted()), { once: true })
+          }),
+        })))
+        const pending = executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)
+        await vi.advanceTimersByTimeAsync(ACHIEVE_FETCH_TIMEOUT_MS)
+        const result = await pending
+        expect(result.deadline).toEqual({ timeout_kind: 'achieve_offers', timed_out_after_ms: ACHIEVE_FETCH_TIMEOUT_MS })
+        expect(result.output).toMatchObject({ ok: false, response_status: 'error' })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('the step\'s own deadline aborting first is not the node\'s wait: unmarked', async () => {
+      vi.useFakeTimers()
+      try {
+        hangUntilAborted()
+        const step = new AbortController()
+        const pending = executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env, step.signal)
+        await vi.advanceTimersByTimeAsync(1)
+        step.abort()
+        const result = await pending
+        await vi.advanceTimersByTimeAsync(ACHIEVE_FETCH_TIMEOUT_MS)
+        expect(result).not.toHaveProperty('deadline')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('an abort nobody here caused, though it reads as a timeout, is unmarked', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(aborted()))
+      const result = await executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)
+      expect(result.output).toMatchObject({ response_reason: `Achieve API timed out after ${ACHIEVE_FETCH_TIMEOUT_MS}ms` })
+      expect(result).not.toHaveProperty('deadline')
+    })
+
+    it('an answer, an error answer and a dropped connection are unmarked', async () => {
+      mockFetchOnce(200, acceptedResponse(1))
+      expect(await executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)).not.toHaveProperty('deadline')
+      mockFetchOnce(500, { message: 'down' })
+      expect(await executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)).not.toHaveProperty('deadline')
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
+      expect(await executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)).not.toHaveProperty('deadline')
+    })
+  })
+
   // #2834: the node waits only as long as the window after the answer has left,
   // less a margin, and never longer than 9 s. The engine hands it that time as
   // ctx.continuationMsLeft; absent (before the answer, or a test run) means no window.

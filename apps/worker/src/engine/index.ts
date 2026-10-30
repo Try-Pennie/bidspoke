@@ -2229,7 +2229,8 @@ export async function walkGraph(
         recordStepOutput(ctx, attempt.namespace, { output: attempt.output, status: attempt.status, error: attempt.error ?? undefined, error_type: attempt.error_type })
         const childNode: NodeDefinition = { id: node.id, namespace: attempt.namespace, type: 'partner_bid', config: {} }
         const attemptInput: ResolvedStepInput = { template: { partner_slug: attempt.partner_slug }, resolved: attempt.input }
-        logStep(stepLogQueue, executionId, executionStartedAt, childNode, attempt.status, attemptInput, attempt.output, attempt.error ?? undefined, attempt.error_type, 0, attempt.started_at.toISOString(), attemptOrderBase + attemptIndex, node.id)
+        // A live buyer call its own timer stopped marks this buyer's row (#3075).
+        logStep(stepLogQueue, executionId, executionStartedAt, childNode, attempt.status, attemptInput, attempt.output, attempt.error ?? undefined, attempt.error_type, 0, attempt.started_at.toISOString(), attemptOrderBase + attemptIndex, node.id, undefined, attempt.timeout ?? null)
         log({ event: attempt.status === 'completed' ? 'step_complete' : 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: attempt.namespace, step_type: 'partner_bid', duration_ms: attempt.completed_at.getTime() - attempt.started_at.getTime(), error_message: attempt.error ?? undefined, error_type: attempt.error_type })
       })
 
@@ -2528,6 +2529,8 @@ export async function walkGraph(
       lastOutput = output
       stepLogs = result.logs
       resolvedInput = result.resolvedInput ?? null
+      // A node whose own timer stopped its call and that completed anyway says so (#3075).
+      stepTimeout = result.deadline ?? null
       forwardBlockSightings(result)
 
       // Early exit / respond sentinels from translated Pipedream patterns:
@@ -2909,6 +2912,8 @@ export async function runParallelChild(
       output = result.output
       stepLogs = result.logs
       resolvedInput = result.resolvedInput ?? null
+      // As in the walk: a completed child its own timer cut short says so (#3075).
+      stepTimeout = result.deadline ?? null
       // A child's result never reaches the walker's step handling, so anything it carries
       // is noted on the context for the parallel step itself to drain (#1265).
       noteCarriedBlockSightings(ctx, result)
