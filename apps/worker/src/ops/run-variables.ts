@@ -16,9 +16,10 @@
  * (source copy, #2999, variable-copies.ts), never a secret.
  *
  * A REFUSAL. The bidding Worker refuses a run by name (RUN_VARIABLES_REFUSALS).
- * The tick ends it unrun, by an outcome that already exists (refusedRunEnd):
- * a deleted workflow dead as workflow_deleted, any other failed with its
- * reason named first in the error, as a missing variable fails a run.
+ * The tick ends it unrun (refusedRunEnd): a deleted workflow dead as
+ * workflow_deleted, any other failed with the status reason variables_refused
+ * (#3131), its refusal and the secrets it names as fields for the tick's page,
+ * and the refusal named first in the error.
  */
 import { ENV_KEY, namedVariables as named } from '../lib/definition-env-references'
 import type { ReadRunVariables, RunVariablesRefusal } from '../lib/ops-gateway-contract'
@@ -73,6 +74,24 @@ export function isDispatchedRunVariables(v: unknown): v is DispatchedRunVariable
   return !Object.keys(v.secretValues).some((k) => Object.hasOwn(values, k))
 }
 
+/**
+ * What a run reports to the tick of the variables it ran on (#3000, phase 4 of
+ * #2982): where its recorded variables came from, and how old they were, in
+ * whole seconds from their served_at to this start, on the run's own clock (a
+ * served_at ahead of it is no age). Never a value. A retry or continued slice
+ * reports its first start's source, since that record is what it runs on.
+ */
+export interface RunVariablesUsed {
+  source: RunVariableSource
+  ageSeconds: number
+}
+
+/** The report of a run's variables from its start's record, or null when it has none. */
+export function variablesUsed(recorded: RunVariablesRecord | null, nowMs: number): RunVariablesUsed | null {
+  if (recorded === null) return null
+  return { source: recorded.source, ageSeconds: Math.max(0, Math.floor((nowMs - Date.parse(recorded.servedAt)) / 1000)) }
+}
+
 /** The record a start sends: the secret names, never their values. */
 export function recordOf(d: DispatchedRunVariables): RunVariablesRecord {
   return { source: d.source, servedAt: d.servedAt, values: { ...d.values }, secretKeys: Object.keys(d.secretValues).sort() }
@@ -99,11 +118,15 @@ export function parseRunVariablesRecord(raw: unknown): RunVariablesRecord | null
  * What a run is given: the variables its definition reads, each a plain value
  * recorded at the run's first start or a secret served for this start, and the
  * secrets among them (for masking, mask-secrets.ts); or why it is given none,
- * as the run's error. Nothing is run on a blank.
+ * as the run's error. Nothing is run on a blank. A refusal for variables that
+ * do not exist for the run (missing when it started, or a secret it read then
+ * that this start was not served) names them in missing (#3000), bare names
+ * the page names; a run with no record of its variables names none, since it
+ * is not a missing variable.
  */
 export function runVariablesFor(
   reads: readonly string[], recorded: RunVariablesRecord | null, secretValues: Readonly<Record<string, string>>,
-): { env: Record<string, string>; secrets: Record<string, string> } | { refused: string } {
+): { env: Record<string, string>; secrets: Record<string, string> } | { refused: string; missing?: string[] } {
   if (reads.length === 0) return { env: {}, secrets: {} }
   if (recorded === null) {
     return { refused: `the definition reads ${named(reads)}, and the run has no record of its variables from when it started, so nothing was run` }
@@ -111,12 +134,18 @@ export function runVariablesFor(
   const missing = reads.filter((k) => !Object.hasOwn(recorded.values, k) && !recorded.secretKeys.includes(k))
   if (missing.length > 0) {
     const one = missing.length === 1
-    return { refused: `the definition reads ${named(missing)}, which ${one ? 'was not a variable' : 'were not variables'} of this workflow when the run started, so nothing was run; add ${one ? 'it' : 'them'} and run it again` }
+    return {
+      refused: `the definition reads ${named(missing)}, which ${one ? 'was not a variable' : 'were not variables'} of this workflow when the run started, so nothing was run; add ${one ? 'it' : 'them'} and run it again`,
+      missing,
+    }
   }
   const unserved = reads.filter((k) => recorded.secretKeys.includes(k) && !Object.hasOwn(secretValues, k))
   if (unserved.length > 0) {
     const one = unserved.length === 1
-    return { refused: `the definition reads the secret ${one ? 'variable' : 'variables'} ${named(unserved)}, which the run read when it started and the bidding Worker did not serve when it started again, so nothing was run` }
+    return {
+      refused: `the definition reads the secret ${one ? 'variable' : 'variables'} ${named(unserved)}, which the run read when it started and the bidding Worker did not serve when it started again, so nothing was run`,
+      missing: unserved,
+    }
   }
   const env: Record<string, string> = {}
   const secrets: Record<string, string> = {}
@@ -140,13 +169,18 @@ function refusalSaid(reason: RunVariablesRefusal, keys: readonly string[], versi
 }
 
 /**
- * How the tick ends, unrun, a run the bidding Worker refused (#2998). Each by
- * an outcome that already exists: a deleted workflow dead as workflow_deleted,
- * as the tick ends a run its copy says is deleted; any other failed with no
- * status reason and the refusal named first in its error, as a missing
- * variable fails a run. None falls back to another source of values.
+ * How the tick ends, unrun, a run the bidding Worker refused (#2998): a
+ * deleted workflow dead as workflow_deleted, as the tick ends a run its copy
+ * says is deleted; any other failed with the status reason variables_refused
+ * (#3131), the refusal and the secrets it names as fields (a copy, never the
+ * answer's own list), which the tick's page names, and the refusal named
+ * first in its error, for the run's record. None falls back to another source
+ * of values.
  */
 export function refusedRunEnd(refusal: { reason: RunVariablesRefusal; keys: readonly string[] }, version: number): CompleteOutcome {
   if (refusal.reason === 'workflow_deleted') return { outcome: 'dead', reason: 'workflow_deleted' }
-  return { outcome: 'failed', error: `variables_refused (${refusal.reason}): ${refusalSaid(refusal.reason, refusal.keys, version)}, so nothing was run` }
+  return {
+    outcome: 'failed', reason: 'variables_refused', refusal: refusal.reason, refusedVariables: [...refusal.keys],
+    error: `variables_refused (${refusal.reason}): ${refusalSaid(refusal.reason, refusal.keys, version)}, so nothing was run`,
+  }
 }

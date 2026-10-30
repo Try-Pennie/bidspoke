@@ -7,8 +7,10 @@
  * by 20261017230000_run_engine_resource_wait_2334.sql,
  * 20261027200000_step_requeue_cap_2859.sql,
  * 20261029233000_retry_disabled_3013.sql,
- * 20261030160000_lease_lapsed_no_retry_3046.sql and
- * 20261030190000_unstarted_wait_cap_3039.sql), which is
+ * 20261030160000_lease_lapsed_no_retry_3046.sql,
+ * 20261030190000_unstarted_wait_cap_3039.sql,
+ * 20261031000000_variable_unavailable_3000.sql and
+ * 20261031010000_variables_refused_3131.sql), which is
  * what actually refuses a wrong value. The two cannot derive from each other
  * across SQL and TypeScript, so
  * apps/web/src/lib/__tests__/ops-run-vocabulary-matches-db.test.ts reads every
@@ -56,7 +58,7 @@ export const STATUS_REASONS = {
   needs_human: ['lease_expired_after_send', 'send_outcome_unknown'],
   skipped: ['paused', 'rate_limited', 'overlap'],
   expired: ['not_started_in_time'],
-  failed: ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded', 'retry_disabled', 'resource_wait_exceeded', 'lease_lapsed_repeatedly', 'requeue_cap_reached', 'lease_lapsed_no_retry', 'unstarted_wait_exceeded'],
+  failed: ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded', 'retry_disabled', 'resource_wait_exceeded', 'lease_lapsed_repeatedly', 'requeue_cap_reached', 'lease_lapsed_no_retry', 'unstarted_wait_exceeded', 'variable_unavailable', 'variables_refused'],
 } as const satisfies Partial<Record<RunRequestStatus, readonly string[]>>
 export type StatusReason = (typeof STATUS_REASONS)[keyof typeof STATUS_REASONS][number]
 export const ALL_STATUS_REASONS: readonly StatusReason[] = Object.values(STATUS_REASONS).flat()
@@ -73,10 +75,17 @@ export const ALL_STATUS_REASONS: readonly StatusReason[] = Object.values(STATUS_
  * unstarted_wait_exceeded by complete_run_request when a run returned to the
  * queue unstarted has waited OPS_UNSTARTED_WAIT_MAX_MS to start (#3039). retry_disabled
  * (#3013) is the holder's: its workflow is set not to retry (#2992), so the
- * first real failure ended the run (run-invocation.ts, retryOr). The vocabulary
- * test holds both lists to the database.
+ * first real failure ended the run (run-invocation.ts, retryOr). variable_unavailable
+ * (#3000) is the holder's too: the run's definition reads a variable it was not
+ * given when it started (run-variables.ts runVariablesFor, ended by
+ * run-walk.ts), which the minute tick pages for a switched on workflow.
+ * variables_refused (#3131) is the holder's as well, the minute tick's, which
+ * holds the claim: the bidding Worker refused to hand over the run's variables
+ * (run-variables.ts refusedRunEnd), so it was never started, and the tick
+ * pages it for a switched on workflow. The vocabulary test holds both lists
+ * to the database.
  */
-export const HOLDER_FAILED_REASONS = ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded', 'retry_disabled'] as const satisfies readonly StatusReason[]
+export const HOLDER_FAILED_REASONS = ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded', 'retry_disabled', 'variable_unavailable', 'variables_refused'] as const satisfies readonly StatusReason[]
 export type HolderFailedReason = (typeof HOLDER_FAILED_REASONS)[number]
 export const ENGINE_FAILED_REASONS = ['resource_wait_exceeded', 'lease_lapsed_repeatedly', 'requeue_cap_reached', 'lease_lapsed_no_retry', 'unstarted_wait_exceeded'] as const satisfies readonly StatusReason[]
 
