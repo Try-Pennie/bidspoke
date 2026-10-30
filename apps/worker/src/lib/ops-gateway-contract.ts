@@ -804,6 +804,14 @@ export const OPS_TICK_PROBLEM_RULES = {
   run_outcome_unknown: 'at_once',
   /** A run lost its lease after a send that cannot be repeated, and waits for a person (lease_expired_after_send). */
   runs_lapsed_after_send: 'at_once',
+  /**
+   * Runs of a live workflow set not to retry lost their lease and the sweep
+   * ended them failed, lease_lapsed_no_retry (#3046, Dan, 2026-10-30): nothing
+   * runs them again, and no later tick reports them again. One that had made a
+   * send that cannot be repeated pages whatever the workflow's state, saying
+   * the send may have landed.
+   */
+  runs_lapsed_no_retry: 'at_once',
   // Reported once, never again by a later tick.
   /** The agreement check failed after its claim; it is not tried again for 14 minutes. */
   agreement_check_failed: 'at_once',

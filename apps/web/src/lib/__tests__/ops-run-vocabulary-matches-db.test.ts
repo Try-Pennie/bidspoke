@@ -231,6 +231,19 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     expect(guardIn(functionBody(SQL, 'complete_run_request'), 'failed', 'p_reason')).toContain('retry_disabled')
   })
 
+  /**
+   * A no-retry run whose lease lapses ends failed by name (#3046, Dan's decision
+   * of 2026-10-30). Only the lease sweep writes the reason, so it is an engine
+   * reason: in the CHECK and STATUS_REASONS.failed, refused from a holder, and
+   * written by sweep_expired_leases as last replaced.
+   */
+  it('lease_lapsed_no_retry is a reason only the lease sweep ends a run for, in the code and the database (#3046)', () => {
+    expect(ENGINE_FAILED_REASONS).toContain('lease_lapsed_no_retry')
+    expect(constraintValues(SQL, 'run_requests_status_reason_check')).toContain('lease_lapsed_no_retry')
+    expect(guardIn(functionBody(SQL, 'complete_run_request'), 'failed', 'p_reason')).not.toContain('lease_lapsed_no_retry')
+    expect(functionBody(SQL, 'sweep_expired_leases')).toContain("v_reason := 'lease_lapsed_no_retry'")
+  })
+
   it('complete_run_request suspends for every resume reason but retry, and a resource wait names one of its causes', () => {
     const body = functionBody(SQL, 'complete_run_request')
     expect(sorted(guardIn(body, 'suspend', 'p_reason'))).toEqual(sorted(RESUME_REASONS.filter((r) => r !== 'retry')))
