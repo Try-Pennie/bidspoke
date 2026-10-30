@@ -498,12 +498,20 @@ describe('runLeadValidationRejectionWatch', () => {
     expect(leadValidationRejectionEnding(out)).toMatchObject({ outcome: 'ok', summary: { paged: [GIGFI], undelivered: [] } })
   })
 
-  it('records a page with no Slack connection to send through as not delivered too', async () => {
+  it('records nothing for a page with no Slack connection to send through, since none was tried', async () => {
     vi.mocked(getSlackConnection).mockResolvedValue(null)
     const kv = makeKv()
     const out = await runLeadValidationRejectionWatch(db(runs(windowAt, 600, { 'loan amount exceeds maximum': 95 })) as never, kv as never, URL, NOW)
-    expect(out.undelivered).toEqual([GIGFI])
-    expect(transitions(kv.store)).toEqual([`undelivered ${GIGFI}`])
+    expect(sendLeadValidationRejectionAlert).not.toHaveBeenCalled()
+    expect(out.undelivered).toEqual([])
+    expect(transitions(kv.store)).toEqual([])
+  })
+
+  it('records nothing for a page whose send threw, which fails the run instead', async () => {
+    vi.mocked(sendLeadValidationRejectionAlert).mockRejectedValue(new Error('Network connection lost.'))
+    const kv = makeKv()
+    await expect(runLeadValidationRejectionWatch(db(runs(windowAt, 600, { 'loan amount exceeds maximum': 95 })) as never, kv as never, URL, NOW)).rejects.toThrow('Network connection lost.')
+    expect(transitions(kv.store)).toEqual([])
   })
 
   it('sends the all-clear on a judged normal window past the re-arm window, and clears the incident', async () => {

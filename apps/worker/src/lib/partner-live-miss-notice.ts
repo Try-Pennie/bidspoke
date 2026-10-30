@@ -153,7 +153,8 @@ export type LiveMissReading = { ok: true; rows: LiveMissRow[] } | { ok: false; e
 export type NoticePost =
   | { kind: 'posted' }
   | { kind: 'not_posted'; reason: 'no_slack' | 'alerts_off' }
-  | { kind: 'failed'; reason: string }
+  /** `refused` only when Slack answered and did not take it (#3056); a connection that could not be read, or a throw, was no refused post. */
+  | { kind: 'failed'; reason: string; refused?: boolean }
 
 export interface LiveMissNotice {
   title: string
@@ -413,18 +414,17 @@ async function handleMiss(deps: LiveMissNoticeDeps, row: LiveMissRow, nowMs: num
 
   const notice = composeLiveMissNotice(row)
   let post: NoticePost
-  let threw = false
   try {
     post = await deps.post(row.organizationId, notice)
   } catch (e) {
-    threw = true
     post = { kind: 'failed', reason: formatErr(e) }
   }
   if (post.kind === 'failed') {
     summary.errors.push(`${row.id}: the notice was not posted: ${post.reason}`)
-    // A post Slack refused is recorded as not delivered (#3056); one that threw
-    // may have landed, so it is recorded as neither.
-    if (!threw) await recordIncident(deps.kv, row, post.kind, nowMs, summary)
+    // A post Slack refused is recorded as not delivered (#3056). One that threw
+    // may have landed, and one whose connection could not be read was never
+    // tried, so neither is recorded.
+    if (post.refused === true) await recordIncident(deps.kv, row, post.kind, nowMs, summary)
     await releaseClaimQuietly(deps.claims, claimKey)
     return 'failed'
   }
@@ -598,7 +598,7 @@ export async function postLiveMissNotice(supabase: SupabaseClient, organizationI
     ...notice.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
   const ts = await postMessage(found.connection.bot_token, found.connection.default_channel, blocks, notice.title, 'partner-page-live-miss')
-  return ts === null ? { kind: 'failed', reason: 'Slack did not accept the post' } : { kind: 'posted' }
+  return ts === null ? { kind: 'failed', reason: 'Slack did not accept the post', refused: true } : { kind: 'posted' }
 }
 
 /**

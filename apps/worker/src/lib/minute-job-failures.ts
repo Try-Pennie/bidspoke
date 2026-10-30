@@ -116,7 +116,7 @@
  * Whose data: none; it names a job of this Worker and posts to every Slack
  * organization, never an error's text, which can carry lead data.
  */
-import { announceRecovery, markAlerted, markSpikeSeen, pageTried, recordPageOutcome, recoveryKey, refreshAlerted, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, noteSend, pageTried, recordPageOutcome, recoveryKey, roundAttempt, refreshAlerted, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv, type SendAnswer } from './alert-recovery'
 import { backoffCooldownKey, clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
 import { minuteAlertClaimKey, minuteAllClearClaim, orgIdsToTell, postMinutePage, slackOrgIds, type MinutePageOutcome } from './alert-fanout'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -371,6 +371,7 @@ async function page(deps: MinuteJobFailingDeps, job: CronJob, alert: MinuteJobFa
   const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
   const repeat = reminderOf ? describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged) ?? undefined : undefined
   let posted: MinutePageOutcome
+  const answers: SendAnswer[] = []
   try {
     posted = await postMinutePage({
       claims: deps.claims,
@@ -386,15 +387,12 @@ async function page(deps: MinuteJobFailingDeps, job: CronJob, alert: MinuteJobFa
         }
       },
       send: async () => {
-        let any = false
         for (const orgId of orgs) {
-          try {
-            if (await deps.sendAlert(orgId, { ...alert, ...(repeat ? { repeat } : {}) })) any = true
-          } catch (err) {
+          await noteSend(answers, () => deps.sendAlert(orgId, { ...alert, ...(repeat ? { repeat } : {}) }), (err) => {
             errors.push(`the page to org ${orgId} failed, the others go on: ${formatErr(err)}`)
-          }
+          })
         }
-        return any
+        return roundAttempt(answers) === 'sent'
       },
     })
   } catch (err) {
@@ -404,6 +402,8 @@ async function page(deps: MinuteJobFailingDeps, job: CronJob, alert: MinuteJobFa
   }
   const incident = incidentFor(job, errors)
   const delivered = posted === 'sent'
+  // A round no organization refused (none to tell, or every send threw) was not a refused page.
+  const attempt = posted === 'not_sent' ? roundAttempt(answers) : posted
   if (delivered) {
     try {
       await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
@@ -418,7 +418,7 @@ async function page(deps: MinuteJobFailingDeps, job: CronJob, alert: MinuteJobFa
   }
   // Delivered or not, a page this run tried is recorded (#3056): one nobody
   // received keeps the incident that was due.
-  if (pageTried(posted)) await recordPageOutcome(kv, MINUTE_JOB_FAILING_SIGNAL, job.id, incident, nowMs, delivered)
+  if (pageTried(attempt)) await recordPageOutcome(kv, MINUTE_JOB_FAILING_SIGNAL, job.id, incident, nowMs, delivered)
   if (!delivered) {
     // Armed only on delivery, so an all clear never follows an unseen page; the next failed run tries again.
     await keepOpen(deps, job, errors)

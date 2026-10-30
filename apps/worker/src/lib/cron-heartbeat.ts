@@ -1180,7 +1180,12 @@ interface DarkPage {
   /** The standing condition when this page is a reminder, and whether it is word for word the last. */
   reminder: () => { standing: StandingCondition; unchanged: boolean } | null
   /** After the post: on a delivery arm the next interval and record the incident, otherwise keep it open. */
-  settle: (alerted: boolean, group: DarkGroup | null) => Promise<void>
+  /**
+   * `answered` is whether any organization's send answered at all (#3056): with
+   * none to tell no page was tried, so nothing is recorded. A send that throws
+   * never reaches here.
+   */
+  settle: (alerted: boolean, group: DarkGroup | null, answered: boolean) => Promise<void>
 }
 
 async function darkPageOf(kv: KVNamespace, check: JobCheck, nowMs: number): Promise<DarkPage> {
@@ -1209,13 +1214,13 @@ async function darkPageOf(kv: KVNamespace, check: JobCheck, nowMs: number): Prom
       const r = reminder()
       return r ? { standing: r.standing, unchanged: r.unchanged } : null
     },
-    settle: async (alerted, group) => {
+    settle: async (alerted, group, answered) => {
       // Only arm the next interval once something actually delivered, so a Slack
       // outage does not silence the condition for a day.
       const startedAt = alerted ? await armDelivered(group) : await keepUndelivered()
-      // Delivered or not, the page is recorded (#3056): one nobody received
+      // Delivered or refused, the page is recorded (#3056): one Slack refused
       // counts against the open incident, or keeps the incident that was due.
-      await recordPageOutcomeOn(kv, CRON_HEARTBEAT_SIGNAL, job.id, startedAt, incident, nowMs, alerted)
+      if (answered) await recordPageOutcomeOn(kv, CRON_HEARTBEAT_SIGNAL, job.id, startedAt, incident, nowMs, alerted)
     },
   }
 
@@ -1332,7 +1337,7 @@ async function pageOne(
     await check.keepOpen()
     return check.result(status, false)
   }
-  await page.settle(alerted, null)
+  await page.settle(alerted, null, orgIds.length > 0)
   return check.result(status, alerted)
 }
 
@@ -1427,7 +1432,7 @@ async function pageGroup(
   if (!alerted) for (const p of due) await releaseClaimQuietly(claims, p.claimKey)
   const paged = due.length > 1 ? { ...group, jobIds: due.map((p) => p.check.look.job.id) } : null
   for (const p of due) {
-    await p.settle(alerted, paged)
+    await p.settle(alerted, paged, orgIds.length > 0)
     results.push(p.check.result(p.check.look.status, alerted))
   }
   return results

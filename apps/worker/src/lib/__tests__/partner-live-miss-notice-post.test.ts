@@ -45,7 +45,7 @@ describe('postLiveMissNotice', () => {
   it('is a failure when Slack refuses the post (ok:false comes back as no ts)', async () => {
     lookupSlackConnection.mockResolvedValue(connection())
     postMessage.mockResolvedValue(null)
-    expect(await postLiveMissNotice(supabase, ORG, notice)).toEqual({ kind: 'failed', reason: 'Slack did not accept the post' })
+    expect(await postLiveMissNotice(supabase, ORG, notice)).toEqual({ kind: 'failed', reason: 'Slack did not accept the post', refused: true })
   })
 
   it('throws when Slack gave no answer, which the run records as a failed post', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { announceRecovery, recoveryKey } from '../alert-recovery'
+import { announceRecovery, recoveryKey, type PostAttempt } from '../alert-recovery'
 import { connectionIncident, settleConnectionIncidents, type ConnectionIncidentFinding, type ConnectionIncidentsOptions } from '../standing-connection-incidents'
 import { transitions } from './_incident-events'
 
@@ -44,7 +44,7 @@ const readLoginOpen = (value: unknown): LoginOpen | null => {
 
 function harness(kv = fakeKv()) {
   let at = NOW
-  const send = vi.fn(async (_firstReportedAt: string | null) => true)
+  const send = vi.fn(async (_firstReportedAt: string | null): Promise<PostAttempt> => 'sent')
   const announce = vi.fn<ConnectionIncidentsOptions<LoginOpen>['announce']>(async (id, open) => {
     return announceRecovery(kv, SIGNAL, id, null, connectionIncident(open.organization_id, `${open.service} label`, []), async () => true, { now: at, rearmMinutes: 0 })
   })
@@ -91,7 +91,7 @@ describe('settleConnectionIncidents: the record a check keeps with each open inc
 
   it('arms the incident only once the page reached Slack, and keeps the record either way', async () => {
     const h = harness()
-    h.send.mockResolvedValueOnce(false)
+    h.send.mockResolvedValueOnce('not_sent')
     const out = await h.run([h.finding()])
     expect(out.paged).toEqual([])
     expect(h.kv.store.get(recoveryKey(SIGNAL, CONN))).toBeUndefined()
@@ -102,12 +102,20 @@ describe('settleConnectionIncidents: the record a check keeps with each open inc
     // The refused page is recorded as not delivered (#3056), the delivered one as paged.
     expect(transitions(h.kv.store)).toEqual([`undelivered ${CONN}`, `opened ${CONN}`, `paged ${CONN}`])
   })
+
+  it.each<PostAttempt>(['in_cooldown', 'claimed_elsewhere', 'not_tried'])('records nothing for a page this run did not try (%s), since none was refused (#3056)', async (attempt) => {
+    const h = harness()
+    h.send.mockResolvedValueOnce(attempt)
+    const out = await h.run([h.finding()])
+    expect(out.paged).toEqual([])
+    expect(transitions(h.kv.store)).toEqual([])
+  })
 })
 
 describe('settleConnectionIncidents: settling an incident', () => {
   it('settles one whose page never reached Slack without an all clear, since none is owed', async () => {
     const h = harness()
-    h.send.mockResolvedValueOnce(false)
+    h.send.mockResolvedValueOnce('not_sent')
     await h.run([h.finding()])
     const out = await h.run([], NOW + MIN)
     expect(h.announce).not.toHaveBeenCalled()

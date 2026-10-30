@@ -12,7 +12,8 @@
  * Every test drives the KV directly and passes its own clock (L524).
  */
 import { describe, expect, it, vi } from 'vitest'
-import { dueKey, markAlerted, recordPageOutcome, recordPageOutcomeOn, recoveryKey, RECOVERY_REARM_MINUTES } from '../alert-recovery'
+import { dueKey, markAlerted, noteSend, pageTried, recordPageOutcome, recordPageOutcomeOn, recoveryKey, RECOVERY_REARM_MINUTES, roundAttempt, type SendAnswer } from '../alert-recovery'
+import { deliverAllAttempt } from '../standing-alert'
 import { INCIDENT_OUTBOX_PREFIX, parseIncidentEvent, type IncidentContext, type IncidentEvent } from '../incident-outbox'
 
 const MIN = 60_000
@@ -151,5 +152,34 @@ describe('parseIncidentEvent: the undelivered event', () => {
     const raw = JSON.stringify({ v: 1, id: 'e1', type: 'undelivered', signal: SIGNAL, subject: WF, subjectLabel: null, scope: 'org', organizationId: ORG_ID, startedAt: iso(T0), at: iso(T0), windowMinutes: 120 })
     expect(parseIncidentEvent(raw)).toEqual({ error: 'an undelivered page must say whether an incident was open' })
     expect(parseIncidentEvent(JSON.stringify({ ...JSON.parse(raw), unannounced: true }))).toMatchObject({ type: 'undelivered', unannounced: true })
+  })
+})
+
+describe('a round of sends: refused only when somebody answered and nobody took it (#3056)', () => {
+  it('is sent when any took it, refused when one refused and none took it, and not tried when none answered', () => {
+    expect(roundAttempt([false, true])).toBe('sent')
+    expect(roundAttempt(['threw', false])).toBe('not_sent')
+    expect(roundAttempt(['threw', 'threw'])).toBe('not_tried')
+    expect(roundAttempt([])).toBe('not_tried')
+    expect(pageTried('not_tried')).toBe(false)
+    expect(pageTried('not_sent')).toBe(true)
+  })
+
+  it('notes a send that threw as threw, reports it, and never throws', async () => {
+    const answers: SendAnswer[] = []
+    const onThrow = vi.fn()
+    await noteSend(answers, async () => { throw new Error('Network connection lost.') }, onThrow)
+    await noteSend(answers, async () => null, onThrow)
+    await noteSend(answers, async () => 'ts-1', onThrow)
+    expect(answers).toEqual(['threw', false, true])
+    expect(onThrow).toHaveBeenCalledTimes(1)
+  })
+
+  it('tells a standing post that every connection refused from one with no connection or only throws', async () => {
+    const slack = { bot_token: 'xoxb', default_channel: 'C1' }
+    expect(await deliverAllAttempt([slack, slack], async () => null)).toBe('not_sent')
+    expect(await deliverAllAttempt([slack], async () => { throw new Error('no answer') })).toBe('not_tried')
+    expect(await deliverAllAttempt([], async () => 'ts')).toBe('not_tried')
+    expect(await deliverAllAttempt([slack, slack], async () => 'ts')).toBe('sent')
   })
 })

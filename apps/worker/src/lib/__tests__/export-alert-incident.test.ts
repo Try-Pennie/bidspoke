@@ -115,6 +115,16 @@ describe('opening and paging', () => {
     expect(kv.store.has(MARKER)).toBe(false)
   })
 
+  it('records nothing for a round whose every send threw, or with no organization to tell, since neither was a refused page (#3056)', async () => {
+    vi.mocked(sendExportFailureAlert).mockRejectedValue(new Error('Network connection lost.'))
+    const threw = makeKv()
+    await fail(threw, T0, PERMANENT, ['org-1', 'org-2'])
+    expect(transitions(threw.store)).toEqual([])
+    const nobody = makeKv()
+    await fail(nobody, T0, PERMANENT, [])
+    expect(transitions(nobody.store)).toEqual([])
+  })
+
   it('records a different problem posted while the first stands as another page of the same incident', async () => {
     const kv = makeKv()
     await fail(kv, T0)

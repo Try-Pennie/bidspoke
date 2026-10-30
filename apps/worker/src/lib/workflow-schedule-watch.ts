@@ -52,7 +52,7 @@
 import { describeGithubRefusal, readGithubRefusal } from './github-refusal'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { orgIdsToTell, slackOrgIds } from './alert-fanout'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPageOutcome, recoveryKey, type IncidentContext } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, noteSend, pageTried, recordPageOutcome, recoveryKey, roundAttempt, type IncidentContext, type SendAnswer } from './alert-recovery'
 import { formatErr } from './format-error'
 import { sendWorkflowScheduleAlert, sendWorkflowScheduleRecoveryAlert } from './slack'
 
@@ -984,16 +984,14 @@ export async function runWorkflowScheduleWatch(
     workflows: problems,
   }
 
-  let alerted = false
+  // Failing to DELIVER a verdict must not destroy the verdict: the returned
+  // results and the run log are the other half of this check's output.
+  const answers: SendAnswer[] = []
   for (const orgId of orgIds) {
-    try {
-      if (await sendWorkflowScheduleAlert(supabase, orgId, payload)) alerted = true
-    } catch (e) {
-      // Failing to DELIVER a verdict must not destroy the verdict: the returned
-      // results and the run log are the other half of this check's output.
-      console.error(`[workflow-schedule] alert to ${orgId} failed:`, formatErr(e))
-    }
+    await noteSend(answers, () => sendWorkflowScheduleAlert(supabase, orgId, payload), (e) => console.error(`[workflow-schedule] alert to ${orgId} failed:`, formatErr(e)))
   }
+  const attempt = roundAttempt(answers)
+  const alerted = attempt === 'sent'
   if (alerted) {
     try {
       await kv.put(cooldownKey(signature), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
@@ -1017,7 +1015,8 @@ export async function runWorkflowScheduleWatch(
     } catch (e) {
       console.error(`[workflow-schedule] recovery start marker for ${workflow.file} failed:`, formatErr(e))
     }
-    await recordPageOutcome(kv, RECOVERY_PREFIX, workflow.file, scheduleIncident(workflow.label), nowMs, alerted, { sameIncidentWithinMinutes: 2 * 60 })
+    // Only a page that went out or was refused: none tried, or every send threw, records nothing.
+    if (pageTried(attempt)) await recordPageOutcome(kv, RECOVERY_PREFIX, workflow.file, scheduleIncident(workflow.label), nowMs, alerted, { sameIncidentWithinMinutes: 2 * 60 })
   }
   return results
 }

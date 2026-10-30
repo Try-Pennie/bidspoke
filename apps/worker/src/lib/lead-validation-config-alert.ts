@@ -173,9 +173,10 @@ export async function reportLeadValidationEvent(
   // The marker before anything else (#2058): a cut after the page costs at worst a
   // repeated page once the claim lapses, never a lost all clear.
   if (delivered) await markAlerted(deps.kv, LEAD_VALIDATION_CONFIG_SIGNAL, subject, incident, nowMs)
-  // Delivered or not, the page is recorded (#3056): one that reached nobody keeps
+  // Delivered or refused, the page is recorded (#3056): one Slack refused keeps
   // the incident that was due, at most once a minute however many leads retry it.
-  await recordPageOutcome(deps.kv, LEAD_VALIDATION_CONFIG_SIGNAL, subject, incident, nowMs, delivered)
+  // With no Slack connection no page was tried, so nothing is recorded.
+  if (slack) await recordPageOutcome(deps.kv, LEAD_VALIDATION_CONFIG_SIGNAL, subject, incident, nowMs, delivered)
   if (!delivered) {
     await release()
     return slack ? 'post_failed' : 'no_slack'

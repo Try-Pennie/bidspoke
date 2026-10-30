@@ -231,19 +231,52 @@ function readDueRecord(raw: string | null): DueRecord | null {
 }
 
 /**
- * What a post under a cooldown and a claim came to (postMinutePage,
- * postStandingOutcome): delivered, tried and not delivered, or not tried by
- * this tick at all.
+ * What a page came to (#3056): `sent`, delivered to at least one place;
+ * `not_sent`, tried and answered with a refusal everywhere it was tried;
+ * `not_tried`, never sent, because there was nowhere to send it or every send
+ * threw (a throw may have landed, so it is no refusal); `in_cooldown` or
+ * `claimed_elsewhere`, a page this tick was not the one to send.
  */
-export type PostAttempt = 'sent' | 'not_sent' | 'in_cooldown' | 'claimed_elsewhere'
+export type PostAttempt = 'sent' | 'not_sent' | 'not_tried' | 'in_cooldown' | 'claimed_elsewhere'
 
 /**
- * Whether this tick tried a page at all (#3056): a page held by the cooldown,
- * or left to the tick that holds the claim, was never due from this one, so it
- * has no outcome to record.
+ * Whether there is an outcome to record (#3056): only a page that was sent or
+ * refused. One never tried, held by the cooldown, or left to the tick that
+ * holds the claim records nothing, and nor does one whose every send threw.
  */
 export function pageTried(attempt: PostAttempt): boolean {
   return attempt === 'sent' || attempt === 'not_sent'
+}
+
+/** One send's answer in a round of sends: delivered, refused, or threw (and may have landed). */
+export type SendAnswer = boolean | 'threw'
+
+/**
+ * What one round of sends came to, one answer per place it was sent (#3056):
+ * `sent` when any delivered, `not_sent` when none did and at least one was
+ * refused, `not_tried` when there were no sends or every one threw.
+ */
+export function roundAttempt(answers: readonly SendAnswer[]): 'sent' | 'not_sent' | 'not_tried' {
+  if (answers.some((a) => a === true)) return 'sent'
+  return answers.some((a) => a === false) ? 'not_sent' : 'not_tried'
+}
+
+/**
+ * Runs one send of a round and notes its answer, rethrowing nothing: a send
+ * that threw is noted as `threw` and reported through `onThrow`. Returns the
+ * answer, so a caller can also keep its own count.
+ */
+export async function noteSend(answers: SendAnswer[], send: () => Promise<unknown>, onThrow: (err: unknown) => void): Promise<SendAnswer> {
+  let answer: SendAnswer
+  try {
+    const r = await send()
+    answer = r !== null && r !== undefined && r !== false
+  } catch (err) {
+    answer = 'threw'
+    onThrow(err)
+  }
+  answers.push(answer)
+  return answer
 }
 
 /**

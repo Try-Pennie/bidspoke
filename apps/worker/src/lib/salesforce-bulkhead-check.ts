@@ -30,7 +30,7 @@
  * reads one Worker setting and posts to each organization's own channel.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPageOutcome, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, noteSend, pageTried, recordPageOutcome, recoveryKey, refreshAlerted, roundAttempt, type IncidentContext, type RecoveryKv, type SendAnswer } from './alert-recovery'
 import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { salesforceBulkheadLimit } from './bulkhead-client'
 import { formatErr } from './format-error'
@@ -138,18 +138,18 @@ export async function runSalesforceBulkheadCheck(deps: SalesforceBulkheadCheckDe
     await refreshAlerted(kv, SALESFORCE_BULKHEAD_SIGNAL, SALESFORCE_BULKHEAD_SUBJECT)
     return summary
   }
+  const answers: SendAnswer[] = []
   for (const orgId of orgs) {
-    try {
-      if (await deps.sendAlert(orgId, { limit, sizedFor, firstReportedAt })) summary.paged++
-    } catch (err) {
-      console.error(`${LOG} the page to org ${orgId} failed, the others go on: ${formatErr(err)}`)
-    }
+    const answer = await noteSend(answers, () => deps.sendAlert(orgId, { limit, sizedFor, firstReportedAt }), (err) => console.error(`${LOG} the page to org ${orgId} failed, the others go on: ${formatErr(err)}`))
+    if (answer === true) summary.paged++
   }
   // One delivered round is one page, however many organizations it reached.
-  const delivered = summary.paged > 0
+  const attempt = roundAttempt(answers)
+  const delivered = attempt === 'sent'
   if (delivered) await markAlerted(kv, SALESFORCE_BULKHEAD_SIGNAL, SALESFORCE_BULKHEAD_SUBJECT, incident(errors), nowMs)
-  // Delivered or not, the round is recorded (#3056). The check runs daily.
-  await recordPageOutcome(kv, SALESFORCE_BULKHEAD_SIGNAL, SALESFORCE_BULKHEAD_SUBJECT, incident(errors), nowMs, delivered, { sameIncidentWithinMinutes: 2 * 24 * 60 })
+  // Delivered or refused, the round is recorded (#3056); none to tell, or every
+  // send throwing (it may have landed), records nothing. The check runs daily.
+  if (pageTried(attempt)) await recordPageOutcome(kv, SALESFORCE_BULKHEAD_SIGNAL, SALESFORCE_BULKHEAD_SUBJECT, incident(errors), nowMs, delivered, { sameIncidentWithinMinutes: 2 * 24 * 60 })
   if (!delivered) {
     console.error(`${LOG} the Salesforce bulkhead limit resolves to ${limit}, not ${sizedFor}, and the page reached no organization`)
     // Armed only on delivery, so an all clear never follows an unseen page.

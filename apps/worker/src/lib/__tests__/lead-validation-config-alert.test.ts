@@ -182,11 +182,10 @@ describe('a configuration fault pages once per incident, never once per lead', (
     expect(h.sendPage).toHaveBeenCalledTimes(1)
   })
 
-  it('an organization with no Slack is logged, not marked, and its page recorded as not delivered', async () => {
+  it('an organization with no Slack is logged, not marked, and records nothing, since no page was tried', async () => {
     const h = harness({ resolveSlack: async () => null })
     expect(await reportLeadValidationEvent(h.deps, RUN, FAULT)).toBe('no_slack')
-    expect(h.store.get(recoveryKey(LEAD_VALIDATION_CONFIG_SIGNAL, SUBJECT))).toBeUndefined()
-    expect(outboxTypes(h.store)).toEqual(['undelivered'])
+    expect(h.store.size).toBe(0)
     expect(h.claims.held.size).toBe(0)
   })
 

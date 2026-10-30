@@ -134,6 +134,9 @@ describe('every page about an incident is recorded, delivered or not (#3056)', (
     expect(misplacedOutcomes('a.ts', `async function f() { if (sent) await markAlerted(kv, P, id, incident, now)\n  await ${call} }`)).toEqual([])
     expect(misplacedOutcomes('a.ts', `async function f() { if (mode === 'alert') await ${call} }`)).toEqual([])
     expect(misplacedOutcomes('a.ts', `async function f() { if (unsent) await ${call} }`)).toEqual([])
+    // Recorded only when a page was tried (sent or refused), never only when it was delivered.
+    expect(misplacedOutcomes('a.ts', "async function f() { if (pageTried(attempt)) await recordPageOutcome(kv, P, id, incident, now, attempt === 'sent') }")).toEqual([])
+    expect(misplacedOutcomes('a.ts', "async function f() { if (attempt === 'sent') await recordPageOutcome(kv, P, id, incident, now, attempt === 'sent') }")).toEqual(["1: recorded only inside a branch that tests attempt === 'sent'"])
   })
 
   it('counts a file that arms without recording, and one that records, as such', () => {

@@ -51,7 +51,7 @@ import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { readEverySlackConnection } from './alert-fanout'
 import { etTime, sendRecoveryAlert, sendTitledAlert } from './slack'
 import { backoffCooldownKey, clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, type BackoffKv } from './alert-backoff'
-import { keepAlerted, markSpikeSeen, recordPageOutcome, recoveryDue, settleRecovery, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { keepAlerted, markSpikeSeen, noteSend, pageTried, recordPageOutcome, recoveryDue, roundAttempt, settleRecovery, type IncidentContext, type RecoveryKv, type SendAnswer } from './alert-recovery'
 import type { AlertClaims } from './alert-claim'
 import type { SlackAlertKind } from './slack-post-outcome'
 import { formatErr } from './format-error'
@@ -333,21 +333,21 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
   const targets = await servingAlertTargets(deps.supabase)
   const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
   const repeat = describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged) ?? undefined
-  let delivered = false
+  const answers: SendAnswer[] = []
   for (const slack of targets) {
-    const ok = await post(slack, { title: message.title, errors: message.errors, context: message.context, fixHint: message.fixHint, repeat }, 'stored-copy-serving').catch((e: unknown) => {
+    await noteSend(answers, () => post(slack, { title: message.title, errors: message.errors, context: message.context, fixHint: message.fixHint, repeat }, 'stored-copy-serving'), (e) => {
       console.error(`[stored-copy-checks] Slack post failed: ${formatErr(e)}`)
-      return false
     })
-    if (ok) delivered = true
   }
+  const attempt = roundAttempt(answers)
+  const delivered = attempt === 'sent'
   if (delivered) {
     const next = await recordAlert(kv, STORED_COPY_SERVING_KEY, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
     await keepAlerted(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, next.since, incident, nowMs)
   }
-  // Delivered or not, the page is recorded (#3056), with no Slack to post to as
-  // much as with every post refused: either way nobody was told.
-  await recordPageOutcome(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, incident, nowMs, delivered)
+  // Delivered or refused, the page is recorded (#3056). With no Slack to post to,
+  // or every post throwing (it may have landed), nothing is.
+  if (pageTried(attempt)) await recordPageOutcome(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, incident, nowMs, delivered)
   if (!delivered) {
     await release()
     return targets.length === 0 ? 'no_slack' : 'post_failed'

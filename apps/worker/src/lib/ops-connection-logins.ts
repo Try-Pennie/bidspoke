@@ -53,7 +53,7 @@
  * Each connection is its own failure boundary, and nothing here throws to the
  * minute cron.
  */
-import { announceRecovery, RECOVERY_REARM_MINUTES, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, RECOVERY_REARM_MINUTES, type PostAttempt, type RecoveryKv } from './alert-recovery'
 import { backoffCooldownKey, clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
 import { minuteAllClearClaim, postMinutePage } from './alert-fanout'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -260,7 +260,7 @@ async function nameOf(deps: ConnectionSignalDeps, organizationId: string, connec
  * the minute claims, so two overlapping ticks post it once. Returns whether it
  * reached Slack; the shared bookkeeping arms its incident only then.
  */
-async function sendPage<I extends DueItem>(rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, item: I, name: string | null, nowMs: number): Promise<boolean> {
+async function sendPage<I extends DueItem>(rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, item: I, name: string | null, nowMs: number): Promise<PostAttempt> {
   const { kv } = deps
   const key = `${rules.signal}:${item.connection_id}`
   const standing = await readCondition(kv, key)
@@ -279,9 +279,10 @@ async function sendPage<I extends DueItem>(rules: ConnectionSignalRules<I>, deps
       reminderOf ? describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged) ?? undefined : undefined,
     ),
   })
-  if (posted !== 'sent') return false
+  // What it came to, so a page held by the cooldown or another tick's claim is not recorded as refused (#3056).
+  if (posted !== 'sent') return posted
   await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
-  return true
+  return posted
 }
 
 /**

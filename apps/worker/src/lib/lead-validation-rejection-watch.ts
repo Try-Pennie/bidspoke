@@ -514,13 +514,17 @@ export async function runLeadValidationRejectionWatch(
     // all-clear follows a page nobody saw; no cooldown either, so a refused page
     // is tried again next hour.
     if (sent) await markAlerted(kv, LEAD_VALIDATION_REJECTION_SIGNAL, wf.id, incident, now)
-    // Delivered or not, the record keeps the incident that was due (#3056).
-    await recordPageOutcome(kv, LEAD_VALIDATION_REJECTION_SIGNAL, wf.id, incident, now, sent, { sameIncidentWithinMinutes: 2 * 60 })
+    // Delivered or refused, the record keeps the incident that was due (#3056).
+    // With no Slack connection to send through no page was tried, so nothing
+    // is recorded; a send that throws fails the run instead.
+    if (slack !== null) await recordPageOutcome(kv, LEAD_VALIDATION_REJECTION_SIGNAL, wf.id, incident, now, sent, { sameIncidentWithinMinutes: 2 * 60 })
     if (sent) {
       await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
       summary.paged.push(wf.id)
+    } else if (slack === null) {
+      console.error(`[${LEAD_VALIDATION_REJECTION_JOB}] page not tried workflow_id=${wf.id}: no Slack connection could be read; tried again next hour`)
     } else {
-      console.error(`[${LEAD_VALIDATION_REJECTION_JOB}] page not delivered workflow_id=${wf.id}: ${slack === null ? 'no Slack connection could be read' : 'Slack did not take it'}; tried again next hour`)
+      console.error(`[${LEAD_VALIDATION_REJECTION_JOB}] page not delivered workflow_id=${wf.id}: Slack did not take it; tried again next hour`)
       summary.undelivered.push(wf.id)
     }
   }

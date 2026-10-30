@@ -41,7 +41,7 @@
  * Whose data: the state names connection ids and their organizations; each
  * page and all clear goes to the connection's own organization.
  */
-import { announceRecovery, markAlerted, markSpikeSeen, recordPageOutcome, recoveryKey, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, pageTried, recordPageOutcome, recoveryKey, refreshAlerted, type IncidentContext, type PostAttempt, type RecoveryKv } from './alert-recovery'
 import { formatErr } from './format-error'
 import type { RecoveryMarkerSignal } from './incident-signals'
 import { readConnectionReferences, type ConnectionReferences } from './connection-references'
@@ -58,8 +58,13 @@ export interface ConnectionIncidentFinding<E extends OpenConnectionIncident> {
   label: string
   /** What is kept with the open incident until it is settled. */
   open: E
-  /** Sends the page, given when it was first reported (null on the first). Returns whether it reached Slack. */
-  send(firstReportedAt: string | null): Promise<boolean>
+  /**
+   * Sends the page, given when it was first reported (null on the first). Says
+   * what it came to (#3056): `sent`, `not_sent` when Slack refused it, or a page
+   * this run did not try (`not_tried`, `in_cooldown`, `claimed_elsewhere`),
+   * which records nothing.
+   */
+  send(firstReportedAt: string | null): Promise<PostAttempt>
 }
 
 export interface ConnectionIncidentsOptions<E extends OpenConnectionIncident> {
@@ -132,12 +137,14 @@ async function page<E extends OpenConnectionIncident>(o: ConnectionIncidentsOpti
   const { kv, signal, nowMs, errors } = o
   await markSpikeSeen(kv, signal, f.id, nowMs)
   const firstReportedAt = await kv.get(recoveryKey(signal, f.id))
-  const delivered = await f.send(firstReportedAt)
+  const attempt = await f.send(firstReportedAt)
+  const delivered = attempt === 'sent'
   const incident = connectionIncident(f.open.organization_id, f.label, errors)
   if (delivered) await markAlerted(kv, signal, f.id, incident, nowMs)
-  // Delivered or not, the page is recorded (#3056). A daily check passes its
+  // Delivered or refused, the page is recorded (#3056); one this run did not try
+  // (a cooldown, another tick's claim) records nothing. A daily check passes its
   // interval, so the refused pages of consecutive days are one incident.
-  await recordPageOutcome(kv, signal, f.id, incident, nowMs, delivered, o.sameIncidentWithinMinutes ? { sameIncidentWithinMinutes: o.sameIncidentWithinMinutes } : {})
+  if (pageTried(attempt)) await recordPageOutcome(kv, signal, f.id, incident, nowMs, delivered, o.sameIncidentWithinMinutes ? { sameIncidentWithinMinutes: o.sameIncidentWithinMinutes } : {})
   // Armed only on delivery, so a Slack outage does not open a marker for an incident nobody saw.
   if (!delivered && firstReportedAt !== null) await refreshAlerted(kv, signal, f.id)
   return delivered
@@ -303,7 +310,8 @@ export function settleStandingConnections(o: StandingConnectionsOptions): Promis
       id: f.id,
       label: f.label,
       open: f.context ? { organization_id: f.organizationId, label: f.label, context: { ...f.context } } : { organization_id: f.organizationId, label: f.label },
-      send: (firstReportedAt: string | null) => f.send(firstReportedAt),
+      // A daily check posts on every run, so false is Slack refusing it; a throw is caught by the caller and recorded as neither.
+      send: async (firstReportedAt: string | null) => ((await f.send(firstReportedAt)) ? 'sent' : 'not_sent'),
     })),
     readOpen: readStandingOpen,
     unjudged: unjudged ? (id, open) => unjudged(id, open.organization_id) : undefined,
