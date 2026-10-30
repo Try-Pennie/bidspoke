@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { synthesizeNumbers, snapshotPartnerConfig, snapshotBuyerProfile, snapshotEnvVar, placeholderValue, snapshotRow, SNAPSHOT_COLUMNS, type SnapshotTable } from '../snapshot'
+import { synthesizeNumbers, snapshotPartnerConfig, snapshotBuyerProfile, snapshotEnvVar, placeholderValue, snapshotRow, SNAPSHOT_COLUMNS, INVENTED_ACHIEVE_SCREEN, type SnapshotTable } from '../snapshot'
 
 describe('synthesizeNumbers', () => {
   it('replaces every number, keeping only its order of magnitude and its position', () => {
@@ -125,8 +125,38 @@ describe('snapshotEnvVar', () => {
   const row = (key: string, value: string, is_secret = false) => snapshotEnvVar({ key, value, is_secret, scope: 'global', organization_id: 'o', workflow_id: null }).value
 
   it('synthesizes a numeric setting, since thresholds steer arms', () => {
-    expect(row('ACHIEVE_MIN_VANTAGE_SCORE', '640')).toBe('100')
+    expect(row('SOME_SCORE_FLOOR', '640')).toBe('100')
     expect(row('BUYER_SELECT_ENGINE_PERCENT', '0')).toBe('0')
+  })
+
+  // Synthesis rounds a limit down to its power of ten, which turned every Achieve
+  // screen setting into one that refused every lead (#3138). The repo is public, so
+  // the snapshot carries invented limits instead, never production's.
+  describe('the Achieve screen settings (#3138)', () => {
+    it('writes the invented limit for each screen setting production has set, whatever production holds', () => {
+      for (const [key, invented] of Object.entries(INVENTED_ACHIEVE_SCREEN)) {
+        expect(row(key, '1')).toBe(invented)
+        expect(row(key, '9999999999')).toBe(invented)
+        expect(row(key, '0.75')).toBe(invented)
+      }
+    })
+
+    it('keeps a screen setting production leaves blank turned off, as a placeholder the screen reads as unset', () => {
+      expect(row('ACHIEVE_MAX_LOAN_AMOUNT', '')).toBe('placeholder-ACHIEVE_MAX_LOAN_AMOUNT')
+      expect(row('ACHIEVE_MIN_VANTAGE_SCORE', '  ')).toBe('placeholder-ACHIEVE_MIN_VANTAGE_SCORE')
+    })
+
+    it('never invents a value for a setting marked secret', () => {
+      expect(row('ACHIEVE_MIN_AGE', '30', true)).toBe('placeholder-ACHIEVE_MIN_AGE')
+    })
+
+    it('invents every numeric screen threshold the Achieve screen reads, each a number in the form production uses', () => {
+      expect(Object.keys(INVENTED_ACHIEVE_SCREEN).sort()).toEqual([
+        'ACHIEVE_MAX_CURRENT_DELINQUENCIES', 'ACHIEVE_MAX_DTI', 'ACHIEVE_MAX_INQUIRY_EPISODES_6MO', 'ACHIEVE_MAX_LOAN_AMOUNT',
+        'ACHIEVE_MAX_LOAN_TO_INCOME', 'ACHIEVE_MIN_AGE', 'ACHIEVE_MIN_LOAN_AMOUNT', 'ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY', 'ACHIEVE_MIN_VANTAGE_SCORE',
+      ])
+      for (const v of Object.values(INVENTED_ACHIEVE_SCREEN)) expect(Number.isFinite(Number(v))).toBe(true)
+    })
   })
 
   it('keeps a short word setting such as a mode or a flag', () => {

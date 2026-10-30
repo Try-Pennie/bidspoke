@@ -316,7 +316,7 @@
             "string": 300
           },
           "string": {
-            "format": "free",
+            "format": "us_phone",
             "min_len": 12,
             "max_len": 14
           }

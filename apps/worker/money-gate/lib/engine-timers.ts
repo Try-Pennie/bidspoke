@@ -66,6 +66,17 @@ export interface LiftedTimers {
   advanceUntil(done: () => boolean): Promise<void>
   /** A held answer's wait on the replay's time (#3086), moved on by advanceUntil. */
   waitFor: WaitOnReplayTime
+  /**
+   * The engine's step clock (EngineRuntime.stepClock, #2163) on the replay's time
+   * (#3138). `sleep` is a retry's backoff: it waits by moving the replay's time on,
+   * like a held answer, so the pinned clock moves by exactly the backoff and nothing
+   * waits for real. `timer` is an attempt's deadline: a pending timer that never
+   * moves time itself and runs only when another wait reaches it, or ends at once
+   * when the attempt answers. Without it a backoff after a timed out attempt is a
+   * lifted timer that nothing moves, so it would fire on the real clock at the gate
+   * deadline.
+   */
+  stepClock: { sleep(ms: number): Promise<void>; timer(ms: number, signal: AbortSignal): Promise<void> }
   /** How many held answers are waiting on the replay's time now (#3137). */
   waiting(): number
   /**
@@ -190,11 +201,31 @@ export function liftEngineTimers(host: TimerHost, opts: LiftOptions = {}): Lifte
     signals.timeout = realTimeout
   }
 
+  const stepClock: LiftedTimers['stepClock'] = {
+    sleep: async (ms) => {
+      await waitFor(new AbortController().signal, ms)
+    },
+    timer: (ms, signal) => new Promise<void>((resolve) => {
+      if (signal.aborted) return resolve()
+      const onAbort = (): void => {
+        host.clearTimeout(handle)
+        resolve()
+      }
+      // Through the lift, so it is pending on the replay's time like the engine's own.
+      const handle = host.setTimeout(() => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }, ms)
+      signal.addEventListener('abort', onAbort, { once: true })
+    }),
+  }
+
   return {
     fired: () => [...fired],
     advanced: () => [...advanced],
     advanceUntil,
     waitFor,
+    stepClock,
     waiting: () => held,
     restore,
     end: () => {

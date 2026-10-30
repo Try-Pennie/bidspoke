@@ -21,7 +21,7 @@ import { runOptions, type RunKind } from '../lib/run-kinds'
 import { scriptFromUpload } from '../lib/test-bundle-upload'
 import { FIXED_TIME_MS, buildEnv, type VariantFile, type Variant } from './replay-env'
 import type { HostedBundle } from '../lib/hosted-bundle'
-import { liftStepDeadlines } from '../lib/step-deadlines'
+import { keepStepDeadlines, liftStepDeadlines } from '../lib/step-deadlines'
 import { describeStillHeld, liftEngineTimers, type FiredTimer, type LiftedTimers, type TimerHost } from '../lib/engine-timers'
 import { waitAtMost } from '../lib/wait-at-most'
 import { abDefinitions, abModeOf } from '../swap/ab'
@@ -48,11 +48,16 @@ export const AB_MODE = abModeOf({
   seed: textBinding('MONEY_GATE_CANDIDATE_SEED'),
 })
 
+// The committed definitions as they are, which a fixture's timed_steps keep their
+// own deadlines from (#3138).
+const committedDefinitions = Object.values(import.meta.glob<DefinitionFile>('../fixtures/definitions/*.json', { eager: true, import: 'default' }))
+const committedById = new Map(committedDefinitions.map((d) => [d.id, d]))
+
 // Every timer a definition sets is lifted far above any real step, on both sides
 // alike, so a slow runner can never time a step out on one side only (#1796). In
 // A/B mode, only the candidate's workflow, with the candidate in place on its side.
 export const definitions = abDefinitions(
-  Object.values(import.meta.glob<DefinitionFile>('../fixtures/definitions/*.json', { eager: true, import: 'default' })).map(liftStepDeadlines),
+  committedDefinitions.map(liftStepDeadlines),
   import.meta.glob<unknown>('../swap/candidates/*.json', { eager: true, import: 'default' }),
   AB_MODE,
 )
@@ -440,8 +445,19 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
   if (hooks.engineTimers !== 'real' && hooks.postResponseLimitMs !== undefined) {
     throw new Error('money gate: postResponseLimitMs needs engineTimers: real, because the lift raises the engine\'s own post-response deadlines to the gate deadline, so the cut would decide every wait they decide')
   }
+  // A step the fixture names in timed_steps keeps its own deadline (#3138), so an
+  // attempt the stubs leave unanswered times out on the replay's time.
+  const timedSteps = variant.timed_steps ?? []
+  if (timedSteps.length > 0) {
+    const committed = committedById.get(def.id)
+    if (!committed) throw new Error(`money gate: ${id} names timed_steps, but ${def.name} is not a committed definition, so its own deadlines are unknown`)
+    def = keepStepDeadlines(def, committed, timedSteps)
+  }
   await e.GATE_IO.fetch('https://gate/begin', { method: 'POST', body: JSON.stringify({ fixture: id, arms }) })
   const unstubbed: string[] = []
+  // How many requests each stub rule has answered in this run, so a scenario can
+  // answer a retry differently from the attempt it follows (#3138).
+  const attempts = new Map<string, number>()
 
   const tables = JSON.parse(JSON.stringify(snapshot.tables)) as Record<string, Row[]>
   tables.workflows = tables.workflows.map((w) => (w.id === def.id ? { ...w, definition: def.definition } : w))
@@ -478,7 +494,7 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
       const body = parseBody(text, req.headers.get('content-type'))
       engineOutbound.push({ via: 'engine', node: currentStep, method: req.method, host: url.host, path: redactPathAndQuery(url), headers: redactHeaders(headers), body: redactBody(body) })
       const stubReq = { method: req.method, url, headers, body }
-      const hit = stubAnswer(stubReq, arms)
+      const hit = stubAnswer(stubReq, arms, attempts)
       if (!hit) unstubbed.push(`${url.host}${url.pathname} (${id})`)
       const a = hit?.answer ?? noRuleAnswer(stubReq)
       // An answer that does not arrive whole waits only on the replay's time, which
@@ -562,7 +578,11 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
       const ctx = createExecutionContext()
       // The runtime the bidding Worker's routes pass, built by the engine under test.
       if (hooks.before) await hooks.before(runEnv, db)
-      const runtime = hooks.runtime ? hooks.runtime(db) : moneyRuntime(db.client as never)
+      const engineRuntime = hooks.runtime ? hooks.runtime(db) : moneyRuntime(db.client as never)
+      // A fixture with timed steps runs every step's deadline and retry backoff on the
+      // replay's time (the engine's step clock, #2163), so a timed out attempt's
+      // backoff moves the pinned clock on rather than waiting for the real one (#3138).
+      const runtime = timedSteps.length > 0 ? { ...(engineRuntime as Record<string, unknown>), stepClock: lifted.stepClock } : engineRuntime
       // Real time (Date is pinned during a run): how long the caller waited for its answer.
       const calledAt = performance.now()
       const result = await executeWorkflow(options as never, runEnv as never, runtime as never, ctx)

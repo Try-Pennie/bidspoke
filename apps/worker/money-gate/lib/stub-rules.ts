@@ -74,7 +74,12 @@ export type Arms = Record<string, string>
 export interface Rule {
   name: string
   match: (r: StubRequest) => boolean
-  scenarios: Record<string, (r: StubRequest) => StubAnswer>
+  /**
+   * Each scenario's answer to a request. `attempt` counts the requests this rule
+   * already answered in the run (0 for the first), so a scenario can answer a
+   * retry differently from the attempt before it (#3138).
+   */
+  scenarios: Record<string, (r: StubRequest, attempt: number) => StubAnswer>
   default: string
 }
 
@@ -167,6 +172,10 @@ const late = (ms: number, whole: (r: StubRequest) => StubAnswer) => (r: StubRequ
 
 /** The answer `whole` gives, failing to arrive whole as `how` says (#3086). */
 const ending = (how: AnswerEnding, whole: (r: StubRequest) => StubAnswer) => (r: StubRequest): StubAnswer => ({ ...whole(r), ending: how })
+
+/** No answer to the first `n` attempts (each ends only when its request aborts), then the answer `whole` gives (#3138). */
+const unansweredFirst = (n: number, whole: (r: StubRequest) => StubAnswer) => (r: StubRequest, attempt: number): StubAnswer =>
+  attempt < n ? { ...whole(r), ending: 'no_headers' } : whole(r)
 
 export const RULES: Rule[] = [
   // ── Salesforce (the instance host is a placeholder, so these match on path) ──
@@ -320,7 +329,10 @@ export const RULES: Rule[] = [
   // either side of its cutoff: with the 12 s window, the 500 ms margin and the 4 s
   // floor, a step starting 7.5 s after the answer sends and one at 7.501 s skips.
   // In production that time is a write's attempts and the waits between them (a
-  // 3,750 ms attempt timing out, 500 ms, then a slow second attempt).
+  // 3,750 ms attempt timing out, 500 ms, then a slow second attempt). The two
+  // no_answer scenarios (#3138) are that: the first attempts get no answer, so the
+  // step's own deadline ends each (a fixture keeps it with `timed_steps`), and the
+  // retry after the backoff is answered.
   {
     name: 'pipedream_outcome_post',
     match: (r) => host(r) === PIPEDREAM_OUTCOME_RELAY_HOST,
@@ -329,6 +341,8 @@ export const RULES: Rule[] = [
       ok: () => json({ success: true }),
       ok_after_7500ms: late(7_500, () => json({ success: true })),
       ok_after_7501ms: late(7_501, () => json({ success: true })),
+      no_answer_then_ok: unansweredFirst(1, () => json({ success: true })),
+      no_answer_twice_then_ok: unansweredFirst(2, () => json({ success: true })),
     },
   },
   {
@@ -488,13 +502,20 @@ export function ruleNames(): string[] {
   return RULES.map((r) => r.name)
 }
 
-export function stubAnswer(req: StubRequest, arms: Arms): { rule: string; scenario: string; answer: StubAnswer } | null {
+/**
+ * The rule and scenario that answer `req`, and the answer. `attempts` is the run's
+ * count of requests each rule has answered (#3138), kept by the caller for one run
+ * and moved on here; without it every request is answered as a first attempt.
+ */
+export function stubAnswer(req: StubRequest, arms: Arms, attempts?: Map<string, number>): { rule: string; scenario: string; answer: StubAnswer } | null {
   for (const rule of RULES) {
     if (!rule.match(req)) continue
     const scenario = arms[rule.name] ?? rule.default
     const fn = rule.scenarios[scenario]
     if (!fn) throw new Error(`money gate stub rule ${rule.name} has no scenario ${scenario}`)
-    return { rule: rule.name, scenario, answer: fn(req) }
+    const attempt = attempts?.get(rule.name) ?? 0
+    attempts?.set(rule.name, attempt + 1)
+    return { rule: rule.name, scenario, answer: fn(req, attempt) }
   }
   return null
 }
