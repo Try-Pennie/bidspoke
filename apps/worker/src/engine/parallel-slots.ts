@@ -32,8 +32,24 @@ export interface ParallelSlot {
 
 const SLOT_HANDLE_PREFIX = 'child-'
 
-function slotNumber(handle: string): number {
-  return parseInt(handle.slice(SLOT_HANDLE_PREFIX.length), 10)
+/** The slot's number, or null when the handle carries none (`child-x`). */
+function slotNumber(handle: string): number | null {
+  const rest = handle.slice(SLOT_HANDLE_PREFIX.length)
+  return /^\d+$/.test(rest) ? Number(rest) : null
+}
+
+/**
+ * Numbered slots by number, then any unnumbered one by its handle text. A NaN
+ * from parsing an unnumbered handle compares as equal to everything, which left
+ * that slot wherever its edge happened to be stored (L50).
+ */
+function compareSlotHandles(a: string, b: string): number {
+  const an = slotNumber(a)
+  const bn = slotNumber(b)
+  if (an !== null && bn !== null) return an - bn
+  if (an !== null) return -1
+  if (bn !== null) return 1
+  return a < b ? -1 : a > b ? 1 : 0
 }
 
 /**
@@ -48,7 +64,7 @@ export function parallelSlots(
   const slots: ParallelSlot[] = []
   const slotEdges = outgoingEdges(node.id, definition.edges)
     .filter((e) => (e.source_handle ?? '').startsWith(SLOT_HANDLE_PREFIX))
-    .sort((a, b) => slotNumber(a.source_handle ?? '') - slotNumber(b.source_handle ?? ''))
+    .sort((a, b) => compareSlotHandles(a.source_handle ?? '', b.source_handle ?? ''))
   for (const e of slotEdges) {
     const first = findNode(e.target, definition.nodes)
     if (first === undefined || first.type === 'parallel_end') continue

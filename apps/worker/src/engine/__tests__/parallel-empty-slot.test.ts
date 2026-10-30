@@ -214,6 +214,15 @@ describe('the one slot list (#3125)', () => {
     expect(parallelSlots(fan, def).map((s) => s.handleId)).toEqual(['child-0', 'child-2', 'child-10'])
   })
 
+  it('a handle with no slot number sorts after every numbered slot, never wherever its edge was stored', () => {
+    const def = block({}, [transform('a')], [transform('b')], [transform('c')])
+    def.edges = def.edges.map((e) => (e.source_handle === 'child-2' ? { ...e, source_handle: 'child-x' } : e))
+    // Stored with the unnumbered slot first, then the numbered ones in reverse.
+    def.edges = [...def.edges.filter((e) => e.source_handle === 'child-x'), ...def.edges.filter((e) => e.source_handle !== 'child-x').reverse()]
+    const fan = def.nodes.find((n) => n.id === 'fan')!
+    expect(parallelSlots(fan, def).map((s) => s.handleId)).toEqual(['child-0', 'child-1', 'child-x'])
+  })
+
   it('a legacy block with no slot edges runs its children list, with no handle to name', () => {
     const def = { nodes: [{ id: 'fan', namespace: 'fan', type: 'parallel', config: {}, children: ['a', 'missing', 'b'] } as NodeDefinition, transform('a'), transform('b')], edges: [] as EdgeDefinition[] }
     expect(parallelSlots(def.nodes[0], def).map((s) => [s.handleId, s.node.namespace])).toEqual([[null, 'a'], [null, 'b']])
