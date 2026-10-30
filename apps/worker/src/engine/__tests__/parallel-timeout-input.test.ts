@@ -472,7 +472,7 @@ describe('a slot still running when its block returns first or fails on another 
     expect(rowsOf(queue, 'amone_post')).toMatchObject([{ status: 'completed' }])
     expect(rowsOf(queue, 'fan')).toMatchObject([{ status: 'completed' }])
     const row = leftRow(queue, 'tripoint_sf_post')
-    expect(row).toMatchObject({ status: 'skipped', error_message: 'Parallel block stopped waiting for this slot when slot "amone_post" succeeded first', error_type: null, output: null, parallel_group_id: 'fan' })
+    expect(row).toMatchObject({ status: 'skipped', error_message: 'Stopped waiting: branch amone_post finished first.', error_type: null, output: null, parallel_group_id: 'fan' })
     // No deadline stopped it, so it carries no deadline marker.
     expect(row).not.toHaveProperty('timeout_kind')
     expectTheRequestSent(row)
@@ -494,7 +494,7 @@ describe('a slot still running when its block returns first or fails on another 
     expect(failure).toMatchObject({ stepNamespace: 'fan', afterAnswer: false })
     expect(rowsOf(queue, 'lendswift_post')).toMatchObject([{ status: 'failed' }])
     const row = leftRow(queue, 'tripoint_sf_post')
-    expect(row).toMatchObject({ status: 'skipped', error_message: 'Parallel block stopped waiting for this slot when slot "lendswift_post" failed', error_type: null, parallel_group_id: 'fan' })
+    expect(row).toMatchObject({ status: 'skipped', error_message: 'Stopped waiting: branch lendswift_post failed.', error_type: null, parallel_group_id: 'fan' })
     expect(row).not.toHaveProperty('timeout_kind')
     expectTheRequestSent(row)
     expect(c.steps.tripoint_sf_post).toBeUndefined()
@@ -514,7 +514,8 @@ describe('a slot still running when its block returns first or fails on another 
     const row = leftRow(queue, 'tripoint_sf_post')
     expect(row).toMatchObject({
       status: 'skipped',
-      error_message: `Parallel block stopped waiting for this slot at its ${BLOCK_TIMEOUT_MS}ms timeout, then failed on slot "lendswift_post"`,
+      // The block's 5 ms limit, in seconds with one decimal (limitInSeconds).
+      error_message: 'Stopped waiting at the 0.0 second limit, then branch lendswift_post failed.',
       error_type: null,
       timeout_kind: 'parallel_block',
       timed_out_after_ms: BLOCK_TIMEOUT_MS,
@@ -551,7 +552,7 @@ describe('a slot still running when its block returns first or fails on another 
     const queue = await walk(ctx(), inBlock({ wait_for: 'first', timeout_ms: NO_DEADLINE_MS }, [refusedPost('lendswift_post')], [answeredPost('amone_post')], [relayPost('tripoint_sf_post')]))
     expect(rowsOf(queue, 'lendswift_post')).toMatchObject([{ status: 'failed' }])
     expect(rowsOf(queue, 'amone_post')).toMatchObject([{ status: 'completed' }])
-    expect(leftRow(queue, 'tripoint_sf_post').error_message).toBe('Parallel block stopped waiting for this slot when slot "amone_post" succeeded first')
+    expect(leftRow(queue, 'tripoint_sf_post').error_message).toBe('Stopped waiting: branch amone_post finished first.')
     failAll(held)
     await lateStepEnded('tripoint_sf_post', 'step_error')
   })

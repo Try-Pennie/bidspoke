@@ -7,7 +7,7 @@
  * alone (L290, L524). Each test now advances time itself.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { continuingSlots, deadlineResultsOf, executeParallelNode, leftRunningOf } from '../parallel'
+import { continuingSlots, deadlineResultsOf, executeParallelNode, leftRunningMessage, leftRunningOf, limitInSeconds } from '../parallel'
 import type { ParallelChildResult } from '../parallel'
 import type { NodeDefinition } from '../../../types'
 
@@ -428,5 +428,37 @@ describe('a block that stops waiting for slots still running, for a reason other
     expect(leftRunningOf(err)).toBeNull()
     expect(leftRunningOf(null)).toBeNull()
     expect(leftRunningOf('a string')).toBeNull()
+  })
+})
+
+describe('what the row of a slot left running says (#3083, wording Dan chose)', () => {
+  const results: ParallelChildResult[] = [fulfilled('inquiry'), { namespace: 'offers', status: 'timeout' }]
+
+  it('a winner returned first', () => {
+    expect(leftRunningMessage({ results, decidedBy: 'inquiry', how: 'succeeded_first', afterTimeoutMs: null })).toBe('Stopped waiting: branch inquiry finished first.')
+  })
+
+  it('the named slot failed', () => {
+    expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'failed', afterTimeoutMs: null })).toBe('Stopped waiting: branch collections failed.')
+  })
+
+  it('the block failed on another slot after its timeout, the limit in seconds', () => {
+    expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'failed', afterTimeoutMs: 20000 })).toBe('Stopped waiting at the 20 second limit, then branch collections failed.')
+    expect(leftRunningMessage({ results, decidedBy: 'collections', how: 'failed', afterTimeoutMs: 1500 })).toBe('Stopped waiting at the 1.5 second limit, then branch collections failed.')
+  })
+})
+
+describe('limitInSeconds: a block timeout in seconds', () => {
+  it('a whole number of seconds is written whole', () => {
+    expect(limitInSeconds(20000)).toBe('20')
+    expect(limitInSeconds(15000)).toBe('15')
+    expect(limitInSeconds(1000)).toBe('1')
+  })
+
+  it('anything else is written with one decimal', () => {
+    expect(limitInSeconds(1500)).toBe('1.5')
+    expect(limitInSeconds(2250)).toBe('2.3')
+    expect(limitInSeconds(1999)).toBe('2.0')
+    expect(limitInSeconds(5)).toBe('0.0')
   })
 })

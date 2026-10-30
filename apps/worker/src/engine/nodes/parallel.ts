@@ -377,9 +377,14 @@ export function leftRunningOf(resultOrErr: unknown): LeftRunning | null {
   return left && typeof left === 'object' && Array.isArray((left as LeftRunning).results) ? (left as LeftRunning) : null
 }
 
-/** What the row of a slot the block left running says (#3083). */
+/** What the row of a slot the block left running says (#3083), in the words Dan chose. */
 export function leftRunningMessage(left: LeftRunning): string {
-  if (left.how === 'succeeded_first') return `Parallel block stopped waiting for this slot when slot "${left.decidedBy}" succeeded first`
-  if (left.afterTimeoutMs !== null) return `Parallel block stopped waiting for this slot at its ${left.afterTimeoutMs}ms timeout, then failed on slot "${left.decidedBy}"`
-  return `Parallel block stopped waiting for this slot when slot "${left.decidedBy}" failed`
+  if (left.how === 'succeeded_first') return `Stopped waiting: branch ${left.decidedBy} finished first.`
+  if (left.afterTimeoutMs !== null) return `Stopped waiting at the ${limitInSeconds(left.afterTimeoutMs)} second limit, then branch ${left.decidedBy} failed.`
+  return `Stopped waiting: branch ${left.decidedBy} failed.`
+}
+
+/** A block's timeout in seconds: whole when it is a whole number of seconds ("20"), otherwise with one decimal ("1.5"). */
+export function limitInSeconds(ms: number): string {
+  return ms % 1000 === 0 ? String(ms / 1000) : (ms / 1000).toFixed(1)
 }
