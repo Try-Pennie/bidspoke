@@ -259,7 +259,8 @@ type RefreshOutcome =
 export type VariableCopyRefresh =
   | { kind: 'nothing_asked'; answeredRequests: 0; unreadable: [] }
   | { kind: 'answered'; workflows: number; answeredRequests: number; unreadable: string[] }
-  | { kind: 'failed'; workflows: number; error: string; answeredRequests: number; unreadable: string[] }
+  /** workflows is null when how many it covers is not known (the tick's copies write threw, #3131). */
+  | { kind: 'failed'; workflows: number | null; error: string; answeredRequests: number; unreadable: string[] }
 
 /** What the copies' write did: its counts, and how its refresh went. */
 export interface VariableCopiesWritten {

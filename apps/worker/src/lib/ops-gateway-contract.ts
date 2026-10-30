@@ -781,6 +781,14 @@ export const OPS_TICK_PROBLEM_RULES = {
    */
   variable_copy_refresh_failing: 'three_in_a_row',
   /**
+   * A switched on workflow's runs failed because the bidding Worker says it is
+   * no longer on the ops lane (variables_refused, not_ops_lane, #3131). Held
+   * for three ticks in a row, so a workflow mid move off the lane does not
+   * page (Dan, 2026-10-30); every other refusal is runs_refused_variables, at
+   * once. On a page of its own (REFUSED_OFF_LANE_PAGE).
+   */
+  runs_refused_off_lane: 'three_in_a_row',
+  /**
    * Lost and requeued runs of one workflow reached the rate in a tick (L77,
    * #1950): held for three ticks, so three ticks in a row of the rate pages.
    */
@@ -869,8 +877,9 @@ export const OPS_TICK_PROBLEM_RULES = {
   runs_variable_missing: 'at_once',
   /**
    * A switched on workflow's runs failed because the bidding Worker refused to
-   * hand over their variables (variables_refused, #3131): a setup break a
-   * person must fix, as a missing variable is. Each failed run is reported
+   * hand over their variables (variables_refused, #3131), for any reason but
+   * the ops lane (runs_refused_off_lane): a setup break a person must fix, as
+   * a missing variable is. Each failed run is reported
    * once, so it pages at once, per workflow, on a page of its own
    * (REFUSED_VARIABLES_PAGE).
    */
@@ -964,6 +973,14 @@ export interface OpsOwnPage {
   perWorkflow: boolean
   /** What the page is about, in the bidding Worker's own error lines. */
   about: string
+  /**
+   * For a page whose fix depends on the problem (#3131): the fix for the
+   * detail its key carries after the subject, past the first '.'
+   * (`kind:subject.detail`), or for none (null). The page is recorded, paged
+   * and stood down by the subject alone, so one workflow is one page whatever
+   * detail each tick names; fix is then the fix for a detail it cannot read.
+   */
+  fixOf?: (detail: string | null) => string
 }
 
 /**
@@ -1059,26 +1076,100 @@ export const MISSING_VARIABLE_PAGE = {
   about: 'runs that failed on a missing variable',
 } as const satisfies OpsOwnPage
 
+// ── the pages about runs whose variables bidding refused (#3131) ──
+// The words are Dan's, approved on 2026-10-30 on #3131.
+
+/**
+ * What a person does about each refusal, by the fix it needs (Dan,
+ * 2026-10-30): a secret that would not decrypt, a version gone or unreadable,
+ * or a workflow under another organization or off the ops lane. The order is
+ * the order the body says the reasons in (RUN_VARIABLES_REFUSALS).
+ */
+const REFUSAL_FIXES = {
+  version: 'Open the workflow in Bidspoke and save it again.',
+  placement: 'Check the workflow\'s organization and lane in Bidspoke.',
+  secret: 'Enter the secret\'s value again on the Environment Variables page.',
+} as const
+type RefusalFix = keyof typeof REFUSAL_FIXES
+const FIX_OF_REFUSAL: Record<FailingRunVariablesRefusal, RefusalFix> = {
+  version_missing: 'version', version_unreadable: 'version', other_organization: 'placement', not_ops_lane: 'placement', secret_unreadable: 'secret',
+}
+const REFUSED_CLOSING = 'Runs that already failed are not run again.'
+const fixSentences = (fixes: readonly RefusalFix[]) => [...fixes.map((f) => REFUSAL_FIXES[f]), REFUSED_CLOSING].join(' ')
+/** Every fix, for a detail that cannot be read: the reader is told every remedy rather than none (L50). */
+const EVERY_REFUSED_FIX = fixSentences(Object.keys(REFUSAL_FIXES) as RefusalFix[])
+
+/** The fixes a set of refused runs needs, each once, in the order the body says their reasons. */
+function refusalFixesOf(runs: readonly { reason: FailingRunVariablesRefusal }[]): RefusalFix[] {
+  const fixes: RefusalFix[] = []
+  for (const reason of RUN_VARIABLES_REFUSALS) {
+    if (reason === 'workflow_deleted' || !runs.some((r) => r.reason === reason)) continue
+    const fix = FIX_OF_REFUSAL[reason]
+    if (!fixes.includes(fix)) fixes.push(fix)
+  }
+  return fixes
+}
+
+/**
+ * The subject a runs_refused_variables problem is keyed by (#3131): the
+ * workflow, and after a '.' the fixes its runs need, so the bidding Worker,
+ * which sees only the key and the body, can give the fix for the reasons
+ * (REFUSED_VARIABLES_PAGE.fixOf). It fits the report's key shape.
+ */
+export function refusedVariablesSubject(workflowId: string, runs: readonly { reason: FailingRunVariablesRefusal }[]): string {
+  return `${workflowId}.${refusalFixesOf(runs).join('-')}`
+}
+
+/**
+ * The fix of a runs_refused_variables page from its key's detail (#3131): each
+ * reason's fix once, in the body's order, then the closing sentence once. A
+ * detail it cannot read, or none, gives every fix.
+ */
+export function refusedVariablesFix(detail: string | null): string {
+  const parts = (detail ?? '').split('-')
+  const known = parts.every((p): p is RefusalFix => Object.hasOwn(REFUSAL_FIXES, p)) && new Set(parts).size === parts.length
+  return known ? fixSentences(parts as RefusalFix[]) : EVERY_REFUSED_FIX
+}
+
 /**
  * A switched on workflow's runs that failed because the bidding Worker refused
  * to hand over their variables (runs_refused_variables, the run's reason
- * variables_refused, #3131), named from each run's end (its refusal and
- * refusedVariables), never from its error's words. The words are a draft for
- * Dan's approval. judgedCount: every live tick whose claim answered.
+ * variables_refused), for every reason but the ops lane, named from each run's
+ * end (its refusal and refusedVariables), never from its error's words. Its
+ * fix changes with the reasons (fixOf, from the key's detail). judgedCount:
+ * every live tick whose claim answered.
  */
 export const REFUSED_VARIABLES_PAGE = {
   kind: 'runs_refused_variables',
   job: (workflowId: string) => `ops-runs-variables-refused:${workflowId}`,
   title: (workflowName: string) => `Ops runs failed because bidding refused their variables: ${workflowName}`,
-  fix: 'If a secret could not be read, enter its value again on the Environment Variables page. Otherwise open the workflow in Bidspoke and save it again. Runs that already failed are not run again.',
+  fix: EVERY_REFUSED_FIX,
+  fixOf: refusedVariablesFix,
   judgedCount: 'variables_refused_judged',
   perWorkflow: true,
   about: 'runs bidding refused their variables',
 } as const satisfies OpsOwnPage
 
+/**
+ * The same, for runs refused because the workflow is no longer on the ops
+ * lane (runs_refused_off_lane), held three ticks in a row so a workflow mid
+ * move does not page (Dan, 2026-10-30). judgedCount: every live tick whose
+ * claim answered.
+ */
+export const REFUSED_OFF_LANE_PAGE = {
+  kind: 'runs_refused_off_lane',
+  job: (workflowId: string) => `ops-runs-variables-refused-off-lane:${workflowId}`,
+  title: REFUSED_VARIABLES_PAGE.title,
+  fix: fixSentences([FIX_OF_REFUSAL.not_ops_lane]),
+  judgedCount: 'variables_refused_off_lane_judged',
+  perWorkflow: true,
+  about: 'runs bidding refused their variables because they are off the ops lane',
+} as const satisfies OpsOwnPage
+
 /** Every kind that pages on a page of its own, in the order the bidding Worker settles them. */
 export const OPS_OWN_PAGES: readonly OpsOwnPage[] = [
   UNSTARTED_RUNS_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, MISSING_VARIABLE_PAGE, REFUSED_VARIABLES_PAGE,
+  REFUSED_OFF_LANE_PAGE,
 ]
 
 /** The own page a problem's key belongs to, read from its kind, or null for the minute cron's shared page. */
@@ -1114,10 +1205,15 @@ export function runsOnVariableCopyText(r: { runs: number; ageSeconds: number }):
   return `${one ? '1 run' : `${r.runs} runs`} used ops's saved copy of ${one ? 'its' : 'their'} variables, ${copyAgeWords(r.ageSeconds)} old, because bidding did not send current values in time.`
 }
 
-/** The body of variable_copy_refresh_failing: how many switched on workflows it refreshes, and why it failed. */
-export function refreshFailingText(r: { workflows: number; error: string }): string {
-  const workflows = r.workflows === 1 ? '1 switched on workflow' : `${r.workflows} switched on workflows`
-  return fitted((detail) => `Ops could not refresh its copy of the environment variables of ${workflows} from bidding: ${detail}. Runs still start whenever bidding answers their own request, but a run that has to fall back to the copy can use it only while it is under ${COPIES_STALE_AFTER_HOURS} hours old.`, r.error)
+/**
+ * The body of variable_copy_refresh_failing: how many switched on workflows it
+ * refreshes, and why it failed. workflows is null when that is not known (the
+ * copies write threw, #3131): the body then names no count rather than a
+ * false one.
+ */
+export function refreshFailingText(r: { workflows: number | null; error: string }): string {
+  const of = r.workflows === null ? '' : r.workflows === 1 ? ' of 1 switched on workflow' : ` of ${r.workflows} switched on workflows`
+  return fitted((detail) => `Ops could not refresh its copy of the environment variables${of} from bidding: ${detail}. Runs still start whenever bidding answers their own request, but a run that has to fall back to the copy can use it only while it is under ${COPIES_STALE_AFTER_HOURS} hours old.`, r.error)
 }
 
 /** The body of run_variables_unreadable: how many requests were answered in a form ops cannot read. */
@@ -1288,7 +1384,8 @@ const SWEEP_NAME = /^[a-z][a-z0-9_]{0,63}$/
 const MAX_SWEEPS_RUN = 20
 
 /** A key's shape: a kind in lower case, and an optional subject (a sweep, an id, a secret's name). */
-const PROBLEM_KEY = /^[a-z][a-z0-9_]{0,63}(?::[A-Za-z0-9_.-]{1,128})?$/
+export const PROBLEM_KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}(?::[A-Za-z0-9_.-]{1,128})?$/
+const PROBLEM_KEY = PROBLEM_KEY_PATTERN
 
 /**
  * Caps a keyed problem list as capProblems caps a plain one, keeping each key

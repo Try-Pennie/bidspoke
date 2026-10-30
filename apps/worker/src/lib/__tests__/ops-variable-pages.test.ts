@@ -33,7 +33,7 @@ describe('the rule each variables page pages by (#3000)', () => {
 
   it('lists every page of its own once, each with its own kind, job and count of the reports that judged it', () => {
     const kinds = OPS_OWN_PAGES.map((p) => p.kind)
-    expect(kinds).toEqual(['runs_unstarted', 'runs_on_variable_copy', 'variable_copy_refresh_failing', 'run_variables_unreadable', 'runs_variable_missing', 'runs_refused_variables'])
+    expect(kinds).toEqual(['runs_unstarted', 'runs_on_variable_copy', 'variable_copy_refresh_failing', 'run_variables_unreadable', 'runs_variable_missing', 'runs_refused_variables', 'runs_refused_off_lane'])
     expect(new Set(OPS_OWN_PAGES.map((p) => p.judgedCount)).size).toBe(OPS_OWN_PAGES.length)
     expect(new Set(OPS_OWN_PAGES.map((p) => p.job(WF))).size).toBe(OPS_OWN_PAGES.length)
     for (const p of OPS_OWN_PAGES) expect(Object.hasOwn(OPS_TICK_PROBLEM_RULES, p.kind), p.kind).toBe(true)
@@ -67,6 +67,10 @@ describe('the words of each page, as Dan approved them (#3000)', () => {
     expect(VARIABLE_COPY_REFRESH_PAGE.title()).toBe('Ops can\'t refresh its copy of the variables')
     expect(refreshFailingText({ workflows: 12, error: 'the refresh did not finish within 15 s' })).toBe(
       'Ops could not refresh its copy of the environment variables of 12 switched on workflows from bidding: the refresh did not finish within 15 s. Runs still start whenever bidding answers their own request, but a run that has to fall back to the copy can use it only while it is under 6 hours old.',
+    )
+    // #3131: when how many it refreshes is not known (the copies write threw), the body names no count rather than a false 0.
+    expect(refreshFailingText({ workflows: null, error: 'the copies write threw' })).toBe(
+      'Ops could not refresh its copy of the environment variables from bidding: the copies write threw. Runs still start whenever bidding answers their own request, but a run that has to fall back to the copy can use it only while it is under 6 hours old.',
     )
     expect(refreshFailingText({ workflows: 1, error: 'x' })).toMatch(new RegExp(`of 1 switched on workflow from bidding: .* under ${COPIES_STALE_AFTER_MS / 3_600_000} hours old\\.$`))
     expect(VARIABLE_COPY_REFRESH_PAGE.fix).toBe('Check that the bidding Worker is up and answering the ops gateway. Its logs for opsRunVariables say why the requests failed.')

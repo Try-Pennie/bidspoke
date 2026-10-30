@@ -1,45 +1,62 @@
 /**
- * The page for an ops run whose variables bidding refused (#3131): a run of a
+ * The pages for ops runs whose variables bidding refused (#3131): a run of a
  * switched on workflow that bidding would not hand its variables to fails
  * before it sends anything (status reason variables_refused), and its
- * workflow is paged at once, on a page of its own, as the missing variable
- * page is (#3000). The page names each refused variable and why bidding
- * refused it in plain words, from the refusal's typed fields, never a code
- * and never the run's error text. These tests pin what it renders.
+ * workflow is paged on a page of its own, as the missing variable page is
+ * (#3000). The page names each refused variable and why bidding refused it in
+ * plain words, from the refusal's typed fields, never a code and never the
+ * run's error text, and its fix changes with the reason. A refusal because
+ * the workflow is no longer on the ops lane pages only three ticks in a row,
+ * on a page of its own, so a workflow mid move does not page; every other
+ * reason pages at once. The words are Dan's, approved on 2026-10-30 on #3131;
+ * these tests pin what each renders.
  */
 import { describe, expect, it } from 'vitest'
 import {
-  MAX_PROBLEM_LENGTH, OPS_OWN_PAGES, OPS_TICK_PROBLEM_RULES, REFUSED_VARIABLES_PAGE, RUN_VARIABLES_REFUSALS, problemRuleOf, refusedVariablesText,
-  type FailingRunVariablesRefusal,
+  MAX_PROBLEM_LENGTH, OPS_OWN_PAGES, OPS_TICK_PROBLEM_RULES, PROBLEM_KEY_PATTERN, REFUSED_OFF_LANE_PAGE, REFUSED_VARIABLES_PAGE, RUN_VARIABLES_REFUSALS,
+  inARowToPage, problemRuleOf, refusedVariablesFix, refusedVariablesSubject, refusedVariablesText, type FailingRunVariablesRefusal,
 } from '../ops-gateway-contract'
 
 const WF = '00000000-0000-4000-8000-0000000019a1'
 const secret = (...keys: string[]) => ({ reason: 'secret_unreadable' as const, keys })
 const plain = (reason: Exclude<FailingRunVariablesRefusal, 'secret_unreadable'>) => ({ reason, keys: [] as string[] })
+const CLOSING = 'Runs that already failed are not run again.'
+const SECRET_FIX = 'Enter the secret\'s value again on the Environment Variables page.'
+const VERSION_FIX = 'Open the workflow in Bidspoke and save it again.'
+const PLACEMENT_FIX = 'Check the workflow\'s organization and lane in Bidspoke.'
 
-describe('the rule the refused variables page pages by (#3131)', () => {
+describe('the rules the refused variables pages page by (#3131)', () => {
   // Each refused run has already failed, and no later tick reports it again,
   // so holding it for three ticks would hold it for ever (the at_once rule).
-  it('pages at once, per workflow', () => {
+  it('pages every reason but the lane at once, per workflow', () => {
     expect(OPS_TICK_PROBLEM_RULES.runs_refused_variables).toBe('at_once')
     expect(problemRuleOf(`runs_refused_variables:${WF}`)).toBe('at_once')
   })
 
-  it('is a page of its own, with its own job and its own count of the reports that judged it', () => {
+  // Dan, 2026-10-30: a workflow mid move off the ops lane must not page.
+  it('pages a refusal because the workflow is off the ops lane only three ticks in a row', () => {
+    expect(OPS_TICK_PROBLEM_RULES.runs_refused_off_lane).toBe('three_in_a_row')
+    expect(inARowToPage(`runs_refused_off_lane:${WF}`)).toBe(3)
+  })
+
+  it('gives each its own page, job and count of the reports that judged it', () => {
     expect(OPS_OWN_PAGES).toContain(REFUSED_VARIABLES_PAGE)
+    expect(OPS_OWN_PAGES).toContain(REFUSED_OFF_LANE_PAGE)
     expect(REFUSED_VARIABLES_PAGE.kind).toBe('runs_refused_variables')
+    expect(REFUSED_OFF_LANE_PAGE.kind).toBe('runs_refused_off_lane')
     expect(REFUSED_VARIABLES_PAGE.job(WF)).toBe(`ops-runs-variables-refused:${WF}`)
+    expect(REFUSED_OFF_LANE_PAGE.job(WF)).toBe(`ops-runs-variables-refused-off-lane:${WF}`)
     expect(REFUSED_VARIABLES_PAGE.judgedCount).toBe('variables_refused_judged')
+    expect(REFUSED_OFF_LANE_PAGE.judgedCount).toBe('variables_refused_off_lane_judged')
     expect(REFUSED_VARIABLES_PAGE.perWorkflow).toBe(true)
+    expect(REFUSED_OFF_LANE_PAGE.perWorkflow).toBe(true)
   })
 })
 
-describe('the words of the refused variables page (#3131, a draft for Dan)', () => {
-  it('has a title naming the workflow, and one fix', () => {
+describe('the words of the refused variables pages, as Dan approved them (#3131)', () => {
+  it('titles both pages the same, naming the workflow', () => {
     expect(REFUSED_VARIABLES_PAGE.title('Lead intake')).toBe('Ops runs failed because bidding refused their variables: Lead intake')
-    expect(REFUSED_VARIABLES_PAGE.fix).toBe(
-      'If a secret could not be read, enter its value again on the Environment Variables page. Otherwise open the workflow in Bidspoke and save it again. Runs that already failed are not run again.',
-    )
+    expect(REFUSED_OFF_LANE_PAGE.title('Lead intake')).toBe('Ops runs failed because bidding refused their variables: Lead intake')
   })
 
   it('names the secret bidding could not read', () => {
@@ -84,9 +101,11 @@ describe('the words of the refused variables page (#3131, a draft for Dan)', () 
 
   it('never shows a refusal code', () => {
     const every = RUN_VARIABLES_REFUSALS.filter((r): r is FailingRunVariablesRefusal => r !== 'workflow_deleted')
-    const text = refusedVariablesText(every.map((reason) => ({ reason, keys: reason === 'secret_unreadable' ? ['API_TOKEN'] : [] })))
+    const runs = every.map((reason) => ({ reason, keys: reason === 'secret_unreadable' ? ['API_TOKEN'] : [] }))
+    const text = refusedVariablesText(runs)
     for (const code of [...RUN_VARIABLES_REFUSALS, 'variables_refused']) expect(text, code).not.toContain(code)
     expect(text).not.toMatch(/env\./)
+    expect(refusedVariablesFix(refusedVariablesSubject(WF, runs).slice(WF.length + 1))).not.toMatch(/_/)
   })
 
   it('says a secret was refused without naming it when the refusal named none, rather than naming nothing', () => {
@@ -102,5 +121,40 @@ describe('the words of the refused variables page (#3131, a draft for Dan)', () 
     expect(text).toContain('...')
     expect(text).toMatch(/^2 runs failed before sending anything, because bidding would not hand over their variables\. For 1 run, /)
     expect(text.endsWith(' could not be read.')).toBe(true)
+  })
+})
+
+// Dan, 2026-10-30: the fix changes with the reason, each reason's fix once in
+// the body's order, then the closing sentence once.
+describe('the fix of the refused variables page, by reason (#3131)', () => {
+  const fixOf = (runs: Array<{ reason: FailingRunVariablesRefusal; keys: string[] }>) => refusedVariablesFix(refusedVariablesSubject(WF, runs).slice(WF.length + 1))
+
+  it('gives each reason its own fix, then the closing sentence', () => {
+    expect(fixOf([secret('API_TOKEN')])).toBe(`${SECRET_FIX} ${CLOSING}`)
+    expect(fixOf([plain('version_missing')])).toBe(`${VERSION_FIX} ${CLOSING}`)
+    expect(fixOf([plain('version_unreadable')])).toBe(`${VERSION_FIX} ${CLOSING}`)
+    expect(fixOf([plain('other_organization')])).toBe(`${PLACEMENT_FIX} ${CLOSING}`)
+    expect(REFUSED_OFF_LANE_PAGE.fix).toBe(`${PLACEMENT_FIX} ${CLOSING}`)
+  })
+
+  it('gives each fix once, in the order of the body\'s sentences, with mixed reasons', () => {
+    const runs = [secret('API_TOKEN'), plain('version_unreadable'), plain('other_organization'), plain('version_missing')]
+    expect(refusedVariablesText(runs)).toMatch(/For 1 run, the saved version .*For 1 run, in bidding, this workflow now belongs .*For 1 run, bidding could not read .*For 1 run, the secret variable/)
+    expect(fixOf(runs)).toBe(`${VERSION_FIX} ${PLACEMENT_FIX} ${SECRET_FIX} ${CLOSING}`)
+  })
+
+  it('keys the page by the workflow, carrying which fixes it needs in a form a report carries', () => {
+    const subject = refusedVariablesSubject(WF, [secret('API_TOKEN'), plain('version_missing')])
+    expect(subject).toBe(`${WF}.version-secret`)
+    expect(PROBLEM_KEY_PATTERN.test(`runs_refused_variables:${subject}`)).toBe(true)
+  })
+
+  // An unreadable detail is judged on the side that tells the reader most (L50): every fix, never none.
+  it('gives every fix for a detail it cannot read, or none at all', () => {
+    const all = `${VERSION_FIX} ${PLACEMENT_FIX} ${SECRET_FIX} ${CLOSING}`
+    expect(refusedVariablesFix(null)).toBe(all)
+    expect(refusedVariablesFix('')).toBe(all)
+    expect(refusedVariablesFix('version-nonsense')).toBe(all)
+    expect(REFUSED_VARIABLES_PAGE.fix).toBe(all)
   })
 })

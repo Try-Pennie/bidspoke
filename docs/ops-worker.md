@@ -153,7 +153,9 @@ included ("Any secret, no exceptions").
   an answer from bidding ops cannot read; and a switched on workflow's runs
   failing with `variable_unavailable`; and a switched on workflow's runs
   that bidding refused their variables (`refusedRunEnd`, status reason
-  `variables_refused`, #3131), named from the refusal's fields. The refresh is skipped only when the
+  `variables_refused`, #3131), named from the refusal's fields, at once,
+  except a refusal because the workflow is off the ops lane, which pages
+  three ticks in a row. The refresh is skipped only when the
   tick's own workflow fetch failed, so it runs beside a claimed ask that failed.
   Each page is in reference/observability.md.
 - **Retired.** The version capture #2702 added (`capture_version_env_variables`,

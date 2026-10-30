@@ -1129,6 +1129,8 @@ async function listOwnPages(kv: KVNamespace, kind: OpsTickProblemKind): Promise<
 /** One problem of a kind that pages on its own: its subject, its sentence, and whether its rule has it due now or held. */
 interface OwnProblem {
   subject: string
+  /** What the key carries past the subject, for a page whose fix depends on it (OpsOwnPage.fixOf, #3131). */
+  detail: string | null
   text: string
   key: string
   due: boolean
@@ -1167,7 +1169,7 @@ async function settleOwnPages(
     const held = inARowToPage(o.key) !== null
     try {
       await deps.notifyFailure(supabase, page.job(o.subject), [o.text], kv, {
-        title: page.title(name), fixHint: page.fix, ...(held ? { context: repeatedContext([o.key]) } : {}),
+        title: page.title(name), fixHint: page.fixOf === undefined ? page.fix : page.fixOf(o.detail), ...(held ? { context: repeatedContext([o.key]) } : {}),
       }, nowMs, { repeatsHeldByCaller: true })
       paged = true
     } catch (err) {
@@ -1252,7 +1254,10 @@ export async function runOpsTickReportCheck(
       const pagesAt = inARowToPage(key)
       // Runs that cannot be matched to the problems page every problem (L50).
       const due = pagesAt === null || runs === null || runs[i] === undefined || runs[i].in_a_row >= pagesAt
-      return [{ subject: key.slice(page.kind.length + 1), text, key, due }]
+      // A page whose fix depends on the problem keys it as subject.detail (#3131), and is one page per subject.
+      const rest = key.slice(page.kind.length + 1)
+      const dot = page.fixOf === undefined ? -1 : rest.indexOf('.')
+      return [{ subject: dot === -1 ? rest : rest.slice(0, dot), detail: dot === -1 ? null : rest.slice(dot + 1), text, key, due }]
     }),
   }))
   let names = new Map<string, string>()
