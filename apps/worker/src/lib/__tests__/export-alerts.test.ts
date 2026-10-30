@@ -195,7 +195,9 @@ describe('notifyExportFailure', () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(false)
     const kv = makeKv()
     await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings export', ['boom nobody recognises'], kv, 'export-job')
-    expect(kv.put).not.toHaveBeenCalled()
+    // Nothing but the record of a page nobody received (#3056): no cooldown, no condition, no marker.
+    const keys = vi.mocked(kv.put).mock.calls.map(([k]) => k as string)
+    expect(keys.filter((k) => !k.startsWith('incident-outbox:') && !k.startsWith('export-alert-due:'))).toEqual([])
   })
 
   it('clears cooldown state on a successful run when kv is provided', async () => {

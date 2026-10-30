@@ -32,7 +32,7 @@
  *
  * Conventions shared with the other minute rate checks (slow-execution-rate.ts):
  * a page under the minute page claim with a 30 minute cooldown, the incident
- * record through markAlerted, recordPaged and announceRecovery, and an all-clear
+ * record through markAlerted, recordPageOutcome and announceRecovery, and an all-clear
  * held until a ping is answered again (#817). Its own heartbeat (cron-heartbeat.ts,
  * `partner-error-rate`), and a read it cannot make throws, so a run that cannot
  * judge counts as a failed run of the job rather than reading as a quiet partner.
@@ -40,7 +40,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { minuteAlertClaimKey, minuteAllClearClaim, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
 import type { AlertClaims } from './alert-claim'
-import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, pageTried, recordPageOutcome, refreshAlerted, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendPartnerErrorRateAlert, sendRecoveryAlert } from './slack'
 import { fetchAllPaged } from './paginate'
 import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
@@ -228,9 +228,10 @@ export async function runPartnerErrorRateCheck(
     })
     // The marker before the cooldown (#2058): a cut between them costs at worst a
     // repeated page, never a lost all-clear.
+    if (outcome === 'sent') await markAlerted(kv, PARTNER_ERROR_RATE_SIGNAL, wf.id, incident, now)
+    // Delivered or not, a page this tick tried is recorded (#3056).
+    if (pageTried(outcome)) await recordPageOutcome(kv, PARTNER_ERROR_RATE_SIGNAL, wf.id, incident, now, outcome === 'sent')
     if (outcome === 'sent') {
-      await markAlerted(kv, PARTNER_ERROR_RATE_SIGNAL, wf.id, incident, now)
-      await recordPaged(kv, PARTNER_ERROR_RATE_SIGNAL, wf.id, incident, now)
       await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
       summary.paged.push(wf.id)
     }

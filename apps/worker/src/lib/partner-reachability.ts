@@ -35,8 +35,8 @@
 import type { AlertClaims } from './alert-claim'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { clearCondition, backoffCooldownKey, type BackoffKv } from './alert-backoff'
-import { deliverAll, postStanding as postStandingAlert, type SlackTarget, type StandingAlert } from './standing-alert'
-import { keepAlerted, markSpikeSeen, recordPaged, recoveryDue, settleRecovery, type IncidentContext, type RecoveryKv } from './alert-recovery'
+import { deliverAll, postStandingOutcome, type SlackTarget, type StandingAlert } from './standing-alert'
+import { keepAlerted, markSpikeSeen, pageTried, recordPageOutcome, recoveryDue, settleRecovery, type IncidentContext, type PostAttempt, type RecoveryKv } from './alert-recovery'
 import { detectBlockPage, cloudflareErrorCode, type BlockPage } from './html-error-summary'
 import { reportPartnerBlock, partnerBlockKey, partnerHostIncident, PARTNER_BLOCK_CONDITION_TTL_SECONDS, PARTNER_REACHABILITY_RECOVERY_PREFIX, PROBE_SEEN_IN } from './partner-block-alert'
 import { ACHIEVE_HOSTS, achieveIdentityHeaders } from '../engine/nodes/achieve-identity'
@@ -296,12 +296,13 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
   const dueForAllClear: Array<{ host: string; alertedAt: string; endedAt: string | null; firstHealthyAt: string | null }> = []
 
   // The incident record (#2099): platform scoped, a failed recording reported in this
-  // run's errors. A page is recorded only when the sender really posts: observe mode
-  // logs what it would have said, and that reached nobody.
+  // run's errors. A page is recorded only when the sender really tries one: observe
+  // mode logs what it would have said, and that reached nobody. Delivered or not,
+  // a page tried is recorded (#3056).
   const onRecordError = (message: string) => { summary.errors.push(`incident record: ${message}`) }
   const incident = (host: string): IncidentContext => partnerHostIncident(host, onRecordError)
-  const paged = async (host: string, posted: boolean) => {
-    if (posted && mode === 'alert') await recordPaged(deps.kv, RECOVERY_PREFIX, host, incident(host), nowMs)
+  const paged = async (host: string, attempt: PostAttempt) => {
+    if (mode === 'alert' && pageTried(attempt)) await recordPageOutcome(deps.kv, RECOVERY_PREFIX, host, incident(host), nowMs, attempt === 'sent')
   }
 
   for (const { target, reading } of readings) {
@@ -366,7 +367,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
         if (heldForMs >= PROBE_BROKEN_AFTER_MS) {
           const posted = await postStanding(deps, PROBE_CONTROL_KEY, claim, release, targetsSlack, nowMs, { problem: 'probe-broken', details: [reading.reason] }, (s, repeat) =>
             senders.probeBroken(s, s.default_channel, { reason: reading.reason, since: state.since, repeat, at: nowMs }))
-          if (posted) summary.alerts.push(`probe-broken:${host}`)
+          if (posted === 'sent') summary.alerts.push(`probe-broken:${host}`)
           await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since, incident(host), nowMs)
           await paged(host, posted)
         }
@@ -378,7 +379,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
             senders.control(s, s.default_channel, {
               host, everPassed: state.controlPassedAt !== undefined, status: reading.status, bodyHead: reading.bodyHead, since: state.since, repeat, at: nowMs,
             }))
-          if (posted) summary.alerts.push(`control:${host}`)
+          if (posted === 'sent') summary.alerts.push(`control:${host}`)
           await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since, incident(host), nowMs)
           await paged(host, posted)
         }
@@ -401,7 +402,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
       if (heldForMs >= UNREACHABLE_ALERT_AFTER_MS) {
         const posted = await postStanding(deps, unreachableKey(host), claim, release, targetsSlack, nowMs, { problem: 'unreachable', details: [reading.reason] }, (s, repeat) =>
           senders.unreachable(s, s.default_channel, { host, reason: reading.reason, since: state.since, repeat, at: nowMs }))
-        if (posted) summary.alerts.push(`unreachable:${host}`)
+        if (posted === 'sent') summary.alerts.push(`unreachable:${host}`)
         await keepAlerted(deps.kv, RECOVERY_PREFIX, host, state.since, incident(host), nowMs)
         await paged(host, posted)
       }
@@ -454,8 +455,8 @@ function postStanding(
   nowMs: number,
   alert: StandingAlert,
   send: (s: SlackTarget, repeat: string | null) => Promise<string | null>,
-): Promise<boolean> {
-  return postStandingAlert({
+): Promise<PostAttempt> {
+  return postStandingOutcome({
     kv: deps.kv, key, claim, release, targets, nowMs, alert, send,
     conditionTtlSeconds: PARTNER_BLOCK_CONDITION_TTL_SECONDS, logPrefix: '[partner-reachability]', log: deps.log,
   })

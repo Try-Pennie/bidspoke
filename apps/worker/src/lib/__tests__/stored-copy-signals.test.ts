@@ -252,6 +252,8 @@ describe('while leads are being served from stored copies', () => {
     for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, served(5))
     expect((await runStoredCopyChecks(h.deps())).serving).toBe('no_slack')
     expect(h.posted).toEqual([])
+    // Nowhere to send it, so no page was tried and none is recorded as refused (#3056).
+    expect(transitions(h.kv.store)).toEqual([])
   })
 
   it('says nothing for copies used in fewer minutes than the threshold, the shape of a healthy day', async () => {
@@ -305,6 +307,8 @@ describe('while leads are being served from stored copies', () => {
     expect((await runStoredCopyChecks(h.deps())).serving).toBe('post_failed')
     expect(h.claimsHeld.size).toBe(0)
     expect(await h.kv.get(`${STORED_COPY_SERVING_KEY}:cooldown`)).toBeNull()
+    // Slack's refusal is recorded as not delivered (#3056).
+    expect(transitions(h.kv.store).map((t) => t.split(' ')[0])).toEqual(['undelivered'])
   })
 
   it('stays quiet while another tick holds the claim', async () => {
