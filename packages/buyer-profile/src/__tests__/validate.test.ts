@@ -332,6 +332,8 @@ describe('accept rules an empty answer could satisfy (#3093)', () => {
   it('refuses accept rules that an empty answer meets, on the accept rules', () => {
     const errors = errorsOf([{ field: 'error', present: false }])
     expect(errors).toEqual([{ code: 'accept_rules_met_by_empty_answer', path: 'acceptSignals', message: ACCEPT_RULES_MET_BY_EMPTY_ANSWER_MESSAGE }])
+    // The words Dan approved (#3093), asserted as written so a change to them is seen.
+    expect(ACCEPT_RULES_MET_BY_EMPTY_ANSWER_MESSAGE).toBe('An empty answer from the buyer would count as a sale. Add a rule that checks a field the buyer sends back.')
   })
 
   it('allows an absence rule beside a rule an empty answer cannot meet', () => {

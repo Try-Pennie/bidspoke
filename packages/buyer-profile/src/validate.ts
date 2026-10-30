@@ -89,7 +89,7 @@ export const ACCEPT_RULE_READS_NO_FIELD_MESSAGE = (ruleNumber: number): string =
   `Accept rule ${ruleNumber} has no field. Name the field of the buyer's answer that it checks.`
 
 export const ACCEPT_RULES_MET_BY_EMPTY_ANSWER_MESSAGE =
-  'An empty answer from the buyer meets every accept rule, so it would be recorded as a sale. Add a rule that checks a field the buyer sends back.'
+  'An empty answer from the buyer would count as a sale. Add a rule that checks a field the buyer sends back.'
 
 /**
  * What a complete answer with nothing in it reaches the accept rules as:
