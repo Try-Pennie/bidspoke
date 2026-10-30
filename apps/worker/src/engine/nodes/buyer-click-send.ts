@@ -117,7 +117,12 @@ export const CLICK_POST_TIMEOUT_MS = 20_000
 export const CLICK_CLAIM_MARGIN_MS = 10_000
 export const CLICK_CLAIM_DEADLINE_MS = CLICK_POST_TIMEOUT_MS + 2 * OBJECT_CALL_DEADLINE_MS + CLICK_CLAIM_MARGIN_MS
 
-/** The node's own bound on the post, a second past the post's timeout, so a fetch that ignores its abort still ends. */
+/**
+ * The node's own bound on the post, a second past the post's timeout, so a fetch
+ * that ignores its abort still ends. Since #3089 the post's timeout covers the
+ * body as well as the headers, so a trickling body ends at that timeout and this
+ * bound is reached only by a fetch that does not settle on its abort.
+ */
 export const CLICK_POST_DEADLINE_MS = CLICK_POST_TIMEOUT_MS + 1_000
 
 /** How long the node waits on one Slack alert before recording it as failed. */

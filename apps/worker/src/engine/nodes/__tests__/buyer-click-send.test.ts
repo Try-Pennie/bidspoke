@@ -14,6 +14,7 @@ import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { ClaimResult } from '../../../durable-objects/lead-sale'
 import type { SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import { postToPartner, type PartnerCallResult } from '../../../lib/post-to-partner'
+import { PAST_THE_LIMIT, tricklingFetch } from '../../../lib/__tests__/_trickling-fetch'
 import type { Env } from '../../../index'
 import { BUYER_CALL_DEADLINE, CLICK_POST_DEADLINE } from '../../step-timeout'
 import { clickAlertMessage, type ClickAlert, type ClickAlertOutcome } from '../../../lib/buyer-click-alert'
@@ -912,6 +913,44 @@ describe('a post our own timer stopped carries the marker for the step row (#307
       expect(h.posts).toHaveLength(1)
       expect(h.sold).toEqual([])
       expect(h.freed).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // #3089: the post's own timer now runs until the body is read, so a buyer
+  // that answers its headers in time and then trickles its body is stopped by
+  // that timer at CLICK_POST_TIMEOUT_MS, marked buyer_call. Before, the timer
+  // stopped at the headers and only the node's bound, a second later, ended
+  // the wait (click_post), with the call possibly still running.
+  it.each([
+    ['honours', true],
+    ['ignores', false],
+  ] as const)('a body still trickling at the post timeout (one that %s the abort) ends at the post\'s own timer, never the node\'s bound', async (_label, honoursAbort) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const { fetchImpl, signals } = tricklingFetch(PAST_THE_LIMIT, 5_000, honoursAbort)
+      const h = harness({ post: realPost(fetchImpl as unknown as (url: string, init: { signal?: AbortSignal }) => Promise<Response>) })
+      let settled = false
+      const p = run(h).then((r) => { settled = true; return r })
+      await vi.advanceTimersByTimeAsync(CLICK_POST_TIMEOUT_MS)
+      expect(settled).toBe(true)
+      const r = await p
+      expect(r.deadline).toEqual({ timeout_kind: BUYER_CALL_DEADLINE, timed_out_after_ms: CLICK_POST_TIMEOUT_MS })
+      expect(r.failure).toBeUndefined()
+      expect(signals[0].aborted).toBe(true)
+      // The abort is the signal's own, whose words the runtime chooses. Everything
+      // is what a bare abort with those words, which nothing marked, produces.
+      const words = (signals[0].reason as Error).message
+      expect(r.output.detail).toBe(`no answer from the buyer: ${words}`)
+      const control = harness({ post: () => Promise.reject(new DOMException(words, 'AbortError')) })
+      const controlRun = await run(control)
+      expect(controlRun.deadline).toBeUndefined()
+      expect(r.output).toEqual(controlRun.output)
+      expect(h.holds).toEqual(control.holds)
+      expect(h.alerts).toEqual(control.alerts)
+      expect(h.posts).toHaveLength(1)
+      expect(h.sold).toEqual([])
     } finally {
       vi.useRealTimers()
     }

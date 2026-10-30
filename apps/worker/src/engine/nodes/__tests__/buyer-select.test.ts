@@ -11,6 +11,7 @@ import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { Env } from '../../../index'
 import type { BuyerProfilesSnapshot, LoadedBuyer } from '../../../lib/buyer-profile-loader'
 import { markNoAnswer, type PartnerCallResult } from '../../../lib/post-to-partner'
+import { PAST_THE_LIMIT, tricklingFetch } from '../../../lib/__tests__/_trickling-fetch'
 import type { ClaimBody, ClaimResult } from '../../../durable-objects/lead-sale'
 import type { EntryKey, EntryResult, LedgerEntry, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
@@ -1613,6 +1614,45 @@ describe('a live buyer call that got no answer says so, and why (#3080)', () => 
     expect(withoutWords(marked.bidRows)).toEqual(withoutWords(plain.bidRows))
     expect(marked.ledgers.get('p-1')!.calls).toEqual(plain.ledgers.get('p-1')!.calls)
     expect(marked.sales[0].state).toBe('in_flight')
+  })
+
+  // #3089: nothing else bounds the live buyer call's body read (the node gives
+  // the call no deadline of its own once it has started, and the walk wraps
+  // buyer_select in none), so the call's own timer must. Headers that arrive in
+  // time followed by a body still trickling at BUYER_CALL_TIMEOUT_MS end there,
+  // and the attempt records it exactly as a call our timer stopped before its
+  // headers: no answer, held, paged, marked buyer_call.
+  it('the production buyer call stops a body still trickling at its own limit, and the attempt says our timer stopped it', async () => {
+    const { fetchImpl } = tricklingFetch(PAST_THE_LIMIT, 5_000, true)
+    vi.stubGlobal('fetch', fetchImpl)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let thrown: unknown
+    try {
+      const objects = { idFromName: () => 'id', get: () => ({}) }
+      const production = productionDeps(ctx(), { BUYER_LEDGER: objects, LEAD_SALE: objects, CIRCUIT_BREAKER: objects } as unknown as Env, {} as never)
+      const target = { slug: 'tripoint', api_endpoint: 'https://tripoint.example/leads', cf_secret_key: null }
+      let settled = false
+      const call = production.callBuyer(target, {}, { traceId: 't', timeoutMs: BUYER_CALL_TIMEOUT_MS }).then(
+        (answer) => { settled = true; return answer },
+        (e: unknown) => { settled = true; return e },
+      )
+      await vi.advanceTimersByTimeAsync(BUYER_CALL_TIMEOUT_MS)
+      expect(settled).toBe(true)
+      thrown = await call
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+    expect(thrown).toMatchObject({ name: 'AbortError' })
+    expect(stepTimeoutMarkerOf(thrown)).toEqual({ timeout_kind: 'buyer_call', timed_out_after_ms: BUYER_CALL_TIMEOUT_MS })
+
+    const detail = `no answer arrived from the buyer within our ${BUYER_CALL_TIMEOUT_MS} ms limit, so we stopped the call`
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1), buyer('p-2', 'liberty', 2)), answers: { tripoint: [thrown as Error] } })
+    const r = await run(h)
+    expect(r.failure).toEqual({ message: `buyer_select outcome_unknown: ${detail}`, errorType: 'transient', reason: 'outcome_unknown' })
+    expect(r.attempts).toHaveLength(1)
+    expect(r.attempts[0]).toMatchObject({ status: 'failed', error: detail, timeout: { timeout_kind: 'buyer_call', timed_out_after_ms: BUYER_CALL_TIMEOUT_MS }, output: { outcome: 'outcome_unknown', http_status: null, held: true } })
+    expect(h.sales[0].state).toBe('in_flight')
   })
 
   it('a real answer no rule matched keeps its words, and still does not fail the step', async () => {
