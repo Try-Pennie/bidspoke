@@ -12,6 +12,7 @@ import { SAMPLE_CONFIDENT, suggestedTimeoutMs } from '../../lib/timeout-suggesti
 import { isIsoTimestamp, isUuid } from '../../lib/query-validators'
 import { readReplayedIds } from '../../lib/replayed-executions'
 import { formatErr } from '../../lib/format-error'
+import { sortStepRows } from '../../lib/step-row-order'
 import {
   findArchivedStep,
   readArchivedChildren,
@@ -420,7 +421,9 @@ executions.get('/:id', async (c) => {
     }
     if (archived.kind === 'not-found') return c.json({ error: 'Execution not found' }, 404)
 
-    const archivedSteps = summary ? archived.steps.map(toSummaryStep) : archived.steps
+    // The bundle holds its steps in the order the archiver paged them (by id),
+    // so they are put in step order here, as a live run's are (#3084).
+    const archivedSteps = sortStepRows((summary ? archived.steps.map(toSummaryStep) : archived.steps) as Array<Record<string, unknown>>)
 
     // A replay or resume can be created any day the parent is still readable,
     // so it lands on its own archive day and the parent's own narrow window
@@ -510,7 +513,9 @@ executions.get('/:id', async (c) => {
   // their original outputs. Replays don't get this treatment — they re-run
   // every step and have their own rows.
   type StepRow = { step_namespace: string; step_order: number; [k: string]: unknown }
-  let steps = (stepsRes.data ?? []) as unknown as StepRow[]
+  // Ordered by step_order in the read; sorted again so rows written before
+  // #3084, which can share an order, list the same way on every read.
+  let steps = sortStepRows((stepsRes.data ?? []) as unknown as StepRow[])
   if (execution.resumed_from_execution_id) {
     const presentNamespaces = new Set(steps.map((s) => s.step_namespace))
     // The resumed-from execution ran strictly before the current one, so its
@@ -546,7 +551,7 @@ executions.get('/:id', async (c) => {
     const inherited = inheritable
       .filter((s) => !presentNamespaces.has(s.step_namespace))
       .map((s) => ({ ...s, inherited_from_execution_id: execution.resumed_from_execution_id }))
-    steps = [...inherited, ...steps].sort((a, b) => a.step_order - b.step_order)
+    steps = sortStepRows([...inherited, ...steps])
   }
   const t3 = Date.now()
 

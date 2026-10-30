@@ -10,8 +10,9 @@
  */
 import { AlertTriangle, CheckCircle, MinusCircle } from 'lucide-react'
 import {
-  CONSIDERED_OUTCOMES, CONSIDERED_OUTCOME_LABELS, MODE_EFFECTIVE, MODE_EFFECTIVE_LABELS, NODE_REASON_LABELS, OUT_REASON_LABELS,
-  type ConsideredOutcome, type ModeEffective, type NodeReason, type OutReason,
+  CONSIDERED_OUTCOMES, CONSIDERED_OUTCOME_LABELS, MODE_EFFECTIVE, MODE_EFFECTIVE_LABELS,
+  UNRESOLVED_ANSWER_LABELS, reasonLabel, unresolvedAnswerOf,
+  type ConsideredOutcome, type ModeEffective,
 } from '@bidspoke/buyer-profile'
 import { NODE_TRAITS } from '@/types/workflow'
 import { ToneBadge, type Tone } from './ToneBadge'
@@ -91,14 +92,6 @@ export function readBuyerSelectOutput(output: unknown): Output | null {
   }
 }
 
-/** The plain words for a reason code from either shared list; the code itself when it is from neither. */
-export function reasonLabel(reason: string | undefined): string {
-  if (!reason) return ''
-  if (reason in OUT_REASON_LABELS) return OUT_REASON_LABELS[reason as OutReason]
-  if (reason in NODE_REASON_LABELS) return NODE_REASON_LABELS[reason as NodeReason]
-  return reason
-}
-
 const OUTCOME_TONE: Record<ConsideredOutcome, Tone> = {
   sold: 'green',
   rehearsed: 'green',
@@ -113,27 +106,51 @@ const OUTCOME_TONE: Record<ConsideredOutcome, Tone> = {
 
 const money = (cents: number): string => `$${(cents / 100).toFixed(2)}`
 
+/** Words for a reason code; the headline's own, so an unknown outcome is worded by whether an answer arrived (#3087). */
+type ReasonWords = (reason: string | undefined) => string
+
 /** What each exit says the node did, by exit. Every exit in the node's list has one (tested). */
-export const ROUTE_HEADLINES: Record<string, (out: Output) => { text: string; tone: Tone }> = {
+export const ROUTE_HEADLINES: Record<string, (out: Output, words?: ReasonWords) => { text: string; tone: Tone }> = {
   sold: (out) => {
     const soldTo = out.considered.find((c) => c.outcome === 'sold')
     const who = out.sale.partner_slug ?? soldTo?.partner ?? 'a buyer'
     const amount = soldTo?.payout_cents
     return { text: `Sold to ${who}${amount !== null && amount !== undefined ? ` for ${money(amount)}` : ''}`, tone: 'green' }
   },
-  no_sale: (out) => ({ text: `No sale: ${reasonLabel(out.reason)}`, tone: 'red' }),
-  not_applicable: (out) => ({ text: `Not for sale: ${reasonLabel(out.reason)}`, tone: 'gray' }),
+  no_sale: (out, words = reasonLabel) => ({ text: `No sale: ${words(out.reason)}`, tone: 'red' }),
+  not_applicable: (out, words = reasonLabel) => ({ text: `Not for sale: ${words(out.reason)}`, tone: 'gray' }),
   // When the reason IS the mode (decide_only, report_only), the mode label beside the
   // namespace already says it, so the headline does not say it twice (L605).
-  deferred: (out) => ({ text: out.reason === out.mode_effective ? 'Left to the workflow to decide' : `Left to the workflow to decide: ${reasonLabel(out.reason)}`, tone: 'amber' }),
+  deferred: (out, words = reasonLabel) => ({ text: out.reason === out.mode_effective ? 'Left to the workflow to decide' : `Left to the workflow to decide: ${words(out.reason)}`, tone: 'amber' }),
 }
 
-function headline(out: Output): { text: string; tone: Tone } {
+function headline(out: Output, words: ReasonWords): { text: string; tone: Tone } {
   const own = ROUTE_HEADLINES[out._route]
-  return own ? own(out) : { text: `${out._route.replace(/_/g, ' ')}: ${reasonLabel(out.reason)}`, tone: 'gray' }
+  return own ? own(out, words) : { text: `${out._route.replace(/_/g, ' ')}: ${words(out.reason)}`, tone: 'gray' }
 }
 
-export function BuyersConsidered({ step }: { step: BuyerSelectStep }) {
+/** One buyer attempt row of a buyer_select step, as the page holds it: a `partner_bid` child named `<namespace>.<buyer>`. */
+export interface BuyerAttemptStep {
+  step_namespace: string
+  output: unknown
+}
+
+/**
+ * The buyers whose live call got no answer (#3087), read from their own attempt
+ * rows by the package's reader, never from the recorded words (L35). The node
+ * records such a call as outcome_unknown, as it does an answer no rule matched;
+ * Dan words the two apart (2026-10-30).
+ */
+function unansweredBuyers(stepNamespace: string, attempts: readonly BuyerAttemptStep[]): Set<string> {
+  const prefix = `${stepNamespace}.`
+  const buyers = new Set<string>()
+  for (const a of attempts) {
+    if (a.step_namespace.startsWith(prefix) && unresolvedAnswerOf(a.output) === 'no_answer') buyers.add(a.step_namespace.slice(prefix.length))
+  }
+  return buyers
+}
+
+export function BuyersConsidered({ step, attempts = [] }: { step: BuyerSelectStep; attempts?: readonly BuyerAttemptStep[] }) {
   const out = readBuyerSelectOutput(step.output)
   if (!out) {
     return (
@@ -143,7 +160,12 @@ export function BuyersConsidered({ step }: { step: BuyerSelectStep }) {
       </div>
     )
   }
-  const head = headline(out)
+  const unanswered = unansweredBuyers(step.step_namespace, attempts)
+  const gotNoAnswer = (c: Considered) => c.outcome === 'outcome_unknown' && unanswered.has(c.partner)
+  // The cascade stops at the buyer whose outcome is unknown, so the node's own reason is that buyer's.
+  const unknownBuyer = out.considered.find((c) => c.outcome === 'outcome_unknown')
+  const headWords: ReasonWords = (reason) => reason === 'outcome_unknown' && unknownBuyer && gotNoAnswer(unknownBuyer) ? UNRESOLVED_ANSWER_LABELS.no_answer.reason : reasonLabel(reason)
+  const head = headline(out, headWords)
   const frame = { green: 'border-green-200 bg-green-50/30', red: 'border-red-200 bg-red-50/30', amber: 'border-amber-200 bg-amber-50/30', gray: 'border-gray-200 bg-gray-50/40' }[head.tone]
   const icon = head.tone === 'green' ? <CheckCircle className="h-4 w-4 text-green-600" aria-hidden="true" />
     : head.tone === 'gray' ? <MinusCircle className="h-4 w-4 text-gray-500" aria-hidden="true" />
@@ -179,12 +201,20 @@ export function BuyersConsidered({ step }: { step: BuyerSelectStep }) {
             <tbody className="divide-y divide-gray-100">
               {rows.map((c, i) => {
                 const took = c.outcome === 'sold'
-                const why = [reasonLabel(c.reason), c.detail].filter(Boolean).join('. ')
+                const noAnswer = gotNoAnswer(c)
+                const reasonWords = noAnswer && c.reason === 'outcome_unknown' ? UNRESOLVED_ANSWER_LABELS.no_answer.reason : reasonLabel(c.reason)
+                const outcomeWords = noAnswer ? UNRESOLVED_ANSWER_LABELS.no_answer.outcome : CONSIDERED_OUTCOME_LABELS[c.outcome]
+                // A call that got no answer records why in a sentence that already says no answer
+                // arrived, so the label before it would say it twice (Dan, 2026-10-30): its Why is the
+                // detail alone, begun with a capital, or the label when no detail was recorded.
+                const why = noAnswer && c.detail
+                  ? c.detail.charAt(0).toUpperCase() + c.detail.slice(1)
+                  : [reasonWords, c.detail].filter(Boolean).join('. ')
                 return (
                   <tr key={`${c.partner}-${i}`} aria-current={took ? 'true' : undefined} className={took ? 'bg-green-50/40' : ''}>
                     <td className="px-3 py-2 text-right font-mono tabular-nums text-gray-600">{c.priority ?? 'none'}</td>
                     <td className="px-3 py-2 font-mono text-graphite">{c.partner}</td>
-                    <td className="px-3 py-2 whitespace-nowrap"><ToneBadge tone={OUTCOME_TONE[c.outcome]}>{CONSIDERED_OUTCOME_LABELS[c.outcome]}</ToneBadge></td>
+                    <td className="px-3 py-2 whitespace-nowrap"><ToneBadge tone={OUTCOME_TONE[c.outcome]}>{outcomeWords}</ToneBadge></td>
                     <td className="px-3 py-2 text-right font-mono tabular-nums text-graphite">{c.payout_cents === null ? 'none' : money(c.payout_cents)}</td>
                     <td className="px-3 py-2 text-gray-600">{why}</td>
                   </tr>

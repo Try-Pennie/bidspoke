@@ -101,6 +101,78 @@ describe('BuyersConsidered', () => {
   })
 })
 
+/**
+ * #3087: an unknown outcome is worded by whether an answer arrived (Dan,
+ * 2026-10-30). The node records both as outcome_unknown; the buyer's attempt
+ * row says which, by its typed fields: a request left (its timing) and came
+ * back with no status. A live call that got no answer reads "No answer" and
+ * "No answer from the buyer"; an answer no rule matched keeps "Answer not
+ * classified" and "Buyer response could not be classified". The row and the
+ * headline say the same, and neither says the other's words.
+ */
+const timing = { before_call_ms: 40, call_ms: 20000, after_call_ms: 12 }
+const timerDetail = 'no answer arrived from the buyer within our 20000 ms limit, so we stopped the call'
+const unresolved = (detail: string) => ({
+  ...sold, _route: 'no_sale', reason: 'outcome_unknown', detail,
+  sale: { skipped: false, accepted: false, buyer_reference: null, result_code: null, partner_slug: 'tripoint' },
+  considered: [
+    { partner: 'acme', priority: 1, payout_cents: null, outcome: 'ineligible', reason: 'closed' },
+    { partner: 'tripoint', priority: 2, payout_cents: 2190, outcome: 'outcome_unknown', reason: 'outcome_unknown', detail },
+  ],
+})
+const attempt = (output: Record<string, unknown>) => ({ step_namespace: 'sell_to_buyer.tripoint', output: { partner_slug: 'tripoint', payout_cents: 2190, kind: 'live', ...output } })
+
+describe('an unknown outcome, by whether an answer arrived (#3087)', () => {
+  it('a live buyer call that got no answer reads No answer, in the row and the headline', () => {
+    render(<BuyersConsidered step={step(unresolved(timerDetail), { status: 'failed' })} attempts={[attempt({ outcome: 'outcome_unknown', detail: timerDetail, http_status: null, held: true, timing })]} />)
+    const row = screen.getAllByRole('row')[2]
+    expect(within(row).getByText('No answer')).toBeInTheDocument()
+    expect(row).toHaveTextContent('No answer arrived from the buyer within our 20000 ms limit')
+    expect(screen.getByText(/^No sale: No answer from the buyer/)).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/could not be classified|Answer not classified/)
+  })
+
+  it('an answer no rule matched keeps its words, in the row and the headline', () => {
+    const detail = 'buyer answered http 200 and no rule matched'
+    render(<BuyersConsidered step={step(unresolved(detail))} attempts={[attempt({ outcome: 'outcome_unknown', detail, http_status: 200, held: true, timing })]} />)
+    const row = screen.getAllByRole('row')[2]
+    expect(within(row).getByText('Answer not classified')).toBeInTheDocument()
+    expect(row).toHaveTextContent('Buyer response could not be classified')
+    expect(screen.getByText(/^No sale: Buyer response could not be classified/)).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/No answer from the buyer/)
+  })
+
+  // Dan, 2026-10-30: the label sentence before the recorded detail said "no
+  // answer" twice, so a no answer row's Why is the detail alone, begun with a
+  // capital. Chosen by the row's reader, never by matching the words.
+  it('a call that got no answer says why once: the recorded detail alone, begun with a capital', () => {
+    render(<BuyersConsidered step={step(unresolved(timerDetail), { status: 'failed' })} attempts={[attempt({ outcome: 'outcome_unknown', detail: timerDetail, http_status: null, held: true, timing })]} />)
+    const why = within(screen.getAllByRole('row')[2]).getAllByRole('cell').at(-1)!
+    expect(why.textContent).toBe('No answer arrived from the buyer within our 20000 ms limit, so we stopped the call')
+  })
+
+  it('an answer no rule matched keeps the label before its detail', () => {
+    const detail = 'buyer answered http 200 and no rule matched'
+    render(<BuyersConsidered step={step(unresolved(detail))} attempts={[attempt({ outcome: 'outcome_unknown', detail, http_status: 200, held: true, timing })]} />)
+    const why = within(screen.getAllByRole('row')[2]).getAllByRole('cell').at(-1)!
+    expect(why.textContent).toBe('Buyer response could not be classified. buyer answered http 200 and no rule matched')
+  })
+
+  it('a call that got no answer with no detail recorded still says no answer arrived', () => {
+    const run = unresolved(timerDetail)
+    const bare = { ...run, considered: [run.considered[0], { partner: 'tripoint', priority: 2, payout_cents: 2190, outcome: 'outcome_unknown', reason: 'outcome_unknown' }] }
+    render(<BuyersConsidered step={step(bare, { status: 'failed' })} attempts={[attempt({ outcome: 'outcome_unknown', http_status: null, held: true, timing })]} />)
+    const why = within(screen.getAllByRole('row')[2]).getAllByRole('cell').at(-1)!
+    expect(why.textContent).toBe('No answer from the buyer')
+  })
+
+  it('reads only the attempt row of the buyer named on the entry', () => {
+    const other = { step_namespace: 'sell_to_buyer.acme', output: { outcome: 'outcome_unknown', http_status: null, held: true, timing } }
+    render(<BuyersConsidered step={step(unresolved('buyer answered http 200 and no rule matched'))} attempts={[other]} />)
+    expect(within(screen.getAllByRole('row')[2]).getByText('Answer not classified')).toBeInTheDocument()
+  })
+})
+
 const pageState = (steps: unknown[]) => ({
   execution: {
     id: 'exec-1', workflow_id: 'wf-1', status: 'completed', started_at: '2027-09-20T15:30:00.000Z', completed_at: '2027-09-20T15:30:02.000Z',
@@ -122,5 +194,18 @@ describe('the execution page places the table', () => {
     vi.mocked(useExecution).mockReturnValue(pageState([{ ...step(sold), step_type: 'code', output: {} }]) as never)
     render(<ExecutionDetailPage />)
     expect(screen.queryByRole('region', { name: 'Buyers considered' })).toBeNull()
+  })
+
+  it('hands the table the buyer attempt rows of its own step, so a call that got no answer reads No answer (#3087)', () => {
+    const child = {
+      ...step({}), id: 'step-2', step_type: 'partner_bid', step_namespace: 'sell_to_buyer.tripoint', parallel_group_id: 'node-1', status: 'failed', step_order: 5,
+      output: { outcome: 'outcome_unknown', detail: timerDetail, http_status: null, held: true, partner_slug: 'tripoint', payout_cents: 2190, kind: 'live', timing },
+    }
+    vi.mocked(useExecution).mockReturnValue(pageState([step(unresolved(timerDetail), { status: 'failed' }), child]) as never)
+    render(<ExecutionDetailPage />)
+    const section = screen.getByRole('region', { name: 'Buyers considered' })
+    expect(within(section).getByText('No answer')).toBeInTheDocument()
+    expect(within(section).getByText(/^No sale: No answer from the buyer/)).toBeInTheDocument()
+    expect(within(section).queryByText(/could not be classified|Answer not classified/)).toBeNull()
   })
 })
