@@ -44,8 +44,9 @@ Each package, and each of the three small apps, keeps its detail in its own READ
 - Every alert that arms an all-clear marker names its signal from `INCIDENT_SIGNALS`
   (`lib/incident-signals.ts`, #2099). Its transitions go to the KV outbox
   (`lib/incident-outbox.ts`), never to Postgres on the alert path, because several of those
-  alerts fire while Postgres is the thing failing. A new delivery site calls `recordPaged`
-  after its marker is armed. The drain (`lib/incident-drain.ts`, five minute cron) writes
+  alerts fire while Postgres is the thing failing. A delivery site calls `recordPageOutcome`
+  with the send's answer after every page it tries, delivered or not (#3056), after its
+  marker is armed; `page-outcomes-recorded.test.ts` fails on one that does not. The drain (`lib/incident-drain.ts`, five minute cron) writes
   `alert_incidents` and closes as lapsed an incident whose marker went with no end.
   A check that keeps its open incident in its own state instead of alert-recovery's
   marker (the cron heartbeat, #2103) names that key as its registry entry's `marker`,
