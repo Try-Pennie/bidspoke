@@ -67,6 +67,11 @@ export function tableKey(raw: string): string {
 
 const NAME = String.raw`(?:"?[A-Za-z_][\w$]*"?\.)?"?[A-Za-z_][\w$]*"?`
 
+// A CREATE TABLE and the name it creates: group 1 is a TEMP or UNLOGGED
+// qualifier when present, group 2 the name. Shared by tablesCreatedBy and the
+// explicit grant checker, so both read the same statements as a table created.
+const CREATE_TABLE = String.raw`\bCREATE\s+((?:GLOBAL\s+|LOCAL\s+)?(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(${NAME})`
+
 /**
  * The tables a fresh database holds after every migration in `files` is applied
  * in order: each CREATE TABLE adds its table, a DROP TABLE or a RENAME removes
@@ -81,7 +86,7 @@ export function tablesCreatedBy(files: Array<{ name: string; sql: string }>): Ma
   for (const { name, sql } of files) {
     const code = sqlCodeOnly(sql)
     const stmt = new RegExp(
-      String.raw`\bCREATE\s+((?:GLOBAL\s+|LOCAL\s+)?(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(${NAME})` +
+      CREATE_TABLE +
         String.raw`|\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(${NAME}(?:\s*,\s*${NAME})*)` +
         String.raw`|\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(${NAME})\s+RENAME\s+TO\s+(${NAME})` +
         String.raw`|\bATTACH\s+PARTITION\s+(${NAME})`,
@@ -116,4 +121,49 @@ export function migrationFiles(): Array<{ name: string; sql: string }> {
     .filter((f) => f.endsWith('.sql'))
     .sort()
     .map((f) => ({ name: f, sql: readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8') }))
+}
+
+/**
+ * The public tables one migration creates without granting them to
+ * service_role in the same file (#3097), as table keys (no `public.` prefix).
+ *
+ * From 2026-10-30 the platform's default privileges give a new public table to
+ * nobody, so a table the migration does not grant is unreachable by the Worker.
+ * A grant counts when it is a real statement (not a comment or a string) of the
+ * form GRANT <privileges> ON [TABLE] <list naming the table> TO <roles naming
+ * service_role>, or GRANT ... ON ALL TABLES IN SCHEMA public TO service_role.
+ * Partitions and temporary tables are left out, as tablesCreatedBy leaves them
+ * out; a table in another schema is not this rule's concern.
+ */
+export function publicTablesWithoutServiceRoleGrant(sql: string): string[] {
+  const code = sqlCodeOnly(sql)
+  const created: string[] = []
+  const create = new RegExp(CREATE_TABLE, 'gi')
+  let m: RegExpExecArray | null
+  while ((m = create.exec(code)) !== null) {
+    if (m[1] !== undefined && /TEMP/i.test(m[1])) continue
+    if (/^\s*PARTITION\s+OF\b/i.test(code.slice(create.lastIndex))) continue
+    const key = tableKey(m[2])
+    if (key.includes('.')) continue
+    if (!created.includes(key)) created.push(key)
+  }
+
+  const granted = new Set<string>()
+  let allTables = false
+  // [^;] keeps each match inside one statement, so a grant to another role
+  // cannot borrow the TO clause of the statement after it.
+  const grant = new RegExp(
+    String.raw`\bGRANT\s[^;]*?\bON\s+(?:TABLE\s+)?(${NAME}(?:\s*,\s*${NAME})*)\s+TO\s+([^;]*)` +
+      String.raw`|\bGRANT\s[^;]*?\bON\s+ALL\s+TABLES\s+IN\s+SCHEMA\s+"?public"?\s+TO\s+([^;]*)`,
+    'gi',
+  )
+  const toServiceRole = (roles: string) => /(^|[\s,"])service_role("|\b)/i.test(roles)
+  while ((m = grant.exec(code)) !== null) {
+    if (m[1] !== undefined && toServiceRole(m[2])) {
+      for (const t of m[1].split(',')) granted.add(tableKey(t.trim()))
+    } else if (m[3] !== undefined && toServiceRole(m[3])) {
+      allTables = true
+    }
+  }
+  return allTables ? [] : created.filter((t) => !granted.has(t))
 }
