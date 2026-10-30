@@ -254,8 +254,7 @@ async function contextFromRun(
  * #2982), secrets decrypted (Dan, 2026-10-29: "Yes, ops reads secrets"),
  * returned apart as secrets so that nothing kept or logged holds their values.
  * A variable the step reads with no value sent for it is refused by name, the
- * same judgement a live save makes (judgeVariables); a bidding Worker from
- * before #3002 sends none, so every variable a step reads is refused there.
+ * same judgement a live save makes (judgeVariables); none sent is none given.
  */
 function stepVariables(request: TestStepRequest): { env: Record<string, string>; secrets: Record<string, string> } | { refused: string } {
   const reads = envReferences({ nodes: [request.node], edges: [] })

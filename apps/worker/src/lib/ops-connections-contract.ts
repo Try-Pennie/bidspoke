@@ -638,10 +638,8 @@ export interface TestStepRequest {
    * "Yes, ops reads secrets"). A variable with no saved value is left out, so
    * ops names it missing. A secret value is given to the step and never kept or
    * logged on ops: the kept result holds the variable's name in its place
-   * (mask-secrets.ts). Null for a step reading no variable, or a bidding Worker
-   * from before #3002, which sends none, and a step reading one is then
-   * refused by name, sending nothing. The saved version such a bidding Worker
-   * sent instead (version, #2702) is ignored since #3003.
+   * (mask-secrets.ts). Null when none are sent, as for a step reading no
+   * variable; a step reading one is then refused by name, sending nothing.
    */
   variables: CurrentVariables | null
 }
@@ -701,6 +699,12 @@ function nodeIdOf(raw: unknown): string {
   return raw
 }
 
+/**
+ * The bidding Worker's step test, as ops reads it. A field it does not read,
+ * beside the request, its node or an earlier step, is ignored whatever its
+ * shape, so a bidding Worker one release apart (a rollback of either Worker)
+ * is read rather than refused (#3136).
+ */
 export function parseTestStepRequest(raw: unknown): TestStepRequest {
   const r = record(raw)
   const organization_id = uuidField(r, 'organization_id')
