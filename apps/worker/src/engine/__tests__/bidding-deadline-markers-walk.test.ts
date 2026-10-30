@@ -218,10 +218,10 @@ describe('a live buyer call its own timer stopped (#3075)', () => {
   const output = { _route: 'no_sale', reason: 'outcome_unknown', mode_effective: 'live', population: 'engine', lead_key: 'lead-1', sale: { skipped: false, accepted: false }, considered: [], live_percent_in_force: null, caps_in_force: [], duration_ms: 20_010 }
   const attempt = (over: Record<string, unknown> = {}) => ({
     partner_slug: 'tripoint', namespace: 'buyer_select.tripoint', status: 'failed', input: { partner_slug: 'tripoint' },
-    output: { outcome: 'outcome_unknown', held: true }, error: 'buyer answered http null and no rule matched', error_type: 'transient',
+    output: { outcome: 'outcome_unknown', held: true }, error: 'no answer arrived from the buyer within our 20000 ms limit, so we stopped the call', error_type: 'transient',
     started_at: new Date('2026-10-29T12:00:00.000Z'), completed_at: new Date('2026-10-29T12:00:20.000Z'), ...over,
   })
-  const failure = { message: 'buyer_select outcome_unknown: buyer answered http null and no rule matched', errorType: 'transient', reason: 'outcome_unknown' }
+  const failure = { message: 'buyer_select outcome_unknown: no answer arrived from the buyer within our 20000 ms limit, so we stopped the call', errorType: 'transient', reason: 'outcome_unknown' }
 
   it('marks the buyer\'s attempt row buyer_call, and not the failed node row', async () => {
     vi.mocked(executeBuyerSelectNode).mockResolvedValue({ output, attempts: [attempt({ timeout: timeoutMarker(BUYER_CALL_DEADLINE, BUYER_CALL_TIMEOUT_MS) })], failure } as never)
