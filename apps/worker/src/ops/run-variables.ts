@@ -117,11 +117,15 @@ export function parseRunVariablesRecord(raw: unknown): RunVariablesRecord | null
  * What a run is given: the variables its definition reads, each a plain value
  * recorded at the run's first start or a secret served for this start, and the
  * secrets among them (for masking, mask-secrets.ts); or why it is given none,
- * as the run's error. Nothing is run on a blank.
+ * as the run's error. Nothing is run on a blank. A refusal for variables that
+ * do not exist for the run (missing when it started, or a secret it read then
+ * that this start was not served) names them in missing (#3000), bare names
+ * the page names; a run with no record of its variables names none, since it
+ * is not a missing variable.
  */
 export function runVariablesFor(
   reads: readonly string[], recorded: RunVariablesRecord | null, secretValues: Readonly<Record<string, string>>,
-): { env: Record<string, string>; secrets: Record<string, string> } | { refused: string } {
+): { env: Record<string, string>; secrets: Record<string, string> } | { refused: string; missing?: string[] } {
   if (reads.length === 0) return { env: {}, secrets: {} }
   if (recorded === null) {
     return { refused: `the definition reads ${named(reads)}, and the run has no record of its variables from when it started, so nothing was run` }
@@ -129,12 +133,18 @@ export function runVariablesFor(
   const missing = reads.filter((k) => !Object.hasOwn(recorded.values, k) && !recorded.secretKeys.includes(k))
   if (missing.length > 0) {
     const one = missing.length === 1
-    return { refused: `the definition reads ${named(missing)}, which ${one ? 'was not a variable' : 'were not variables'} of this workflow when the run started, so nothing was run; add ${one ? 'it' : 'them'} and run it again` }
+    return {
+      refused: `the definition reads ${named(missing)}, which ${one ? 'was not a variable' : 'were not variables'} of this workflow when the run started, so nothing was run; add ${one ? 'it' : 'them'} and run it again`,
+      missing,
+    }
   }
   const unserved = reads.filter((k) => recorded.secretKeys.includes(k) && !Object.hasOwn(secretValues, k))
   if (unserved.length > 0) {
     const one = unserved.length === 1
-    return { refused: `the definition reads the secret ${one ? 'variable' : 'variables'} ${named(unserved)}, which the run read when it started and the bidding Worker did not serve when it started again, so nothing was run` }
+    return {
+      refused: `the definition reads the secret ${one ? 'variable' : 'variables'} ${named(unserved)}, which the run read when it started and the bidding Worker did not serve when it started again, so nothing was run`,
+      missing: unserved,
+    }
   }
   const env: Record<string, string> = {}
   const secrets: Record<string, string> = {}

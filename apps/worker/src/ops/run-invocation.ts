@@ -254,7 +254,9 @@ export type RunBodyEnd =
    * suspended to continue, at once, and resumed after that checkpoint.
    */
   | { outcome: 'continue' }
-  | { outcome: 'failed'; reason?: HolderFailedReason; error?: string }
+  | { outcome: 'failed'; reason?: Exclude<HolderFailedReason, 'variable_unavailable'>; error?: string }
+  /** A variable the run was not given (#3000): the names, bare, which the minute tick's page names. */
+  | { outcome: 'failed'; reason: 'variable_unavailable'; missingVariables: readonly string[]; error?: string }
   | { outcome: 'retry'; error?: string; notBefore?: Date }
   | { outcome: 'needs_human'; reason: 'send_outcome_unknown'; error?: string }
 

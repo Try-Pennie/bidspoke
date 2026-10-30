@@ -482,6 +482,18 @@ const MAX_NOT_CONFIGURED_SECRETS = 10
 
 /** A report carries at most this many problems, each at most this long, so one bad tick cannot fill KV or a Slack post. */
 export const MAX_REPORT_PROBLEMS = 20
+
+/**
+ * In live mode, how old the saved workflow copies may be and still start runs
+ * (Dan, 2026-10-22, on #1950): within it, ported workflows keep running through
+ * a bidding outage from their last confirmed copies; past it, the tick fires no
+ * schedule and claims no run, and pages (copies_stale), so a long outage cannot
+ * run a workflow on a stale on or off state. Judged on the database clock. The
+ * variables copy keeps the same age limit (#2999), and the pages about it name
+ * it from here (#3000), so the words cannot drift from the rule.
+ */
+export const COPIES_STALE_AFTER_MS = 6 * 60 * 60 * 1000
+const COPIES_STALE_AFTER_HOURS = COPIES_STALE_AFTER_MS / 3_600_000
 export const MAX_PROBLEM_LENGTH = 400
 
 /**
@@ -971,19 +983,20 @@ export const UNSTARTED_RUNS_PAGE = {
 } as const satisfies OpsOwnPage
 
 // ── the pages about a run's variables (#3000, phase 4 of #2982) ──
-// Each one's words are a DRAFT for Dan to approve (Alert copy is Dan's to approve, #3000).
+// Each one's words are Dan's, approved on 2026-10-30 on #3000. Every number in
+// them comes from a real value or a constant, never a literal.
 
 /**
  * Runs of a switched on workflow that started on the kept copy of their
  * variables while bidding answered the copy's refresh in the same tick
- * (runs_on_variable_copy). judgedCount: every live tick that dispatched its
- * claimed runs. DRAFT wording.
+ * (runs_on_variable_copy). judgedCount: every live tick whose claim answered.
+ * Why their own request failed goes to the tick's log line, not the page.
  */
 export const RUNS_ON_VARIABLE_COPY_PAGE = {
   kind: 'runs_on_variable_copy',
   job: (workflowId: string) => `ops-runs-on-variable-copy:${workflowId}`,
   title: (workflowName: string) => `Ops runs used old variables: ${workflowName}`,
-  fix: 'Search the bidding Worker\'s logs for opsRunVariables around the time of this alert. If a variable this workflow reads was changed in the last 6 hours, check what these runs sent.',
+  fix: `If a variable this workflow reads changed in the last ${COPIES_STALE_AFTER_HOURS} hours, check what these runs sent.`,
   judgedCount: 'variable_copy_use_judged',
   perWorkflow: true,
   about: 'runs that used old variables',
@@ -992,7 +1005,7 @@ export const RUNS_ON_VARIABLE_COPY_PAGE = {
 /**
  * The refresh of the kept variables copy failing three ticks in a row
  * (variable_copy_refresh_failing), one page. judgedCount: every live tick
- * whose refresh ran or had nothing to ask. DRAFT wording.
+ * whose refresh ran or had nothing to ask.
  */
 export const VARIABLE_COPY_REFRESH_PAGE = {
   kind: 'variable_copy_refresh_failing',
@@ -1005,9 +1018,10 @@ export const VARIABLE_COPY_REFRESH_PAGE = {
 } as const satisfies OpsOwnPage
 
 /**
- * An answer to a run variables request that ops cannot read
+ * Answers to run variables requests that ops cannot read
  * (run_variables_unreadable), one page. judgedCount: every tick in which at
- * least one such request was answered. DRAFT wording.
+ * least one such request was answered. The reasons go to the tick's log
+ * lines, not the page.
  */
 export const RUN_VARIABLES_UNREADABLE_PAGE = {
   kind: 'run_variables_unreadable',
@@ -1021,8 +1035,9 @@ export const RUN_VARIABLES_UNREADABLE_PAGE = {
 
 /**
  * A switched on workflow's runs failing on a variable they were not given
- * (runs_variable_missing, the run's reason variable_unavailable).
- * judgedCount: every live tick that dispatched its claimed runs. DRAFT wording.
+ * (runs_variable_missing, the run's reason variable_unavailable), named from
+ * the names each run's end carries (missingVariables), never from its error's
+ * words. judgedCount: every live tick whose claim answered.
  */
 export const MISSING_VARIABLE_PAGE = {
   kind: 'runs_variable_missing',
@@ -1056,7 +1071,7 @@ function fitted(make: (part: string) => string, part: string): string {
   return make(`${part.slice(0, Math.max(0, room - 3))}...`)
 }
 
-/** How long before a run started its copy was last confirmed, in words. */
+/** How old a copy was when a run started, in words. */
 function copyAgeWords(seconds: number): string {
   if (seconds < 60) return 'less than a minute'
   const minutes = Math.floor(seconds / 60)
@@ -1066,33 +1081,41 @@ function copyAgeWords(seconds: number): string {
   return `${hours} hours${rest === 0 ? '' : rest === 1 ? ' 1 minute' : ` ${rest} minutes`}`
 }
 
-/**
- * The body of runs_on_variable_copy: how many runs, how old their copy was
- * when they started (the oldest a run reported), and why their own request
- * failed. DRAFT wording.
- */
-export function runsOnVariableCopyText(r: { runs: number; ageSeconds: number; why: string }): string {
+/** The body of runs_on_variable_copy: how many runs, and how old their copy was when they started (the oldest a run reported). */
+export function runsOnVariableCopyText(r: { runs: number; ageSeconds: number }): string {
   const one = r.runs === 1
-  const age = copyAgeWords(r.ageSeconds)
-  return fitted((why) => `${one ? '1 run' : `${r.runs} runs`} started on the copy of ${one ? 'its' : 'their'} environment variables that ops keeps, last confirmed by bidding ${age} before ${one ? 'it' : 'they'} started, because bidding did not answer the request for ${one ? 'its' : 'their'} current values (${why}). In the same minute bidding answered the refresh of that copy, so ${one ? 'this run' : 'these runs'} should have had current values.`, r.why)
+  return `${one ? '1 run' : `${r.runs} runs`} used ops's saved copy of ${one ? 'its' : 'their'} variables, ${copyAgeWords(r.ageSeconds)} old, because bidding did not send current values in time.`
 }
 
-/** The body of variable_copy_refresh_failing: how many switched on workflows it refreshes, and why it failed. DRAFT wording. */
+/** The body of variable_copy_refresh_failing: how many switched on workflows it refreshes, and why it failed. */
 export function refreshFailingText(r: { workflows: number; error: string }): string {
   const workflows = r.workflows === 1 ? '1 switched on workflow' : `${r.workflows} switched on workflows`
-  return fitted((detail) => `Ops could not refresh its copy of the environment variables of ${workflows} from bidding: ${detail}. Runs still start whenever bidding answers their own request, but a run that has to fall back to the copy can use it only while it is under 6 hours old.`, r.error)
+  return fitted((detail) => `Ops could not refresh its copy of the environment variables of ${workflows} from bidding: ${detail}. Runs still start whenever bidding answers their own request, but a run that has to fall back to the copy can use it only while it is under ${COPIES_STALE_AFTER_HOURS} hours old.`, r.error)
 }
 
-/** The body of run_variables_unreadable: how many answers could not be read, and the first one's reason. DRAFT wording. */
-export function runVariablesUnreadableText(r: { answers: readonly string[] }): string {
-  const first = (r.answers[0] ?? '').replace(/\.$/, '')
-  return fitted((said) => `Bidding answered ${r.answers.length} of ops's requests for environment variables in a shape ops cannot read. The first: ${said}. Runs fall back to the copy ops keeps where they can, and the rest wait to start.`, first)
+/** The body of run_variables_unreadable: how many requests were answered in a form ops cannot read. */
+export function runVariablesUnreadableText(r: { requests: number }): string {
+  return `Bidding answered ${r.requests === 1 ? '1 request' : `${r.requests} requests`} for environment variables in a form ops cannot read. Runs use ops's saved copy where they can, and the rest wait to start.`
 }
 
-/** The body of runs_variable_missing: how many runs failed, and the first one's error, which names the variables. DRAFT wording. */
-export function missingVariableText(r: { runs: number; error: string }): string {
-  const lead = r.runs === 1 ? '1 run failed before sending anything. It said' : `${r.runs} runs failed before sending anything. The first said`
-  return fitted((detail) => `${lead}: ${detail}.`, r.error.replace(/\.$/, ''))
+/** "A", "A and B", "A, B and C". */
+function listed(names: readonly string[]): string {
+  return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/**
+ * The body of runs_variable_missing: how many runs failed, and every variable
+ * they named (each once, sorted), from the names their ends carry. A run whose
+ * end named none cannot be told apart here: it is the same release's run
+ * (OpsInternal.run through SELF), whose type requires the names.
+ */
+export function missingVariableText(r: { runs: number; names: readonly string[] }): string {
+  const names = [...new Set(r.names)].sort()
+  const one = names.length === 1
+  const lead = r.runs === 1 ? '1 run' : `${r.runs} runs`
+  const end = one ? ' and no such variable exists.' : ' and no such variables exist.'
+  const make = (list: string) => `${lead} failed before sending anything, because this workflow reads the ${one ? 'variable' : 'variables'} ${list}${end}`
+  return fitted(make, listed(names))
 }
 
 /**

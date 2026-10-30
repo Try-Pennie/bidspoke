@@ -123,7 +123,7 @@
 import { easternParts } from '@bidspoke/buyer-profile'
 import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type MissedReason, type PlannedFire, type ScheduleConfig } from '@bidspoke/workflow-definition'
 import {
-  CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, MAX_RUN_VARIABLES_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsRunVariables,
+  COPIES_STALE_AFTER_MS, CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, MAX_RUN_VARIABLES_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsRunVariables,
   parseServedOpsWorkflows, tickProblem, unstartedRunsText, UNSTARTED_RUNS_PAGE,
   MISSING_VARIABLE_PAGE, RUN_VARIABLES_UNREADABLE_PAGE, RUNS_ON_VARIABLE_COPY_PAGE, VARIABLE_COPY_REFRESH_PAGE, missingVariableText, refreshFailingText,
   runVariablesUnreadableText, runsOnVariableCopyText,
@@ -168,14 +168,8 @@ export const RUN_VARIABLES_RETRY_MS = 60_000
 export const DEFINITIONS_READ_LIMIT = 1000
 export const DEFINITIONS_PER_TICK = 30
 
-/**
- * In live mode, how old the saved workflow copies may be and still start runs
- * (Dan, 2026-10-22, on #1950): within it, ported workflows keep running through
- * a bidding outage from their last confirmed copies; past it, the tick fires no
- * schedule and claims no run, and pages (copies_stale), so a long outage cannot
- * run a workflow on a stale on or off state. Judged on the database clock.
- */
-export const COPIES_STALE_AFTER_MS = 6 * 60 * 60 * 1000
+// COPIES_STALE_AFTER_MS lives in the contract (#3000), whose page words name it.
+export { COPIES_STALE_AFTER_MS }
 
 /**
  * The rate at which one workflow's runs, in one tick, ending lost (a claim
@@ -1148,8 +1142,8 @@ interface RunResult {
   fellBack?: string
   /** What the run reported of the variables it ran on (#3000); absent when its report said nothing of them or was lost. */
   ran?: RunVariablesUsed
-  /** Its error, when it failed on a variable it was not given (variable_unavailable, #3000). */
-  missing?: string
+  /** The variables it failed on, by name, when it failed on one it was not given (variable_unavailable, #3000). */
+  missing?: readonly string[]
 }
 
 /**
@@ -1210,7 +1204,8 @@ async function dispatchOneRun(
     const result: RunResult = { workflowId: run.workflowId, tally, ...sent, ...(ran === undefined ? {} : { ran }) }
     if (report.outcome === 'completed' && report.end.outcome === 'failed' && report.end.reason === 'variable_unavailable') {
       bump(counts, 'runs_variable_unavailable')
-      return { ...result, missing: report.end.error ?? 'the run named no variable' }
+      // The names come from the end's own field, never from its error's words (Dan, 2026-10-30).
+      return { ...result, missing: Array.isArray(report.end.missingVariables) ? report.end.missingVariables : [] }
     }
     // A run stopped at the requeue cap names its step, host and status, so the page says which host kept refusing.
     if (tally === 'requeue_capped' && report.outcome === 'completed' && 'error' in report.end && report.end.error !== undefined) {
@@ -1308,11 +1303,16 @@ function judgeVariables(
       for (const [workflowId, runs] of fellBack) {
         const ages = runs.map((r) => (r.ran?.source === 'copy' ? r.ran.ageSeconds : Math.max(0, Math.floor((nowMs - Date.parse(r.servedAt ?? '')) / 1000))))
         const ageSeconds = Math.max(0, ...ages.filter((a) => Number.isFinite(a)))
-        problem(RUNS_ON_VARIABLE_COPY_PAGE.kind, runsOnVariableCopyText({ runs: runs.length, ageSeconds, why: runs[0].fellBack ?? 'no reason was recorded' }), workflowId)
+        problem(RUNS_ON_VARIABLE_COPY_PAGE.kind, runsOnVariableCopyText({ runs: runs.length, ageSeconds }), workflowId)
+        // Why their own request failed is the log's, not the page's (Dan, 2026-10-30).
+        log('runs_on_variable_copy', { workflow_id: workflowId, runs: runs.length, age_seconds: ageSeconds, why: runs[0].fellBack ?? 'no reason was recorded' })
       }
     }
-    for (const [workflowId, errors] of byWorkflow((r) => r.missing)) {
-      problem(MISSING_VARIABLE_PAGE.kind, missingVariableText({ runs: errors.length, error: errors[0] }), workflowId)
+    for (const [workflowId, named] of byWorkflow((r) => r.missing)) {
+      const names = [...new Set(named.flat())].sort()
+      // A run of this release always names them (its type requires it): none named is logged as the defect it would be.
+      if (names.length === 0) log('variable_unavailable_unnamed', { workflow_id: workflowId, runs: named.length })
+      problem(MISSING_VARIABLE_PAGE.kind, missingVariableText({ runs: named.length, names }), workflowId)
     }
   }
   if (refresh !== null) {
@@ -1321,7 +1321,11 @@ function judgeVariables(
   }
   const unreadable = [...asked.unreadable, ...(refresh?.unreadable ?? [])]
   if (asked.answered + (refresh?.answeredRequests ?? 0) > 0) bump(counts, RUN_VARIABLES_UNREADABLE_PAGE.judgedCount)
-  if (unreadable.length > 0) problem(RUN_VARIABLES_UNREADABLE_PAGE.kind, runVariablesUnreadableText({ answers: unreadable }))
+  if (unreadable.length > 0) {
+    problem(RUN_VARIABLES_UNREADABLE_PAGE.kind, runVariablesUnreadableText({ requests: unreadable.length }))
+    // The reasons are the log's, not the page's (Dan, 2026-10-30).
+    for (const why of unreadable) log('run_variables_unreadable', { why })
+  }
 }
 
 export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {

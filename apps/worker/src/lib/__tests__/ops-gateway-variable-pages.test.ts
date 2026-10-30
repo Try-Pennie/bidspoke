@@ -17,10 +17,10 @@ const OTHER = '00000000-0000-4000-8000-0000000019b2'
 const NOW = Date.parse('2026-10-17T10:02:31.000Z')
 const MIN = 60_000
 
-const MISSING = missingVariableText({ runs: 2, error: 'the definition reads env.LIST_ID, which was not a variable of this workflow when the run started, so nothing was run; add it and run it again' })
-const ON_COPY = runsOnVariableCopyText({ runs: 2, ageSeconds: 14 * 60, why: 'the bidding Worker\'s run variables did not answer within 15 s' })
+const MISSING = missingVariableText({ runs: 2, names: ['LIST_ID'] })
+const ON_COPY = runsOnVariableCopyText({ runs: 2, ageSeconds: 14 * 60 })
 const REFRESH = refreshFailingText({ workflows: 12, error: 'the bidding Worker\'s run variables did not answer within 15 s' })
-const UNREADABLE = runVariablesUnreadableText({ answers: ['the bidding Worker answered the run variables request with something other than { organization_id, runs }'] })
+const UNREADABLE = runVariablesUnreadableText({ requests: 1 })
 /** Every variables kind judged whole, as a live tick that dispatched its runs, ran its refresh and read an answer reports. */
 const ALL_JUDGED = { variable_copy_use_judged: 1, variable_copy_refresh_judged: 1, run_variables_answers_judged: 1, variable_missing_judged: 1 }
 

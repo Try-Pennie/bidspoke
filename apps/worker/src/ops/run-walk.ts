@@ -180,8 +180,10 @@ async function walk(
   }
   // Steps and edge conditions alike resolve against the run's environment: what it read when it started.
   const given = runVariablesFor(envReferences(definition), run.runVariables ?? null, options.secretValues ?? {})
-  // Named (#3000), so the minute tick pages a switched on workflow whose run fails this way: a person must add the variable.
-  if ('refused' in given) return { outcome: 'failed', reason: 'variable_unavailable', error: given.refused }
+  // Named, with the variables as a field (#3000), so the minute tick pages a switched on workflow whose run fails this way by name.
+  if ('refused' in given) {
+    return given.missing === undefined ? failed(given.refused) : { outcome: 'failed', reason: 'variable_unavailable', missingVariables: given.missing, error: given.refused }
+  }
   masking.secrets = given.secrets
   const secrets = given.secrets
 

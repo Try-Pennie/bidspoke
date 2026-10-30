@@ -1027,6 +1027,13 @@ describe('invokeRun: the variables a run ran on, reported to the tick (#3000)', 
     expect(report).toMatchObject({ outcome: 'complete_failed', variables: { source: 'bidding', ageSeconds: 0 } })
   })
 
+  it('carries the names of the variables a run failed on to the tick, in its end (#3000)', async () => {
+    const h = harness()
+    const report = await h.run(async () => ({ outcome: 'failed', reason: 'variable_unavailable', missingVariables: ['LIST_ID'], error: 'the definition reads env.LIST_ID' }))
+    expect(report).toMatchObject({ outcome: 'completed', end: { outcome: 'failed', reason: 'variable_unavailable', missingVariables: ['LIST_ID'] } })
+    expect(h.db.completes[0]).toMatchObject({ outcome: 'failed', reason: 'variable_unavailable' })
+  })
+
   it('says nothing of variables for a run that recorded none', async () => {
     const h = harness()
     const report = await h.run(async () => ({ outcome: 'done' }))

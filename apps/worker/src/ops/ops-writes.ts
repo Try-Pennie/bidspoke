@@ -434,7 +434,13 @@ export async function extendRunLease(
  */
 export type CompleteOutcome =
   | { outcome: 'done' }
-  | { outcome: 'failed'; reason?: HolderFailedReason; error?: string }
+  | { outcome: 'failed'; reason?: Exclude<HolderFailedReason, 'variable_unavailable'>; error?: string }
+  /**
+   * A variable the run was not given (#3000): missingVariables names them,
+   * bare, for the minute tick's page; only the reason and the error are sent
+   * to complete_run_request.
+   */
+  | { outcome: 'failed'; reason: 'variable_unavailable'; missingVariables: readonly string[]; error?: string }
   | { outcome: 'retry'; error?: string; notBefore?: Date; unstartedCause?: UnstartedReturnCause }
   | { outcome: 'suspend'; reason: 'continue' | 'wake'; notBefore: Date }
   | { outcome: 'suspend'; reason: 'resource_wait'; cause: ResourceWaitCause; notBefore: Date }

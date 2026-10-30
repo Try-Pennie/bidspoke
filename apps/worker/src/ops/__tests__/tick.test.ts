@@ -2846,7 +2846,7 @@ describe('the pages about a run\'s variables (#3000, phase 4 of #2982)', () => {
   const problemOf = (report: { problems: string[]; problem_keys: string[] | null }, key: string) => report.problems[(report.problem_keys ?? []).indexOf(key)]
   const MISSING = 'the definition reads env.LIST_ID, which was not a variable of this workflow when the run started, so nothing was run; add it and run it again'
   const failedMissing = async (): Promise<RunInvocationReport> =>
-    ({ outcome: 'completed', end: { outcome: 'failed', reason: 'variable_unavailable', error: MISSING }, runStatus: 'failed', variables: { source: 'bidding', ageSeconds: 1 } })
+    ({ outcome: 'completed', end: { outcome: 'failed', reason: 'variable_unavailable', missingVariables: ['LIST_ID'], error: MISSING }, runStatus: 'failed', variables: { source: 'bidding', ageSeconds: 1 } })
 
   describe('(a) runs that ran on the kept copy while bidding answered the refresh', () => {
     it('refreshes the copy although the claimed runs\' own request failed, and pages their workflow with the copy\'s age the runs reported', async () => {
@@ -2854,11 +2854,19 @@ describe('the pages about a run\'s variables (#3000, phase 4 of #2982)', () => {
         mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2)], serveRunVariables: onlyRefresh,
         variableCopies: [held()], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE') }, runReport: ranOn('copy', 14 * 60 + 30),
       })
-      const report = await runOpsTick(f.ports)
+      const seen = captureLog()
+      let report: Awaited<ReturnType<typeof runOpsTick>>
+      try {
+        report = await runOpsTick(f.ports)
+      } finally {
+        seen.restore()
+      }
       expect(f.ranVariables[claimedRun(WF_A, 1).runRequestId]).toMatchObject({ source: 'copy' })
       // The plan: the refresh "skips when its workflow fetch already failed this tick", and only then.
       expect(f.variableRequests.filter((r) => r.secrets === 'names')).toHaveLength(1)
-      expect(problemOf(report, `runs_on_variable_copy:${WF_A}`)).toBe(runsOnVariableCopyText({ runs: 2, ageSeconds: 14 * 60 + 30, why: DOWN }))
+      expect(problemOf(report, `runs_on_variable_copy:${WF_A}`)).toBe(runsOnVariableCopyText({ runs: 2, ageSeconds: 14 * 60 + 30 }))
+      // Why their own request failed goes to the log line, not the page (Dan, 2026-10-30).
+      expect(seen()).toContainEqual(expect.objectContaining({ step: 'runs_on_variable_copy', workflow_id: WF_A, runs: 2, why: DOWN }))
       expect(report.counts).toMatchObject({ runs_ran_on_copy: 2, variable_copy_use_judged: 1, variable_copy_refresh_judged: 1 })
     })
 
@@ -2937,10 +2945,18 @@ describe('the pages about a run\'s variables (#3000, phase 4 of #2982)', () => {
         mode: 'live', claimed: [claimedRun(WF_A, 1)], variableCopies: [held()], heldDefinitions: { [`${WF_A}:3`]: reading('API_BASE') },
         serveRunVariables: async (request) => (request.secrets === 'names' ? servedVariables(request) : { runs: 'nope' }),
       })
-      const report = await runOpsTick(f.ports)
+      const seen = captureLog()
+      let report: Awaited<ReturnType<typeof runOpsTick>>
+      try {
+        report = await runOpsTick(f.ports)
+      } finally {
+        seen.restore()
+      }
       expect(f.ranVariables[claimedRun(WF_A, 1).runRequestId]).toMatchObject({ source: 'copy' })
-      expect(problemOf(report, 'run_variables_unreadable')).toBe(runVariablesUnreadableText({
-        answers: ['the bidding Worker answered the run variables request with something other than { organization_id, runs }'],
+      expect(problemOf(report, 'run_variables_unreadable')).toBe(runVariablesUnreadableText({ requests: 1 }))
+      // The reason goes to the log line, not the page (Dan, 2026-10-30).
+      expect(seen()).toContainEqual(expect.objectContaining({
+        step: 'run_variables_unreadable', why: 'the bidding Worker answered the run variables request with something other than { organization_id, runs }',
       }))
       expect(report.counts).toMatchObject({ run_variables_answers_judged: 1 })
     })
@@ -2957,7 +2973,7 @@ describe('the pages about a run\'s variables (#3000, phase 4 of #2982)', () => {
       })
       const report = await runOpsTick(f.ports)
       const text = problemOf(report, 'run_variables_unreadable')
-      expect(text).toMatch(/^Bidding answered 2 of ops's requests for environment variables in a shape ops cannot read\./)
+      expect(text).toBe(runVariablesUnreadableText({ requests: 2 }))
       // The refresh's unreadable answer fails the refresh too.
       expect(report.problem_keys).toContain('variable_copy_refresh_failing')
     })
@@ -2975,9 +2991,21 @@ describe('the pages about a run\'s variables (#3000, phase 4 of #2982)', () => {
       const f = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2), claimedRun(WF_B, 3)], copies: [copy(), copy({ workflowId: WF_B })],
         runReport: async (run) => (run.workflowId === WF_A ? failedMissing() : ranOn('bidding', 1)()) })
       const report = await runOpsTick(f.ports)
-      expect(problemOf(report, `runs_variable_missing:${WF_A}`)).toBe(missingVariableText({ runs: 2, error: MISSING }))
+      expect(problemOf(report, `runs_variable_missing:${WF_A}`)).toBe(missingVariableText({ runs: 2, names: ['LIST_ID'] }))
       expect((report.problem_keys ?? []).filter((k) => k.startsWith('runs_variable_missing'))).toEqual([`runs_variable_missing:${WF_A}`])
       expect(report.counts).toMatchObject({ runs_variable_unavailable: 2, variable_missing_judged: 1 })
+    })
+
+    it('names every variable the workflow\'s runs failed on, from the names they carry', async () => {
+      const f = fake({
+        mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2)],
+        runReport: async (run) => ({
+          outcome: 'completed', runStatus: 'failed',
+          end: { outcome: 'failed', reason: 'variable_unavailable', missingVariables: run.runRequestId === claimedRun(WF_A, 1).runRequestId ? ['LIST_ID'] : ['API_BASE', 'LIST_ID'], error: 'its sentence is never read' },
+        }),
+      })
+      const report = await runOpsTick(f.ports)
+      expect(problemOf(report, `runs_variable_missing:${WF_A}`)).toBe(missingVariableText({ runs: 2, names: ['API_BASE', 'LIST_ID'] }))
     })
 
     it('pages nothing for a run that failed for any other reason, or whose report was lost', async () => {

@@ -146,9 +146,9 @@ describe('walkOpsDefinition', () => {
     const r = recorder()
     const def = { nodes: [node('shape', 'transform', { mappings: [{ source: 'env.API_BASE', target: 'base' }] }), node('act', 'action_a')], edges: [edge('trigger', 'shape'), edge('shape', 'act')] }
     const end = await walkOpsDefinition(def, runCtx().ctx, { action_a: r.handler })
-    // Named variable_unavailable (#3000), so the minute tick can page a switched on workflow's run that fails this way.
+    // No record is not a missing variable (#3000): it is not named variable_unavailable, so it never pages as one.
     expect(end).toEqual({
-      outcome: 'failed', reason: 'variable_unavailable',
+      outcome: 'failed',
       error: 'the definition reads env.API_BASE, and the run has no record of its variables from when it started, so nothing was run',
     })
     expect(r.seen).toHaveLength(0)
@@ -158,7 +158,8 @@ describe('walkOpsDefinition', () => {
     const r = recorder()
     const gated = { ...edge('trigger', 'act'), condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'env.REGION', operator: 'equals', value: 'us' }] }] } }
     const end = await walkOpsDefinition({ nodes: [node('act', 'action_a')], edges: [gated] }, runCtx().ctx, { action_a: r.handler })
-    expect(end).toMatchObject({ outcome: 'failed', reason: 'variable_unavailable', error: expect.stringMatching(/env\.REGION/) })
+    expect(end).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/env\.REGION/) })
+    expect(end).not.toHaveProperty('reason')
     expect(r.seen).toHaveLength(0)
   })
   it('ends failed, naming the step, when a handler reports an error or throws; a stopped run is passed on', async () => {
@@ -731,7 +732,8 @@ describe('walkOpsDefinition: the variables a run started with (#2998)', () => {
     const r = recorder()
     const run = runCtx({ runVariables: recorded({ API_BASE: 'a', REGION: 'us' }) })
     expect(await walkOpsDefinition(def, run.ctx, { action_a: r.handler })).toEqual({
-      outcome: 'failed', reason: 'variable_unavailable',
+      // Named variable_unavailable, with the names as a field (#3000), so the minute tick pages it by name.
+      outcome: 'failed', reason: 'variable_unavailable', missingVariables: ['LIST_ID'],
       error: 'the definition reads env.LIST_ID, which was not a variable of this workflow when the run started, so nothing was run; add it and run it again',
     })
     expect(r.seen).toHaveLength(0)
@@ -742,7 +744,7 @@ describe('walkOpsDefinition: the variables a run started with (#2998)', () => {
     const r = recorder()
     const run = runCtx({ runVariables: recorded({ LIST_ID: 'l', REGION: 'us' }, ['API_BASE']) })
     expect(await walkOpsDefinition(def, run.ctx, { action_a: r.handler }, { secretValues: {} })).toMatchObject({
-      outcome: 'failed', reason: 'variable_unavailable', error: expect.stringMatching(/^the definition reads the secret variable env\.API_BASE, which the run read when it started/),
+      outcome: 'failed', reason: 'variable_unavailable', missingVariables: ['API_BASE'], error: expect.stringMatching(/^the definition reads the secret variable env\.API_BASE, which the run read when it started/),
     })
     expect(r.seen).toHaveLength(0)
   })
@@ -900,7 +902,7 @@ describe('walkOpsDefinition: a checkpoint holding a secret is written masked and
     rr.row.continuations++
     rr.row.reads = 0
     const end = await walkOpsDefinition(carries, sliceOf(rr).ctx, { action_a: r.handler }, { ...slicing('on', () => m.store, stepsBudget(50)), secretValues: {} })
-    expect(end).toEqual({ outcome: 'failed', reason: 'variable_unavailable', error: expect.stringMatching(/secret variable env\.API_TOKEN/) })
+    expect(end).toEqual({ outcome: 'failed', reason: 'variable_unavailable', missingVariables: ['API_TOKEN'], error: expect.stringMatching(/secret variable env\.API_TOKEN/) })
     expect(r.seen).toEqual([])
     expect(rr.row.reads).toBe(0)
   })
