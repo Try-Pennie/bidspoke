@@ -12,6 +12,9 @@
  * block follows each slot's steps here: the one it started last, whether that
  * step has written its own row yet, and the request each step noted.
  *
+ * The run's step outputs (`ctx.steps`) record the cut-off under the same step
+ * (#3082), so a step the slot finished keeps the output a later step reads.
+ *
  * A slot whose running step already wrote its row is given no cut-off row: that
  * can only happen when the step finished in the instant between the block
  * deciding and the block giving up, and a second row is exactly what #63 rules

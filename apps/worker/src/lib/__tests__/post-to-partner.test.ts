@@ -1,8 +1,10 @@
 /**
- * postToPartner (#1411): the one outbound POST to a partner, shared by the bid
- * resolver's API call and the buyer_select node's sale attempt. The credential
- * rule, the trace header and the body are the resolver's; the timeout is the
- * caller's. No network here: the fetch is injected.
+ * postToPartner (#1411): the one outbound POST to a buyer, shared by the
+ * buyer_select node's sale attempt and buyer_click_send's post. The bid
+ * resolver imports only partnerRequestHeaders, so the credential rule and the
+ * trace header are the resolver's too, while the body handling and the timer
+ * are this call's own; the timeout is the caller's (#3094). No network here:
+ * the fetch is injected.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
