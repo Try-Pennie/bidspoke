@@ -74,6 +74,12 @@ export interface LiftedTimers {
    * refuses by name and never tells the pinned clock.
    */
   restore(): void
+  /**
+   * Ends the run's time (#3137): counts the held answers still waiting, then
+   * restores, which refuses each of them by name. A count above zero is a step
+   * that would run after its run's record closed (`describeStillHeld`).
+   */
+  end(): number
 }
 
 export interface LiftOptions {
@@ -177,17 +183,24 @@ export function liftEngineTimers(host: TimerHost, opts: LiftOptions = {}): Lifte
     return signal
   }
 
+  const restore = (): void => {
+    restored = true
+    host.setTimeout = realSetTimeout
+    host.clearTimeout = realClearTimeout
+    signals.timeout = realTimeout
+  }
+
   return {
     fired: () => [...fired],
     advanced: () => [...advanced],
     advanceUntil,
     waitFor,
     waiting: () => held,
-    restore: () => {
-      restored = true
-      host.setTimeout = realSetTimeout
-      host.clearTimeout = realClearTimeout
-      signals.timeout = realTimeout
+    restore,
+    end: () => {
+      const stillHeld = held
+      restore()
+      return stillHeld
     },
   }
 }

@@ -255,6 +255,24 @@ describe('advanceUntil (#3086)', () => {
     }
   })
 
+  it('ends a run by counting the answers still held, then refusing each of them, so the replay can stop by name on a walk that outlived it (#3137)', async () => {
+    const h = host()
+    const seen: number[] = []
+    const lift = liftEngineTimers(h, { onAdvance: (ms) => seen.push(ms) })
+    const held = lift.waitFor(new AbortController().signal, 7_500)
+    expect(lift.end()).toBe(1)
+    await expect(held).rejects.toThrow('outlived its run')
+    expect(seen).toEqual([])
+    expect(h.setTimeout).toBe(globalThis.setTimeout)
+  })
+
+  it('ends a run with nothing held as zero', async () => {
+    const h = host()
+    const lift = liftEngineTimers(h)
+    expect(await lift.waitFor(new AbortController().signal, 7_500)).toBe('elapsed')
+    expect(lift.end()).toBe(0)
+  })
+
   it('with floorMs 0 keeps every length as the engine asked, and can still advance', async () => {
     const asked: number[] = []
     // A real timer far off for the engine's, so only the advance can run it; the lift's own settle turn (0 ms) stays real.

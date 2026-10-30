@@ -582,9 +582,8 @@ export async function runOnce(e: GateEnv, def: DefinitionFile, spec: RunSpec, pa
     // A run that kept real timers lets them fire; only a lifted one that fires is a fault.
     timersFired = hooks.engineTimers === 'real' ? [] : (lifted?.fired() ?? [])
     // A step still waiting on the replay's time when the run ends would carry on
-    // after its record closed (#3137), so it is counted before the lift goes.
-    stillHeld = lifted?.waiting() ?? 0
-    lifted?.restore()
+    // after its record closed (#3137): end counts them, then restores the lift.
+    stillHeld = lifted?.end() ?? 0
     globalThis.fetch = realFetch
     vi.useRealTimers()
     // Every spy: the console, and the seeded randomness pinRandomness installed.
