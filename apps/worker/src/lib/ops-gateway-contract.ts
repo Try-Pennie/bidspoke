@@ -918,14 +918,6 @@ export const OPS_TICK_PROBLEM_RULES = {
 export type OpsTickProblemKind = keyof typeof OPS_TICK_PROBLEM_RULES
 
 /**
- * The page for a workflow whose runs keep returning to the queue unstarted
- * (#3039), in the words Dan approved on 2026-10-30, recorded on the issue. The
- * tick writes the sentence (unstartedRunsText) as the problem runs_unstarted,
- * keyed on the workflow; the bidding Worker pages each one on its own, under
- * the title naming the workflow and the fix below, never on the shared page of
- * the minute cron.
- */
-/**
  * A kind of tick problem that pages on a page of its own (#3039, #3000), never
  * on the minute cron's shared page: its own alert job, title and fix. The
  * bidding Worker pages each due problem of the kind (ops-gateway.ts
@@ -952,6 +944,14 @@ export interface OpsOwnPage {
   about: string
 }
 
+/**
+ * The page for a workflow whose runs keep returning to the queue unstarted
+ * (#3039), in the words Dan approved on 2026-10-30, recorded on the issue. The
+ * tick writes the sentence (unstartedRunsText) as the problem runs_unstarted,
+ * keyed on the workflow; the bidding Worker pages each one on its own, under
+ * the title naming the workflow and the fix below, never on the shared page of
+ * the minute cron.
+ */
 export const UNSTARTED_RUNS_PAGE = {
   kind: 'runs_unstarted',
   /** The bidding Worker's alert job for one workflow's page: its own incident, stood down by its own all clear. */

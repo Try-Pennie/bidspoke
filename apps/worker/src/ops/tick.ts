@@ -1136,15 +1136,6 @@ async function askRunVariables(ports: OpsTickPorts, runs: readonly ClaimedRun[])
   return { answers, served: servedVersions, answered: heard.answered, unreadable: heard.unreadable }
 }
 
-/**
- * One claimed run, in its own boundary (L73: a throw here never stops a
- * sibling). A run of a workflow its copy says is deleted or switched off, or
- * that no copy names, is ended dead without running (the claim re-checks the
- * workflow, #1698 1.3). Any other is decided by its variables (#2998): a run
- * the bidding Worker refused is ended unrun by its own reason, one whose
- * variables could not be had goes back to the queue unstarted at retryAt, and
- * one served is handed to OpsInternal.run with them and awaited.
- */
 /** One claimed run as the tick judges it. */
 interface RunResult {
   workflowId: string
@@ -1161,6 +1152,15 @@ interface RunResult {
   missing?: string
 }
 
+/**
+ * One claimed run, in its own boundary (L73: a throw here never stops a
+ * sibling). A run of a workflow its copy says is deleted or switched off, or
+ * that no copy names, is ended dead without running (the claim re-checks the
+ * workflow, #1698 1.3). Any other is decided by its variables (#2998): a run
+ * the bidding Worker refused is ended unrun by its own reason, one whose
+ * variables could not be had goes back to the queue unstarted at retryAt, and
+ * one served is handed to OpsInternal.run with them and awaited.
+ */
 async function dispatchOneRun(
   ports: OpsTickPorts, db: OpsTickDb | null, copies: readonly WorkflowCopy[], run: ClaimedRun, answer: RunVariablesAnswer | undefined, retryAt: Date,
   counts: Record<string, number>,
@@ -1283,8 +1283,10 @@ function judgeRunOutcomes(
  *  - runs_variable_missing, per workflow, at once: runs that failed with
  *    variable_unavailable. The tick dispatches only runs of a workflow that
  *    may start, so each is a switched on workflow's.
- * judged is whether this tick dispatched its claimed runs (live, with the
- * database), which judges the two per workflow kinds.
+ * judged is whether this tick's claim ran and answered, so the runs it
+ * dispatched are all it could judge, which judges the two per workflow kinds:
+ * a tick whose claim failed, or that could not claim (held, no database clock,
+ * the copies unread), judges neither, and stands neither page down.
  */
 function judgeVariables(
   judged: boolean, results: readonly RunResult[], asked: { answered: number; unreadable: readonly string[] }, refresh: VariableCopyRefresh | null, nowMs: number,
@@ -1706,6 +1708,8 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
 
   // 6. The claim: observed (what a claim would find), or in live mode taken.
   let claimed: ClaimedRun[] = []
+  /** Whether this tick's claim ran and answered, so the runs it dispatches are every run it could have judged (#3000). */
+  let claimAnswered = false
   if (db && !live) {
     try {
       const depth = await db.dueQueueDepth()
@@ -1717,6 +1721,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   } else if (db && live && !liveHeld && dbNow !== null && copiesRead) {
     try {
       claimed = await db.claimRuns({ worker: ports.tickId, limit: TICK_CLAIM_LIMIT, perWorkflow: TICK_CLAIM_PER_WORKFLOW, leaseSeconds: RUN_LEASE_SECONDS })
+      claimAnswered = true
       if (claimed.length > 0) bump(counts, 'runs_claimed', claimed.length)
     } catch (err) {
       problem('claim_failed', `The ops tick could not claim runs (${formatErr(err)}); every queued run waits for the next tick.`)
@@ -1789,7 +1794,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   for (const [key, n] of Object.entries(written?.counts ?? {})) bump(counts, key, n)
   // The pages about the runs' variables (#3000), in live mode with the database only.
   if (live && db !== null) {
-    judgeVariables(true, results, asked, fetchError !== null ? null : (written?.refresh ?? null), ports.now(), problem, counts)
+    judgeVariables(claimAnswered, results, asked, fetchError !== null ? null : (written?.refresh ?? null), ports.now(), problem, counts)
   }
   sent.forEach((r, i) => {
     if (r.status === 'fulfilled') {

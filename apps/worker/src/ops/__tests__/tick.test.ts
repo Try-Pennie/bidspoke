@@ -2891,6 +2891,18 @@ describe('the pages about a run\'s variables (#3000, phase 4 of #2982)', () => {
       expect(observe.counts.variable_copy_use_judged).toBeUndefined()
       expect(observe.counts.variable_missing_judged).toBeUndefined()
     })
+
+    // A tick that claimed no runs because its claim failed, or could not claim at
+    // all, judged no run: a page it does not name may still stand.
+    it('judges nothing of the runs when the claim failed or the tick could not claim', async () => {
+      const failed = await runOpsTick(fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)], failing: { claimRuns: new Error('statement timeout') } }).ports)
+      expect(failed.problem_keys).toContain('claim_failed')
+      expect(failed.counts.variable_copy_use_judged).toBeUndefined()
+      expect(failed.counts.variable_missing_judged).toBeUndefined()
+      const unread = await runOpsTick(fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)], failing: { readCopies: new Error('statement timeout') } }).ports)
+      expect(unread.counts.variable_copy_use_judged).toBeUndefined()
+      expect(unread.counts.variable_missing_judged).toBeUndefined()
+    })
   })
 
   describe('(b) the refresh failing', () => {
