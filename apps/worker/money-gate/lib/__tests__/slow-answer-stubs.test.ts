@@ -75,7 +75,7 @@ describe('the outcome relay answering late (#3128)', () => {
     expect(achieveWait(CONTINUATION_WINDOW_MS - 7_501).send).toBe(false)
   })
 
-  it('Main Flow replays a Tripoint win with each late relay answer, as a live run only, with the Achieve screen open', () => {
+  it('Main Flow replays a Tripoint win with each late relay answer, as a live run only, through the Achieve screen as the snapshot has it', () => {
     const late = mainFlow.variants.filter((v) => /^ok_after_/.test(v.stubs?.pipedream_outcome_post ?? ''))
     expect(late.map((v) => [v.name, v.stubs?.pipedream_outcome_post, v.stubs?.tripoint_create])).toEqual([
       ['achieve_starts_7500ms_after_answer', 'ok_after_7500ms', 'accepted'],
@@ -84,11 +84,10 @@ describe('the outcome relay answering late (#3128)', () => {
     for (const v of late) {
       // A test run has no window (continuationMsLeft is unset), so it could not see the cutoff.
       expect(v.also_run_as).toBeUndefined()
-      // The snapshot's synthetic screen settings refuse every lead before the window is read,
-      // so each variant turns off the criteria this lead fails, and both runs reach the window.
-      expect(v.env).toEqual({ ACHIEVE_MIN_LOAN_AMOUNT: '', ACHIEVE_MAX_LOAN_AMOUNT: '', ACHIEVE_MAX_LOAN_TO_INCOME: '', ACHIEVE_MIN_VANTAGE_SCORE: '' })
-      // The generated phone is free text, which the node refuses as missing before the window too.
-      expect(v.set).toEqual({ 'personalInformation.primaryPhone': '(555) 010-0199' })
+      // The lead reaches the window through the Achieve screen as the snapshot has it and
+      // with the phone the generator gives it (#3138), so neither is overridden here.
+      expect(v.env).toBeUndefined()
+      expect(v.set).toBeUndefined()
     }
   })
 })

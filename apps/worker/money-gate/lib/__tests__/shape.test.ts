@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildWorkflowShape, renderShapesFile, summarizeShapes, type ShapesFile } from '../shape'
+import { buildWorkflowShape, renderShapesFile, stringFormat, summarizeShapes, type ShapesFile } from '../shape'
 
 // Every leaf value in these payloads is a token that must never reach the output.
 // The guard is the whole point of the export (L222): it reads production trigger
@@ -53,6 +53,17 @@ describe('buildWorkflowShape', () => {
     expect(shape.fields['financialInformation.creditScore'].classes).toEqual({ integer: 20 })
     expect(shape.fields['financialInformation.debt[].amount'].present).toBe(20)
     expect(shape.fields['flags.military'].classes).toEqual({ boolean: 20 })
+  })
+
+  // Main Flow's form sends a phone as (ddd) ddd-dddd (all 300 of a 2026-10-30 sample),
+  // which read as free text, so the generator invented one with no ten digits and
+  // Achieve's node refused every fixture as missing a phone (#3138).
+  it('reads a punctuated US phone number as a phone, and leaves a bare run of digits as digits', () => {
+    expect(stringFormat('(212) 555-0123')).toBe('us_phone')
+    expect(stringFormat('212-555-0123')).toBe('us_phone')
+    expect(stringFormat('2125550123')).toBe('digits')
+    expect(stringFormat('(212) 555-012')).toBe('free')
+    expect(stringFormat('call (212) 555-0123')).toBe('free')
   })
 
   it('keeps a small enumerated domain on a non identifying path (positive control)', () => {

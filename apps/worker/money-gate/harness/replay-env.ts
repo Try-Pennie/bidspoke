@@ -25,6 +25,12 @@ export interface Variant {
   stubs?: Record<string, string>
   /** Environment variable values this fixture runs with (a setting that gates an arm). */
   env?: Record<string, string>
+  /**
+   * Steps that keep their own per attempt deadline instead of the gate's (#3138),
+   * so a stub that does not answer an attempt lets it time out on the replay's
+   * time and the engine's retry run after its backoff, as in production.
+   */
+  timed_steps?: string[]
   /** Runs of the same payload before the recorded one, whose state it meets (a repeat click). */
   prior_runs?: number
   /** Stub scenarios for the prior runs; the variant's own stubs when absent. */

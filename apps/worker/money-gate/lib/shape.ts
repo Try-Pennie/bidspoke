@@ -23,7 +23,7 @@ export type ValueClass = 'string' | 'integer' | 'number' | 'boolean' | 'null' | 
 
 export type StringFormat =
   | 'empty' | 'uuid' | 'email' | 'iso_date' | 'iso_datetime' | 'us_date' | 'ssn_like'
-  | 'digits' | 'decimal' | 'url' | 'alpha' | 'alnum' | 'free'
+  | 'digits' | 'decimal' | 'url' | 'alpha' | 'alnum' | 'us_phone' | 'free'
 
 export interface FieldShape {
   /** Samples in which the path was present at all. */
@@ -92,6 +92,9 @@ export function stringFormat(s: string): StringFormat {
   if (/^\d{4}-\d{2}-\d{2}T/.test(s)) return 'iso_datetime'
   if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) return 'us_date'
   if (/^\d+$/.test(s)) return 'digits'
+  // A punctuated ten digit US number, as the lead form sends a phone (#3138). A bare
+  // run of digits stays digits above: it could be any identifier of that length.
+  if (/^(\(\d{3}\) ?|\d{3}[-. ])\d{3}[-. ]\d{4}$/.test(s)) return 'us_phone'
   if (/^-?\d+\.\d+$/.test(s)) return 'decimal'
   if (/^https?:\/\//i.test(s)) return 'url'
   if (/^[A-Za-z]+$/.test(s)) return 'alpha'

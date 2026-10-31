@@ -161,6 +161,55 @@ it('refuses a lifted run with a post-response cut before it touches anything glo
 })
 
 /**
+ * A fixture's timed_steps (#3138) keep a step's own deadline only on a committed
+ * definition, by a step it has: anything else is refused by name before anything
+ * global is replaced, rather than replaying a deadline nobody chose.
+ */
+it('refuses timed_steps on a definition that is not committed, or naming a step it lacks, before it touches anything global', async () => {
+  const e = env as unknown as GateEnv
+  const def = definitions.find((d) => d.name === 'Main Flow')!
+  const shape = shapes.workflows.find((w) => w.workflow_id === def.id) as WorkflowShape
+  const fetchBefore = globalThis.fetch
+  const stranger = { ...def, id: '00000000-0000-4000-8000-000000003138', name: 'Not Committed' }
+  await expect(runOnce(e, stranger, { id: 'timed-stranger', seed: 'timed-stranger', kind: 'live' }, {}, { name: 'timed-stranger', timed_steps: ['tripoint_sf_post'] }, {}, shape))
+    .rejects.toThrow('Not Committed is not a committed definition')
+  await expect(runOnce(e, def, { id: 'timed-missing', seed: 'timed-missing', kind: 'live' }, {}, { name: 'timed-missing', timed_steps: ['no_such_step'] }, {}, shape))
+    .rejects.toThrow('no_such_step')
+  expect(globalThis.fetch).toBe(fetchBefore)
+  expect(Date.now()).not.toBe(FIXED_TIME_MS)
+})
+
+/**
+ * The relay post timing out once and its retry being answered (#3138), through
+ * the engine under test: the run keeps tripoint_sf_post's own 3,750 ms deadline,
+ * waits the 500 ms backoff on the replay's time and counts the stub's attempts,
+ * so the relay is asked twice and Achieve is asked 4.25 s after the answer, with
+ * no timer firing on the real clock.
+ */
+it.skipIf(AB_MODE !== null)('replays a timed out relay attempt and its retry on the replay time', async () => {
+  const e = env as unknown as GateEnv
+  try {
+    await hostBundles(e)
+    await reset()
+    const def = definitions.find((d) => d.name === 'Main Flow')!
+    const shape = shapes.workflows.find((w) => w.workflow_id === def.id) as WorkflowShape
+    const planned = runPlan(variantFiles.find((v) => v.workflow_id === def.id)).find((p) => p.variant.name === 'achieve_starts_after_a_timed_out_relay_attempt' && p.kind === 'live')
+    expect(planned, 'Main Flow has no live variant achieve_starts_after_a_timed_out_relay_attempt').toBeDefined()
+    const variant = planned!.variant
+    const id = fixtureId(def.name, variant.name, 'live')
+    const payload = generatePayload(shape, { seed: id, set: variant.set, unset: variant.unset })
+    const run = await runOnce(e, def, { id, seed: id, kind: 'live' }, payload, variant, variant.stubs ?? {}, shape)
+    expect(run.timersFired, describeFiredTimers(id, run.timersFired)).toEqual([])
+    const fixture = await recordFixture(e, def, { id, variant: variant.name, kind: 'live' }, run)
+    expect(fixture.outbound.filter((o) => o.node === 'tripoint_sf_post').length).toBe(2)
+    const evaluation = fixture.supabase_writes.find((w) => w.table === 'achieve_evaluations') as { values?: Array<{ requested_at_utc?: string }> } | undefined
+    expect(evaluation?.values?.[0]?.requested_at_utc).toBe(new Date(FIXED_TIME_MS + 3_750 + 500).toISOString())
+  } finally {
+    await e.GATE_IO.fetch('https://gate/dispose', { method: 'POST' })
+  }
+}, 300_000)
+
+/**
  * A run whose setup throws after the harness has replaced fetch, the console, the
  * clock and randomness puts every one of them back, and still fails by name, so a
  * setup mistake cannot leak into the next fixture or be recorded as a result.

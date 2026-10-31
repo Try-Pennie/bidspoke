@@ -817,7 +817,7 @@
     "environment_variables": [
       {
         "key": "ACHIEVE_ALLOWED_STATES",
-        "value": "AK,AL,AR,AZ,CA,DE,DC,FL,GA,IL,IN,ID,KS,KY,LA,MA,MD,MI,MN,MO,MS,MT,ND,NC,NE,NH,NJ,NM,NV,NY,OH,OK,OR,PA,RI,SC,SD,TN,TX,UT,VA",
+        "value": "AL,AR,AZ,CA,CT,DE,FL,GA,IA,IL,IN,KS,KY,LA,MA,MD,MI,MO,NC,NE,NJ,NM,NY,OH,OK,PA,SC,TN,TX,VA",
         "is_secret": false,
         "scope": "global",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
@@ -865,22 +865,6 @@
       },
       {
         "key": "ACHIEVE_MAX_CURRENT_DELINQUENCIES",
-        "value": "0",
-        "is_secret": false,
-        "scope": "global",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "workflow_id": null
-      },
-      {
-        "key": "ACHIEVE_MAX_DTI",
-        "value": "0.1",
-        "is_secret": false,
-        "scope": "global",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "workflow_id": null
-      },
-      {
-        "key": "ACHIEVE_MAX_INQUIRY_EPISODES_6MO",
         "value": "1",
         "is_secret": false,
         "scope": "global",
@@ -888,8 +872,24 @@
         "workflow_id": null
       },
       {
+        "key": "ACHIEVE_MAX_DTI",
+        "value": "0.5",
+        "is_secret": false,
+        "scope": "global",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "workflow_id": null
+      },
+      {
+        "key": "ACHIEVE_MAX_INQUIRY_EPISODES_6MO",
+        "value": "3",
+        "is_secret": false,
+        "scope": "global",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "workflow_id": null
+      },
+      {
         "key": "ACHIEVE_MAX_LOAN_AMOUNT",
-        "value": "10000",
+        "value": "45000",
         "is_secret": false,
         "scope": "global",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
@@ -897,7 +897,7 @@
       },
       {
         "key": "ACHIEVE_MAX_LOAN_TO_INCOME",
-        "value": "0.1",
+        "value": "0.4",
         "is_secret": false,
         "scope": "global",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
@@ -905,7 +905,7 @@
       },
       {
         "key": "ACHIEVE_MIN_AGE",
-        "value": "10",
+        "value": "21",
         "is_secret": false,
         "scope": "global",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
@@ -913,7 +913,7 @@
       },
       {
         "key": "ACHIEVE_MIN_LOAN_AMOUNT",
-        "value": "10000",
+        "value": "12000",
         "is_secret": false,
         "scope": "global",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
@@ -921,7 +921,7 @@
       },
       {
         "key": "ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY",
-        "value": "10",
+        "value": "36",
         "is_secret": false,
         "scope": "global",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
@@ -929,7 +929,7 @@
       },
       {
         "key": "ACHIEVE_MIN_VANTAGE_SCORE",
-        "value": "1000000000",
+        "value": "620",
         "is_secret": false,
         "scope": "global",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",

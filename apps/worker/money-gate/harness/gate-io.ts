@@ -94,6 +94,8 @@ export function createGateIo(opts: GateIoOptions) {
   const unstubbed = new Set<string>()
   /** Answers a bundle asked for and could not be given (codeBundleRefusal), drained with the outbound. */
   let refused: string[] = []
+  /** How many requests each stub rule has answered for the fixture's bundles (#3138). */
+  let attempts = new Map<string, number>()
 
   async function codeOutbound(request: Request): Promise<Response> {
     const url = new URL(request.url)
@@ -111,7 +113,7 @@ export function createGateIo(opts: GateIoOptions) {
       body: redactBody(body),
     })
     const stubReq = { method: request.method, url, headers, body }
-    const hit = stubAnswer(stubReq, arms)
+    const hit = stubAnswer(stubReq, arms, attempts)
     if (!hit) unstubbed.add(`${url.host}${url.pathname} (${fixture})`)
     // An answer that does not arrive whole cannot reach a bundle as one (#3086):
     // named, and the replay refuses the run when it drains.
@@ -172,6 +174,7 @@ export function createGateIo(opts: GateIoOptions) {
         arms = body.arms ?? {}
         outbound = []
         refused = []
+        attempts = new Map()
         return Response.json({ ok: true })
       }
       case '/dispatch': {

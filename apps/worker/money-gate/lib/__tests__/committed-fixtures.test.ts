@@ -15,7 +15,7 @@ import { generatePayload } from '../generate'
 import { RULES } from '../stub-rules'
 import { parseExpectedChanges } from '../expected-changes'
 import type { ShapesFile } from '../shape'
-import type { ConfigSnapshot } from '../snapshot'
+import { INVENTED_ACHIEVE_SCREEN, placeholderValue, type ConfigSnapshot } from '../snapshot'
 import { resolveVariant, runPlan, type VariantFile } from '../../harness/replay-env'
 import { EXTRA_RUN_KINDS } from '../run-kinds'
 import { postgresTimeMicros } from '../../../src/engine/definition-loader'
@@ -54,6 +54,19 @@ describe('committed money gate fixtures', () => {
   it('expected-changes.json parses, and every entry in it names a workflow, a check and a reason', () => {
     const parsed = parseExpectedChanges(readFileSync(join(fixtures, '..', 'expected-changes.json'), 'utf8'))
     expect(parsed.failures).toEqual([])
+  })
+
+  // The repository is public, so the Achieve screen's limits in the snapshot are
+  // invented (#3138): each is the invented value or, where production leaves it
+  // blank, the placeholder the screen reads as off. A hand edit or an export from
+  // before the invented values fails here, by name.
+  it('every Achieve screen limit in the snapshot, the allowed states included, is its invented value, or off', () => {
+    const rows = snapshot.tables.environment_variables as Array<{ key: string; value: string }>
+    for (const [key, invented] of Object.entries(INVENTED_ACHIEVE_SCREEN)) {
+      const held = rows.filter((r) => r.key === key).map((r) => r.value)
+      for (const value of held) expect({ key, value }).toEqual({ key, value: value === placeholderValue(key) ? placeholderValue(key) : invented })
+    }
+    expect(rows.filter((r) => Object.hasOwn(INVENTED_ACHIEVE_SCREEN, r.key)).length).toBeGreaterThan(0)
   })
 
   // Every production workflow row carries updated_at, and the definition loader

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { synthesizeNumbers, snapshotPartnerConfig, snapshotBuyerProfile, snapshotEnvVar, placeholderValue, snapshotRow, SNAPSHOT_COLUMNS, type SnapshotTable } from '../snapshot'
+import { synthesizeNumbers, snapshotPartnerConfig, snapshotBuyerProfile, snapshotEnvVar, placeholderValue, snapshotRow, SNAPSHOT_COLUMNS, INVENTED_ACHIEVE_SCREEN, type SnapshotTable } from '../snapshot'
 
 describe('synthesizeNumbers', () => {
   it('replaces every number, keeping only its order of magnitude and its position', () => {
@@ -125,8 +125,51 @@ describe('snapshotEnvVar', () => {
   const row = (key: string, value: string, is_secret = false) => snapshotEnvVar({ key, value, is_secret, scope: 'global', organization_id: 'o', workflow_id: null }).value
 
   it('synthesizes a numeric setting, since thresholds steer arms', () => {
-    expect(row('ACHIEVE_MIN_VANTAGE_SCORE', '640')).toBe('100')
+    expect(row('SOME_SCORE_FLOOR', '640')).toBe('100')
     expect(row('BUYER_SELECT_ENGINE_PERCENT', '0')).toBe('0')
+  })
+
+  // Synthesis rounds a limit down to its power of ten, which turned every Achieve
+  // screen setting into one that refused every lead (#3138). The repo is public, so
+  // the snapshot carries invented limits instead, never production's.
+  describe('the Achieve screen settings (#3138)', () => {
+    it('writes the invented limit for each screen setting production has set, whatever production holds', () => {
+      for (const [key, invented] of Object.entries(INVENTED_ACHIEVE_SCREEN)) {
+        expect(row(key, '1')).toBe(invented)
+        expect(row(key, '9999999999')).toBe(invented)
+        expect(row(key, '0.75')).toBe(invented)
+      }
+    })
+
+    it('keeps a screen setting production leaves blank turned off, as a placeholder the screen reads as unset', () => {
+      expect(row('ACHIEVE_MAX_LOAN_AMOUNT', '')).toBe('placeholder-ACHIEVE_MAX_LOAN_AMOUNT')
+      expect(row('ACHIEVE_MIN_VANTAGE_SCORE', '  ')).toBe('placeholder-ACHIEVE_MIN_VANTAGE_SCORE')
+    })
+
+    it('never invents a value for a setting marked secret', () => {
+      expect(row('ACHIEVE_MIN_AGE', '30', true)).toBe('placeholder-ACHIEVE_MIN_AGE')
+    })
+
+    it('invents every limit the Achieve screen reads: each threshold a number, the states a list in the form production uses', () => {
+      const { ACHIEVE_ALLOWED_STATES: states, ...thresholds } = INVENTED_ACHIEVE_SCREEN
+      expect(Object.keys(thresholds).sort()).toEqual([
+        'ACHIEVE_MAX_CURRENT_DELINQUENCIES', 'ACHIEVE_MAX_DTI', 'ACHIEVE_MAX_INQUIRY_EPISODES_6MO', 'ACHIEVE_MAX_LOAN_AMOUNT',
+        'ACHIEVE_MAX_LOAN_TO_INCOME', 'ACHIEVE_MIN_AGE', 'ACHIEVE_MIN_LOAN_AMOUNT', 'ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY', 'ACHIEVE_MIN_VANTAGE_SCORE',
+      ])
+      for (const v of Object.values(thresholds)) expect(Number.isFinite(Number(v))).toBe(true)
+      // Two letter codes, comma separated with no spaces, as production writes its list.
+      expect(states).toMatch(/^[A-Z]{2}(,[A-Z]{2})+$/)
+    })
+
+    // The Main Flow fixture lead lives in TX, so the sending fixtures pass the
+    // state criterion; invalid_state's MN is a state Pennie refuses, kept off the
+    // list too, so the screen turns that lead away as state_not_allowed (#3138).
+    it('invents an allowed states list holding the fixture lead\'s state and not the invalid state fixture\'s', () => {
+      const states = INVENTED_ACHIEVE_SCREEN.ACHIEVE_ALLOWED_STATES.split(',')
+      expect(states).toContain('TX')
+      expect(states).not.toContain('MN')
+      expect(row('ACHIEVE_ALLOWED_STATES', 'AL,AK')).toBe(INVENTED_ACHIEVE_SCREEN.ACHIEVE_ALLOWED_STATES)
+    })
   })
 
   it('keeps a short word setting such as a mode or a flag', () => {
@@ -141,8 +184,8 @@ describe('snapshotEnvVar', () => {
     expect(row('SCOUT_CLIENT_ID', 'abc')).toBe('placeholder-SCOUT_CLIENT_ID')
   })
 
-  it('keeps a comma separated list of short codes, such as allowed states', () => {
-    expect(row('ACHIEVE_ALLOWED_STATES', 'AL, AK,TX')).toBe('AL, AK,TX')
+  it('keeps a comma separated list of short codes', () => {
+    expect(row('SOME_PARTNER_STATES', 'AL, AK,TX')).toBe('AL, AK,TX')
   })
 
   it('replaces any secret, and any other value, with a placeholder', () => {
