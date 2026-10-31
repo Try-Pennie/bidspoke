@@ -287,13 +287,16 @@ function comparedDoState(state: Record<string, unknown>): Record<string, unknown
 }
 
 /**
- * A flow that does not pass the drill yet, keyed on the workflow, the outage
- * shape (or `*`) and its expected FIRST difference (`field: pattern`, `*` as a
- * wildcard), so any other difference in that flow still fails. Each carries the
- * issue that removes it and a date it stops excusing anything.
+ * A fixture that does not pass the drill yet, keyed on the workflow, the fixture
+ * (the variant's name), the outage shape (or `*`) and its expected FIRST
+ * difference (`field: pattern`, `*` as a wildcard), so any other difference, and
+ * any other fixture of that flow, still fails (#3147). Each carries the issue
+ * that removes it and a date it stops excusing anything.
  */
 export interface OutageExemption {
   workflow: string
+  /** The one fixture it excuses: a variant name the drill runs for `workflow`. */
+  fixture: string
   shape: OutageShape | '*'
   first_difference: string
   issue: number
@@ -314,27 +317,57 @@ function wildcard(pattern: string): RegExp {
 }
 
 function matches(e: OutageExemption, f: FixtureOutcome): boolean {
-  if (e.workflow !== f.workflow) return false
+  if (e.workflow !== f.workflow || e.fixture !== f.variant) return false
   if (e.shape !== '*' && e.shape !== f.shape) return false
   const first = f.diffs[0]
   return !!first && wildcard(e.first_difference).test(`${first.field}: ${first.detail}`)
 }
 
+/** A fixture the drill runs: a workflow's name and one of its live variants. */
+export interface DrilledFixture {
+  workflow: string
+  variant: string
+}
+
+/**
+ * Why an exemption cannot excuse anything as written, or null when it names a
+ * fixture the drill runs. The file is JSON, so its type is a cast and a missing
+ * field arrives as undefined.
+ */
+function unusable(e: OutageExemption, drilled: readonly DrilledFixture[]): string | null {
+  const head = `exemption for ${e.workflow} [${e.shape}] '${e.first_difference}'`
+  if (typeof e.fixture !== 'string' || e.fixture === '') {
+    return `${head} names no fixture; add the one fixture it excuses (#${e.issue})`
+  }
+  if (drilled.some((d) => d.workflow === e.workflow && d.variant === e.fixture)) return null
+  const known = drilled.filter((d) => d.workflow === e.workflow).map((d) => d.variant)
+  return `${head} names fixture '${e.fixture}', which the drill does not run; ${known.length ? `its fixtures of ${e.workflow} are ${known.join(', ')}` : `it runs no fixture of ${e.workflow}`} (#${e.issue})`
+}
+
 /**
  * The drill's verdict. A fixture with differences passes only when a live
- * exemption matches its first difference. An exemption past its date, or one
- * that matched no fixture, is itself a failure, so a flow that has been fixed
- * cannot stay exempt and an exemption cannot outlive its issue.
+ * exemption naming that fixture matches its first difference. An exemption past
+ * its date, one that matched no fixture, one naming no fixture and one naming a
+ * fixture the drill does not run (`drilled`) are each a failure, so a flow that
+ * has been fixed cannot stay exempt, an exemption cannot outlive its issue, and
+ * a pattern written for one fixture cannot excuse its siblings (#3147).
  */
-export function applyExemptions(outcomes: FixtureOutcome[], exemptions: OutageExemption[], today: string): { failures: string[]; excused: FixtureOutcome[] } {
+export function applyExemptions(outcomes: FixtureOutcome[], exemptions: OutageExemption[], today: string, drilled: readonly DrilledFixture[]): { failures: string[]; excused: FixtureOutcome[] } {
   const failures: string[] = []
   const excused: FixtureOutcome[] = []
+  const usable: OutageExemption[] = []
+  for (const e of exemptions) {
+    const why = unusable(e, drilled)
+    // Refused once, by name, and kept out of matching and out of the "matched nothing" report.
+    if (why) failures.push(why)
+    else usable.push(e)
+  }
   const used = new Set<OutageExemption>()
   for (const f of outcomes) {
     if (f.diffs.length === 0) continue
     // A live entry wins over an expired one for the same difference, whatever
     // their order; the expired one then matched nothing and is reported for removal.
-    const candidates = exemptions.filter((e) => matches(e, f))
+    const candidates = usable.filter((e) => matches(e, f))
     const hit = candidates.find((e) => e.expires >= today) ?? candidates[0]
     if (hit) {
       used.add(hit)
@@ -347,8 +380,8 @@ export function applyExemptions(outcomes: FixtureOutcome[], exemptions: OutageEx
     }
     failures.push(`${f.workflow}/${f.variant} [${f.shape}] differs from its database-up twin: ${f.diffs.map((d) => `${d.field}: ${d.detail}`).join(' | ')}`)
   }
-  for (const e of exemptions) {
-    if (!used.has(e)) failures.push(`exemption for ${e.workflow} [${e.shape}] '${e.first_difference}' matched no difference; remove it (#${e.issue})`)
+  for (const e of usable) {
+    if (!used.has(e)) failures.push(`exemption for ${e.workflow}/${e.fixture} [${e.shape}] '${e.first_difference}' matched no difference; remove it (#${e.issue})`)
   }
   return { failures, excused }
 }

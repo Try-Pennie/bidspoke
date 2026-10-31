@@ -362,12 +362,24 @@ narrowed. `MONEY_GATE_OUT=<file>` writes the report: each fixture's differences,
 each one naming the first position where the down run parted from its twin, and
 the time spent by phase.
 
-**Exemptions.** A flow that does not pass yet is listed in
-`money-gate/outage-exemptions.json` with its workflow, the outage shape (or `*`),
+**Exemptions.** A fixture that does not pass yet is listed in
+`money-gate/outage-exemptions.json` with its workflow, the fixture (the variant's
+name, as the report shows it after the workflow's), the outage shape (or `*`),
 its expected first difference (`field: pattern`, `*` as a wildcard), the issue
-that removes it and an expiry date. Any other difference still fails, an expired
-entry fails, and an entry that matched nothing fails, so a fixed flow cannot stay
-exempt.
+that removes it and an expiry date:
+
+```json
+{ "workflow": "Main Flow", "fixture": "tripoint_accepted", "shape": "refused",
+  "first_difference": "outbound: at [5]*", "issue": 1234, "expires": "2026-11-30" }
+```
+
+The fixture is required (#3147): an entry excuses that one fixture only, so a
+broad pattern cannot excuse a sibling fixture of the same flow whose first
+difference happens to match it. Each fixture that needs excusing gets its own
+entry. Any other difference still fails, an expired entry fails, an entry that
+matched nothing fails, so a fixed flow cannot stay exempt, and an entry that
+names no fixture, or a fixture the drill does not run, fails by name, listing
+the fixtures it does run for that workflow.
 
 **Not drilled**, each for its reason:
 
