@@ -86,6 +86,12 @@ function synthString(path: string, f: FieldShape, seed: string): string {
     case 'digits': return ACCOUNT_PATH.test(seg) ? '0'.repeat(Math.max(len, 6)) : digits(s, Math.max(len, 1))
     case 'decimal': return '1000.00'
     case 'url': return `https://example.com/${hex(s, 6)}`
+    // 555-0100 to 555-0199 is the range reserved for fiction, in the form the samples
+    // used, so a node that needs a real phone shape can send it (#3138).
+    case 'us_phone': {
+      const line = `01${String(fnv1a(s) % 100).padStart(2, '0')}`
+      return len >= 14 ? `(555) 555-${line}` : `555-555-${line}`
+    }
     case 'alpha': return `Synth${'x'.repeat(Math.max(0, Math.min(len, 12) - 5))}`.slice(0, Math.max(len, 1))
     case 'alnum': return `S${hex(s, Math.max(1, Math.min(len, 64) - 1))}`
     default: return `synthetic ${hex(s, 6)}`

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildWorkflowShape } from '../shape'
+import { buildWorkflowShape, stringFormat } from '../shape'
 import { generatePayload } from '../generate'
 import { scanForPersonalData } from '../fixture-scan'
 
@@ -48,6 +48,19 @@ describe('generatePayload', () => {
     expect(p.dateOfBirth).toBe('1980-01-01T00:00:00.000Z')
     expect(p.birth_ts).toBe('1980-01-01T00:00:00.000Z')
     expect(scanForPersonalData(p)).toEqual([])
+  })
+
+  // A phone in the form the lead's form sends, from the range reserved for fiction
+  // (555-0100 to 555-0199), so the Achieve node can send it (#3138).
+  it('gives a US phone field a fictional 555-01xx number in the form the samples used', () => {
+    const at = (phone: string) => buildWorkflowShape({ workflow_id: 'w', workflow_name: 'w', payloads: [{ p: { primaryPhone: phone } }, { p: { primaryPhone: phone } }] })
+    const parens = (generatePayload(at('(212) 555-0123'), { seed: 'x' }) as { p: { primaryPhone: string } }).p.primaryPhone
+    const dashed = (generatePayload(at('212-555-0123'), { seed: 'x' }) as { p: { primaryPhone: string } }).p.primaryPhone
+    expect(parens).toMatch(/^\(555\) 555-01\d\d$/)
+    expect(dashed).toMatch(/^555-555-01\d\d$/)
+    expect(stringFormat(parens)).toBe('us_phone')
+    expect(parens).not.toBe((generatePayload(at('(212) 555-0123'), { seed: 'y' }) as { p: { primaryPhone: string } }).p.primaryPhone)
+    expect(scanForPersonalData({ parens, dashed })).toEqual([])
   })
 
   it('leaves out a path present in under half the samples', () => {

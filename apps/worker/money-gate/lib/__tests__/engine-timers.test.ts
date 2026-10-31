@@ -290,6 +290,62 @@ describe('advanceUntil (#3086)', () => {
   })
 })
 
+// The engine's step clock seam (EngineRuntime.stepClock, #2163), on the replay's
+// time (#3138): a retry's backoff and each attempt's deadline, so a fixture can
+// replay an attempt timing out and the retry after it with nothing waiting for real.
+describe('stepClock (#3138)', () => {
+  it('sleeps a retry backoff on the replay time: the pinned clock moves on by exactly that much, nothing waits for real, and nothing fires', async () => {
+    const h = host()
+    const moved: number[] = []
+    const lift = liftEngineTimers(h, { onAdvance: (ms) => { moved.push(ms) } })
+    try {
+      const started = performance.now()
+      await lift.stepClock.sleep(500)
+      await lift.stepClock.sleep(1_000)
+      expect(performance.now() - started).toBeLessThan(1_000)
+      expect(moved).toEqual([500, 1_500])
+      expect(lift.fired()).toEqual([])
+      expect(lift.waiting()).toBe(0)
+    } finally {
+      lift.restore()
+    }
+  })
+
+  it('watches an attempt deadline without moving time itself: it runs only when another wait reaches it', async () => {
+    const h = host()
+    const lift = liftEngineTimers(h)
+    try {
+      const watching = new AbortController()
+      let timedOut = false
+      void lift.stepClock.timer(3_750, watching.signal).then(() => { timedOut = true })
+      // A real turn passes and nothing moves the time, so the deadline has not run.
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 0))
+      expect(timedOut).toBe(false)
+      // A held answer that would take 5 s waits on the replay time, which reaches the deadline first.
+      const held = new AbortController()
+      void lift.stepClock.timer(3_750, watching.signal).then(() => held.abort())
+      expect(await lift.waitFor(held.signal, 5_000)).toBe('aborted')
+      expect(timedOut).toBe(true)
+    } finally {
+      lift.restore()
+    }
+  })
+
+  it('ends a deadline watch at once when the attempt answers, and leaves no timer pending to move time later', async () => {
+    const h = host()
+    const lift = liftEngineTimers(h)
+    try {
+      const answered = new AbortController()
+      const watch = lift.stepClock.timer(3_750, answered.signal)
+      answered.abort()
+      await watch
+      await expect(lift.advanceUntil(() => false)).rejects.toThrow('no engine timer is pending')
+    } finally {
+      lift.restore()
+    }
+  })
+})
+
 describe('describeFiredTimers (#1872)', () => {
   it('names the fixture, each timer and where it was set, so a red points at the code', () => {
     const text = describeFiredTimers('Engine Bidding Workflow/tripoint_declined_click_eligible', [

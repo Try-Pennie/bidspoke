@@ -127,15 +127,51 @@ export function placeholderValue(key: string): string {
 }
 
 /**
+ * The Achieve screen's limits as the snapshot holds them (#3138): invented, never
+ * production's, since the repository is public. Each threshold is a number in the
+ * form production uses (a whole dollar loan amount, a ratio below 1, a count, years,
+ * months, a score), chosen so the Main Flow fixture lead (a 20,000 loan on an 85,000
+ * income in TX, a score of 700, one trade, no delinquency, bankruptcy or inquiry,
+ * born 1980) passes every criterion, and a variant changing one of those is turned
+ * away. The allowed states are a list in production's form (two letter codes, comma
+ * separated, no spaces) holding TX and not MN, so the invalid state fixture's lead
+ * is turned away by the screen as state_not_allowed.
+ *
+ * Synthesis would round each down to its power of ten, which made a ceiling smaller
+ * than the lead (10,000 against its 20,000 loan, a loan to income of 0.1) and kept
+ * the score floor at the size of the pause production sets it to, so every lead was
+ * refused before the call and no fixture reached Achieve through its screen. A
+ * floor that pauses the pipe is not invented here: the gate is there to replay the
+ * screen and the send, not the pause.
+ */
+export const INVENTED_ACHIEVE_SCREEN: Readonly<Record<string, string>> = {
+  ACHIEVE_MIN_LOAN_AMOUNT: '12000',
+  ACHIEVE_MAX_LOAN_AMOUNT: '45000',
+  ACHIEVE_MAX_LOAN_TO_INCOME: '0.4',
+  ACHIEVE_MAX_DTI: '0.5',
+  ACHIEVE_MAX_CURRENT_DELINQUENCIES: '1',
+  ACHIEVE_MAX_INQUIRY_EPISODES_6MO: '3',
+  ACHIEVE_MIN_AGE: '21',
+  ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY: '36',
+  ACHIEVE_MIN_VANTAGE_SCORE: '620',
+  ACHIEVE_ALLOWED_STATES: 'AL,AR,AZ,CA,CT,DE,FL,GA,IA,IL,IN,KS,KY,LA,MA,MD,MI,MO,NC,NE,NJ,NM,NY,OH,OK,PA,SC,TN,TX,VA',
+}
+
+/**
  * The NAME of an environment variable is structure; a secret's value never leaves
  * production. A non secret setting can steer an arm (a score floor, a percent, a
  * mode), so a number is kept as a synthetic number and a short word (a mode, a
- * flag) as itself. Anything else is a placeholder.
+ * flag) as itself. Anything else is a placeholder. An Achieve screen limit that
+ * production has set is written as its invented value (INVENTED_ACHIEVE_SCREEN);
+ * one production leaves blank stays off.
  */
 export function snapshotEnvVar(row: EnvVarRow): EnvVarRow {
   let value = placeholderValue(row.key)
   const raw = (row.value ?? '').trim()
-  if (!row.is_secret && !/(_URL|_ENDPOINT|_HOST)$/.test(row.key) && !CREDENTIAL_NAME.test(row.key) && !/(USER|LOGIN|EMAIL)/i.test(row.key)) {
+  const invented = Object.hasOwn(INVENTED_ACHIEVE_SCREEN, row.key) ? INVENTED_ACHIEVE_SCREEN[row.key] : undefined
+  if (invented !== undefined) {
+    if (!row.is_secret && raw !== '') value = invented
+  } else if (!row.is_secret && !/(_URL|_ENDPOINT|_HOST)$/.test(row.key) && !CREDENTIAL_NAME.test(row.key) && !/(USER|LOGIN|EMAIL)/i.test(row.key)) {
     if (/^-?\d+(\.\d+)?$/.test(raw)) value = String(synthesizeNumbers(Number(raw)))
     else if (/^[A-Za-z_][A-Za-z_-]{0,39}$/.test(raw)) value = raw
     else if (/^[A-Za-z]{1,12}(\s*,\s*[A-Za-z]{1,12})+$/.test(raw)) value = raw

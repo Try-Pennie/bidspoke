@@ -87,11 +87,25 @@ slow the Salesforce write through the Pipedream outcome relay
 (`pipedream_outcome_post`, the step before `achieve_tripoint_win`), so the
 Achieve step starts on either side of its cutoff (the 12 s window less the
 500 ms margin and the 4 s floor, `achieve-offers.ts`): the first sends, the
-second skips as `answer_window_spent`. Each turns off the Achieve screen
-criteria the synthetic snapshot refuses this lead on, and gives it a phone
-Achieve takes, so the window alone decides. A change to the floor, the margin or
-the window moves one of them across the cutoff and the gate reports it;
+second skips as `answer_window_spent`. The lead passes the Achieve screen as
+the snapshot has it, so the window alone decides. A change to the floor, the
+margin or the window moves one of them across the cutoff and the gate reports it;
 `slow-answer-stubs.test.ts` fails when the two no longer straddle it.
+
+One late answer is not how production starts Achieve late, though: the relay post
+gives each attempt 3,750 ms and retries twice after a 500 ms and a 1 s backoff.
+So a fixture can name steps in `timed_steps` (#3138). Each keeps its own per
+attempt deadline instead of the gate's (`keepStepDeadlines`; a code step is
+refused, since its dispatch takes real time), and the run's step clock (the
+engine's `stepClock` seam) runs every attempt deadline and backoff on the
+replay's time: a deadline waits until a held answer's advance reaches it, and a
+backoff moves the replay's time on by exactly its length. A stub scenario can
+answer each attempt of a rule differently, counted per run. The Main Flow
+variants `achieve_starts_after_a_timed_out_relay_attempt` (first attempt
+unanswered, so Achieve starts 4.25 s in and sends with a shortened wait) and
+`achieve_skips_after_two_timed_out_relay_attempts` (two unanswered, 9 s in, so it
+skips) replay that; `timed-out-attempt-stubs.test.ts` runs the engine's own retry
+ladder on the replay's time to the same two positions.
 
 The replay also runs one lead twice, once as usual and once with every table
 read (rpc calls are not held) held past the click check's budget (`dbReadDelayMs`), and fails on any
@@ -150,15 +164,29 @@ by name and the nodes never executed. A workflow that executed no node fails.
   enumerated domains of recent real trigger payloads, never a value. Written by
   `scripts/export-money-fixture-shapes.ts`, which reads production through a client
   whose writes and rpc throw; its output guard is `lib/__tests__/export-script.test.ts`.
+  A punctuated US phone is its own format (`us_phone`, #3138), which the generator
+  fills from the fictional 555-0100 to 555-0199 range in the same form, so the
+  Achieve node can send it. Main Flow's phone was set to that format by hand on
+  2026-10-30, after all 300 of a read only sample of its live runs came in the
+  form (ddd) ddd-dddd; the next export writes it itself.
 * `fixtures/config-snapshot.json`: the config tables the engine reads, real
   structure, synthetic numbers (order of magnitude and position only), env var
   names with placeholders, URL tokens removed. Result codes, routing codes and
   priority are kept: they decide which arm a lead takes, not what it is worth.
+  The Achieve screen's limits, its allowed states included, are not synthesized
+  or kept but invented (`INVENTED_ACHIEVE_SCREEN` in `lib/snapshot.ts`, #3138),
+  never production's: rounded down to a power of ten the thresholds refused every
+  lead before the call. The fixture lead (in TX) passes them, so `achieve_rejects`
+  and the accepted arms reach Achieve through its real screen,
+  `achieve_screen_turns_away` is refused on its loan to income, and
+  `invalid_state` (MN, off the invented list) as a state Achieve does not take.
+  A setting production leaves blank stays off.
 * `fixtures/definitions/*.json`: the live definitions, from the
   `Try-Pennie/bidspoke-workflows` backup, refused unless equal to production.
 * `fixtures/variants/*.json`: per workflow, the arms to steer towards (and, by
   `also_run_as`, which variants also run as a test run and a shadow run): payload
-  overrides by path, stub scenarios, env overrides, prior runs.
+  overrides by path, stub scenarios, env overrides, prior runs, and steps that
+  keep their own deadline (`timed_steps`).
 * `lib/fixture-scan.ts` fails on an issuable SSN, a date of birth other than the
   first of January, a Luhn valid card number and a non zero account number, over
   everything committed and every payload generated (`lib/__tests__/committed-fixtures.test.ts`).

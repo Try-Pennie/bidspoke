@@ -742,7 +742,10 @@ jobs:
       # main"; a Deploy run ships every target, so it is one fact. When a queued
       # alert is fixed by a deploy, the message also says what happened to the
       # newest Deploy run on main (the step that failed, or that none ran since),
-      # which the strand text alone could only guess at.
+      # which the strand text alone could only guess at. Its scripts come from
+      # `head/`, the first checkout: the root one comes partway through the job
+      # and is skipped once a step fails hard, which would lose an alert the
+      # worker steps had already queued.
       - name: Post the drift alerts
         id: drift_send
         if: always()
@@ -753,11 +756,11 @@ jobs:
           set -uo pipefail
           CAUSE=''
           if grep -qs . "$DRIFT_STATE_DIR"/outbox/*.remedy; then
-            CAUSE=$(bash .github/scripts/deploy-latest-outcome.sh)
+            CAUSE=$(bash head/.github/scripts/deploy-latest-outcome.sh)
           fi
           SENT=$(DRIFT_CAUSE="$CAUSE" \
             DRIFT_RUN_LINK="<$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID|Open this check>" \
-            bash .github/scripts/drift-alert-state.sh send)
+            bash head/.github/scripts/drift-alert-state.sh send)
           echo "slack: $SENT"
 
       # Write the reminder record for the next run, whatever happened above
@@ -776,7 +779,7 @@ jobs:
           TAIL: ${{ steps.tail_alert.outcome }}
         run: |
           set -uo pipefail
-          OUTCOME=$(bash .github/scripts/drift-alert-state.sh finish)
+          OUTCOME=$(bash head/.github/scripts/drift-alert-state.sh finish)
           echo "outcome=$OUTCOME" >> "$GITHUB_OUTPUT"
           echo "run outcome: $OUTCOME"
 
