@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { GATE_STEP_DEADLINE_MS, liftStepDeadlines } from '../step-deadlines'
+import { GATE_STEP_DEADLINE_MS, keepStepDeadlines, liftStepDeadlines } from '../step-deadlines'
 
 interface Def { id: string; name: string; definition: { nodes: Array<{ namespace: string; type: string; config?: Record<string, unknown> }>; edges: unknown[] } }
 
@@ -58,5 +58,47 @@ describe('liftStepDeadlines (#1796)', () => {
   it('sets the deadline far above any real replay step, and below the replay test timeout', () => {
     expect(GATE_STEP_DEADLINE_MS).toBeGreaterThanOrEqual(60_000)
     expect(GATE_STEP_DEADLINE_MS).toBeLessThan(900_000)
+  })
+})
+
+// A fixture can keep a step's own per attempt deadline (#3138), so an attempt can
+// time out on the replay's time and its retry run, as production's would.
+describe('keepStepDeadlines (#3138)', () => {
+  const defined = def([
+    { namespace: 'tripoint_sf_post', type: 'webhook', config: { url: 'https://relay.example', retries: 2, timeout_ms: 3750 } },
+    { namespace: 'other_post', type: 'webhook', config: { timeout_ms: 5000 } },
+    { namespace: 'build_body', type: 'code', config: { script: 'return 1', timeout_ms: 250 } },
+    { namespace: 'route', type: 'branch' },
+  ])
+  const lifted = liftStepDeadlines(defined)
+
+  it('gives back the named step its defined deadline and leaves every other step lifted', () => {
+    const out = keepStepDeadlines(lifted, defined, ['tripoint_sf_post'])
+    expect(out.definition.nodes[0].config).toEqual({ url: 'https://relay.example', retries: 2, timeout_ms: 3750 })
+    expect(out.definition.nodes[1].config?.timeout_ms).toBe(GATE_STEP_DEADLINE_MS)
+    expect(out.definition.nodes[2].config?.timeout_ms).toBe(GATE_STEP_DEADLINE_MS)
+    expect(lifted.definition.nodes[0].config?.timeout_ms).toBe(GATE_STEP_DEADLINE_MS)
+  })
+
+  it('changes nothing when no step is named', () => {
+    expect(keepStepDeadlines(lifted, defined, [])).toEqual(lifted)
+  })
+
+  it('refuses by name a step the definition does not have', () => {
+    expect(() => keepStepDeadlines(lifted, defined, ['no_such_step'])).toThrow(/no_such_step/)
+  })
+
+  it('refuses by name a step that sets no deadline, since there is nothing to keep', () => {
+    expect(() => keepStepDeadlines(lifted, defined, ['route'])).toThrow(/route.*no timeout_ms/)
+  })
+
+  it('refuses by name a code step, whose dispatch takes real time a kept deadline would race', () => {
+    expect(() => keepStepDeadlines(lifted, defined, ['build_body'])).toThrow(/build_body.*code/)
+  })
+
+  it('keeps the Main Flow outcome relay post the timed out attempt fixtures name at its committed 3,750 ms', () => {
+    const mainFlow = committed.find((d) => d.name === 'Main Flow')!
+    const out = keepStepDeadlines(liftStepDeadlines(mainFlow), mainFlow, ['tripoint_sf_post'])
+    expect(out.definition.nodes.find((n) => n.namespace === 'tripoint_sf_post')!.config).toMatchObject({ timeout_ms: 3750, retries: 2 })
   })
 })
